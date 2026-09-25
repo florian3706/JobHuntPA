@@ -1,9 +1,10 @@
-> [!WARNING] This was vibe-coded in its entirety, as a way to get experience with LLM-based 
-development (and save my sanity while job hunting).
-
-I'm making this public so I can more easily share this with friends who are also job hunting.
-This is provided as is with no warranty. Do whatever you want with this, but don't come crying to
-me if it doesn't work. It's a vibe-coded throwaway tool --- nothing more.
+> [!WARNING]
+> This was vibe-coded in its entirety, as a way to get experience with LLM-based
+> development (and save my sanity while job hunting).
+> 
+> I'm making this public so I can more easily share this with friends who are also job hunting.
+> This is provided as is with no warranty. Do whatever you want with this, but don't come crying to
+> me if it doesn't work. It's a vibe-coded throwaway tool --- nothing more.
 
 # JobHuntPA
 
