@@ -119,16 +119,28 @@ def _dominant_shape(anchors: list[tuple[Tag, str]]) -> list[tuple[Tag, str]]:
     by_shape: dict[str, set[str]] = {}
     for _, url in anchors:
         by_shape.setdefault(_shape(url), set()).add(url)
-    if len(by_shape) <= 1:
-        return anchors
-    top = max(len(v) for v in by_shape.values())
-    keep = {k for k, v in by_shape.items() if len(v) >= max(2, top / 3)}
+    top = max((len(v) for v in by_shape.values()), default=0)
+    keep = {k for k, v in by_shape.items() if len(v) >= max(2, top / 3)} if len(by_shape) > 1 else set(by_shape)
     # Aggregators: postings live under the employer (/company/<x>/jobs/<y>);
     # sibling /jobs/<y> links are category filters.
     scoped = {k for k in keep if "/company/" in k or "/companies/" in k}
     if scoped:
         keep = scoped
-    return [(a, u) for a, u in anchors if _shape(u) in keep]
+    kept = [(a, u) for a, u in anchors if _shape(u) in keep]
+    # Boards like edtechjobs.io put postings (/jobs/<uuid>-title) and topic pages
+    # (/jobs/edtech-product) under one pattern: when postings carry ids, drop the rest.
+    with_id = {u for _, u in kept if _has_posting_id(u)}
+    if len(with_id) >= 3 and len(with_id) < len({u for _, u in kept}):
+        kept = [(a, u) for a, u in kept if u in with_id]
+    return kept
+
+
+_POSTING_ID_RE = re.compile(r"\d{4,}|[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
+
+
+def _has_posting_id(url: str) -> bool:
+    segs = _path_segments(urlsplit(url).path)
+    return bool(segs) and bool(_POSTING_ID_RE.search(segs[-1]))
 
 
 def _is_pagination_link(url: str, index_url: str) -> bool:
@@ -261,6 +273,16 @@ def parse_detail(html: str, stub: Posting) -> Optional[Posting]:
         container = node
     container = container or soup.select_one("main, article, [role=main]") or soup.body
     if container is None:
+        return None
+    # A search/topic page lists other postings; a job ad doesn't.
+    if re.search(r"\bjobs\s*$", h1_text, re.I):
+        return None
+    listed = {
+        urldefrag(urljoin(stub.url, a["href"]))[0]
+        for a in soup.find_all("a", href=True)
+        if is_job_link(urldefrag(urljoin(stub.url, a["href"]))[0], stub.url)
+    }
+    if len(listed) >= 5:
         return None
     text = html_to_text(str(container))[:MAX_DESCRIPTION]
     if len(text) < 300 or not _JOBISH_RE.search(text):

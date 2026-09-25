@@ -104,8 +104,19 @@ _NOT_A_PLACE = re.compile(r"^(remote|anywhere|various|multiple locations?|global
 def _geocode_query(location_text: str) -> str:
     # "Sydney NSW; Melbourne VIC" -> geocode the first place only.
     first = re.split(r"[;|/]| or ", location_text or "")[0]
+    first = re.sub(r"[^\w\s,&'.-]", " ", first)  # emoji flags etc.
+    first = re.sub(r"\s[-\u2013]\s*remote\b.*$|\bremote\b", " ", first, flags=re.I)
     first = re.sub(r"\((.*?)\)", "", first)
-    return " ".join(first.split()).strip(" ,")
+    parts = [p.strip() for p in first.split(",")]
+    parts = [p for p in parts if p]  # "Sydney, , Australia"
+    # A trailing ISO code after the country name ("Melbourne, Australia, AU")
+    # only confuses the search; the country filter covers it.
+    if len(parts) > 1 and re.fullmatch(r"[A-Z]{2,3}", parts[-1]) and parts[-1] not in _AU_STATES:
+        parts = parts[:-1]
+    return ", ".join(" ".join(p.split()) for p in parts)
+
+
+_AU_STATES = {"NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"}
 
 
 def geocode(location_text: str) -> Optional[dict[str, Any]]:
@@ -135,7 +146,7 @@ def geocode(location_text: str) -> Optional[dict[str, Any]]:
 
 def _nominatim(query: str):
     global _geo_last
-    params = {"q": query, "format": "jsonv2", "limit": 1, "addressdetails": 1}
+    params = {"q": query, "format": "jsonv2", "limit": 5, "addressdetails": 1}
     guessed = guess_country(query)
     if guessed:
         params["countrycodes"] = guessed.lower()
@@ -153,7 +164,12 @@ def _nominatim(query: str):
             return False
     if not hits:
         return None
-    hit = hits[0]
+    # The first hit can be an obscure landmark ("Melbourne Point, WA" for
+    # "Melbourne, Australia"); the most important place is the one meant.
+    hit = max(hits, key=lambda h: float(h.get("importance") or 0))
+    # "Australia" or "Victoria" is not a place you can measure a commute to.
+    if hit.get("addresstype") in ("country", "state", "region", "continent"):
+        return None
     return {
         "lat": float(hit["lat"]),
         "lng": float(hit["lon"]),

@@ -195,6 +195,20 @@ class GenericTest(unittest.TestCase):
         self.assertEqual(postings[0].company, "Company 0")
         self.assertTrue(all("/company/" in p.url for p in postings))
 
+    def test_topic_pages_dropped_when_postings_have_ids(self):
+        links = "".join(f'<div><a href="/jobs/d04765c9-e0c4-4e92-ae2e-32d587f1f75{i}-product-manager-{i}">Product Manager {i}</a></div>' for i in range(4))
+        links += '<a href="/jobs/edtech-product">Edtech Product</a><a href="/jobs/learning-design">Learning Design</a>'
+        postings, _ = parse_listing(links, "https://edtechjobs.io/jobs/product-management", "Board")
+        self.assertEqual(len(postings), 4)
+        self.assertTrue(all("d04765c9" in p.url for p in postings))
+
+    def test_detail_rejects_topic_listing_page(self):
+        body = "".join(f'<li><a href="/jobs/{i}0000-pm-role">PM role {i}</a> Experience with requirements and stakeholders.</li>' for i in range(6))
+        html = f"<html><body><h1>Edtech Product EdTech Jobs</h1><ul>{body}</ul><p>{'You will find responsibilities here. ' * 20}</p></body></html>"
+        self.assertIsNone(parse_detail(html, Posting(url="https://edtechjobs.io/jobs/edtech-product", title="x")))
+        html2 = html.replace("Edtech Product EdTech Jobs", "Edtech Product")
+        self.assertIsNone(parse_detail(html2, Posting(url="https://edtechjobs.io/jobs/edtech-product", title="x")))
+
     def test_detect_ats(self):
         html = '<a href="https://apply.workable.com/learnosity/">Jobs</a> <iframe src="https://boards.greenhouse.io/embed/job_board?for=acme"></iframe>'
         self.assertEqual(detect_ats(html), [("workable", ("learnosity",)), ("greenhouse", ("acme",))])
@@ -260,6 +274,25 @@ class GeoTest(unittest.TestCase):
         self.assertEqual(guess_country("Austin, TX"), "US")
         self.assertEqual(guess_country("Hawthorn, Victoria, Australia"), "AU")
         self.assertEqual(guess_country(""), "")
+
+    def test_geocode_query_cleanup(self):
+        from backend.geo import _geocode_query
+        self.assertEqual(_geocode_query("Melbourne, Australia, AU"), "Melbourne, Australia")
+        self.assertEqual(_geocode_query("Sydney, , Australia"), "Sydney, Australia")
+        self.assertEqual(_geocode_query("Perth, WA"), "Perth, WA")
+        self.assertEqual(_geocode_query("Sydney NSW; Melbourne VIC"), "Sydney NSW")
+        self.assertEqual(_geocode_query("\U0001F1E6\U0001F1FA Australia \u2013 Remote"), "Australia")
+
+    def test_geocode_prefers_most_important_place(self):
+        from unittest import mock
+        import backend.geo as geo
+        hits = [{"lat": "-20.378", "lon": "115.55", "importance": 0.2, "display_name": "Melbourne Point, WA",
+                 "address": {"country_code": "au"}},
+                {"lat": "-37.814", "lon": "144.963", "importance": 0.8, "display_name": "Melbourne, Victoria",
+                 "address": {"country_code": "au"}}]
+        resp = mock.Mock(json=lambda: hits, raise_for_status=lambda: None)
+        with mock.patch.object(geo.httpx, "get", return_value=resp), mock.patch.object(geo.time, "sleep"):
+            self.assertEqual(geo._nominatim("Melbourne, Australia")["lat"], -37.814)
 
     def test_work_mode(self):
         self.assertEqual(classify_work_mode("PM", "Sydney", "We offer hybrid working, 3 days in office."), "hybrid")
