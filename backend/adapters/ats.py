@@ -72,6 +72,8 @@ class WorkableAdapter(Adapter):
             if not token:
                 break
             body = {**body, "token": token}
+        else:
+            self.complete_listing = False
         return out
 
     def fetch_detail(self, posting: Posting) -> Optional[Posting]:
@@ -252,6 +254,8 @@ class SmartRecruitersAdapter(Adapter):
             offset += len(content)
             if not content or offset >= int(data.get("totalFound") or 0):
                 break
+        else:
+            self.complete_listing = False
         return out
 
     def fetch_detail(self, posting: Posting) -> Optional[Posting]:
@@ -278,7 +282,7 @@ class WorkdayAdapter(Adapter):
         self.api = f"https://{host}/wday/cxs/{tenant}/{site}"
 
     def list_postings(self) -> list[Posting]:
-        out, offset, limit = [], 0, 20
+        out, offset, limit, total = [], 0, 20, None
         for _ in range(MAX_LISTING_PAGES):
             data = self.client.post_json(
                 f"{self.api}/jobs", {"appliedFacets": {}, "limit": limit, "offset": offset, "searchText": ""},
@@ -300,8 +304,12 @@ class WorkdayAdapter(Adapter):
                     detail_ref=path,
                 ))
             offset += len(postings)
-            if not postings or offset >= int(data.get("total") or 0):
+            if total is None:
+                total = int(data.get("total") or 0)  # Workday only reports it on the first page
+            if not postings or offset >= total:
                 break
+        else:
+            self.complete_listing = False  # capped: don't close unseen jobs
         return out
 
     def fetch_detail(self, posting: Posting) -> Optional[Posting]:
@@ -317,10 +325,58 @@ class WorkdayAdapter(Adapter):
 
 
 # ---------------------------------------------------------------------------
+# Atlassian (its careers site loads every listing from one JSON endpoint)
+# ---------------------------------------------------------------------------
+
+class AtlassianAdapter(Adapter):
+    source = "atlassian"
+    method = "Atlassian careers listings endpoint"
+
+    def __init__(self, client: PoliteClient, company: str = "Atlassian"):
+        self.client, self.company = client, company or "Atlassian"
+
+    def list_postings(self) -> list[Posting]:
+        data = self.client.get("https://www.atlassian.com/endpoint/careers/listings", ttl=LISTING_TTL).json()
+        out = []
+        for job in data if isinstance(data, list) else []:
+            if not job.get("id") or not job.get("title"):
+                continue
+            locations = [clean(l) for l in job.get("locations") or [] if clean(l)]
+            parts = [html_to_text(job.get(k) or "") for k in ("overview", "responsibilities", "qualifications")]
+            desc = "\n\n".join(p for p in parts if p)
+            remote = any(l.lower().startswith("remote") for l in locations)
+            out.append(Posting(
+                url=f"https://www.atlassian.com/company/careers/details/{job['id']}",
+                title=clean(job["title"]),
+                company=self.company,
+                external_id=str(job["id"]),
+                location_text="; ".join(locations),
+                country=_atlassian_country(locations),
+                work_mode="remote" if remote else "unknown",
+                description=desc,
+                detail_status="full" if desc else "none",
+                posted_at=clean((job.get("portalJobPost") or {}).get("updatedDate")),
+                industry=clean(job.get("category")),
+            ))
+        return out
+
+
+def _atlassian_country(locations: list[str]) -> str:
+    """"Sydney - Australia", "Remote - Australia", "Remote - Remote" -> "AU" when any is in Australia."""
+    from backend.geo import guess_country
+
+    codes = {guess_country(l) for l in locations} - {""}
+    if "AU" in codes:
+        return "AU"
+    return codes.pop() if len(codes) == 1 else ""
+
+
+# ---------------------------------------------------------------------------
 # Detection: which ATS (if any) does a URL belong to?
 # ---------------------------------------------------------------------------
 
 _ATS_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("atlassian", re.compile(r"https?://(?:www\.)?atlassian\.com/company/careers()", re.I)),
     ("workable", re.compile(r"https?://apply\.workable\.com/(?!api/)([A-Za-z0-9_-]+)", re.I)),
     ("workable", re.compile(r"https?://([A-Za-z0-9_-]+)\.workable\.com(?:/|$)", re.I)),
     ("greenhouse", re.compile(r"https?://(?:job-)?boards(?:-api)?\.greenhouse\.io/(?:embed/job_board\?for=|v1/boards/)?([A-Za-z0-9_-]+)", re.I)),
@@ -341,7 +397,9 @@ def detect_ats(text: str) -> list[tuple[str, tuple[str, ...]]]:
     found: dict[tuple[str, tuple[str, ...]], int] = {}
     for kind, rx in _ATS_PATTERNS:
         for m in rx.finditer(text or ""):
-            if kind == "workday":
+            if kind == "atlassian":
+                args = ("atlassian",)
+            elif kind == "workday":
                 args = (f"{m.group(1)}.{m.group(2)}.myworkdayjobs.com", m.group(1), m.group(3))
             else:
                 board = m.group(1)
@@ -365,6 +423,8 @@ def make_ats_adapter(client: PoliteClient, kind: str, args: tuple[str, ...], com
         return SmartRecruitersAdapter(client, args[0], company)
     if kind == "workday":
         return WorkdayAdapter(client, *args, company=company)
+    if kind == "atlassian":
+        return AtlassianAdapter(client, company)
     raise SourceError(f"unknown ATS {kind}")
 
 

@@ -179,7 +179,7 @@ def _process_source(db: Session, src: Optional[CompanySource], adapter: Adapter,
         seen.add(p.url)
         progress(f"{rep.label}: {i}/{len(postings)}", {"source": rep.label, "done": i, "total": len(postings)})
         if src is not None and src.label:
-            p.company = src.label
+            p.company = p.company or src.label
         job, is_new = upsert_posting(db, p, adapter.source, src.id if src is not None else None, crit, now)
         rep.new += is_new
 

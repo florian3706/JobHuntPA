@@ -54,6 +54,7 @@ _DENY_SEGMENTS = {
     "job-alerts", "privacy", "about", "why", "category", "categories", "tag", "tags", "page",
     "feed", "rss", "talent-community", "hiring-process", "how-we-hire", "diversity", "perks",
     "values", "all", "index", "home", "en", "open-positions", "openings", "vacancies", "jobs",
+    "all-jobs", "all-positions", "job-search", "search-jobs", "listings",
 }
 _GENERIC_LINK_TEXT = re.compile(r"^(learn more|read more|view( job| role| details)?|apply( now)?|see details|more|details|find out more)$", re.I)
 _JOBISH_RE = re.compile(
@@ -92,6 +93,42 @@ def is_job_link(url: str, index_url: str) -> bool:
     last = rest[-1]
     # A posting slug/id: "senior-pm", "12345", "12345-senior-pm"
     return bool(re.search(r"\d", last) or "-" in last or "_" in last)
+
+
+def _shape(url: str) -> str:
+    """Path pattern with slugs/ids and locale prefixes wildcarded:
+    /us/company/acme/jobs/pm-1 -> /*/company/*/jobs/*"""
+    segs = _path_segments(urlsplit(url).path)
+    if segs and re.fullmatch(r"[a-z]{2}(-[a-z]{2})?", segs[0], re.I):
+        segs = segs[1:]  # locale prefix: /us/..., /en-au/...
+    out = []
+    for i, seg in enumerate(segs):
+        prev = segs[i - 1].lower() if i else ""
+        keep = seg.lower() in _SHAPE_WORDS and not _JOB_PATH_RE.search("/" + prev + "/x")
+        out.append(seg.lower() if keep else "*")
+    return "/" + "/".join(out)
+
+
+_SHAPE_WORDS = {"company", "companies", "job", "jobs", "career", "careers", "position", "positions",
+                "vacancy", "vacancies", "opening", "openings", "role", "roles", "posting", "postings"}
+
+
+def _dominant_shape(anchors: list[tuple[Tag, str]]) -> list[tuple[Tag, str]]:
+    """Job boards mix postings with category/filter links (/jobs/product-owner/).
+    Keep link shapes that account for a real share of the distinct URLs."""
+    by_shape: dict[str, set[str]] = {}
+    for _, url in anchors:
+        by_shape.setdefault(_shape(url), set()).add(url)
+    if len(by_shape) <= 1:
+        return anchors
+    top = max(len(v) for v in by_shape.values())
+    keep = {k for k, v in by_shape.items() if len(v) >= max(2, top / 3)}
+    # Aggregators: postings live under the employer (/company/<x>/jobs/<y>);
+    # sibling /jobs/<y> links are category filters.
+    scoped = {k for k in keep if "/company/" in k or "/companies/" in k}
+    if scoped:
+        keep = scoped
+    return [(a, u) for a, u in anchors if _shape(u) in keep]
 
 
 def _is_pagination_link(url: str, index_url: str) -> bool:
@@ -144,6 +181,7 @@ def parse_listing(html: str, page_url: str, company: str) -> tuple[list[Posting]
         url = urldefrag(urljoin(page_url, a["href"].strip()))[0]
         if is_job_link(url, page_url):
             anchors.append((a, url))
+    anchors = _dominant_shape(anchors)
     candidate_urls = {u for _, u in anchors}
     seen = {p.url for p in postings}
     for a, url in anchors:
@@ -151,17 +189,25 @@ def parse_listing(html: str, page_url: str, company: str) -> tuple[list[Posting]
             continue
         seen.add(url)
         card = _card_for(a, candidate_urls, page_url)
-        title = clean(a.get_text(" "))
+        # Cards often put department/location inside the link: first line is the title.
+        link_lines = [clean(t) for t in a.get_text("\n").split("\n") if clean(t)]
+        title = link_lines[0] if link_lines else ""
         if not title or _GENERIC_LINK_TEXT.match(title) or len(title) > 150:
             heading = card.find(["h1", "h2", "h3", "h4"])
             title = clean(heading.get_text(" ")) if heading else ""
         title = title or clean(a.get("title")) or _title_from_url(url)
         lines = [clean(t) for t in card.get_text("\n").split("\n")]
-        location = next((l for l in lines if l and l != title and looks_like_location(l)), "")
+        # Job boards name the employer in the card.
+        employer = next((
+            text for el in card.select('[class*=company], [data-id*=company], a[href*="/company/"], a[href*="/companies/"]')
+            if el is not a and a not in el.parents and not el.find("a", href=a["href"])
+            and (text := clean(el.get_text(" "))) and text != title and len(text) <= 80
+        ), company)
+        location = next((l for l in lines if l and l not in (title, employer) and looks_like_location(l)), "")
         postings.append(Posting(
             url=url,
             title=title,
-            company=company,
+            company=employer,
             location_text=location,
             country=guess_country(location),
         ))
@@ -172,13 +218,6 @@ def parse_listing(html: str, page_url: str, company: str) -> tuple[list[Posting]
         if _is_pagination_link(url, page_url) and url != page_url:
             pages.append(url)
     return postings, list(dict.fromkeys(pages))
-
-
-def _looks_like_js_app(html: str) -> bool:
-    soup = BeautifulSoup(html, "lxml")
-    body = soup.body
-    text_len = len(body.get_text(" ", strip=True)) if body else 0
-    return text_len < 1500 or bool(soup.select_one("#root:empty, #app:empty, #__next:empty"))
 
 
 def parse_detail(html: str, stub: Posting) -> Optional[Posting]:
@@ -194,7 +233,8 @@ def parse_detail(html: str, stub: Posting) -> Optional[Posting]:
             stub.salary_min, stub.salary_max = p.salary_min or stub.salary_min, p.salary_max or stub.salary_max
             stub.work_mode = p.work_mode if p.work_mode != "unknown" else stub.work_mode
             stub.posted_at = p.posted_at or stub.posted_at
-            stub.company = stub.company or p.company
+            # Job boards/aggregators: the posting names the real employer.
+            stub.company = p.company or stub.company
             stub.detail_status = "full"
             return stub
 
@@ -263,20 +303,23 @@ class GenericAdapter(Adapter):
         except FetchError as exc:
             raise SourceError(str(exc)) from exc
 
-        # 1b. the careers page links to / embeds an ATS job board
+        # 1b. the careers page links to / embeds ONE ATS job board and lists
+        # no jobs itself. Job boards/aggregators link to many companies'
+        # boards; those must be scraped as HTML, not hijacked by one link.
         refs = [r for r in detect_ats(index.text) if r not in direct]
-        if refs:
+        own_links, _ = parse_listing(index.text, index.url, self.company)
+        if len(refs) == 1 and len(own_links) < 3:
             got = self._try_ats(refs, found_on=" (linked from careers page)")
             if got is not None:
                 return got
 
         # 2 + 3. JSON-LD / HTML job links, following pagination
         postings = self._crawl_listing(index)
-        if not postings and _looks_like_js_app(index.text):
+        if not postings:
             # 4. JavaScript-rendered listing
             rendered = self.client.render(self.careers_url)
             refs = detect_ats(rendered.text)
-            if refs:
+            if len(refs) == 1:
                 got = self._try_ats(refs, found_on=" (found in rendered page)")
                 if got is not None:
                     return got
@@ -297,6 +340,7 @@ class GenericAdapter(Adapter):
                 self.notes.append(f"{adapter.method}: {exc}")
                 continue
             self.delegate = adapter
+            self.complete_listing = adapter.complete_listing
             self.source = adapter.source
             self.method = adapter.method + found_on
             return postings

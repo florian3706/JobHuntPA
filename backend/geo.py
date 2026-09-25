@@ -52,6 +52,18 @@ _COUNTRY_RE = re.compile(r"\b(" + "|".join(re.escape(k) for k in sorted(_COUNTRI
 _US_STATE_RE = re.compile(r",\s*(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WV|WI|WY|DC)\b")
 
 
+_CITIES = {
+    "london": "GB", "manchester": "GB", "edinburgh": "GB", "dublin": "IE", "new york": "US",
+    "san francisco": "US", "seattle": "US", "austin": "US", "boston": "US", "chicago": "US",
+    "toronto": "CA", "vancouver": "CA", "auckland": "NZ", "wellington": "NZ", "berlin": "DE",
+    "munich": "DE", "paris": "FR", "amsterdam": "NL", "madrid": "ES", "barcelona": "ES",
+    "lisbon": "PT", "bangalore": "IN", "bengaluru": "IN", "manila": "PH", "makati": "PH",
+    "tokyo": "JP", "seoul": "KR", "beijing": "CN", "shanghai": "CN", "istanbul": "TR",
+}
+_CITY_RE = re.compile(r"\b(" + "|".join(re.escape(k) for k in sorted(_CITIES, key=len, reverse=True)) + r")\b", re.I)
+_ISO_SUFFIX_RE = re.compile(r",\s*([A-Z]{2})\s*$")
+
+
 def guess_country(text: str) -> str:
     """ISO-2 country for a location string, or '' when unsure."""
     t = text or ""
@@ -62,6 +74,12 @@ def guess_country(text: str) -> str:
         return "AU"
     if _US_STATE_RE.search(t):
         return "US"
+    m = _ISO_SUFFIX_RE.search(t)
+    if m and m.group(1) in set(_COUNTRIES.values()) | {"AU"}:
+        return m.group(1)
+    m = _CITY_RE.search(t)
+    if m:
+        return _CITIES[m.group(1).lower()]
     return ""
 
 

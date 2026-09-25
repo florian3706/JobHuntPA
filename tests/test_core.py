@@ -134,6 +134,14 @@ class GenericTest(unittest.TestCase):
         self.assertEqual(postings[1].country, "AU")
         self.assertEqual(pages, ["https://www.lifeatcanva.com/en/jobs/?page=2"])
 
+    def test_title_first_line_of_link(self):
+        html = ('<ul><li><a href="/jobs/8333730-executive-assistant"><span>Executive Assistant</span>'
+                '<div><span>People &amp; Operations</span> · <span>Remote</span></div></a></li>'
+                '<li><a href="/jobs/8341125-it-manager"><span>IT Manager</span><div>London, GB</div></a></li></ul>')
+        postings, _ = parse_listing(html, "https://careers.tryhackme.com/jobs", "TryHackMe")
+        self.assertEqual([p.title for p in postings], ["Executive Assistant", "IT Manager"])
+        self.assertEqual(postings[1].location_text, "London, GB")
+
     def test_detail_main_content(self):
         html = """<html><body><nav>Home Products Careers</nav>
         <div class="content-wrapper"><div class="job-info"><div class="single-job-info">Full Time</div>
@@ -162,6 +170,30 @@ class GenericTest(unittest.TestCase):
         html = f'<script type="application/ld+json">{json.dumps(ld)}</script><h1>ignored</h1>'
         p = parse_detail(html, Posting(url="https://acme.com/careers/pm-1", title="stub"))
         self.assertEqual((p.title, p.country, p.work_mode, p.detail_status), ("Program Manager", "AU", "remote", "full"))
+
+    def test_aggregator_not_hijacked_by_one_ats_link(self):
+        from unittest.mock import MagicMock
+        from backend.adapters.generic import GenericAdapter
+        from backend.scraping.http import Response
+        html = ('<a href="https://jobs.lever.co/binance">Featured</a>'
+                + "".join(f'<div><a href="/jobs/{i}-product-manager">Product Manager {i}</a><p>Sydney NSW</p></div>' for i in range(5)))
+        client = MagicMock()
+        client.get.return_value = Response(url="https://board.example/jobs/pm", status=200, text=html)
+        adapter = GenericAdapter(client, "https://board.example/jobs/pm", company="Board")
+        postings = adapter.list_postings()
+        self.assertIsNone(adapter.delegate)
+        self.assertEqual(len(postings), 5)
+
+    def test_job_board_keeps_postings_not_categories(self):
+        cards = "".join(
+            f'<div><a href="/company/co{i}/jobs/pm-{i}/">Product Manager {i}</a>'
+            f'<a href="/company/co{i}/">Company {i}</a><p>Sydney, Australia</p>'
+            f'<a href="/jobs/full-time/">Full Time</a><a href="/jobs/product-manager/">product manager jobs</a></div>'
+            for i in range(8))
+        postings, _ = parse_listing(cards, "https://board.example/country/australia/jobs/product-manager/", "Board")
+        self.assertEqual(len(postings), 8)
+        self.assertEqual(postings[0].company, "Company 0")
+        self.assertTrue(all("/company/" in p.url for p in postings))
 
     def test_detect_ats(self):
         html = '<a href="https://apply.workable.com/learnosity/">Jobs</a> <iframe src="https://boards.greenhouse.io/embed/job_board?for=acme"></iframe>'
