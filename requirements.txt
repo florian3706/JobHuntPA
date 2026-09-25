@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+sqlalchemy
+python-multipart
+pypdf
+python-docx
+odfpy
+httpx
+geopy
+playwright

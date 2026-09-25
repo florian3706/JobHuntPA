@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JobHuntPA — Dashboard</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <div>
+          <h1>JobHuntPA</h1>
+          <p class="subtitle">Personal job-hunt dashboard</p>
+        </div>
+      </div>
+      <div class="header-meta">
+        <span id="api-status" class="api-status is-unknown" title="Backend connectivity">● backend: checking…</span>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+      <button class="tab active" role="tab" aria-selected="true" data-tab="jobs" id="tabbtn-jobs">Jobs</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="search" id="tabbtn-search">Search setup</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="docs" id="tabbtn-docs">Documents</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="map" id="tabbtn-map">Map</button>
+    </nav>
+  </header>
+
+  <main class="main">
+    <!-- ============ JOBS ============ -->
+    <section id="tab-jobs" class="tab-panel active" role="tabpanel" aria-labelledby="tabbtn-jobs">
+      <div class="jobs-toolbar">
+        <div class="toolbar-row">
+          <label class="field search-field">
+            <span class="field-label">Search</span>
+            <input id="filter-search" type="search" placeholder="company, title, location, keyword…" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Min score: <output id="score-output" for="filter-min-score">0</output></span>
+            <input id="filter-min-score" type="range" min="0" max="100" step="5" value="0" />
+          </label>
+          <label class="field">
+            <span class="field-label">Work mode</span>
+            <select id="filter-mode">
+              <option value="all">All modes</option>
+              <option value="remote">Remote</option>
+              <option value="hybrid">Hybrid</option>
+              <option value="onsite">Onsite</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Max distance (km)</span>
+            <input id="filter-max-dist" type="number" min="0" step="1" placeholder="Any" />
+          </label>
+          <label class="field check-field">
+            <input id="filter-hide-excluded" type="checkbox" checked />
+            <span>Hide excluded</span>
+          </label>
+          <button id="jobs-reload" class="btn btn-ghost" type="button" title="Reload jobs">↻ Reload</button>
+          <button id="search-run" class="btn btn-primary" type="button" title="Run job search">🔍 Run search</button>
+          <span id="search-run-status" class="muted" aria-live="polite"></span>
+        </div>
+        <div class="toolbar-row chips-row">
+          <div id="status-chips" class="chips" aria-label="Filter by status"></div>
+          <span id="jobs-count" class="muted"></span>
+        </div>
+        <div id="bulk-bar" class="bulk-bar" hidden>
+          <label class="bulk-select-all"><input id="bulk-select-all" type="checkbox" /> <span id="bulk-count">0 selected</span></label>
+          <select id="bulk-status" aria-label="Bulk status">
+            <option value="to_review">to_review</option>
+            <option value="applied">applied</option>
+            <option value="shortlisted">shortlisted</option>
+            <option value="not_interested">not_interested</option>
+          </select>
+          <button id="bulk-apply" class="btn btn-primary btn-sm" type="button">Apply to selected</button>
+          <button id="bulk-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
+        </div>
+      </div>
+      <div id="jobs-list" class="jobs-grid" aria-live="polite"></div>
+      <div id="jobs-empty" class="empty" hidden>No jobs match the current filters.</div>
+      <div id="jobs-error" class="error" hidden></div>
+    </section>
+
+    <!-- ============ SEARCH SETUP ============ -->
+    <section id="tab-search" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-search" hidden>
+      <div class="panel-head">
+        <h2>Search setup</h2>
+        <span id="search-save-status" class="muted" aria-live="polite">Not loaded yet</span>
+      </div>
+      <form id="search-form" class="card form-card" autocomplete="off">
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Job titles</label>
+            <div class="tag-input" data-field="titles"><div class="tags"></div><input type="text" placeholder="Add title + Enter" /></div>
+            <small class="hint">e.g. Backend Engineer, Data Analyst</small>
+          </div>
+          <div class="form-group">
+            <label>Keywords — include</label>
+            <div class="tag-input" data-field="keywords_include"><div class="tags"></div><input type="text" placeholder="Add keyword + Enter" /></div>
+          </div>
+          <div class="form-group">
+            <label>Keywords — exclude</label>
+            <div class="tag-input" data-field="keywords_exclude"><div class="tags"></div><input type="text" placeholder="Add keyword + Enter" /></div>
+          </div>
+          <div class="form-group">
+            <label for="salary-floor">Salary floor (annual, €)</label>
+            <input id="salary-floor" type="number" min="0" step="1000" placeholder="e.g. 50000" />
+          </div>
+          <fieldset class="form-group">
+            <legend>Work modes allowed</legend>
+            <label class="check"><input type="checkbox" id="allow-remote" checked /> Remote</label>
+            <label class="check"><input type="checkbox" id="allow-hybrid" checked /> Hybrid</label>
+            <label class="check"><input type="checkbox" id="allow-onsite" checked /> Onsite</label>
+          </fieldset>
+          <div class="form-group">
+            <label>Dealbreakers — industries</label>
+            <div class="tag-input" data-field="dealbreakers_industries"><div class="tags"></div><input type="text" placeholder="Add industry + Enter" /></div>
+          </div>
+          <div class="form-group">
+            <label>Dealbreakers — keywords</label>
+            <div class="tag-input" data-field="dealbreakers_keywords"><div class="tags"></div><input type="text" placeholder="Add keyword + Enter" /></div>
+          </div>
+        </div>
+        <p class="hint">Changes save automatically (PUT /api/search-setup, mirrored to PUT /api/profile + /api/dealbreakers, debounced). <button id="search-reload" class="link" type="button">Reload from server</button></p>
+        <div id="search-error" class="error" hidden></div>
+      </form>
+      <div class="card sources-card">
+        <h3>Sources</h3>
+        <p class="hint">Job-board / ATS URLs to crawl (GET /api/sources). Run search uses enabled sources via POST /api/search/run.</p>
+        <div class="toolbar-row">
+          <label class="field search-field">
+            <span class="field-label">Source URL</span>
+            <input id="source-url" type="text" placeholder="https://…/careers" autocomplete="off" />
+          </label>
+          <button id="source-add" class="btn btn-primary" type="button">Add</button>
+          <button id="score-test" class="btn btn-ghost" type="button" title="Test Muse Spark scorer">Test scorer</button>
+          <span id="score-test-status" class="muted" aria-live="polite"></span>
+        </div>
+        <div id="sources-list" class="docs-list" aria-live="polite"></div>
+        <div id="sources-error" class="error" hidden></div>
+      </div>
+    </section>
+
+    <!-- ============ DOCUMENTS ============ -->
+    <section id="tab-docs" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-docs" hidden>
+      <div class="panel-head">
+        <h2>Documents</h2>
+        <span class="muted">PDF / ODF / DOCX</span>
+      </div>
+      <form id="upload-form" class="card upload-card">
+        <label class="field">
+          <span class="field-label">Upload CV / cover letter</span>
+          <input id="upload-input" type="file" accept=".pdf,.odt,.ods,.odp,.docx,.doc,application/pdf,application/vnd.oasis.opendocument.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple />
+        </label>
+        <button class="btn btn-primary" type="submit">Upload</button>
+        <span id="upload-status" class="muted" aria-live="polite"></span>
+      </form>
+      <div id="docs-list" class="docs-list"></div>
+      <div id="docs-empty" class="empty" hidden>No documents yet. Upload your CV to get started.</div>
+      <div id="docs-error" class="error" hidden></div>
+      <div id="preview-modal" class="modal" hidden>
+        <div class="modal-box">
+          <div class="modal-head">
+            <strong id="preview-title">Preview</strong>
+            <button id="preview-close" class="btn btn-ghost btn-sm" type="button">✕ Close</button>
+          </div>
+          <iframe id="preview-frame" title="Document preview"></iframe>
+          <pre id="preview-text" class="preview-text" hidden></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ MAP ============ -->
+    <section id="tab-map" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-map" hidden>
+      <div class="panel-head">
+        <h2>Location pins</h2>
+        <span class="muted">Click map to drop a pin · drag to move</span>
+      </div>
+      <div class="map-controls card">
+        <label class="field">
+          <span class="field-label">Pin kind</span>
+          <select id="pin-kind">
+            <option value="home">home</option>
+            <option value="hybrid">hybrid</option>
+            <option value="onsite">onsite</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Radius: <output id="pin-radius-output" for="pin-radius">10 km</output></span>
+          <input id="pin-radius" type="range" min="1" max="100" step="1" value="10" />
+        </label>
+        <label class="field">
+          <span class="field-label">Label (optional)</span>
+          <input id="pin-label" type="text" placeholder="e.g. Home, Office hub" />
+        </label>
+        <button id="pins-reload" class="btn btn-ghost btn-sm" type="button">↻ Reload pins</button>
+      </div>
+      <div id="map" class="map"></div>
+      <div id="pins-list" class="pins-list"></div>
+      <div id="pins-error" class="error" hidden></div>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="assertive"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

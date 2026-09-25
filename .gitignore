@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/jobhunt.db
+data/jobhunt.db-*
+data/uploads/*
+!data/uploads/.gitkeep
+data/cache/*
+!data/cache/.gitkeep
