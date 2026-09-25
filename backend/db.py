@@ -222,6 +222,54 @@ class CompanySource(Base):
 
 
 # ---------------------------------------------------------------------------
+# Company profiles (filled by backend.research)
+# ---------------------------------------------------------------------------
+
+def company_key(name: str) -> str:
+    """Normalised company name used to match jobs to profiles."""
+    return " ".join((name or "").lower().split())
+
+
+class CompanyProfile(Base):
+    __tablename__ = "company_profiles"
+
+    key = Column(String, primary_key=True)          # company_key(name)
+    name = Column(String, nullable=False)           # name as it appears on jobs
+    status = Column(String, nullable=False, default="missing")  # done | error | skipped
+    official_name = Column(String, nullable=True)
+    is_recruiter = Column(Boolean, nullable=False, default=False, server_default="0")
+    business_model = Column(Text, nullable=True)
+    ownership = Column(Text, nullable=True)
+    headquarters = Column(String, nullable=True)
+    controversies_json = Column(Text, nullable=False, default="[]")
+    controversy_note = Column(Text, nullable=True)
+    sources_json = Column(Text, nullable=False, default="[]")
+    unverified_dropped = Column(Integer, nullable=False, default=0, server_default="0")
+    error = Column(Text, nullable=True)
+    model = Column(String, nullable=True)
+    researched_at = Column(DateTime, nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "key": self.key,
+            "name": self.name,
+            "status": self.status,
+            "official_name": self.official_name,
+            "is_recruiter": bool(self.is_recruiter),
+            "business_model": self.business_model,
+            "ownership": self.ownership,
+            "headquarters": self.headquarters,
+            "controversies": json.loads(self.controversies_json or "[]"),
+            "controversy_note": self.controversy_note,
+            "sources": json.loads(self.sources_json or "[]"),
+            "unverified_dropped": self.unverified_dropped or 0,
+            "error": self.error,
+            "model": self.model,
+            "researched_at": self.researched_at.isoformat() if self.researched_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Background runs + caches
 # ---------------------------------------------------------------------------
 

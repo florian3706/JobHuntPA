@@ -285,3 +285,65 @@ class ScorerParseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResearchTest(unittest.TestCase):
+    RESPONSE = {
+        "id": "resp_1", "status": "completed",
+        "output": [
+            {"type": "web_search_call", "status": "completed", "results": [
+                {"type": "text_result", "title": "About Acme", "url": "https://www.acme.com/about/"},
+                {"type": "text_result", "title": "Acme fined over data breach", "url": "https://news.example.com/acme-fine"},
+            ]},
+            {"type": "message", "content": [{"type": "output_text", "annotations": [
+                {"type": "url_citation", "url": "https://abc.net.au/news/acme-layoffs", "title": "Acme layoffs", "start_index": 0, "end_index": 5}],
+                "text": json.dumps({
+                    "official_name": "Acme Pty Ltd", "is_company": True, "is_recruiter": False,
+                    "business_model": "Sells SaaS subscriptions.", "ownership": "Private, VC-backed.",
+                    "headquarters": "Sydney, Australia",
+                    "controversies": [
+                        {"title": "Data breach fine", "year": "2024", "summary": "Fined by OAIC.",
+                         "sources": [{"title": "Fine", "url": "https://news.example.com/acme-fine/"}]},
+                        {"title": "Layoffs", "year": "2025", "summary": "Cut 10% of staff.",
+                         "sources": [{"title": "ABC", "url": "https://www.abc.net.au/news/acme-layoffs"}]},
+                        {"title": "Invented scandal", "year": "2023", "summary": "Hallucinated.",
+                         "sources": [{"title": "Fake", "url": "https://made-up.example/story"}]},
+                    ],
+                    "controversy_note": "Two notable issues.",
+                    "sources": [{"title": "About", "url": "https://acme.com/about"}, {"title": "x", "url": "https://nowhere.example"}],
+                })}]},
+        ],
+    }
+
+    def test_only_searched_links_survive(self):
+        from backend.research import extract, parse_profile
+        text, seen = extract(self.RESPONSE)
+        profile, dropped = parse_profile(text, seen)
+        self.assertEqual([c["title"] for c in profile["controversies"]], ["Data breach fine", "Layoffs"])
+        self.assertEqual(len(profile["sources"]), 1)
+        self.assertEqual(dropped, 2)
+        self.assertEqual(profile["headquarters"], "Sydney, Australia")
+
+    def test_research_saves_and_aborts_on_auth(self):
+        from unittest import mock
+        import backend.research as r
+        from backend.db import CompanyProfile, SessionLocal
+
+        cfg = {"api_key": "k", "base_url": "https://api.meta.ai/v1", "model": "m", "concurrency": 2}
+        with mock.patch.object(r, "get_config", return_value=cfg), \
+                mock.patch.object(r, "run_agent", return_value=self.RESPONSE):
+            out = r.research_companies([{"name": "Acme", "key": "acme", "jobs": []}])
+        self.assertEqual(out["researched"], 1)
+        db = SessionLocal()
+        row = db.get(CompanyProfile, "acme")
+        self.assertEqual((row.status, len(row.to_dict()["controversies"])), ("done", 2))
+        db.close()
+
+        def rejected(company, cfg):
+            raise ScorerError("HTTP 401: rejected", auth=True)
+        with mock.patch.object(r, "get_config", return_value={**cfg, "concurrency": 1}), \
+                mock.patch.object(r, "run_agent", side_effect=rejected):
+            out = r.research_companies([{"name": f"C{i}", "key": f"c{i}", "jobs": []} for i in range(5)])
+        self.assertIn("401", out["aborted"])
+        self.assertEqual(out["errors"], 1)
+        self.assertEqual(out["skipped"], 4)

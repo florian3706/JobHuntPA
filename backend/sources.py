@@ -66,15 +66,6 @@ def source_to_dict(s: CompanySource) -> dict:
     }
 
 
-def fix_legacy_labels(db: Session) -> None:
-    """Older versions stored the bare hostname as the label (shown as company)."""
-    for src in db.query(CompanySource).all():
-        host = urlsplit(src.careers_url or "").netloc.lower()
-        if src.label and src.label.lower() in (host, host.removeprefix("www.")):
-            src.label = default_label(src.careers_url)
-    db.commit()
-
-
 @router.get("")
 def list_sources(db: Session = Depends(get_db)):
     return [source_to_dict(s) for s in db.query(CompanySource).order_by(CompanySource.id).all()]

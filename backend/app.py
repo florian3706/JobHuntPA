@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env first)
 from backend import tasks
-from backend.db import FitResult, Job, SearchRun, SessionLocal, get_db, init_db
+from backend.db import CompanyProfile, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.docs import router as docs_router
 from backend.profile import router as profile_router
 from backend.sources import router as sources_router
@@ -33,13 +33,6 @@ STATUSES = ("to_review", "applied", "shortlisted", "not_interested")
 async def lifespan(app: FastAPI):
     init_db()
     tasks.mark_interrupted()
-    from backend.sources import fix_legacy_labels
-
-    db = SessionLocal()
-    try:
-        fix_legacy_labels(db)
-    finally:
-        db.close()
     yield
 
 
@@ -80,6 +73,7 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "id": job.id,
         "source": job.source,
         "company": job.company,
+        "company_key": company_key(job.company or ""),
         "title": job.title,
         "location_text": job.location_text,
         "country": job.country,
@@ -271,6 +265,43 @@ def score_single(job_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=502, detail=str(exc))
     db.expire_all()
     return get_job(job_id, db)
+
+
+# ---------------------------------------------------------------------------
+# Company profiles (Muse Spark research agents)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/companies")
+def list_companies(db: Session = Depends(get_db)):
+    return {p.key: p.to_dict() for p in db.query(CompanyProfile).all()}
+
+
+class ResearchRequest(BaseModel):
+    mode: Literal["missing", "all"] = "missing"
+    name: Optional[str] = None  # research just this company
+
+
+@app.post("/api/companies/research")
+def start_research(payload: ResearchRequest):
+    from backend.research import companies_to_research, job_context, research_companies
+    from backend.scorer import ScorerError, get_config
+
+    if not get_config()["api_key"]:
+        raise HTTPException(status_code=400, detail="No API key: set MODEL_API_KEY in .env and restart the server.")
+
+    def job(progress):
+        db = SessionLocal()
+        try:
+            companies = [job_context(db, payload.name)] if payload.name else companies_to_research(db, payload.mode)
+        finally:
+            db.close()
+        progress(f"researching {len(companies)} companies", {"done": 0, "total": len(companies)})
+        try:
+            return {"research": research_companies(companies, progress)}
+        except ScorerError as exc:
+            return {"research": {"aborted": str(exc)}}
+
+    return tasks.start("research", job)
 
 
 # ---------------------------------------------------------------------------

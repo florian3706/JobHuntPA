@@ -16,6 +16,7 @@ const state = {
   pinLayers: new Map(),
   jobLayer: null,
   pollTimer: null,
+  companies: {}, // company_key -> profile
 };
 
 /* ---------- utils ---------- */
@@ -60,6 +61,16 @@ function fmtDate(iso) {
 function openModal(title, text) {
   $('#modal-title').textContent = title;
   $('#modal-text').textContent = text;
+  $('#modal-text').hidden = false;
+  $('#modal-html').hidden = true;
+  $('#modal').hidden = false;
+}
+
+function openHtmlModal(title, html) {
+  $('#modal-title').textContent = title;
+  $('#modal-html').innerHTML = html;
+  $('#modal-html').hidden = false;
+  $('#modal-text').hidden = true;
   $('#modal').hidden = false;
 }
 
@@ -172,7 +183,7 @@ function renderJobCard(job) {
     <div class="job-top">
       <input type="checkbox" aria-label="Select job" ${state.selected.has(job.id) ? 'checked' : ''} />
       <div class="job-title-row">
-        <div class="job-company">${esc(job.company || '—')}</div>
+        <div class="job-company">${esc(job.company || '—')} ${companyIcon(job)}</div>
         <h3 class="job-title"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
         <div class="job-meta">
           <span>${esc(job.location_text || 'location unknown')}</span>
@@ -204,6 +215,7 @@ function renderJobCard(job) {
   sel.addEventListener('change', () => updateJobStatus(job, sel.value, sel));
   card.querySelector('[data-act="rescore"]').addEventListener('click', (e) => rescoreJob(job, e.target));
   card.querySelector('[data-act="desc"]').addEventListener('click', () => showDescription(job));
+  card.querySelector('[data-act="company"]')?.addEventListener('click', () => showCompany(job));
   card.querySelector('details').addEventListener('toggle', (e) => {
     if (e.target.open) e.target.querySelector('.fit-body').innerHTML = fitHtml(job);
   });
@@ -304,9 +316,11 @@ function initJobs() {
   });
   $('#search-run').addEventListener('click', () => startRun('/api/search/run', {}));
   $('#score-pending').addEventListener('click', () => startRun('/api/score/run', { mode: 'pending' }));
+  $('#fill-info').addEventListener('click', () => startRun('/api/companies/research', { mode: 'missing' }));
 }
 
 /* ================= BACKGROUND RUNS ================= */
+const RUN_LABEL = { search: 'Search', score: 'Scoring', research: 'Company research' };
 async function startRun(url, body) {
   try {
     const run = await api(url, { method: 'POST', body: JSON.stringify(body) });
@@ -317,8 +331,7 @@ async function startRun(url, body) {
 
 function watchRun(id) {
   clearTimeout(state.pollTimer);
-  $('#search-run').disabled = true;
-  $('#score-pending').disabled = true;
+  ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = true; });
   $('#run-progress').hidden = false;
   const tick = async () => {
     let run;
@@ -327,7 +340,7 @@ function watchRun(id) {
     const pct = p.total ? Math.round((100 * (p.done || 0)) / p.total) : null;
     $('#run-progress .progress-bar').style.width = pct === null ? '100%' : `${pct}%`;
     $('#run-progress').classList.toggle('indeterminate', pct === null);
-    $('#run-status').textContent = `${run.kind === 'score' ? 'Scoring' : 'Searching'}: ${run.stage || run.state}…`;
+    $('#run-status').textContent = `${RUN_LABEL[run.kind] || 'Working'}: ${run.stage || run.state}…`;
     if (run.state === 'queued' || run.state === 'running') { state.pollTimer = setTimeout(tick, 1200); return; }
     finishRun(run);
   };
@@ -335,19 +348,19 @@ function watchRun(id) {
 }
 
 function finishRun(run) {
-  $('#search-run').disabled = false;
-  $('#score-pending').disabled = false;
+  ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = false; });
   $('#run-progress').hidden = true;
   if (run.state === 'failed') {
     $('#run-status').textContent = `Run failed: ${run.error}`;
     toast(`Run failed: ${run.error}`, 'err', 10000);
   } else {
     $('#run-status').textContent = runSummaryText(run);
-    const sc = run.summary?.scoring;
-    if (sc?.aborted) toast(`Scoring stopped: ${sc.aborted}`, 'err', 12000);
-    else if (sc?.first_error) toast(`Some scores failed: ${sc.first_error}`, 'err', 9000);
+    const sc = run.summary?.scoring || run.summary?.research;
+    if (sc?.aborted) toast(`Stopped: ${sc.aborted}`, 'err', 12000);
+    else if (sc?.first_error) toast(`Some failed: ${sc.first_error}`, 'err', 9000);
   }
   renderRunReport(run);
+  loadCompanies();
   loadJobs();
   loadScorerStatus();
   loadSources();
@@ -363,7 +376,12 @@ function runSummaryText(run) {
     else if (sc.aborted) bits.push('scoring stopped (see error)');
     else if (sc.requested !== undefined) bits.push(`scored ${sc.scored}/${sc.unique_postings ?? sc.requested} unique postings${sc.errors ? `, ${sc.errors} failed` : ''}`);
   }
-  return `${run.kind === 'score' ? 'Scoring' : 'Search'} finished ${fmtDate(run.finished_at)}: ${bits.join(' · ')}`;
+  const rs = run.summary?.research;
+  if (rs) {
+    if (rs.aborted) bits.push('research stopped (see error)');
+    else bits.push(`researched ${rs.researched}/${rs.requested} companies${rs.errors ? `, ${rs.errors} failed` : ''}`);
+  }
+  return `${RUN_LABEL[run.kind] || 'Run'} finished ${fmtDate(run.finished_at)}: ${bits.join(' · ')}`;
 }
 
 function renderRunReport(run) {
@@ -388,6 +406,67 @@ async function loadLatestRun() {
     $('#run-status').textContent = run.state === 'failed' ? `Last run failed: ${run.error}` : runSummaryText(run);
     renderRunReport(run);
   } catch { /* first launch */ }
+}
+
+/* ================= COMPANY PROFILES ================= */
+async function loadCompanies() {
+  try { state.companies = await api('/api/companies'); } catch { state.companies = {}; }
+  renderJobs();
+}
+
+function companyIcon(job) {
+  if (!job.company) return '';
+  const p = state.companies[job.company_key];
+  let cls = 'none', title = 'No company profile yet (Fill missing info)';
+  if (p?.status === 'done') {
+    const n = p.controversies.length;
+    cls = n ? 'warn' : 'ok';
+    title = n ? `${n} controversy item(s) found: click for details` : 'Company profile';
+  } else if (p?.status === 'error') { cls = 'err'; title = 'Research failed: click for details'; }
+  else if (p?.status === 'skipped') { cls = 'none'; title = 'Not a researchable company'; }
+  const count = p?.status === 'done' && p.controversies.length ? `<sup>${p.controversies.length}</sup>` : '';
+  return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}" aria-label="Company info">ⓘ${count}</button>`;
+}
+
+function linkList(sources) {
+  return (sources || []).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.url)}</a>`).join(' · ');
+}
+
+function showCompany(job) {
+  const p = state.companies[job.company_key];
+  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>`;
+  let body;
+  if (!p) {
+    body = `<p class="muted">Not researched yet. <strong>Fill missing info</strong> researches every company in your list, or research just this one:</p>${researchBtn}`;
+  } else if (p.status === 'error') {
+    body = `<p class="err-text">Research failed: ${esc(p.error)}</p>${researchBtn}`;
+  } else if (p.status === 'skipped') {
+    body = `<p class="muted">"${esc(p.name)}" isn't an identifiable organisation (for example an anonymous advertiser).</p>${researchBtn}`;
+  } else {
+    const cons = p.controversies.length
+      ? `<ul class="controversies">${p.controversies.map((c) => `
+          <li><strong>${esc(c.title)}</strong>${c.year ? ` <span class="muted">(${esc(c.year)})</span>` : ''}
+            <div>${esc(c.summary)}</div><div class="sources">${linkList(c.sources)}</div></li>`).join('')}</ul>`
+      : '';
+    body = `
+      ${p.is_recruiter ? '<p class="notice">This is a recruitment agency. The employer behind the ad is usually not disclosed; ask the recruiter who the client is.</p>' : ''}
+      <dl class="profile">
+        <dt>How they make money</dt><dd>${esc(p.business_model || 'Unknown')}</dd>
+        <dt>Ownership</dt><dd>${esc(p.ownership || 'Unknown')}</dd>
+        <dt>Headquarters</dt><dd>${esc(p.headquarters || 'Unknown')}</dd>
+        <dt>Controversies</dt><dd>${esc(p.controversy_note || (p.controversies.length ? '' : 'None found.'))}${cons}</dd>
+      </dl>
+      ${p.sources.length ? `<p class="sources"><span class="muted">Sources:</span> ${linkList(p.sources)}</p>` : ''}
+      <p class="muted">Researched ${esc(fmtDate(p.researched_at))} by ${esc(p.model || 'Muse Spark')} with web search.
+        Only links the search actually returned are shown${p.unverified_dropped ? `; ${p.unverified_dropped} unverifiable link(s) and their claims were removed` : ''}.
+        Automated research can be wrong: check the linked articles.</p>
+      ${researchBtn}`;
+  }
+  openHtmlModal(p?.official_name || job.company, body);
+  $('#company-research').addEventListener('click', () => {
+    $('#modal').hidden = true;
+    startRun('/api/companies/research', { name: job.company });
+  });
 }
 
 /* ================= SEARCH SETUP ================= */
@@ -796,6 +875,7 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#modal-close').addEventListener('click', () => { $('#modal').hidden = true; });
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#modal').hidden = true; });
+  loadCompanies();
   loadJobs();
   loadSetup();
   loadSources();

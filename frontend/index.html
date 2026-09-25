@@ -36,6 +36,7 @@
         <div class="toolbar-row">
           <button id="search-run" class="btn btn-primary" type="button">Run search</button>
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
+          <button id="fill-info" class="btn" type="button" title="Research every company in your job list that has no profile yet (one Muse Spark web-search agent per company)">Fill missing info</button>
           <span id="run-status" class="muted" aria-live="polite"></span>
         </div>
         <div id="run-progress" class="progress" hidden><div class="progress-bar"></div></div>
@@ -255,6 +256,7 @@
         <button id="modal-close" class="btn btn-ghost btn-sm" type="button">✕ Close</button>
       </div>
       <pre id="modal-text" class="preview-text"></pre>
+      <div id="modal-html" class="modal-html" hidden></div>
     </div>
   </div>
 
