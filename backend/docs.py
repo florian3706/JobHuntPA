@@ -1,62 +1,53 @@
-"""Documents router: upload PDF/DOCX/ODF, extract text, persist."""
+"""Documents API: upload PDF/DOCX/ODF, extract text, choose what the scorer sees.
+
+    GET    /api/documents
+    POST   /api/documents            multipart: file, kind
+    PATCH  /api/documents/{id}       {kind?, use_for_scoring?}
+    GET    /api/documents/{id}/text
+    DELETE /api/documents/{id}
+"""
 from __future__ import annotations
 
 import shutil
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from .db import Document, get_db
+from backend.db import DOCUMENT_KINDS, UPLOAD_DIR, Document, get_db
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-UPLOAD_DIR = PROJECT_ROOT / "data" / "uploads"
+router = APIRouter(prefix="/api/documents", tags=["documents"])
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".odt", ".ods", ".odp"}
-
-router = APIRouter(prefix="/api/docs", tags=["docs"])
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".odt", ".ods", ".odp", ".txt", ".md"}
 
 
 def _extract_pdf_text(path: Path) -> str:
     from pypdf import PdfReader
 
-    reader = PdfReader(str(path))
-    parts = [(page.extract_text() or "") for page in reader.pages]
-    return "\n".join(parts).strip()
+    return "\n".join((page.extract_text() or "") for page in PdfReader(str(path)).pages).strip()
 
 
 def _extract_docx_text(path: Path) -> str:
     import docx
 
     doc = docx.Document(str(path))
-    return "\n".join(p.text for p in doc.paragraphs).strip()
+    parts = [p.text for p in doc.paragraphs]
+    for table in doc.tables:
+        for row in table.rows:
+            parts.append(" | ".join(cell.text.strip() for cell in row.cells))
+    return "\n".join(parts).strip()
 
 
 def _extract_odf_text(path: Path) -> str:
+    from odf import teletype
     from odf import text as odf_text
     from odf.opendocument import load
 
     doc = load(str(path))
-    parts = []
-    for p in doc.getElementsByType(odf_text.P):
-        chunks = []
-        for node in p.childNodes:
-            if node.nodeType == node.TEXT_NODE:
-                chunks.append(node.data)
-            else:
-                # e.g. <text:span> elements
-                for sub in node.childNodes:
-                    if sub.nodeType == sub.TEXT_NODE:
-                        chunks.append(sub.data)
-                    elif hasattr(sub, "data"):
-                        try:
-                            chunks.append(str(sub.data))
-                        except Exception:
-                            pass
-        if chunks:
-            parts.append("".join(chunks))
-    return "\n".join(parts).strip()
+    return "\n".join(teletype.extractText(p) for p in doc.getElementsByType(odf_text.P)).strip()
 
 
 def extract_text(path: Path, suffix: str) -> str:
@@ -67,39 +58,43 @@ def extract_text(path: Path, suffix: str) -> str:
         return _extract_docx_text(path)
     if suffix in {".odt", ".ods", ".odp"}:
         return _extract_odf_text(path)
+    if suffix in {".txt", ".md"}:
+        return path.read_text(encoding="utf-8", errors="replace").strip()
     raise ValueError(f"Unsupported file type: {suffix}")
 
 
-def _doc_to_dict(d: Document, include_text: bool = False) -> dict:
-    data = {
+def doc_to_dict(d: Document) -> dict:
+    return {
         "id": d.id,
         "filename": d.filename,
         "filetype": d.filetype,
-        "kind": d.kind,
+        "kind": d.kind or "other",
+        "use_for_scoring": bool(d.use_for_scoring),
         "created_at": d.created_at.isoformat() if d.created_at else None,
         "text_len": len(d.text or ""),
     }
-    if include_text:
-        data["text"] = d.text or ""
-    return data
+
+
+class DocumentUpdate(BaseModel):
+    kind: Optional[str] = None
+    use_for_scoring: Optional[bool] = None
+
+
+@router.get("")
+def list_documents(db: Session = Depends(get_db)):
+    return [doc_to_dict(d) for d in db.query(Document).order_by(Document.created_at.desc()).all()]
 
 
 @router.post("")
-def upload_doc(
-    file: UploadFile = File(...),
-    kind: str = Form("cv"),
-    db: Session = Depends(get_db),
-):
-    original_name = file.filename or "upload"
-    suffix = Path(original_name).suffix.lower()
+def upload_document(file: UploadFile = File(...), kind: str = Form("resume"), db: Session = Depends(get_db)):
+    if kind not in DOCUMENT_KINDS:
+        raise HTTPException(status_code=422, detail=f"kind must be one of {DOCUMENT_KINDS}")
+    original = file.filename or "upload"
+    suffix = Path(original).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type {suffix!r}. Allowed: {sorted(ALLOWED_EXTENSIONS)}",
-        )
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    stored_name = f"{uuid.uuid4().hex}{suffix}"
-    dest = UPLOAD_DIR / stored_name
+        raise HTTPException(status_code=400, detail=f"Unsupported file type {suffix!r}. Allowed: {sorted(ALLOWED_EXTENSIONS)}")
+    stored = f"{uuid.uuid4().hex}{suffix}"
+    dest = UPLOAD_DIR / stored
     with dest.open("wb") as out:
         shutil.copyfileobj(file.file, out)
     try:
@@ -107,42 +102,45 @@ def upload_doc(
     except Exception as exc:
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Could not extract text: {exc}")
-
-    doc = Document(filename=original_name, filetype=suffix, text=text, kind=kind)
+    if not text:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="No text found in the file (scanned PDF?)")
+    doc = Document(filename=original, filetype=suffix, stored_name=stored, text=text, kind=kind)
     db.add(doc)
     db.commit()
-    db.refresh(doc)
-    return _doc_to_dict(doc, include_text=False)
+    return doc_to_dict(doc)
 
 
-@router.get("")
-def list_docs(db: Session = Depends(get_db)):
-    docs = db.query(Document).order_by(Document.created_at.desc()).all()
-    return [_doc_to_dict(d) for d in docs]
+@router.patch("/{doc_id}")
+def update_document(doc_id: int, payload: DocumentUpdate, db: Session = Depends(get_db)):
+    doc = db.get(Document, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if payload.kind is not None:
+        if payload.kind not in DOCUMENT_KINDS:
+            raise HTTPException(status_code=422, detail=f"kind must be one of {DOCUMENT_KINDS}")
+        doc.kind = payload.kind
+    if payload.use_for_scoring is not None:
+        doc.use_for_scoring = payload.use_for_scoring
+    db.commit()
+    return doc_to_dict(doc)
 
 
 @router.get("/{doc_id}/text")
-def get_doc_text(doc_id: int, db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == doc_id).first()
-    if not doc:
+def document_text(doc_id: int, db: Session = Depends(get_db)):
+    doc = db.get(Document, doc_id)
+    if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"id": doc.id, "filename": doc.filename, "text": doc.text or ""}
 
 
 @router.delete("/{doc_id}")
-def delete_doc(doc_id: int, db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == doc_id).first()
-    if not doc:
+def delete_document(doc_id: int, db: Session = Depends(get_db)):
+    doc = db.get(Document, doc_id)
+    if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    if doc.stored_name:
+        (UPLOAD_DIR / doc.stored_name).unlink(missing_ok=True)
     db.delete(doc)
     db.commit()
-    # Best-effort cleanup: stored files use uuid names so the original
-    # filename is not on disk; uploads dir is left intact. Remove any
-    # file that exactly matches the original filename (legacy behavior).
-    legacy = UPLOAD_DIR / (doc.filename or "")
-    try:
-        if legacy.is_file():
-            legacy.unlink()
-    except Exception:
-        pass
     return {"ok": True, "id": doc_id}

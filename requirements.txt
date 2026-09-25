@@ -1,10 +1,12 @@
 fastapi
 uvicorn
-sqlalchemy
+sqlalchemy>=2
 python-multipart
 pypdf
 python-docx
 odfpy
 httpx
-geopy
+beautifulsoup4
+lxml
+# Optional: renders JavaScript-only careers pages (then run: playwright install chromium)
 playwright

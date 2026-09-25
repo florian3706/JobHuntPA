@@ -9,3 +9,4 @@ data/uploads/*
 !data/uploads/.gitkeep
 data/cache/*
 !data/cache/.gitkeep
+data/jobhunt.db.bak*
