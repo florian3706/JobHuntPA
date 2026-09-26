@@ -380,3 +380,48 @@ class ResearchTest(unittest.TestCase):
         self.assertIn("401", out["aborted"])
         self.assertEqual(out["errors"], 1)
         self.assertEqual(out["skipped"], 4)
+
+
+class ResearchV2Test(unittest.TestCase):
+    def _response(self, glassdoor_url):
+        profile = {
+            "official_name": "Acme", "is_company": True, "business_model": "SaaS.", "ownership": "Private.",
+            "headquarters": "Sydney, Australia", "employee_count": "about 250 (2025, LinkedIn)",
+            "glassdoor_url": glassdoor_url,
+            "employee_sentiment": {
+                "summary": "Mostly positive; some workload complaints.", "rating": "4.1/5 on Glassdoor (80 reviews)",
+                "positives": ["Flexible hours", "Good team"], "negatives": ["Long hours before releases"],
+                "sources": [{"title": "Reviews", "url": "https://www.glassdoor.com.au/Reviews/Acme-Reviews-E123.htm"},
+                            {"title": "Made up", "url": "https://fake.example/reviews"}]},
+            "controversies": [], "controversy_note": "None found.", "sources": [],
+        }
+        return {"status": "completed", "output": [
+            {"type": "web_search_call", "results": [
+                {"title": "Acme Reviews", "url": "https://www.glassdoor.com.au/Reviews/Acme-Reviews-E123.htm"}]},
+            {"type": "message", "content": [{"type": "output_text", "text": json.dumps(profile), "annotations": []}]}]}
+
+    def test_new_fields_verified(self):
+        from backend.research import extract, parse_profile
+        p, dropped = parse_profile(*extract(self._response("https://www.glassdoor.com.au/Reviews/Acme-Reviews-E123.htm")))
+        self.assertEqual(p["employee_count"], "about 250 (2025, LinkedIn)")
+        self.assertIn("glassdoor.com.au/Reviews/Acme", p["glassdoor_url"])
+        self.assertEqual(p["sentiment"]["rating"], "4.1/5 on Glassdoor (80 reviews)")
+        self.assertEqual(len(p["sentiment"]["sources"]), 1)
+        self.assertEqual(dropped, 1)
+
+    def test_invented_glassdoor_url_replaced_by_searched_one(self):
+        from backend.research import extract, parse_profile
+        p, _ = parse_profile(*extract(self._response("https://www.glassdoor.com/Overview/Made-Up-E999.htm")))
+        self.assertIn("E123", p["glassdoor_url"])
+
+    def test_old_profiles_need_update(self):
+        from datetime import datetime
+        from backend.db import CompanyProfile, Job, SessionLocal
+        from backend.research import RESEARCH_VERSION, companies_to_research
+        db = SessionLocal()
+        db.add(Job(url="https://x.example/job/1", title="PM", company="Oldco", status="to_review", detail_status="full"))
+        db.add(CompanyProfile(key="oldco", name="Oldco", status="done", research_version=RESEARCH_VERSION - 1,
+                              researched_at=datetime.utcnow()))
+        db.commit()
+        self.assertIn("oldco", [c["key"] for c in companies_to_research(db)])
+        db.close()

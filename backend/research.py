@@ -36,10 +36,12 @@ REFRESH_AFTER = timedelta(days=90)
 POLL_INTERVAL_S = 3
 MAX_WAIT_S = 600
 NOT_COMPANIES = {"private advertiser", "confidential", "confidential company", "undisclosed", ""}
+# Bump when the profile gains fields: older profiles count as missing.
+RESEARCH_VERSION = 2
 
 INSTRUCTIONS = """You are a company research agent. Research ONE organisation using web search and return a factual profile.
 
-Search the web before answering (company website, "about" pages, annual reports, Wikipedia, business press, and news coverage of controversies). Use the job context given to identify the right organisation when the name is ambiguous.
+Search the web before answering (company website, "about" pages, annual reports, Wikipedia, LinkedIn, business press, news coverage of controversies, and employee review sites such as Glassdoor, Indeed company reviews, Seek company reviews, Reddit and Blind). Use the job context given to identify the right organisation when the name is ambiguous.
 
 Return ONLY a JSON object, no markdown:
 {
@@ -49,6 +51,15 @@ Return ONLY a JSON object, no markdown:
   "business_model": "2-3 sentences: what they sell, to whom, and how they make money (main revenue streams).",
   "ownership": "1-2 sentences: public (exchange + ticker), private (founders / major shareholders / VC or private-equity backers), subsidiary (of whom), government-owned, or non-profit.",
   "headquarters": "City, Country",
+  "employee_count": "approximate headcount with year and basis, e.g. 'about 5,000 (2025, annual report)' or '51-200 (LinkedIn)'",
+  "glassdoor_url": "URL of the company's Glassdoor overview or reviews page, if your search returned one, else empty",
+  "employee_sentiment": {
+    "summary": "2-4 sentences: what current and former employees say overall, and how consistent that is",
+    "rating": "e.g. '3.9/5 on Glassdoor (1,200 reviews)'; empty if not found",
+    "positives": ["short recurring theme"],
+    "negatives": ["short recurring theme"],
+    "sources": [{"title": "page title", "url": "https://..."}]
+  },
   "controversies": [
     {"title": "short headline", "year": "YYYY", "summary": "1-2 neutral sentences; say 'alleged' where nothing was proven",
      "sources": [{"title": "article title", "url": "https://..."}]}
@@ -60,7 +71,9 @@ Return ONLY a JSON object, no markdown:
 Rules:
 - Controversies: lawsuits, regulatory fines or investigations, data breaches, workplace/labour or discrimination issues, mass layoffs handled badly, ethics, environmental or safety scandals, fraud. Maximum 5, most significant first. Only include items reported by news outlets you found in your search, and cite those articles' URLs. Never invent a URL: every URL must be a page your search returned.
 - If you find no controversies, return "controversies": [] and say so in controversy_note. Don't pad the list with minor items.
-- "sources" backs the business model / ownership / headquarters facts.
+- "sources" backs the business model / ownership / headquarters / employee count facts.
+- Employee count: prefer the company's own figures, annual reports or LinkedIn; give a range when that is all you find.
+- Employee sentiment: base it on review sites and forums you actually found (up to 4 themes each way), note if reviews are few or dated, and cite the pages. If you find nothing, say so in summary and leave the lists empty.
 - is_recruiter: true for recruitment/staffing agencies (they advertise roles for undisclosed clients).
 - is_company: false if the name is not a real organisation (e.g. "Private Advertiser") - then leave the other fields empty.
 - If a fact can't be established, write "Unknown" rather than guessing."""
@@ -84,7 +97,8 @@ def _board_labels(db: Session) -> set[str]:
 def companies_to_research(db: Session, mode: str = "missing") -> list[dict]:
     """[{name, key, context}] for companies of jobs that pass your filters.
 
-    mode: missing (no profile, failed, or older than 90 days) | all
+    mode: missing (no profile, failed, older than 90 days, or made before the
+    current RESEARCH_VERSION) | all
     """
     skip = NOT_COMPANIES | _board_labels(db)
     rows = (db.query(Job.company, Job.title, Job.location_text, Job.url)
@@ -104,7 +118,8 @@ def companies_to_research(db: Session, mode: str = "missing") -> list[dict]:
     for key, entry in by_key.items():
         p = profiles.get(key)
         if mode == "all" or p is None or p.status == "error" or (
-                p.status == "done" and p.researched_at and p.researched_at < stale_before):
+                p.status == "done" and ((p.researched_at and p.researched_at < stale_before)
+                                        or (p.research_version or 1) < RESEARCH_VERSION)):
             out.append(entry)
     return sorted(out, key=lambda e: e["name"].lower())
 
@@ -258,8 +273,44 @@ def parse_profile(text: str, seen: dict[str, str]) -> tuple[dict, int]:
         "controversies": controversies[:5],
         "controversy_note": str(obj.get("controversy_note") or "").strip(),
         "sources": verified(obj.get("sources")),
+        "employee_count": str(obj.get("employee_count") or "").strip(),
+        "glassdoor_url": _verified_glassdoor(obj.get("glassdoor_url"), seen),
+        "sentiment": _sentiment(obj.get("employee_sentiment"), verified),
     }
+    # The rating usually comes from Glassdoor: cite the verified page with it.
+    gd, sent = profile["glassdoor_url"], profile["sentiment"]
+    if gd and not any("glassdoor." in urlsplit(x["url"]).netloc for x in sent["sources"]):
+        sent["sources"].insert(0, {"title": "Glassdoor reviews", "url": gd})
     return profile, dropped
+
+
+def _verified_glassdoor(url: Any, seen: dict[str, str]) -> str:
+    """The Glassdoor page URL, only if the search actually returned it."""
+    url = str(url or "").strip()
+    host = urlsplit(url).netloc.lower()
+    if "glassdoor." in host and _norm_url(url) in seen:
+        return url
+    # Fall back to any Glassdoor company page the search returned.
+    for key in seen:
+        parts = urlsplit(key)
+        if "glassdoor." in parts.netloc and re.search(r"/(Overview|Reviews)/", parts.path, re.I):
+            return f"https://www.{parts.netloc}{parts.path}"
+    return ""
+
+
+def _sentiment(obj: Any, verified: Callable[[Any], list[dict]]) -> dict:
+    obj = obj if isinstance(obj, dict) else {}
+
+    def themes(v: Any) -> list[str]:
+        return [str(t).strip() for t in (v if isinstance(v, list) else []) if str(t).strip()][:4]
+
+    return {
+        "summary": str(obj.get("summary") or "").strip(),
+        "rating": str(obj.get("rating") or "").strip(),
+        "positives": themes(obj.get("positives")),
+        "negatives": themes(obj.get("negatives")),
+        "sources": verified(obj.get("sources")),
+    }
 
 
 def _save(company: dict, *, profile: Optional[dict] = None, dropped: int = 0,
@@ -281,6 +332,10 @@ def _save(company: dict, *, profile: Optional[dict] = None, dropped: int = 0,
             row.controversies_json = json.dumps(profile["controversies"])
             row.controversy_note = profile["controversy_note"]
             row.sources_json = json.dumps(profile["sources"])
+            row.employee_count = profile["employee_count"] or None
+            row.glassdoor_url = profile["glassdoor_url"] or None
+            row.sentiment_json = json.dumps(profile["sentiment"])
+            row.research_version = RESEARCH_VERSION
             row.unverified_dropped = dropped
             row.error, row.model, row.researched_at = None, model, datetime.utcnow()
         else:

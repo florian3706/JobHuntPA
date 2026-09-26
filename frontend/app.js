@@ -457,6 +457,26 @@ function linkList(sources) {
   return (sources || []).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.url)}</a>`).join(' · ');
 }
 
+function glassdoorLink(p, name) {
+  if (p?.glassdoor_url) {
+    return `<a class="glassdoor" href="${esc(p.glassdoor_url)}" target="_blank" rel="noopener noreferrer">Glassdoor page ↗</a>`;
+  }
+  // No verified page: a Glassdoor search for the name (built here, not by the model).
+  const q = encodeURIComponent(p?.official_name || name);
+  return `<a class="glassdoor" href="https://www.glassdoor.com.au/Search/results.htm?keyword=${q}" target="_blank" rel="noopener noreferrer">Search Glassdoor ↗</a>`;
+}
+
+function sentimentHtml(p) {
+  const s = p.sentiment;
+  if (!s) return '<span class="muted">Not researched yet: click Research again (or Fill missing info) to add it.</span>';
+  const list = (items, cls, mark) => (items.length ? `<ul class="themes ${cls}">${items.map((t) => `<li>${mark} ${esc(t)}</li>`).join('')}</ul>` : '');
+  return `
+    ${s.rating ? `<div><strong>${esc(s.rating)}</strong></div>` : ''}
+    <div>${esc(s.summary || 'No employee reviews found.')}</div>
+    ${list(s.positives, 'pos', '+')}${list(s.negatives, 'neg', '−')}
+    ${s.sources.length ? `<div class="sources">${linkList(s.sources)}</div>` : ''}`;
+}
+
 function showCompany(job) {
   const p = state.companies[job.company_key];
   const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>`;
@@ -479,6 +499,8 @@ function showCompany(job) {
         <dt>How they make money</dt><dd>${esc(p.business_model || 'Unknown')}</dd>
         <dt>Ownership</dt><dd>${esc(p.ownership || 'Unknown')}</dd>
         <dt>Headquarters</dt><dd>${esc(p.headquarters || 'Unknown')}</dd>
+        <dt>Employees</dt><dd>${esc(p.employee_count || (p.research_version >= 2 ? 'Unknown' : 'Not researched yet'))}</dd>
+        <dt>Employee sentiment</dt><dd>${sentimentHtml(p)}</dd>
         <dt>Controversies</dt><dd>${esc(p.controversy_note || (p.controversies.length ? '' : 'None found.'))}${cons}</dd>
       </dl>
       ${p.sources.length ? `<p class="sources"><span class="muted">Sources:</span> ${linkList(p.sources)}</p>` : ''}
@@ -487,7 +509,8 @@ function showCompany(job) {
         Automated research can be wrong: check the linked articles.</p>
       ${researchBtn}`;
   }
-  openHtmlModal(p?.official_name || job.company, body);
+  const skipped = p?.status === 'skipped';
+  openHtmlModal(p?.official_name || job.company, (skipped ? '' : `<p class="modal-links">${glassdoorLink(p, job.company)}</p>`) + body);
   $('#company-research').addEventListener('click', () => {
     $('#modal').hidden = true;
     startRun('/api/companies/research', { name: job.company });

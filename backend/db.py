@@ -244,6 +244,10 @@ class CompanyProfile(Base):
     controversies_json = Column(Text, nullable=False, default="[]")
     controversy_note = Column(Text, nullable=True)
     sources_json = Column(Text, nullable=False, default="[]")
+    employee_count = Column(String, nullable=True)
+    glassdoor_url = Column(String, nullable=True)      # verified company page, if found
+    sentiment_json = Column(Text, nullable=True)       # employee sentiment summary + sources
+    research_version = Column(Integer, nullable=False, default=1, server_default="1")
     unverified_dropped = Column(Integer, nullable=False, default=0, server_default="0")
     error = Column(Text, nullable=True)
     model = Column(String, nullable=True)
@@ -262,6 +266,10 @@ class CompanyProfile(Base):
             "controversies": json.loads(self.controversies_json or "[]"),
             "controversy_note": self.controversy_note,
             "sources": json.loads(self.sources_json or "[]"),
+            "employee_count": self.employee_count,
+            "glassdoor_url": self.glassdoor_url,
+            "sentiment": json.loads(self.sentiment_json) if self.sentiment_json else None,
+            "research_version": self.research_version or 1,
             "unverified_dropped": self.unverified_dropped or 0,
             "error": self.error,
             "model": self.model,

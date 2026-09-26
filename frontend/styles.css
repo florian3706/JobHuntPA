@@ -309,3 +309,8 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; paddi
 .reqs.gaps { border-top: none; padding-top: 0; }
 .reqs.gaps summary { color: #ffb4b4; }
 .reqs .gaps-sub { margin: 8px 0 0; }
+.modal-html .modal-links { margin: 0 0 8px; }
+.modal-html .glassdoor { color: var(--accent); font-weight: 600; }
+.modal-html .themes { margin: 6px 0 0; padding-left: 18px; list-style: none; }
+.modal-html .themes.pos li { color: #7fe3ae; }
+.modal-html .themes.neg li { color: #ffb4b4; }
