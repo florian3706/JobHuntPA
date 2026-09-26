@@ -17,8 +17,11 @@ from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env first)
 from backend import tasks
-from backend.db import CompanyProfile, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
+from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
+from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
+from backend.llm_settings import router as llm_router
+from backend.title_suggestions import router as titles_router
 from backend.profile import router as profile_router
 from backend.sources import router as sources_router
 from backend.workspaces import current_workspace, owned
@@ -39,10 +42,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="JobHuntPA", lifespan=lifespan)
+app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)
 app.include_router(profile_router)
 app.include_router(sources_router)
 app.include_router(workspaces_router)
+app.include_router(llm_router)
+app.include_router(cover_letters_router)
 
 
 @app.get("/api/health")
@@ -71,7 +77,8 @@ def _fit_dict(fit: Optional[FitResult], profile_hash: str) -> Optional[dict]:
     }
 
 
-def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: bool = False) -> dict:
+def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: bool = False,
+                has_letter: bool = False) -> dict:
     out = {
         "id": job.id,
         "source": job.source,
@@ -97,6 +104,7 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "last_seen": job.last_seen.isoformat() if job.last_seen else None,
         "closed": job.closed_at is not None,
         "fit": _fit_dict(fit, profile_hash),
+        "has_cover_letter": has_letter,
     }
     if full:
         out["description"] = job.description or ""
@@ -114,7 +122,9 @@ def list_jobs(db: Session = Depends(get_db), ws: int = Depends(current_workspace
     phash = _profile_hash(db, ws)
     rows = (db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id)
             .filter(Job.workspace_id == ws).all())
-    return [job_to_dict(job, fit, phash) for job, fit in rows]
+    letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
+               .filter(Job.workspace_id == ws)}
+    return [job_to_dict(job, fit, phash, has_letter=job.id in letters) for job, fit in rows]
 
 
 @app.get("/api/jobs/{job_id}")
@@ -249,7 +259,7 @@ def scorer_status(db: Session = Depends(get_db), ws: int = Depends(current_works
 def score_single(job_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     from backend.scorer import ScorerError, build_profile, config_problem, get_config, score_one
 
-    cfg = get_config()
+    cfg = get_config("scoring")
     if config_problem(cfg):
         raise HTTPException(status_code=400, detail=config_problem(cfg))
     owned(db, Job, job_id, ws, "Job")

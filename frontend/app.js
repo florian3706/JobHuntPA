@@ -19,6 +19,7 @@ const state = {
   companies: {}, // company_key -> profile
   ws: 1, // current workspace id
   workspaces: [],
+  titleSuggestions: [],
 };
 
 /* ---------- utils ---------- */
@@ -204,6 +205,7 @@ function renderJobCard(job) {
       </select>
       <button class="btn btn-ghost btn-sm" type="button" data-act="rescore">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="desc">Description</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="letter">${job.has_cover_letter ? 'Cover letter ✓' : 'Draft cover letter'}</button>
     </div>
     <details class="reqs" data-section="fit"><summary>Fit: requirements → evidence</summary><div class="fit-body"></div></details>
     ${gapsSection(job)}`;
@@ -217,6 +219,7 @@ function renderJobCard(job) {
   sel.addEventListener('change', () => updateJobStatus(job, sel.value, sel));
   card.querySelector('[data-act="rescore"]').addEventListener('click', (e) => rescoreJob(job, e.target));
   card.querySelector('[data-act="desc"]').addEventListener('click', () => showDescription(job));
+  card.querySelector('[data-act="letter"]').addEventListener('click', () => showCoverLetter(job));
   card.querySelector('[data-act="company"]')?.addEventListener('click', () => showCompany(job));
   card.querySelector('details[data-section="fit"]').addEventListener('toggle', (e) => {
     if (e.target.open) e.target.querySelector('.fit-body').innerHTML = fitHtml(job);
@@ -520,6 +523,186 @@ function showCompany(job) {
     $('#modal').hidden = true;
     startRun('/api/companies/research', { name: job.company });
   });
+}
+
+/* ================= COVER LETTERS ================= */
+async function showCoverLetter(job) {
+  let letter = null;
+  try { letter = await api(`/api/jobs/${job.id}/cover-letter`); } catch { letter = null; }
+  openHtmlModal(`Cover letter: ${job.title} at ${job.company}`, `
+    <div class="letter-editor">
+      <label class="field"><span class="field-label">Extra instructions for the draft (optional)</span>
+        <textarea id="cl-instructions" rows="2" placeholder="e.g. Mention I can start in two weeks. Keep it under 300 words.">${esc(letter?.instructions || '')}</textarea></label>
+      <div class="toolbar-row">
+        <button id="cl-draft" class="btn btn-primary btn-sm" type="button">${letter ? 'Redraft' : 'Draft cover letter'}</button>
+        <span id="cl-status" class="muted" aria-live="polite"></span>
+      </div>
+      <textarea id="cl-text" rows="16" placeholder="Your draft appears here. You can edit it before saving.">${esc(letter?.text || '')}</textarea>
+      <div class="toolbar-row">
+        <button id="cl-save" class="btn btn-sm" type="button">Save edits</button>
+        <button id="cl-copy" class="btn btn-ghost btn-sm" type="button">Copy</button>
+        <a id="cl-docx" class="btn btn-ghost btn-sm" href="/api/jobs/${job.id}/cover-letter.docx?ws=${state.ws}" ${letter ? '' : 'hidden'}>Download .docx</a>
+        <span id="cl-meta" class="muted"></span>
+      </div>
+      <p class="hint">Drafts use only facts from your documents, but always check them before sending.
+        Upload earlier cover letters as "Cover letter" documents and drafts will follow your style.</p>
+    </div>`);
+  const meta = (l) => {
+    if (!l) return '';
+    const effort = l.reasoning_effort ? `, reasoning ${l.reasoning_effort}` : '';
+    return `${l.edited ? 'Edited' : 'Drafted'} ${fmtDate(l.updated_at)} · ${l.model || ''}${effort}`;
+  };
+  $('#cl-meta').textContent = meta(letter);
+  $('#cl-draft').addEventListener('click', async () => {
+    const btn = $('#cl-draft');
+    if ($('#cl-text').value.trim() && !confirm('Replace the current letter with a new draft?')) return;
+    btn.disabled = true;
+    $('#cl-status').textContent = 'Drafting… this can take a minute.';
+    try {
+      letter = await api(`/api/jobs/${job.id}/cover-letter`, { method: 'POST', body: JSON.stringify({ instructions: $('#cl-instructions').value }) });
+      $('#cl-text').value = letter.text;
+      $('#cl-status').textContent = '';
+      $('#cl-meta').textContent = meta(letter);
+      $('#cl-docx').hidden = false;
+      btn.textContent = 'Redraft';
+      job.has_cover_letter = true;
+      renderJobs();
+    } catch (e) { $('#cl-status').textContent = `Failed: ${e.message}`; }
+    btn.disabled = false;
+  });
+  $('#cl-save').addEventListener('click', async () => {
+    try {
+      letter = await api(`/api/jobs/${job.id}/cover-letter`, { method: 'PUT', body: JSON.stringify({ text: $('#cl-text').value }) });
+      $('#cl-meta').textContent = meta(letter);
+      $('#cl-docx').hidden = false;
+      job.has_cover_letter = true;
+      toast('Cover letter saved', 'ok', 2000);
+    } catch (e) { toast(`Save failed: ${e.message}`, 'err'); }
+  });
+  $('#cl-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('#cl-text').value); toast('Copied', 'ok', 1500); }
+    catch { $('#cl-text').select(); toast('Press Ctrl+C to copy', '', 2500); }
+  });
+}
+
+/* ================= JOB TITLE SUGGESTIONS ================= */
+const FIT_LABEL = { strong: 'Strong fit', good: 'Good fit', stretch: 'Stretch' };
+
+function renderTitleSuggestions(titles) {
+  $('#titles-list').innerHTML = titles.map((t, i) => `
+    <label class="title-row">
+      <input type="checkbox" data-i="${i}" ${t.in_search ? 'disabled' : (t.fit !== 'stretch' ? 'checked' : '')} />
+      <span class="title-name">${esc(t.title)}</span>
+      <span class="badge fit-${t.fit}">${FIT_LABEL[t.fit] || t.fit}</span>
+      ${t.in_search ? '<span class="badge flag">already in this search</span>' : ''}
+      <span class="muted title-reason">${esc(t.reason)}</span>
+    </label>`).join('');
+  $('#titles-actions').hidden = !titles.length;
+}
+
+function pickedTitles() {
+  return $$('#titles-list input[type="checkbox"]:checked').map((cb) => state.titleSuggestions[Number(cb.dataset.i)].title);
+}
+
+async function saveTitles(titles, replace) {
+  const profile = await api('/api/profile');
+  const merged = replace ? titles : [...profile.titles, ...titles.filter((t) => !profile.titles.some((x) => x.toLowerCase() === t.toLowerCase()))];
+  await api('/api/profile', { method: 'PUT', body: JSON.stringify({ ...profile, titles: merged }) });
+  await api('/api/jobs/refilter', { method: 'POST' });
+  await loadSetup();
+  loadJobs();
+  return merged;
+}
+
+function initTitleSuggestions() {
+  $('#suggest-titles').addEventListener('click', async () => {
+    const btn = $('#suggest-titles');
+    btn.disabled = true;
+    $('#titles-status').textContent = 'Reading your documents… (about 20 seconds)';
+    try {
+      const r = await api('/api/documents/suggest-titles', { method: 'POST' });
+      state.titleSuggestions = r.titles;
+      renderTitleSuggestions(r.titles);
+      $('#titles-status').textContent = `${r.titles.length} suggestions. Titles are also used as SEEK search terms.`;
+    } catch (e) { $('#titles-status').textContent = `Failed: ${e.message}`; }
+    btn.disabled = false;
+  });
+  $('#titles-merge').addEventListener('click', async () => {
+    const picked = pickedTitles();
+    if (!picked.length) { toast('Tick at least one title.', 'err'); return; }
+    try {
+      const all = await saveTitles(picked, false);
+      toast(`Added ${picked.length} title(s); this search now has ${all.length}.`, 'ok');
+      state.titleSuggestions = state.titleSuggestions.map((t) => (picked.includes(t.title) ? { ...t, in_search: true } : t));
+      renderTitleSuggestions(state.titleSuggestions);
+    } catch (e) { toast(`Could not add titles: ${e.message}`, 'err'); }
+  });
+  $('#titles-new').addEventListener('click', async () => {
+    const picked = pickedTitles();
+    if (!picked.length) { toast('Tick at least one title.', 'err'); return; }
+    const data = await workspaceForm('New search with these titles', { create: true, name: `${picked[0]} search` });
+    if (!data.name) return;
+    try {
+      const ws = await api('/api/workspaces', { method: 'POST', body: JSON.stringify(data) });
+      await switchWorkspace(ws.id);
+      await saveTitles(picked, true);
+      toast(`Created "${ws.name}" with ${picked.length} title(s).`, 'ok');
+    } catch (e) { toast(`Could not create the search: ${e.message}`, 'err'); }
+  });
+}
+
+/* ================= LLM SETTINGS ================= */
+const LEVEL_LABEL = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' };
+let levelsAutoDetected = false;
+
+function renderLlmSettings(st) {
+  const levels = st.levels;
+  $$('.reasoning-settings select').forEach((sel) => {
+    const task = sel.dataset.task;
+    const current = st.reasoning[task] || '';
+    const defLabel = st.env_default ? `Model default (${LEVEL_LABEL[st.env_default] || st.env_default} from .env)` : 'Model default';
+    const opts = (levels || []).map((l) => `<option value="${l}" ${l === current ? 'selected' : ''}>${LEVEL_LABEL[l] || l}</option>`);
+    if (current && levels && !levels.includes(current)) {
+      opts.push(`<option value="${current}" selected>${LEVEL_LABEL[current] || current} (not supported by this model)</option>`);
+    }
+    sel.innerHTML = `<option value="" ${current ? '' : 'selected'}>${esc(defLabel)}</option>${opts.join('')}`;
+    sel.disabled = !levels;
+  });
+  const status = $('#levels-status');
+  if (!st.configured) status.textContent = 'Configure the LLM first.';
+  else if (levels === null) status.textContent = 'Not detected yet for this model.';
+  else if (!levels.length) status.textContent = `${st.model} doesn't accept a reasoning level; it always uses its default.`;
+  else status.textContent = `${st.model} accepts: ${levels.map((l) => LEVEL_LABEL[l] || l).join(', ')}.`;
+}
+
+async function loadLlmSettings() {
+  try {
+    const st = await api('/api/llm');
+    renderLlmSettings(st);
+    if (st.configured && st.levels === null && !levelsAutoDetected) {
+      levelsAutoDetected = true;
+      detectLevels();
+    }
+  } catch (e) { $('#levels-status').textContent = `Could not load LLM settings: ${e.message}`; }
+}
+
+async function detectLevels() {
+  const btn = $('#detect-levels');
+  btn.disabled = true;
+  $('#levels-status').textContent = 'Detecting (a few tiny test requests)…';
+  try { renderLlmSettings(await api('/api/llm/detect-levels', { method: 'POST' })); }
+  catch (e) { $('#levels-status').textContent = `Detection failed: ${e.message}`; }
+  btn.disabled = false;
+}
+
+function initLlmSettings() {
+  $('#detect-levels').addEventListener('click', detectLevels);
+  $$('.reasoning-settings select').forEach((sel) => sel.addEventListener('change', async () => {
+    try {
+      renderLlmSettings(await api('/api/llm/reasoning', { method: 'PUT', body: JSON.stringify({ [sel.dataset.task]: sel.value }) }));
+      toast('Reasoning level saved', 'ok', 1500);
+    } catch (e) { toast(`Save failed: ${e.message}`, 'err'); }
+  }));
 }
 
 /* ================= SEARCH SETUP ================= */
@@ -936,6 +1119,10 @@ async function switchWorkspace(id) {
   clearTimeout(state.pollTimer);
   state.selected.clear();
   state.details.clear();
+  state.titleSuggestions = [];
+  $('#titles-list').innerHTML = '';
+  $('#titles-actions').hidden = true;
+  $('#titles-status').textContent = '';
   $('#run-status').textContent = '';
   $('#run-report').hidden = true;
   ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = false; });
@@ -945,6 +1132,7 @@ async function switchWorkspace(id) {
 }
 
 function loadAll() {
+  loadLlmSettings();
   loadCompanies();
   loadJobs();
   loadSetup();
@@ -1013,6 +1201,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   state.ws = storedWorkspace();
   try { await loadWorkspaces(); } catch (e) { toast(`Could not load workspaces: ${e.message}`, 'err'); }
   initWorkspaces();
+  initLlmSettings();
+  initTitleSuggestions();
   initTabs();
   initJobs();
   initSetup();

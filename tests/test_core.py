@@ -525,3 +525,101 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertIn("alpha co", picked)
         self.assertNotIn("beta co", picked)
         db.close()
+
+
+class ReasoningLevelsTest(unittest.TestCase):
+    def test_detect_and_effort_for(self):
+        from unittest import mock
+        import backend.llm_settings as ls
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            ok = json["reasoning_effort"] in ("low", "medium", "high")
+            return mock.Mock(status_code=200 if ok else 400, text="" if ok else "unsupported reasoning_effort")
+        cfg = {"api_key": "k", "base_url": "https://llm.example/v1", "model": "m1"}
+        with mock.patch.object(ls.httpx, "post", side_effect=fake_post):
+            out = ls.detect_levels(cfg)
+        self.assertEqual(out["levels"], ["low", "medium", "high"])
+        self.assertEqual(ls.supported_levels(cfg["base_url"], "m1"), ["low", "medium", "high"])
+        ls._set("reasoning", {"scoring": "high", "research": "", "cover_letter": "xhigh"})
+        with mock.patch.dict(os.environ, {"LLM_REASONING_EFFORT": ""}):
+            self.assertEqual(ls.effort_for("scoring", cfg["base_url"], "m1"), "high")
+            self.assertEqual(ls.effort_for("research", cfg["base_url"], "m1"), "")
+            self.assertEqual(ls.effort_for("cover_letter", cfg["base_url"], "m1"), "")  # not accepted by m1
+            self.assertEqual(ls.effort_for("scoring", cfg["base_url"], "never-detected"), "high")
+
+
+class CoverLetterTest(unittest.TestCase):
+    def test_draft_save_download(self):
+        from unittest import mock
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import Document, FitResult, Job, SessionLocal
+        import backend.scorer as sc
+
+        db = SessionLocal()
+        job = Job(workspace_id=1, url="https://cl.example/job/1", title="Program Manager", company="Acme",
+                  description="Lead programs. Stakeholder management required.", status="to_review", detail_status="full")
+        db.add(job)
+        db.add(Document(workspace_id=1, filename="cv.pdf", kind="resume", text="Jane Doe. Program lead at Foo 2019-2025."))
+        db.add(Document(workspace_id=1, filename="old.pdf", kind="cover_letter", text="Dear team, I build things."))
+        db.commit()
+        db.add(FitResult(job_id=job.id, status="ok", score=80, evidence_json=json.dumps(
+            {"requirements": [{"point": "Stakeholders", "matched": True, "evidence": [{"bullet": "Led steering groups"}]}],
+             "gaps": ["No PMP"]})))
+        db.commit()
+        job_id = job.id
+        from backend.cover_letters import build_prompt
+        prompt = build_prompt(db, db.get(Job, job_id), "Mention I start in 2 weeks")
+        db.close()
+        self.assertLess(prompt.index("RESUME"), prompt.index("EARLIER COVER LETTER"))
+        for part in ("Led steering groups", "No PMP", "Mention I start in 2 weeks", "Stakeholder management"):
+            self.assertIn(part, prompt)
+
+        sent = {}
+
+        def fake_call(messages, cfg, json_mode=True):
+            sent.update(json_mode=json_mode, cfg=cfg)
+            return "```\nDear Hiring Manager,\n\nI led steering groups.\n\nJane Doe\n```"
+        with TestClient(app) as c, mock.patch.object(sc, "call_model", side_effect=fake_call), \
+                mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://x/v1", "LLM_MODEL": "m"}):
+            r = c.post(f"/api/jobs/{job_id}/cover-letter", json={"instructions": "short"})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertTrue(r.json()["text"].startswith("Dear Hiring Manager,"))
+            self.assertFalse(sent["json_mode"])
+            r = c.put(f"/api/jobs/{job_id}/cover-letter", json={"text": "Dear Hiring Manager,\n\nEdited.\n\nJane"})
+            self.assertTrue(r.json()["edited"])
+            r = c.get(f"/api/jobs/{job_id}/cover-letter.docx?ws=1")
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(r.content[:2] == b"PK")  # a .docx is a zip file
+            self.assertTrue([j for j in c.get("/api/jobs").json() if j["id"] == job_id][0]["has_cover_letter"])
+            ws2 = c.post("/api/workspaces", json={"name": "Other"}).json()["id"]
+            self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter", headers={"X-Workspace": str(ws2)}).status_code, 404)
+            c.delete(f"/api/workspaces/{ws2}")
+
+
+class TitleSuggestionTest(unittest.TestCase):
+    def test_parse_and_flag_existing(self):
+        from unittest import mock
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import Document, SessionLocal
+        import backend.scorer as sc
+
+        db = SessionLocal()
+        db.add(Document(workspace_id=1, filename="cv2.pdf", kind="resume", text="Ran programs for 8 years."))
+        db.commit(); db.close()
+        raw = json.dumps({"titles": [
+            {"title": "Program  Manager", "fit": "strong", "reason": "8 years running programs"},
+            {"title": "program manager", "fit": "good", "reason": "duplicate"},
+            {"title": "Head of Delivery", "fit": "weird", "reason": "next step"}, "junk"]})
+        with TestClient(app) as c, mock.patch.object(sc, "call_model", return_value=raw), \
+                mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://x/v1", "LLM_MODEL": "m"}):
+            c.put("/api/profile", json={"titles": ["Program Manager"]})
+            r = c.post("/api/documents/suggest-titles").json()
+            ws2 = c.post("/api/workspaces", json={"name": "No docs"}).json()["id"]
+            empty = c.post("/api/documents/suggest-titles", headers={"X-Workspace": str(ws2)})
+            c.delete(f"/api/workspaces/{ws2}")
+        self.assertEqual([t["title"] for t in r["titles"]], ["Program Manager", "Head of Delivery"])
+        self.assertTrue(r["titles"][0]["in_search"])
+        self.assertEqual(r["titles"][1]["fit"], "good")
+        self.assertEqual(empty.status_code, 400)

@@ -119,7 +119,7 @@ def write_env(path: Path, lines: list[str], updates: dict[str, str]) -> None:
         else:
             out.append(line)
     if not lines:
-        out = ["# LLM used for fit scoring and company research.",
+        out = ["# LLM used for fit scoring, cover letters, job-title suggestions and company research.",
                "# Works with any OpenAI-compatible API. Re-run setup to change these."]
     for key, val in updates.items():
         if key not in done:
@@ -150,7 +150,7 @@ def configure_llm(interactive: bool, reconfigure: bool) -> None:
         say("  Wrote .env" + (f"; still to fill in: {', '.join(missing)}" if missing else "."))
         return
 
-    say("  JobHuntPA uses an AI model (LLM) to score jobs and research companies.")
+    say("  JobHuntPA uses an AI model (LLM) to score jobs, draft cover letters, suggest job titles and research companies.")
     say("  Which provider do you have an API key for?")
     for i, (name, _, _) in enumerate(LLM_PRESETS, 1):
         say(f"    {i}) {name}")

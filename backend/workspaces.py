@@ -4,8 +4,8 @@ Each workspace has its own search settings, dealbreakers, SEEK settings,
 company sources, documents, map pins, jobs (with their scores) and runs.
 Company profiles, the geocode cache and the HTTP cache are shared.
 
-The frontend sends the current workspace in the ``X-Workspace`` header;
-requests without it use workspace 1.
+The frontend sends the current workspace in the ``X-Workspace`` header
+(or ``?ws=`` for plain links); requests without either use workspace 1.
 
     GET    /api/workspaces
     POST   /api/workspaces          {name, copy_from?, copy_documents?}
@@ -18,7 +18,7 @@ import shutil
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -39,9 +39,10 @@ router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 
 def current_workspace(
     x_workspace: Optional[int] = Header(default=None),
+    ws_param: Optional[int] = Query(default=None, alias="ws"),  # for plain links (downloads)
     db: Session = Depends(get_db),
 ) -> int:
-    ws = x_workspace or 1
+    ws = x_workspace or ws_param or 1
     if db.get(Workspace, ws) is None:
         raise HTTPException(status_code=404, detail=f"Workspace {ws} not found")
     return ws

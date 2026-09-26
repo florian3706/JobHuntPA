@@ -10,7 +10,8 @@
 
 A personal job search dashboard that runs on your own computer. It collects jobs from SEEK and
 company careers pages, filters them against your search settings and map pins, scores the rest
-against your CV with an AI model of your choice, and researches each employer.
+against your CV with an AI model of your choice, drafts cover letters, suggests job titles to
+search for, and researches each employer.
 
 ## What you need
 
@@ -19,7 +20,7 @@ against your CV with an AI model of your choice, and researches each employer.
   [Meta Model API](https://dev.meta.ai/) (Muse Spark) or [OpenAI](https://platform.openai.com/).
   Setup asks for three things: the provider's API address, the model name and your key. Using the
   model costs money on your provider account. The app still collects and filters jobs without a
-  key, but scoring and company research need one.
+  key, but scoring, cover letters, title suggestions and company research need one.
 
 Setup takes about 5-10 minutes and needs no technical knowledge. Everything stays on your
 computer: your documents, jobs and API key are never uploaded anywhere except the requests the
@@ -65,6 +66,14 @@ The dashboard opens at http://127.0.0.1:8000. Start in **Search setup** (job tit
 salary, work modes and company careers pages), upload your CV under **Documents**, drop pins for
 where you can commute on the **Map**, then click **Run search** on the Jobs tab. Separate searches
 can live in their own **workspaces** (switcher at the top right).
+
+- **Suggested job titles** (Documents tab): the AI reads your documents and suggests titles to
+  search for; add them to the current search or start a new workspace with them.
+- **Cover letters**: *Draft cover letter* on any job writes a first draft from your documents
+  (upload earlier cover letters as "Cover letter" documents to match your style). Edit it, then
+  copy it or download it as a Word file. Always check it before sending.
+- **Reasoning level** (Search setup > LLM): how long the AI thinks, set separately for scoring,
+  cover letters and company research. *Detect supported levels* shows what your model accepts.
 
 ## Updating
 

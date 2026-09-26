@@ -364,7 +364,7 @@ def research_one(company: dict, cfg: dict) -> dict:
 
 def research_companies(companies: list[dict], progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
     """Run one research agent per company, a few in parallel."""
-    cfg = get_config()
+    cfg = get_config("research")
     if config_problem(cfg):
         raise ScorerError(config_problem(cfg), auth=True)
     if not companies:

@@ -53,12 +53,17 @@ def _env(name: str) -> str:
     return (os.getenv(name) or "").strip()
 
 
-def get_config() -> dict[str, Any]:
+def get_config(task: Optional[str] = None) -> dict[str, Any]:
+    """LLM config; ``task`` (scoring | research | cover_letter) picks the
+    reasoning level set in the app for that task."""
+    from backend.llm_settings import effort_for
+
+    base_url, model = _env("LLM_BASE_URL").rstrip("/"), _env("LLM_MODEL")
     return {
         "api_key": _env("LLM_API_KEY"),
-        "base_url": _env("LLM_BASE_URL").rstrip("/"),
-        "model": _env("LLM_MODEL"),
-        "reasoning_effort": _env("LLM_REASONING_EFFORT"),
+        "base_url": base_url,
+        "model": model,
+        "reasoning_effort": effort_for(task, base_url, model),
         "timeout_s": float(_env("LLM_TIMEOUT_S") or 180),
         "concurrency": max(1, int(_env("LLM_CONCURRENCY") or 3)),
     }
@@ -169,12 +174,10 @@ def build_messages(job: Job, profile_text: str) -> list[dict]:
 # API call
 # --------------------------------------------------------------------------
 
-def call_model(messages: list[dict], cfg: dict) -> str:
-    payload: dict[str, Any] = {
-        "model": cfg["model"],
-        "messages": messages,
-        "response_format": {"type": "json_object"},
-    }
+def call_model(messages: list[dict], cfg: dict, *, json_mode: bool = True) -> str:
+    payload: dict[str, Any] = {"model": cfg["model"], "messages": messages}
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     if cfg.get("reasoning_effort"):
         payload["reasoning_effort"] = cfg["reasoning_effort"]
     headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
@@ -341,7 +344,7 @@ def _copy_to_duplicates(dup_ids: list[int], result: dict, profile_hash: str, mod
 
 
 def score_jobs(ws: int, job_ids: list[int], progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
-    cfg = get_config()
+    cfg = get_config("scoring")
     if config_problem(cfg):
         raise ScorerError(config_problem(cfg), auth=True)
     db = SessionLocal()

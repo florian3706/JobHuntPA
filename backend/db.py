@@ -303,6 +303,35 @@ class CompanyProfile(Base):
 
 
 # ---------------------------------------------------------------------------
+# Cover letters + app-wide settings
+# ---------------------------------------------------------------------------
+
+class CoverLetter(Base):
+    """Latest cover-letter draft per job (written by backend.cover_letters)."""
+
+    __tablename__ = "cover_letters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    text = Column(Text, nullable=False, default="")
+    instructions = Column(Text, nullable=True)
+    edited = Column(Boolean, nullable=False, default=False, server_default="0")
+    model = Column(String, nullable=True)
+    reasoning_effort = Column(String, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow)
+
+
+class AppSetting(Base):
+    """App-wide settings stored as JSON (e.g. reasoning level per LLM task)."""
+
+    __tablename__ = "app_settings"
+
+    key = Column(String, primary_key=True)
+    value_json = Column(Text, nullable=False, default="null")
+
+
+# ---------------------------------------------------------------------------
 # Background runs + caches
 # ---------------------------------------------------------------------------
 
