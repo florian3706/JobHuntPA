@@ -83,29 +83,35 @@ Rules:
 # Which companies need research
 # --------------------------------------------------------------------------
 
-def _board_labels(db: Session) -> set[str]:
+def _board_labels(db: Session, ws: int) -> set[str]:
     """Labels of sources that are job boards (their jobs name many employers).
     Jobs from those boards whose employer is unknown carry the board's name."""
     out = set()
-    for src in db.query(CompanySource).all():
+    for src in db.query(CompanySource).filter(CompanySource.workspace_id == ws):
         companies = {c for (c,) in db.query(Job.company).filter(Job.source_id == src.id).distinct()}
         if len(companies) >= 3:
             out.add(company_key(src.label or ""))
     return out
 
 
-def companies_to_research(db: Session, mode: str = "missing") -> list[dict]:
-    """[{name, key, context}] for companies of jobs that pass your filters.
+def companies_to_research(db: Session, ws: int, mode: str = "missing",
+                          job_ids: Optional[list[int]] = None) -> list[dict]:
+    """[{name, key, jobs}] for the companies of a workspace's jobs.
 
+    job_ids: only these jobs' companies (e.g. the jobs ticked in the UI);
+    otherwise every job that passes the filters and isn't closed.
     mode: missing (no profile, failed, older than 90 days, or made before the
     current RESEARCH_VERSION) | all
     """
-    skip = NOT_COMPANIES | _board_labels(db)
-    rows = (db.query(Job.company, Job.title, Job.location_text, Job.url)
-            .filter((Job.excluded_reason.is_(None)) | (Job.excluded_reason == ""))
-            .filter(Job.closed_at.is_(None)).all())
+    skip = NOT_COMPANIES | _board_labels(db, ws)
+    q = db.query(Job.company, Job.title, Job.location_text, Job.url).filter(Job.workspace_id == ws)
+    if job_ids is not None:
+        q = q.filter(Job.id.in_(job_ids))
+    else:
+        q = (q.filter((Job.excluded_reason.is_(None)) | (Job.excluded_reason == ""))
+             .filter(Job.closed_at.is_(None)))
     by_key: dict[str, dict] = {}
-    for company, title, location, url in rows:
+    for company, title, location, url in q.all():
         key = company_key(company or "")
         if key in skip:
             continue
@@ -124,14 +130,11 @@ def companies_to_research(db: Session, mode: str = "missing") -> list[dict]:
     return sorted(out, key=lambda e: e["name"].lower())
 
 
-def job_context(db: Session, name: str) -> dict:
+def job_context(db: Session, ws: int, name: str) -> dict:
     """{name, key, jobs} for researching one company on demand."""
     key = company_key(name)
-    jobs = [
-        {"title": t, "location": l, "url": u}
-        for (t, l, u, c) in db.query(Job.title, Job.location_text, Job.url, Job.company).all()
-        if company_key(c or "") == key
-    ][:3]
+    rows = db.query(Job.title, Job.location_text, Job.url, Job.company).filter(Job.workspace_id == ws).all()
+    jobs = [{"title": t, "location": l, "url": u} for (t, l, u, c) in rows if company_key(c or "") == key][:3]
     return {"name": name.strip(), "key": key, "jobs": jobs}
 
 

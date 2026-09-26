@@ -423,7 +423,7 @@ class ResearchV2Test(unittest.TestCase):
         db.add(CompanyProfile(key="oldco", name="Oldco", status="done", research_version=RESEARCH_VERSION - 1,
                               researched_at=datetime.utcnow()))
         db.commit()
-        self.assertIn("oldco", [c["key"] for c in companies_to_research(db)])
+        self.assertIn("oldco", [c["key"] for c in companies_to_research(db, 1)])
         db.close()
 
 
@@ -453,3 +453,75 @@ class LlmConfigTest(unittest.TestCase):
             sc.call_model([], {**cfg, "reasoning_effort": "low"})
         self.assertNotIn("reasoning_effort", sent[0])
         self.assertEqual(sent[1]["reasoning_effort"], "low")
+
+
+
+class OfficeDaysTest(unittest.TestCase):
+    def test_parse(self):
+        from backend.geo import parse_office_days as p
+        cases = {"We offer hybrid working with 3 days in the office.": 3, "2-3 days per week in office": 3,
+                 "minimum of three days onsite": 3, "Hybrid: in the office 2 days a week": 2, "hybrid, 2 days WFH": 3,
+                 "Flexible hybrid working": None, "Our 10 office locations": None,
+                 "You will be in our Sydney CBD office 3 days": 3, "Work from home 1 day a week (hybrid)": 4}
+        for text, expected in cases.items():
+            self.assertEqual(p(text), expected, text)
+
+    def test_max_office_days_rule(self):
+        c = Criteria(max_office_days=2, pins=PINS)
+        self.assertIn("3 office days", exclusion_reason(_job(office_days=3), c))
+        self.assertIsNone(exclusion_reason(_job(office_days=2), c))
+        self.assertIsNone(exclusion_reason(_job(office_days=None), c))  # unstated passes
+        self.assertIsNone(exclusion_reason(_job(office_days=3), Criteria(pins=PINS)))  # no max set
+
+
+class WorkspaceApiTest(unittest.TestCase):
+    def test_isolation_and_copy(self):
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import Job, SessionLocal
+
+        with TestClient(app) as c:
+            ws2 = c.post("/api/workspaces", json={"name": "Contract roles"}).json()["id"]
+            h1, h2 = {"X-Workspace": "1"}, {"X-Workspace": str(ws2)}
+            db = SessionLocal()
+            db.add(Job(workspace_id=1, url="https://iso.example/job/1", title="Only in ws1", status="to_review", detail_status="full"))
+            db.commit(); db.close()
+            self.assertIn("Only in ws1", [j["title"] for j in c.get("/api/jobs", headers=h1).json()])
+            self.assertNotIn("Only in ws1", [j["title"] for j in c.get("/api/jobs", headers=h2).json()])
+            job_id = [j for j in c.get("/api/jobs", headers=h1).json() if j["title"] == "Only in ws1"][0]["id"]
+            self.assertEqual(c.get(f"/api/jobs/{job_id}", headers=h2).status_code, 404)
+
+            c.put("/api/profile", headers=h1, json={"titles": ["Product Manager"], "max_office_days": 2})
+            self.assertEqual(c.get("/api/profile", headers=h2).json()["titles"], [])
+            self.assertEqual(c.get("/api/profile", headers=h1).json()["max_office_days"], 2)
+            c.post("/api/pins", headers=h1, json={"label": "Home", "kind": "home", "lat": -33.4, "lng": 151.3, "radius_km": 20})
+            self.assertEqual(c.get("/api/pins", headers=h2).json(), [])
+            url = "https://jobs.lever.co/iso-test"
+            self.assertEqual(c.post("/api/sources", headers=h1, json={"url": url}).status_code, 201)
+            self.assertEqual(c.post("/api/sources", headers=h2, json={"url": url}).status_code, 201)  # same URL, other workspace
+            self.assertEqual(c.post("/api/sources", headers=h2, json={"url": url}).status_code, 409)
+
+            ws3 = c.post("/api/workspaces", json={"name": "Copy", "copy_from": 1}).json()["id"]
+            h3 = {"X-Workspace": str(ws3)}
+            self.assertEqual(c.get("/api/profile", headers=h3).json()["titles"], ["Product Manager"])
+            self.assertEqual(len(c.get("/api/pins", headers=h3).json()), len(c.get("/api/pins", headers=h1).json()))
+            self.assertEqual(c.get("/api/jobs", headers=h3).json(), [])
+
+            self.assertEqual(c.delete(f"/api/workspaces/{ws3}").status_code, 200)
+            self.assertEqual(c.get("/api/profile", headers=h3).status_code, 404)
+            for w in c.get("/api/workspaces").json():
+                if w["id"] != 1:
+                    c.delete(f"/api/workspaces/{w['id']}")
+            self.assertEqual(c.delete("/api/workspaces/1").status_code, 409)
+
+    def test_research_targets_selected_jobs(self):
+        from backend.db import Job, SessionLocal
+        from backend.research import companies_to_research
+        db = SessionLocal()
+        a = Job(workspace_id=1, url="https://sel.example/1", title="PM", company="Alpha Co", status="to_review", detail_status="full")
+        b = Job(workspace_id=1, url="https://sel.example/2", title="PM", company="Beta Co", status="to_review", detail_status="full")
+        db.add_all([a, b]); db.commit()
+        picked = [x["key"] for x in companies_to_research(db, 1, "missing", [a.id])]
+        self.assertIn("alpha co", picked)
+        self.assertNotIn("beta co", picked)
+        db.close()

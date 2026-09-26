@@ -17,6 +17,8 @@ const state = {
   jobLayer: null,
   pollTimer: null,
   companies: {}, // company_key -> profile
+  ws: 1, // current workspace id
+  workspaces: [],
 };
 
 /* ---------- utils ---------- */
@@ -37,10 +39,8 @@ function toast(msg, kind = '', ms = 5000) {
 
 async function api(url, opts = {}) {
   const isForm = opts.body instanceof FormData;
-  const res = await fetch(url, {
-    ...opts,
-    headers: isForm ? opts.headers : { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-  });
+  const headers = { 'X-Workspace': String(state.ws), ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...(opts.headers || {}) };
+  const res = await fetch(url, { ...opts, headers });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -176,6 +176,7 @@ function renderJobCard(job) {
     job.detail_status === 'summary' ? '<span class="badge flag" title="Only the job board listing summary is available">summary only</span>' : '',
     job.detail_status === 'none' ? '<span class="badge flag" title="Description not fetched yet">no description</span>' : '',
     job.closed ? '<span class="badge flag">closed</span>' : '',
+    job.office_days ? `<span class="badge flag" title="Days per week in the office, from the ad">${job.office_days} day${job.office_days > 1 ? 's' : ''} in office</span>` : '',
   ].join('');
   const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
   const fitErr = job.fit && job.fit.error ? `<p class="hint err-text">Scoring failed: ${esc(job.fit.error.slice(0, 240))}</p>` : '';
@@ -282,6 +283,7 @@ function renderBulkBar() {
   $('#bulk-count').textContent = `${n} selected`;
   const vis = visibleJobs().map((j) => j.id);
   $('#bulk-select-all').checked = vis.length > 0 && vis.every((id) => state.selected.has(id));
+  $('#fill-info').textContent = n ? `Fill missing info (${n} selected)` : 'Fill missing info';
 }
 
 async function updateJobStatus(job, next, selectEl) {
@@ -341,7 +343,10 @@ function initJobs() {
   });
   $('#search-run').addEventListener('click', () => startRun('/api/search/run', {}));
   $('#score-pending').addEventListener('click', () => startRun('/api/score/run', { mode: 'pending' }));
-  $('#fill-info').addEventListener('click', () => startRun('/api/companies/research', { mode: 'missing' }));
+  $('#fill-info').addEventListener('click', () => {
+    const ids = Array.from(state.selected);
+    startRun('/api/companies/research', ids.length ? { mode: 'missing', job_ids: ids } : { mode: 'missing' });
+  });
 }
 
 /* ================= BACKGROUND RUNS ================= */
@@ -545,6 +550,7 @@ async function loadSetup() {
     $('#remote-aus').checked = profile.remote_aus_ok;
     $('#remote-global').checked = profile.remote_global_ok;
     $('#allow-hybrid').checked = profile.allow_hybrid;
+    $('#max-office-days').value = profile.max_office_days ?? '';
     $('#allow-onsite').checked = profile.allow_onsite;
     $('#seek-enabled').checked = profile.seek_enabled;
     $('#search-error').hidden = true;
@@ -566,6 +572,7 @@ const saveSetup = debounce(async () => {
     remote_aus_ok: $('#remote-aus').checked,
     remote_global_ok: $('#remote-global').checked,
     allow_hybrid: $('#allow-hybrid').checked,
+    max_office_days: $('#max-office-days').value === '' ? null : Number($('#max-office-days').value),
     allow_onsite: $('#allow-onsite').checked,
     seek_enabled: $('#seek-enabled').checked,
     seek_locations: getTags('seek_locations'),
@@ -602,7 +609,7 @@ function initSetup() {
     input.addEventListener('blur', () => { if (input.value.trim()) { addTag(field, input.value); input.value = ''; } });
   });
   ['#salary-floor'].forEach((s) => $(s).addEventListener('input', saveSetup));
-  ['#remote-aus', '#remote-global', '#allow-hybrid', '#allow-onsite', '#seek-enabled'].forEach((s) => $(s).addEventListener('change', saveSetup));
+  ['#remote-aus', '#remote-global', '#allow-hybrid', '#allow-onsite', '#seek-enabled', '#max-office-days'].forEach((s) => $(s).addEventListener('change', saveSetup));
   $('#search-form').addEventListener('submit', (e) => e.preventDefault());
   $('#import-form').addEventListener('submit', importPages);
 }
@@ -910,7 +917,102 @@ function renderPinsList() {
 }
 
 /* ---------- boot ---------- */
-document.addEventListener('DOMContentLoaded', () => {
+/* ================= WORKSPACES ================= */
+function storedWorkspace() {
+  try { return Number(localStorage.getItem('jobhunt.ws')) || 1; } catch { return 1; }
+}
+
+async function loadWorkspaces() {
+  state.workspaces = await api('/api/workspaces');
+  if (!state.workspaces.some((w) => w.id === state.ws)) state.ws = state.workspaces[0]?.id ?? 1;
+  $('#ws-select').innerHTML = state.workspaces
+    .map((w) => `<option value="${w.id}" ${w.id === state.ws ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
+  $('#ws-delete').disabled = state.workspaces.length <= 1;
+}
+
+async function switchWorkspace(id) {
+  state.ws = Number(id);
+  try { localStorage.setItem('jobhunt.ws', String(state.ws)); } catch { /* private mode */ }
+  clearTimeout(state.pollTimer);
+  state.selected.clear();
+  state.details.clear();
+  $('#run-status').textContent = '';
+  $('#run-report').hidden = true;
+  ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = false; });
+  $('#run-progress').hidden = true;
+  await loadWorkspaces();
+  loadAll();
+}
+
+function loadAll() {
+  loadCompanies();
+  loadJobs();
+  loadSetup();
+  loadSources();
+  loadDocs();
+  loadScorerStatus();
+  loadLatestRun();
+  if (state.map) loadPins();
+}
+
+function workspaceForm(title, { name = '', create = false } = {}) {
+  const current = state.workspaces.find((w) => w.id === state.ws);
+  openHtmlModal(title, `
+    <form id="ws-form" class="ws-form">
+      <label class="field"><span class="field-label">Name</span>
+        <input id="ws-name" type="text" maxlength="80" value="${esc(name)}" required /></label>
+      ${create ? `
+      <label class="check"><input id="ws-copy" type="checkbox" /> Copy search settings, company sources and pins from "${esc(current?.name || '')}"</label>
+      <label class="check"><input id="ws-copy-docs" type="checkbox" /> Also copy its documents</label>
+      <p class="muted">Jobs, scores and runs always start empty. Company profiles are shared by all workspaces.</p>` : ''}
+      <button class="btn btn-primary" type="submit">${create ? 'Create workspace' : 'Save'}</button>
+    </form>`);
+  $('#ws-name').focus();
+  return new Promise((resolve) => {
+    $('#ws-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const out = { name: $('#ws-name').value.trim() };
+      if (create && $('#ws-copy').checked) { out.copy_from = state.ws; out.copy_documents = $('#ws-copy-docs').checked; }
+      $('#modal').hidden = true;
+      resolve(out);
+    });
+  });
+}
+
+function initWorkspaces() {
+  $('#ws-select').addEventListener('change', (e) => switchWorkspace(e.target.value));
+  $('#ws-new').addEventListener('click', async () => {
+    const data = await workspaceForm('New workspace', { create: true });
+    if (!data.name) return;
+    try {
+      const ws = await api('/api/workspaces', { method: 'POST', body: JSON.stringify(data) });
+      toast(`Created "${ws.name}"`, 'ok');
+      await switchWorkspace(ws.id);
+    } catch (e) { toast(`Could not create workspace: ${e.message}`, 'err'); }
+  });
+  $('#ws-rename').addEventListener('click', async () => {
+    const current = state.workspaces.find((w) => w.id === state.ws);
+    const data = await workspaceForm('Rename workspace', { name: current?.name || '' });
+    if (!data.name) return;
+    try { await api(`/api/workspaces/${state.ws}`, { method: 'PATCH', body: JSON.stringify({ name: data.name }) }); await loadWorkspaces(); }
+    catch (e) { toast(`Rename failed: ${e.message}`, 'err'); }
+  });
+  $('#ws-delete').addEventListener('click', async () => {
+    const current = state.workspaces.find((w) => w.id === state.ws);
+    if (!confirm(`Delete workspace "${current?.name}" with all its jobs, scores, documents, pins, sources and settings? This can't be undone.`)) return;
+    try {
+      await api(`/api/workspaces/${state.ws}`, { method: 'DELETE' });
+      const next = state.workspaces.find((w) => w.id !== state.ws);
+      toast(`Deleted "${current?.name}"`, 'ok');
+      await switchWorkspace(next.id);
+    } catch (e) { toast(`Delete failed: ${e.message}`, 'err'); }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  state.ws = storedWorkspace();
+  try { await loadWorkspaces(); } catch (e) { toast(`Could not load workspaces: ${e.message}`, 'err'); }
+  initWorkspaces();
   initTabs();
   initJobs();
   initSetup();
@@ -923,11 +1025,5 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#modal-close').addEventListener('click', () => { $('#modal').hidden = true; });
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#modal').hidden = true; });
-  loadCompanies();
-  loadJobs();
-  loadSetup();
-  loadSources();
-  loadDocs();
-  loadScorerStatus();
-  loadLatestRun();
+  loadAll();
 });

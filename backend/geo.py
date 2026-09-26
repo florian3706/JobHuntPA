@@ -216,6 +216,48 @@ _HYBRID = re.compile(r"\bhybrid\b|\b\d\s*days? (?:a week |per week )?in (?:the )
 _ONSITE = re.compile(r"\b(on-?site|office[- ]based|in[- ]office (?:role|position)|5 days in (?:the )?office)\b", re.I)
 
 
+_NUM = r"(\d|one|two|three|four|five)"
+_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+_OFFICE = r"(?:(?:the|our|your)\s+)?(?:[A-Z][\w-]+\s+){0,2}(?:office|on-?site|onsite|studio|hub|workplace)"
+_OFFICE_DAY_PATTERNS = [
+    # "3 days in the office", "2-3 days per week in office", "minimum of 3 days onsite"
+    re.compile(_NUM + r"(?:\s*(?:-|to|or)\s*" + _NUM + r")?\s*(?:days?|x)\s*(?:a|per|each|/)?\s*(?:week|wk)?\s*"
+               r"(?:in|at|from|on)?\s*" + _OFFICE, re.I),
+    # "in the office 3 days a week"
+    re.compile(r"(?:in|at)\s+" + _OFFICE + r"\s+" + _NUM + r"(?:\s*(?:-|to)\s*" + _NUM + r")?\s*days?", re.I),
+    # "3 office days", "2 onsite days"
+    re.compile(_NUM + r"(?:\s*(?:-|to)\s*" + _NUM + r")?\s+(?:office|on-?site|onsite|in-office)\s+days?", re.I),
+]
+_HOME_DAYS = [
+    re.compile(_NUM + r"\s*days?\s*(?:a|per)?\s*(?:week\s*)?(?:from\s+home|wfh|working\s+from\s+home|remote(?:ly)?)", re.I),
+    re.compile(r"(?:work(?:ing)?\s+from\s+home|wfh|remote(?:ly)?)\s+" + _NUM + r"\s*days?", re.I),
+]
+
+
+def _to_int(v: Optional[str]) -> Optional[int]:
+    if not v:
+        return None
+    v = v.lower()
+    return _WORDS.get(v) or (int(v) if v.isdigit() else None)
+
+
+def parse_office_days(*texts: str) -> Optional[int]:
+    """Days per week in the office an ad asks for (the upper end of a range), or None."""
+    blob = "\n".join(t for t in texts if t)[:6000]
+    for rx in _OFFICE_DAY_PATTERNS:
+        for m in rx.finditer(blob):
+            nums = [n for n in (_to_int(g) for g in m.groups()) if n]
+            if nums and 1 <= max(nums) <= 5:
+                return max(nums)
+    if _HYBRID.search(blob):
+        for rx in _HOME_DAYS:
+            m = rx.search(blob)
+            home = _to_int(m.group(1)) if m else None
+            if home and 1 <= home <= 4:
+                return 5 - home
+    return None
+
+
 def classify_work_mode(title: str, location_text: str, description: str) -> str:
     head = f"{title}\n{location_text}"
     if re.search(r"\bremote\b", head, re.I):

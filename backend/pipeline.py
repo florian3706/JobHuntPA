@@ -29,7 +29,7 @@ from backend.adapters.generic import GenericAdapter
 from backend.adapters.seek import SeekAdapter
 from backend.db import CompanySource, Job, SessionLocal
 from backend.filters import Criteria, commute_pins, exclusion_reason, load_criteria
-from backend.geo import HOME_COUNTRY, classify_work_mode, geocode, guess_country, home_distance
+from backend.geo import HOME_COUNTRY, classify_work_mode, geocode, guess_country, home_distance, parse_office_days
 from backend.profile import get_profile
 from backend.scraping.http import FetchError, PoliteClient, purge_cache
 from backend.scraping.text import description_hash
@@ -59,12 +59,15 @@ class SourceReport:
     notes: list[str] = field(default_factory=list)
 
 
-def build_adapters(db: Session, client: PoliteClient) -> list[tuple[Optional[CompanySource], Adapter]]:
-    prof = get_profile(db)
+def build_adapters(db: Session, ws: int, client: PoliteClient) -> list[tuple[Optional[CompanySource], Adapter]]:
+    prof = get_profile(db, ws)
     adapters: list[tuple[Optional[CompanySource], Adapter]] = []
     if prof["seek_enabled"]:
         adapters.append((None, SeekAdapter(client, prof["titles"], prof["seek_locations"])))
-    for src in db.query(CompanySource).filter(CompanySource.enabled.is_(True)).order_by(CompanySource.id):
+    sources = (db.query(CompanySource)
+               .filter(CompanySource.workspace_id == ws, CompanySource.enabled.is_(True))
+               .order_by(CompanySource.id))
+    for src in sources:
         adapters.append((src, GenericAdapter(client, src.careers_url, company=src.label or "")))
     return adapters
 
@@ -105,18 +108,21 @@ def enrich(job: Job, crit: Criteria) -> None:
         if hit:
             job.lat, job.lng = hit["lat"], hit["lng"]
             job.country = job.country or hit["country"]
+    job.office_days = parse_office_days(job.title or "", job.location_text or "", job.description or "")
     if (job.work_mode or "unknown") == "unknown":
         job.work_mode = classify_work_mode(job.title or "", job.location_text or "", job.description or "")
+    if job.work_mode == "unknown" and job.office_days:
+        job.work_mode = "hybrid" if job.office_days < 5 else "onsite"
     job.distance_km = home_distance(job.lat, job.lng, commute_pins(crit.pins))
     job.description_hash = description_hash(job.description or "")
 
 
-def upsert_posting(db: Session, p: Posting, source: str, source_id: Optional[int],
+def upsert_posting(db: Session, ws: int, p: Posting, source: str, source_id: Optional[int],
                    crit: Criteria, now: datetime) -> tuple[Job, bool]:
-    job = db.query(Job).filter(Job.url == p.url).first()
+    job = db.query(Job).filter(Job.workspace_id == ws, Job.url == p.url).first()
     is_new = job is None
     if is_new:
-        job = Job(url=p.url, status="to_review", first_seen=now, detail_status="none")
+        job = Job(workspace_id=ws, url=p.url, status="to_review", first_seen=now, detail_status="none")
         db.add(job)
     job.source = source
     if source_id is not None or is_new:
@@ -127,15 +133,15 @@ def upsert_posting(db: Session, p: Posting, source: str, source_id: Optional[int
     return job, is_new
 
 
-def import_postings(postings: list[Posting], source: str) -> dict:
+def import_postings(postings: list[Posting], source: str, ws: int) -> dict:
     """Store postings parsed from a page the user saved in their browser."""
     db = SessionLocal()
     try:
-        crit = load_criteria(db)
+        crit = load_criteria(db, ws)
         now = datetime.utcnow()
         new = kept = 0
         for p in postings:
-            job, is_new = upsert_posting(db, p, source, None, crit, now)
+            job, is_new = upsert_posting(db, ws, p, source, None, crit, now)
             if job.excluded_reason == NOT_A_JOB:
                 job.excluded_reason = None
             stage = "full" if job.detail_status in ("full", "summary") else "listing"
@@ -148,10 +154,10 @@ def import_postings(postings: list[Posting], source: str) -> dict:
         db.close()
 
 
-def refilter(db: Session, crit: Criteria, jobs: Optional[list[Job]] = None) -> int:
+def refilter(db: Session, crit: Criteria, ws: int, jobs: Optional[list[Job]] = None) -> int:
     """Re-apply filters to stored jobs (no network). Returns #changed."""
     changed = 0
-    for job in jobs if jobs is not None else db.query(Job).all():
+    for job in jobs if jobs is not None else db.query(Job).filter(Job.workspace_id == ws).all():
         if job.excluded_reason == NOT_A_JOB:
             continue
         stage = "full" if job.detail_status in ("full", "summary") else "listing"
@@ -163,7 +169,7 @@ def refilter(db: Session, crit: Criteria, jobs: Optional[list[Job]] = None) -> i
     return changed
 
 
-def _process_source(db: Session, src: Optional[CompanySource], adapter: Adapter,
+def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter: Adapter,
                     crit: Criteria, rep: SourceReport, progress: Progress) -> None:
     postings = adapter.list_postings()
     rep.method = adapter.method
@@ -180,7 +186,7 @@ def _process_source(db: Session, src: Optional[CompanySource], adapter: Adapter,
         progress(f"{rep.label}: {i}/{len(postings)}", {"source": rep.label, "done": i, "total": len(postings)})
         if src is not None and src.label:
             p.company = p.company or src.label
-        job, is_new = upsert_posting(db, p, adapter.source, src.id if src is not None else None, crit, now)
+        job, is_new = upsert_posting(db, ws, p, adapter.source, src.id if src is not None else None, crit, now)
         rep.new += is_new
 
         if job.excluded_reason == NOT_A_JOB:
@@ -219,25 +225,25 @@ def _process_source(db: Session, src: Optional[CompanySource], adapter: Adapter,
         db.commit()
 
     if adapter.complete_listing and postings:
-        q = db.query(Job).filter(Job.closed_at.is_(None), Job.url.notin_(seen))
+        q = db.query(Job).filter(Job.workspace_id == ws, Job.closed_at.is_(None), Job.url.notin_(seen))
         q = q.filter(Job.source_id == src.id) if src is not None else q.filter(Job.source == adapter.source)
         rep.closed = q.update({Job.closed_at: now}, synchronize_session=False)
         db.commit()
 
 
-def run_search(progress: Progress = lambda stage, info: None) -> dict:
+def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
     db = SessionLocal()
     client = PoliteClient()
     try:
-        crit = load_criteria(db)
+        crit = load_criteria(db, ws)
         reports: list[SourceReport] = []
-        for src, adapter in build_adapters(db, client):
+        for src, adapter in build_adapters(db, ws, client):
             label = (src.label or src.careers_url) if src is not None else "SEEK"
             rep = SourceReport(label=label, url=src.careers_url if src is not None else "https://www.seek.com.au")
             reports.append(rep)
             progress(f"{label}: listing jobs", {"source": label})
             try:
-                _process_source(db, src, adapter, crit, rep, progress)
+                _process_source(db, ws, src, adapter, crit, rep, progress)
             except (SourceError, FetchError) as exc:
                 db.rollback()
                 rep.error = str(exc)
@@ -253,7 +259,7 @@ def run_search(progress: Progress = lambda stage, info: None) -> dict:
                 src.last_method = rep.method or None
                 db.commit()
         progress("re-applying filters to stored jobs", {})
-        refilter(db, crit)
+        refilter(db, crit, ws)
         purge_cache()
         totals = {k: sum(getattr(r, k) for r in reports)
                   for k in ("listed", "new", "details_fetched", "details_deferred", "excluded", "kept", "closed")}

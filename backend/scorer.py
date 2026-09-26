@@ -92,14 +92,15 @@ _KIND_ORDER = {"resume": 0, "cover_letter": 1, "other": 2}
 _KIND_LABEL = {"resume": "RESUME / CV", "cover_letter": "COVER LETTER", "other": "SUPPORTING DOCUMENT"}
 
 
-def build_profile(db: Session) -> tuple[str, str]:
+def build_profile(db: Session, ws: int) -> tuple[str, str]:
     """(profile text, hash). Resume(s) first, then cover letters, then other docs."""
     from backend.profile import get_profile
 
-    docs = [d for d in db.query(Document).all() if d.use_for_scoring and (d.text or "").strip()]
+    docs = [d for d in db.query(Document).filter(Document.workspace_id == ws)
+            if d.use_for_scoring and (d.text or "").strip()]
     docs.sort(key=lambda d: (_KIND_ORDER.get(d.kind or "other", 2), d.id))
     parts = []
-    prof = get_profile(db)
+    prof = get_profile(db, ws)
     if prof["titles"]:
         parts.append("TARGET ROLES: " + ", ".join(prof["titles"]))
     for d in docs:
@@ -288,7 +289,7 @@ def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> d
         db.close()
 
 
-def select_jobs(db: Session, mode: str, profile_hash: str) -> list[int]:
+def select_jobs(db: Session, mode: str, profile_hash: str, ws: int) -> list[int]:
     """Job ids to score. mode: pending (never scored or errored) | stale (+ scored
     against older documents) | all (every eligible job)."""
     rows = (
@@ -296,6 +297,7 @@ def select_jobs(db: Session, mode: str, profile_hash: str) -> list[int]:
         .outerjoin(FitResult, FitResult.job_id == Job.id)
         .filter((Job.excluded_reason.is_(None)) | (Job.excluded_reason == ""))
         .filter(Job.closed_at.is_(None))
+        .filter(Job.workspace_id == ws)
         .filter(Job.detail_status.in_(["full", "summary"]))
         .all()
     )
@@ -338,13 +340,13 @@ def _copy_to_duplicates(dup_ids: list[int], result: dict, profile_hash: str, mod
         db.close()
 
 
-def score_jobs(job_ids: list[int], progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
+def score_jobs(ws: int, job_ids: list[int], progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
     cfg = get_config()
     if config_problem(cfg):
         raise ScorerError(config_problem(cfg), auth=True)
     db = SessionLocal()
     try:
-        profile_text, profile_hash = build_profile(db)
+        profile_text, profile_hash = build_profile(db, ws)
     finally:
         db.close()
     if not job_ids:

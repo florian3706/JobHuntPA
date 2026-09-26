@@ -18,6 +18,13 @@
         </div>
       </div>
       <div class="header-meta">
+        <div class="workspace-bar">
+          <label for="ws-select" class="muted">Workspace</label>
+          <select id="ws-select" aria-label="Workspace"></select>
+          <button id="ws-new" class="btn btn-sm" type="button" title="New workspace: a separate search with its own settings, documents, pins and jobs">+ New</button>
+          <button id="ws-rename" class="btn btn-ghost btn-sm" type="button">Rename</button>
+          <button id="ws-delete" class="btn btn-danger btn-sm" type="button">Delete</button>
+        </div>
         <span id="scorer-status" class="api-status is-unknown">● scorer: checking…</span>
       </div>
     </div>
@@ -36,7 +43,7 @@
         <div class="toolbar-row">
           <button id="search-run" class="btn btn-primary" type="button">Run search</button>
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
-          <button id="fill-info" class="btn" type="button" title="Research every company in your job list that has no profile yet (one LLM web-search agent per company)">Fill missing info</button>
+          <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile: the ticked jobs' companies, or every company in your list when none are ticked (one LLM web-search agent per company)">Fill missing info</button>
           <span id="run-status" class="muted" aria-live="polite"></span>
         </div>
         <div id="run-progress" class="progress" hidden><div class="progress-bar"></div></div>
@@ -138,6 +145,17 @@
             <label class="check"><input type="checkbox" id="allow-onsite" /> Onsite</label>
             <small class="hint">Hybrid/onsite roles must be inside a pin radius (Map tab).</small>
           </fieldset>
+          <div class="form-group">
+            <label for="max-office-days">Hybrid: max days in the office per week</label>
+            <select id="max-office-days">
+              <option value="">Any</option>
+              <option value="1">1 day</option>
+              <option value="2">2 days</option>
+              <option value="3">3 days</option>
+              <option value="4">4 days</option>
+            </select>
+            <small class="hint">Hybrid roles whose ad asks for more office days are excluded. Ads that don't say how many days are kept.</small>
+          </div>
           <div class="form-group">
             <label>Dealbreaker industries</label>
             <div class="tag-input" data-field="dealbreaker_industries"><div class="tags"></div><input type="text" placeholder="Add industry + Enter" /></div>

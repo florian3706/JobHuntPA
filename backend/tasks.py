@@ -56,15 +56,16 @@ def mark_interrupted() -> None:
         db.close()
 
 
-def start(kind: str, job: Callable[[Progress], dict]) -> dict:
-    """Queue ``job(progress)``; refuses when another run is active."""
+def start(kind: str, job: Callable[[Progress], dict], ws: int) -> dict:
+    """Queue ``job(progress)`` for workspace ``ws``; refuses when any run is active
+    (one scraper/LLM run at a time keeps crawl delays and rate limits simple)."""
     with _start_lock:
         current = active_run()
         if current is not None:
             return {**current, "already_running": True}
         db = SessionLocal()
         try:
-            run = SearchRun(kind=kind, state="queued", progress_json="{}")
+            run = SearchRun(workspace_id=ws, kind=kind, state="queued", progress_json="{}")
             db.add(run)
             db.commit()
             run_id = run.id

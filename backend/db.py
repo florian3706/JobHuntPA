@@ -22,12 +22,14 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
     event,
     inspect,
     text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.schema import CreateTable
 
 log = logging.getLogger(__name__)
 
@@ -64,10 +66,27 @@ def utcnow() -> datetime:
 # Jobs + fit scores
 # ---------------------------------------------------------------------------
 
-class Job(Base):
-    __tablename__ = "jobs"
+class Workspace(Base):
+    """A separate job search: its own settings, sources, documents, pins and jobs."""
+
+    __tablename__ = "workspaces"
 
     id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+
+
+def _workspace_fk():
+    return Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False,
+                  default=1, server_default="1", index=True)
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+    __table_args__ = (UniqueConstraint("workspace_id", "url", name="uq_jobs_workspace_url"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = _workspace_fk()
     source = Column(String, nullable=True)          # "seek", "workable:compass-education", ...
     source_id = Column(Integer, ForeignKey("company_sources.id", ondelete="SET NULL"), nullable=True)
     external_id = Column(String, nullable=True)
@@ -78,10 +97,11 @@ class Job(Base):
     lat = Column(Float, nullable=True)
     lng = Column(Float, nullable=True)
     work_mode = Column(String, nullable=True)       # remote | hybrid | onsite | unknown
+    office_days = Column(Integer, nullable=True)    # days/week in the office, when stated
     salary_min = Column(Integer, nullable=True)
     salary_max = Column(Integer, nullable=True)
     salary_text = Column(String, nullable=True)
-    url = Column(String, unique=True, nullable=True)
+    url = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     description_hash = Column(String, nullable=True, index=True)
     # none: listing data only; summary: listing teaser only (e.g. SEEK);
@@ -125,6 +145,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, index=True)
+    workspace_id = _workspace_fk()
     filename = Column(String, nullable=False)
     filetype = Column(String, nullable=True)
     stored_name = Column(String, nullable=True)
@@ -151,7 +172,7 @@ class SearchProfile(Base):
 
 
 class UserProfile(Base):
-    """Single-row table (id=1): search profile."""
+    """One row per workspace (id = workspace id): search profile."""
 
     __tablename__ = "user_profile"
 
@@ -163,6 +184,7 @@ class UserProfile(Base):
     remote_aus_ok = Column(Boolean, default=True, nullable=False)
     remote_global_ok = Column(Boolean, default=False, nullable=False)
     allow_hybrid = Column(Boolean, nullable=False, default=True, server_default="1")
+    max_office_days = Column(Integer, nullable=True)  # hybrid: most office days/week accepted
     allow_onsite = Column(Boolean, nullable=False, default=True, server_default="1")
     seek_enabled = Column(Boolean, nullable=False, default=True, server_default="1")
     seek_locations = Column(JSON, nullable=True)
@@ -170,7 +192,7 @@ class UserProfile(Base):
 
 
 class DealbreakerSet(Base):
-    """Single-row table (id=1): exclusion tag arrays."""
+    """One row per workspace (id = workspace id): exclusion tag arrays."""
 
     __tablename__ = "dealbreakers"
 
@@ -185,6 +207,7 @@ class Pin(Base):
     __tablename__ = "pins"
 
     id = Column(Integer, primary_key=True, index=True)
+    workspace_id = _workspace_fk()
     label = Column(String, nullable=False)
     kind = Column(String, nullable=False)  # home | hybrid | onsite
     lat = Column(Float, nullable=False)
@@ -200,10 +223,12 @@ class CompanySource(Base):
     """One company's careers page / job board, added by URL in the UI."""
 
     __tablename__ = "company_sources"
+    __table_args__ = (UniqueConstraint("workspace_id", "careers_url", name="uq_sources_workspace_url"),)
 
     id = Column(Integer, primary_key=True, index=True)
     label = Column(String, nullable=True, default="")
-    careers_url = Column(String, unique=True, nullable=True, default="")
+    workspace_id = _workspace_fk()
+    careers_url = Column(String, nullable=True, default="")
     source_type = Column(String, nullable=True, default="generic")
     adapter_key = Column(String, nullable=True, default="")
     enabled = Column(Boolean, nullable=False, default=True)
@@ -287,6 +312,7 @@ class SearchRun(Base):
     __tablename__ = "search_runs"
 
     id = Column(Integer, primary_key=True, index=True)
+    workspace_id = _workspace_fk()
     kind = Column(String, nullable=False, default="search")  # search | score
     state = Column(String, nullable=False, default="queued")  # queued | running | done | failed
     stage = Column(String, nullable=True)
@@ -299,6 +325,7 @@ class SearchRun(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "workspace_id": self.workspace_id,
             "kind": self.kind,
             "state": self.state,
             "stage": self.stage,
@@ -403,6 +430,38 @@ def _rebuild_legacy_fit_results() -> None:
     log.info("migrated fit_results to the new schema")
 
 
+def _rebuild_for_workspaces(table_name: str) -> None:
+    """Replace a table whose URL column was globally UNIQUE with the current
+    definition (unique per workspace), keeping every row (SQLite can't drop a
+    constraint in place). Follows SQLite's create-copy-drop-rename recipe with
+    foreign keys off, so rows referencing this table are untouched."""
+    insp = inspect(engine)
+    if not insp.has_table(table_name):
+        return
+    if "workspace_id" in {c["name"] for c in insp.get_columns(table_name)}:
+        return
+    table = Base.metadata.tables[table_name]
+    old_cols = {c["name"] for c in insp.get_columns(table_name)}
+    cols = ", ".join(c.name for c in table.columns if c.name in old_cols)
+    ddl = str(CreateTable(table).compile(engine)).replace(
+        f"CREATE TABLE {table_name} ", f"CREATE TABLE {table_name}_new ", 1)
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        conn.exec_driver_sql(ddl)
+        conn.exec_driver_sql(f"INSERT INTO {table_name}_new ({cols}) SELECT {cols} FROM {table_name}")
+        conn.exec_driver_sql(f"DROP TABLE {table_name}")
+        conn.exec_driver_sql(f"ALTER TABLE {table_name}_new RENAME TO {table_name}")
+        for index in table.indexes:
+            index.create(conn, checkfirst=True)
+        problems = conn.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+        if problems:
+            conn.rollback()
+            raise RuntimeError(f"workspace migration of {table_name} failed foreign key check: {problems[:5]}")
+        conn.commit()
+        conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+    log.info("migrated %s to per-workspace uniqueness", table_name)
+
+
 def _fix_legacy_data() -> None:
     """One-off data repairs for databases written by the previous code."""
     with engine.begin() as conn:
@@ -419,6 +478,12 @@ def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     _rebuild_legacy_fit_results()
+    Base.metadata.tables["workspaces"].create(bind=engine, checkfirst=True)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT OR IGNORE INTO workspaces (id, name, created_at) "
+                          "VALUES (1, 'My job search', CURRENT_TIMESTAMP)"))
+    _rebuild_for_workspaces("company_sources")
+    _rebuild_for_workspaces("jobs")
     Base.metadata.create_all(bind=engine)
     _add_missing_columns()
     _fix_legacy_data()

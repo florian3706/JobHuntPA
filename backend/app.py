@@ -21,6 +21,8 @@ from backend.db import CompanyProfile, FitResult, Job, SearchRun, SessionLocal, 
 from backend.docs import router as docs_router
 from backend.profile import router as profile_router
 from backend.sources import router as sources_router
+from backend.workspaces import current_workspace, owned
+from backend.workspaces import router as workspaces_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ app = FastAPI(title="JobHuntPA", lifespan=lifespan)
 app.include_router(docs_router)
 app.include_router(profile_router)
 app.include_router(sources_router)
+app.include_router(workspaces_router)
 
 
 @app.get("/api/health")
@@ -80,6 +83,7 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "lat": job.lat,
         "lng": job.lng,
         "work_mode": job.work_mode or "unknown",
+        "office_days": job.office_days,
         "salary_text": job.salary_text,
         "salary_min": job.salary_min,
         "salary_max": job.salary_max,
@@ -99,26 +103,25 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
     return out
 
 
-def _profile_hash(db: Session) -> str:
+def _profile_hash(db: Session, ws: int) -> str:
     from backend.scorer import build_profile
 
-    return build_profile(db)[1]
+    return build_profile(db, ws)[1]
 
 
 @app.get("/api/jobs")
-def list_jobs(db: Session = Depends(get_db)):
-    phash = _profile_hash(db)
-    rows = db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id).all()
+def list_jobs(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    phash = _profile_hash(db, ws)
+    rows = (db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id)
+            .filter(Job.workspace_id == ws).all())
     return [job_to_dict(job, fit, phash) for job, fit in rows]
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: int, db: Session = Depends(get_db)):
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+def get_job(job_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    job = owned(db, Job, job_id, ws, "Job")
     fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
-    return job_to_dict(job, fit, _profile_hash(db), full=True)
+    return job_to_dict(job, fit, _profile_hash(db, ws), full=True)
 
 
 class StatusUpdate(BaseModel):
@@ -130,58 +133,61 @@ class BulkStatusUpdate(StatusUpdate):
 
 
 @app.patch("/api/jobs/status")
-def bulk_update_status(payload: BulkStatusUpdate, db: Session = Depends(get_db)):
-    n = db.query(Job).filter(Job.id.in_(payload.ids)).update({Job.status: payload.status}, synchronize_session=False)
+def bulk_update_status(payload: BulkStatusUpdate, db: Session = Depends(get_db),
+                       ws: int = Depends(current_workspace)):
+    n = (db.query(Job).filter(Job.workspace_id == ws, Job.id.in_(payload.ids))
+         .update({Job.status: payload.status}, synchronize_session=False))
     db.commit()
     return {"ok": True, "updated": n}
 
 
 @app.patch("/api/jobs/{job_id}/status")
-def update_status(job_id: int, payload: StatusUpdate, db: Session = Depends(get_db)):
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+def update_status(job_id: int, payload: StatusUpdate, db: Session = Depends(get_db),
+                  ws: int = Depends(current_workspace)):
+    job = owned(db, Job, job_id, ws, "Job")
     job.status = payload.status
     db.commit()
     return {"ok": True, "id": job_id, "status": job.status}
 
 
 @app.post("/api/jobs/refilter")
-def refilter_jobs(db: Session = Depends(get_db)):
+def refilter_jobs(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """Re-apply the current filters to every stored job (no network)."""
     from backend.filters import load_criteria
     from backend.pipeline import refilter
 
-    return {"changed": refilter(db, load_criteria(db))}
+    return {"changed": refilter(db, load_criteria(db, ws), ws)}
 
 
 # ---------------------------------------------------------------------------
 # Background runs
 # ---------------------------------------------------------------------------
 
-def _search_then_score(progress):
-    from backend.pipeline import run_search
-    from backend.scorer import ScorerError, build_profile, config_problem, score_jobs, select_jobs
+def _score(ws: int, mode: str, progress) -> dict:
+    from backend.scorer import ScorerError, build_profile, score_jobs, select_jobs
 
-    summary = {"search": run_search(progress)}
-    if config_problem():
-        summary["scoring"] = {"skipped": config_problem()}
-        return summary
     db = SessionLocal()
     try:
-        ids = select_jobs(db, "pending", build_profile(db)[1])
+        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws)
     finally:
         db.close()
     try:
-        summary["scoring"] = score_jobs(ids, progress)
+        return score_jobs(ws, ids, progress)
     except ScorerError as exc:
-        summary["scoring"] = {"aborted": str(exc)}
-    return summary
+        return {"aborted": str(exc)}
 
 
 @app.post("/api/search/run")
-def start_search():
-    return tasks.start("search", _search_then_score)
+def start_search(ws: int = Depends(current_workspace)):
+    from backend.pipeline import run_search
+    from backend.scorer import config_problem
+
+    def job(progress):
+        summary = {"search": run_search(ws, progress)}
+        summary["scoring"] = {"skipped": config_problem()} if config_problem() else _score(ws, "pending", progress)
+        return summary
+
+    return tasks.start("search", job, ws)
 
 
 class ScoreRunRequest(BaseModel):
@@ -189,29 +195,17 @@ class ScoreRunRequest(BaseModel):
 
 
 @app.post("/api/score/run")
-def start_scoring(payload: ScoreRunRequest):
-    from backend.scorer import ScorerError, build_profile, config_problem, score_jobs, select_jobs
+def start_scoring(payload: ScoreRunRequest, ws: int = Depends(current_workspace)):
+    from backend.scorer import config_problem
 
     if config_problem():
         raise HTTPException(status_code=400, detail=config_problem())
-
-    def job(progress):
-        db = SessionLocal()
-        try:
-            ids = select_jobs(db, payload.mode, build_profile(db)[1])
-        finally:
-            db.close()
-        try:
-            return {"scoring": score_jobs(ids, progress)}
-        except ScorerError as exc:
-            return {"scoring": {"aborted": str(exc)}}
-
-    return tasks.start("score", job)
+    return tasks.start("score", lambda progress: {"scoring": _score(ws, payload.mode, progress)}, ws)
 
 
 @app.get("/api/runs/latest")
-def latest_run(db: Session = Depends(get_db)):
-    run = db.query(SearchRun).order_by(SearchRun.id.desc()).first()
+def latest_run(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    run = db.query(SearchRun).filter(SearchRun.workspace_id == ws).order_by(SearchRun.id.desc()).first()
     return run.to_dict() if run else None
 
 
@@ -235,40 +229,41 @@ def test_scorer():
 
 
 @app.get("/api/score/status")
-def scorer_status(db: Session = Depends(get_db)):
+def scorer_status(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     from backend.scorer import build_profile, public_config, select_jobs
 
-    text, phash = build_profile(db)
+    text, phash = build_profile(db, ws)
+    pending = len(select_jobs(db, "pending", phash, ws))
+    fits = db.query(FitResult.status).join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws)
     return {
         **public_config(),
         "profile_chars": len(text),
-        "pending": len(select_jobs(db, "pending", phash)),
-        "stale": len(select_jobs(db, "stale", phash)) - len(select_jobs(db, "pending", phash)),
-        "scored": db.query(FitResult).filter(FitResult.status == "ok").count(),
-        "errors": db.query(FitResult).filter(FitResult.status == "error").count(),
+        "pending": pending,
+        "stale": len(select_jobs(db, "stale", phash, ws)) - pending,
+        "scored": fits.filter(FitResult.status == "ok").count(),
+        "errors": fits.filter(FitResult.status == "error").count(),
     }
 
 
 @app.post("/api/score/{job_id}")
-def score_single(job_id: int, db: Session = Depends(get_db)):
+def score_single(job_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     from backend.scorer import ScorerError, build_profile, config_problem, get_config, score_one
 
     cfg = get_config()
     if config_problem(cfg):
         raise HTTPException(status_code=400, detail=config_problem(cfg))
-    if db.get(Job, job_id) is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    text, phash = build_profile(db)
+    owned(db, Job, job_id, ws, "Job")
+    text, phash = build_profile(db, ws)
     try:
         score_one(job_id, text, phash, cfg)
     except ScorerError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     db.expire_all()
-    return get_job(job_id, db)
+    return get_job(job_id, db, ws)
 
 
 # ---------------------------------------------------------------------------
-# Company profiles (LLM web-search research agents)
+# Company profiles (LLM web-search research agents; shared by all workspaces)
 # ---------------------------------------------------------------------------
 
 @app.get("/api/companies")
@@ -278,11 +273,12 @@ def list_companies(db: Session = Depends(get_db)):
 
 class ResearchRequest(BaseModel):
     mode: Literal["missing", "all"] = "missing"
-    name: Optional[str] = None  # research just this company
+    name: Optional[str] = None           # research just this company
+    job_ids: Optional[list[int]] = None  # only these jobs' companies (the ticked jobs)
 
 
 @app.post("/api/companies/research")
-def start_research(payload: ResearchRequest):
+def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace)):
     from backend.research import companies_to_research, job_context, research_companies
     from backend.scorer import ScorerError, config_problem
 
@@ -292,7 +288,10 @@ def start_research(payload: ResearchRequest):
     def job(progress):
         db = SessionLocal()
         try:
-            companies = [job_context(db, payload.name)] if payload.name else companies_to_research(db, payload.mode)
+            if payload.name:
+                companies = [job_context(db, ws, payload.name)]
+            else:
+                companies = companies_to_research(db, ws, payload.mode, payload.job_ids)
         finally:
             db.close()
         progress(f"researching {len(companies)} companies", {"done": 0, "total": len(companies)})
@@ -301,7 +300,7 @@ def start_research(payload: ResearchRequest):
         except ScorerError as exc:
             return {"research": {"aborted": str(exc)}}
 
-    return tasks.start("research", job)
+    return tasks.start("research", job, ws)
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +308,7 @@ def start_research(payload: ResearchRequest):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/import/page")
-async def import_page(file: UploadFile = File(...)):
+async def import_page(file: UploadFile = File(...), ws: int = Depends(current_workspace)):
     from backend.adapters.seek import parse_seek_page
     from backend.pipeline import import_postings
     from backend.scraping.jsonld import find_job_postings, posting_from_jsonld
@@ -322,7 +321,7 @@ async def import_page(file: UploadFile = File(...)):
         source = "import"
     if not postings:
         raise HTTPException(status_code=422, detail="No job data found. Save a SEEK search/job page, or a page with JobPosting data.")
-    return import_postings(postings, source)
+    return import_postings(postings, source, ws)
 
 
 if FRONTEND_DIR.is_dir():

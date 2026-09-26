@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.db import DOCUMENT_KINDS, UPLOAD_DIR, Document, get_db
+from backend.workspaces import current_workspace, owned
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -81,12 +82,14 @@ class DocumentUpdate(BaseModel):
 
 
 @router.get("")
-def list_documents(db: Session = Depends(get_db)):
-    return [doc_to_dict(d) for d in db.query(Document).order_by(Document.created_at.desc()).all()]
+def list_documents(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    rows = db.query(Document).filter(Document.workspace_id == ws).order_by(Document.created_at.desc())
+    return [doc_to_dict(d) for d in rows]
 
 
 @router.post("")
-def upload_document(file: UploadFile = File(...), kind: str = Form("resume"), db: Session = Depends(get_db)):
+def upload_document(file: UploadFile = File(...), kind: str = Form("resume"), db: Session = Depends(get_db),
+                    ws: int = Depends(current_workspace)):
     if kind not in DOCUMENT_KINDS:
         raise HTTPException(status_code=422, detail=f"kind must be one of {DOCUMENT_KINDS}")
     original = file.filename or "upload"
@@ -105,17 +108,16 @@ def upload_document(file: UploadFile = File(...), kind: str = Form("resume"), db
     if not text:
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="No text found in the file (scanned PDF?)")
-    doc = Document(filename=original, filetype=suffix, stored_name=stored, text=text, kind=kind)
+    doc = Document(workspace_id=ws, filename=original, filetype=suffix, stored_name=stored, text=text, kind=kind)
     db.add(doc)
     db.commit()
     return doc_to_dict(doc)
 
 
 @router.patch("/{doc_id}")
-def update_document(doc_id: int, payload: DocumentUpdate, db: Session = Depends(get_db)):
-    doc = db.get(Document, doc_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+def update_document(doc_id: int, payload: DocumentUpdate, db: Session = Depends(get_db),
+                    ws: int = Depends(current_workspace)):
+    doc = owned(db, Document, doc_id, ws, "Document")
     if payload.kind is not None:
         if payload.kind not in DOCUMENT_KINDS:
             raise HTTPException(status_code=422, detail=f"kind must be one of {DOCUMENT_KINDS}")
@@ -127,18 +129,14 @@ def update_document(doc_id: int, payload: DocumentUpdate, db: Session = Depends(
 
 
 @router.get("/{doc_id}/text")
-def document_text(doc_id: int, db: Session = Depends(get_db)):
-    doc = db.get(Document, doc_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+def document_text(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    doc = owned(db, Document, doc_id, ws, "Document")
     return {"id": doc.id, "filename": doc.filename, "text": doc.text or ""}
 
 
 @router.delete("/{doc_id}")
-def delete_document(doc_id: int, db: Session = Depends(get_db)):
-    doc = db.get(Document, doc_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+def delete_document(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    doc = owned(db, Document, doc_id, ws, "Document")
     if doc.stored_name:
         (UPLOAD_DIR / doc.stored_name).unlink(missing_ok=True)
     db.delete(doc)

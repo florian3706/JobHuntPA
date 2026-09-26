@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.db import DealbreakerSet, Pin, UserProfile, get_db
+from backend.workspaces import current_workspace, owned
 
 router = APIRouter()
 
@@ -29,6 +30,7 @@ class ProfileSchema(BaseModel):
     remote_aus_ok: bool = True
     remote_global_ok: bool = False
     allow_hybrid: bool = True
+    max_office_days: Optional[int] = Field(default=None, ge=0, le=5)
     allow_onsite: bool = True
     seek_enabled: bool = True
     seek_locations: list[str] = Field(default_factory=list)
@@ -70,8 +72,8 @@ def _clean_tags(values: Any) -> list[str]:
     return list(dict.fromkeys(str(v).strip() for v in values if str(v).strip()))
 
 
-def get_profile(db: Session) -> dict[str, Any]:
-    row = db.get(UserProfile, 1)
+def get_profile(db: Session, ws: int) -> dict[str, Any]:
+    row = db.get(UserProfile, ws)
     if row is None:
         return ProfileSchema().model_dump()
     return {
@@ -82,16 +84,17 @@ def get_profile(db: Session) -> dict[str, Any]:
         "remote_aus_ok": bool(row.remote_aus_ok),
         "remote_global_ok": bool(row.remote_global_ok),
         "allow_hybrid": bool(row.allow_hybrid),
+        "max_office_days": row.max_office_days,
         "allow_onsite": bool(row.allow_onsite),
         "seek_enabled": bool(row.seek_enabled),
         "seek_locations": list(row.seek_locations or []),
     }
 
 
-def save_profile(db: Session, data: ProfileSchema) -> dict[str, Any]:
-    row = db.get(UserProfile, 1)
+def save_profile(db: Session, ws: int, data: ProfileSchema) -> dict[str, Any]:
+    row = db.get(UserProfile, ws)
     if row is None:
-        row = UserProfile(id=1)
+        row = UserProfile(id=ws)
         db.add(row)
     row.titles = _clean_tags(data.titles)
     row.keywords_include = _clean_tags(data.keywords_include)
@@ -100,29 +103,30 @@ def save_profile(db: Session, data: ProfileSchema) -> dict[str, Any]:
     row.remote_aus_ok = data.remote_aus_ok
     row.remote_global_ok = data.remote_global_ok
     row.allow_hybrid = data.allow_hybrid
+    row.max_office_days = data.max_office_days
     row.allow_onsite = data.allow_onsite
     row.seek_enabled = data.seek_enabled
     row.seek_locations = _clean_tags(data.seek_locations)
     db.commit()
-    return get_profile(db)
+    return get_profile(db, ws)
 
 
-def get_dealbreakers(db: Session) -> dict[str, Any]:
-    row = db.get(DealbreakerSet, 1)
+def get_dealbreakers(db: Session, ws: int) -> dict[str, Any]:
+    row = db.get(DealbreakerSet, ws)
     if row is None:
         return {"industries": [], "keywords": []}
     return {"industries": list(row.industries or []), "keywords": list(row.keywords or [])}
 
 
-def save_dealbreakers(db: Session, data: DealbreakersSchema) -> dict[str, Any]:
-    row = db.get(DealbreakerSet, 1)
+def save_dealbreakers(db: Session, ws: int, data: DealbreakersSchema) -> dict[str, Any]:
+    row = db.get(DealbreakerSet, ws)
     if row is None:
-        row = DealbreakerSet(id=1)
+        row = DealbreakerSet(id=ws)
         db.add(row)
     row.industries = _clean_tags(data.industries)
     row.keywords = _clean_tags(data.keywords)
     db.commit()
-    return get_dealbreakers(db)
+    return get_dealbreakers(db, ws)
 
 
 def _pin_to_dict(pin: Pin) -> dict[str, Any]:
@@ -130,38 +134,40 @@ def _pin_to_dict(pin: Pin) -> dict[str, Any]:
             "lat": pin.lat, "lng": pin.lng, "radius_km": pin.radius_km}
 
 
-def list_pins(db: Session) -> list[dict[str, Any]]:
-    return [_pin_to_dict(p) for p in db.query(Pin).order_by(Pin.id).all()]
+def list_pins(db: Session, ws: int) -> list[dict[str, Any]]:
+    return [_pin_to_dict(p) for p in db.query(Pin).filter(Pin.workspace_id == ws).order_by(Pin.id).all()]
 
 
 @router.get("/api/profile")
-def read_profile(db: Session = Depends(get_db)) -> dict[str, Any]:
-    return get_profile(db)
+def read_profile(db: Session = Depends(get_db), ws: int = Depends(current_workspace)) -> dict[str, Any]:
+    return get_profile(db, ws)
 
 
 @router.put("/api/profile")
-def write_profile(payload: ProfileSchema, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return save_profile(db, payload)
+def write_profile(payload: ProfileSchema, db: Session = Depends(get_db),
+                  ws: int = Depends(current_workspace)) -> dict[str, Any]:
+    return save_profile(db, ws, payload)
 
 
 @router.get("/api/dealbreakers")
-def read_dealbreakers(db: Session = Depends(get_db)) -> dict[str, Any]:
-    return get_dealbreakers(db)
+def read_dealbreakers(db: Session = Depends(get_db), ws: int = Depends(current_workspace)) -> dict[str, Any]:
+    return get_dealbreakers(db, ws)
 
 
 @router.put("/api/dealbreakers")
-def write_dealbreakers(payload: DealbreakersSchema, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return save_dealbreakers(db, payload)
+def write_dealbreakers(payload: DealbreakersSchema, db: Session = Depends(get_db),
+                       ws: int = Depends(current_workspace)) -> dict[str, Any]:
+    return save_dealbreakers(db, ws, payload)
 
 
 @router.get("/api/pins", response_model=list[PinOut])
-def read_pins(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    return list_pins(db)
+def read_pins(db: Session = Depends(get_db), ws: int = Depends(current_workspace)) -> list[dict[str, Any]]:
+    return list_pins(db, ws)
 
 
 @router.post("/api/pins", response_model=PinOut, status_code=status.HTTP_201_CREATED)
-def add_pin(payload: PinCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
-    pin = Pin(label=payload.label.strip(), kind=payload.kind, lat=payload.lat,
+def add_pin(payload: PinCreate, db: Session = Depends(get_db), ws: int = Depends(current_workspace)) -> dict[str, Any]:
+    pin = Pin(workspace_id=ws, label=payload.label.strip(), kind=payload.kind, lat=payload.lat,
               lng=payload.lng, radius_km=payload.radius_km)
     db.add(pin)
     db.commit()
@@ -169,10 +175,9 @@ def add_pin(payload: PinCreate, db: Session = Depends(get_db)) -> dict[str, Any]
 
 
 @router.put("/api/pins/{pin_id}", response_model=PinOut)
-def edit_pin(pin_id: int, payload: PinUpdate, db: Session = Depends(get_db)) -> dict[str, Any]:
-    pin = db.get(Pin, pin_id)
-    if pin is None:
-        raise HTTPException(status_code=404, detail=f"Pin {pin_id} not found")
+def edit_pin(pin_id: int, payload: PinUpdate, db: Session = Depends(get_db),
+             ws: int = Depends(current_workspace)) -> dict[str, Any]:
+    pin = owned(db, Pin, pin_id, ws, "Pin")
     for field, value in payload.model_dump(exclude_unset=True).items():
         if value is not None:
             setattr(pin, field, value.strip() if field == "label" else value)
@@ -181,9 +186,7 @@ def edit_pin(pin_id: int, payload: PinUpdate, db: Session = Depends(get_db)) -> 
 
 
 @router.delete("/api/pins/{pin_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_pin(pin_id: int, db: Session = Depends(get_db)) -> None:
-    pin = db.get(Pin, pin_id)
-    if pin is None:
-        raise HTTPException(status_code=404, detail=f"Pin {pin_id} not found")
+def remove_pin(pin_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)) -> None:
+    pin = owned(db, Pin, pin_id, ws, "Pin")
     db.delete(pin)
     db.commit()

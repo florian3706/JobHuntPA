@@ -9,6 +9,8 @@ the dealbreaker "war" does not match "software"):
   or its title/description contains one of the include keywords. (With
   neither configured, everything passes.)
 - Salary floor: only applied when the salary is stated and parseable.
+- Hybrid office days: when the ad states days in the office and it's more
+  than your maximum, the job is excluded (unstated days pass).
 - Work mode: remote needs "remote (Australia)" or "remote (global)"; roles
   based outside Australia need "remote (global)". Hybrid/onsite can be
   switched off.
@@ -42,16 +44,17 @@ class Criteria:
     remote_aus_ok: bool = True
     remote_global_ok: bool = False
     allow_hybrid: bool = True
+    max_office_days: Optional[int] = None
     allow_onsite: bool = True
     dealbreaker_industries: list[str] = field(default_factory=list)
     dealbreaker_keywords: list[str] = field(default_factory=list)
     pins: list[dict] = field(default_factory=list)
 
 
-def load_criteria(db: Session) -> Criteria:
+def load_criteria(db: Session, ws: int) -> Criteria:
     from backend.profile import get_dealbreakers, get_profile, list_pins
 
-    prof, dbk = get_profile(db), get_dealbreakers(db)
+    prof, dbk = get_profile(db, ws), get_dealbreakers(db, ws)
     return Criteria(
         titles=prof["titles"],
         keywords_include=prof["keywords_include"],
@@ -60,10 +63,11 @@ def load_criteria(db: Session) -> Criteria:
         remote_aus_ok=prof["remote_aus_ok"],
         remote_global_ok=prof["remote_global_ok"],
         allow_hybrid=prof["allow_hybrid"],
+        max_office_days=prof["max_office_days"],
         allow_onsite=prof["allow_onsite"],
         dealbreaker_industries=dbk["industries"],
         dealbreaker_keywords=dbk["keywords"],
-        pins=list_pins(db),
+        pins=list_pins(db, ws),
     )
 
 
@@ -185,6 +189,9 @@ def _location_reason(job: Any, c: Criteria) -> Optional[str]:
         return None
     if mode == "hybrid" and not c.allow_hybrid:
         return "hybrid roles not wanted"
+    office_days = _get(job, "office_days")
+    if mode == "hybrid" and c.max_office_days is not None and office_days and office_days > c.max_office_days:
+        return f"hybrid role needs {office_days} office days a week (your max is {c.max_office_days})"
     if mode == "onsite" and not c.allow_onsite:
         return "onsite roles not wanted"
     if abroad:

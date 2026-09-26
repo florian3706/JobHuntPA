@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from backend.adapters.base import SourceError
 from backend.adapters.generic import GenericAdapter
 from backend.db import CompanySource, get_db
+from backend.workspaces import current_workspace, owned
 from backend.scraping.http import FetchError, PoliteClient
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
@@ -67,16 +68,17 @@ def source_to_dict(s: CompanySource) -> dict:
 
 
 @router.get("")
-def list_sources(db: Session = Depends(get_db)):
-    return [source_to_dict(s) for s in db.query(CompanySource).order_by(CompanySource.id).all()]
+def list_sources(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    rows = db.query(CompanySource).filter(CompanySource.workspace_id == ws).order_by(CompanySource.id)
+    return [source_to_dict(s) for s in rows]
 
 
 @router.post("", status_code=201)
-def create_source(payload: SourceCreate, db: Session = Depends(get_db)):
+def create_source(payload: SourceCreate, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     url = normalize_url(payload.url)
-    if db.query(CompanySource).filter(CompanySource.careers_url == url).first():
+    if db.query(CompanySource).filter(CompanySource.workspace_id == ws, CompanySource.careers_url == url).first():
         raise HTTPException(status_code=409, detail="That URL is already a source")
-    src = CompanySource(careers_url=url, url=url, label=(payload.label or "").strip() or default_label(url),
+    src = CompanySource(workspace_id=ws, careers_url=url, url=url, label=(payload.label or "").strip() or default_label(url),
                         source_type="auto", enabled=True)
     db.add(src)
     db.commit()
@@ -84,10 +86,9 @@ def create_source(payload: SourceCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/{source_id}")
-def update_source(source_id: int, payload: SourceUpdate, db: Session = Depends(get_db)):
-    src = db.get(CompanySource, source_id)
-    if src is None:
-        raise HTTPException(status_code=404, detail="Source not found")
+def update_source(source_id: int, payload: SourceUpdate, db: Session = Depends(get_db),
+                 ws: int = Depends(current_workspace)):
+    src = owned(db, CompanySource, source_id, ws, "Source")
     if payload.enabled is not None:
         src.enabled = payload.enabled
     if payload.label is not None and payload.label.strip():
@@ -97,20 +98,18 @@ def update_source(source_id: int, payload: SourceUpdate, db: Session = Depends(g
 
 
 @router.delete("/{source_id}")
-def delete_source(source_id: int, db: Session = Depends(get_db)):
-    src = db.get(CompanySource, source_id)
-    if src is None:
-        raise HTTPException(status_code=404, detail="Source not found")
+def delete_source(source_id: int, db: Session = Depends(get_db),
+                 ws: int = Depends(current_workspace)):
+    src = owned(db, CompanySource, source_id, ws, "Source")
     db.delete(src)
     db.commit()
     return {"ok": True, "id": source_id}
 
 
 @router.post("/{source_id}/test")
-def test_source(source_id: int, db: Session = Depends(get_db)):
-    src = db.get(CompanySource, source_id)
-    if src is None:
-        raise HTTPException(status_code=404, detail="Source not found")
+def test_source(source_id: int, db: Session = Depends(get_db),
+               ws: int = Depends(current_workspace)):
+    src = owned(db, CompanySource, source_id, ws, "Source")
     client = PoliteClient()
     adapter = GenericAdapter(client, src.careers_url, company=src.label or "")
     try:
