@@ -1,0 +1,66 @@
+# Every push: unit tests, then the real setup + launch scripts on Linux, macOS
+# and Windows, and a build + launch test of the Windows programs. A change that
+# breaks setup or start-up fails here.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -t . -v
+
+  setup-unix:
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-latest, macos-latest] }
+    runs-on: ${{ matrix.os }}
+    env: { LLM_API_KEY: test-key, LLM_BASE_URL: "https://example.invalid/v1", LLM_MODEL: test-model }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: One-time setup
+        run: ./setup.sh --non-interactive --skip-browser
+      - name: Setup is repeatable
+        run: ./setup.sh --non-interactive --skip-browser
+      - name: Start and check it responds
+        run: |
+          ./start.sh --no-browser --port 8123 > launch.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8123/api/health && break; sleep 1; done
+          curl -sf http://127.0.0.1:8123/api/health
+          curl -sf http://127.0.0.1:8123/api/workspaces
+          curl -sf http://127.0.0.1:8123/ | grep -q JobHuntPA
+      - if: failure()
+        run: cat launch.log || true
+
+  windows:
+    runs-on: windows-latest
+    env: { LLM_API_KEY: test-key, LLM_BASE_URL: "https://example.invalid/v1", LLM_MODEL: test-model }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Shared setup
+        run: python installer/installer.py --non-interactive --skip-browser
+      - name: Build the Windows programs
+        shell: bash
+        run: |
+          pip install pyinstaller
+          pyinstaller --onefile --console --name JobHuntPA installer/windows_launch.py
+          pyinstaller --onefile --console --name JobHuntPA-Setup --add-data "dist/JobHuntPA.exe;." --add-data "VERSION;." installer/windows_setup.py
+      - name: JobHuntPA.exe starts the app
+        shell: pwsh
+        run: |
+          Start-Process -FilePath dist\JobHuntPA.exe -ArgumentList "--no-browser","--port","8123"
+          for ($i = 0; $i -lt 60; $i++) {
+            try { Invoke-RestMethod http://127.0.0.1:8123/api/health; exit 0 } catch { Start-Sleep 1 }
+          }
+          exit 1

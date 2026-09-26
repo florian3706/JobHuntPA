@@ -1,0 +1,36 @@
+# Push a tag like v1.2.0 (matching the VERSION file) to publish
+# JobHuntPA-Setup.exe and JobHuntPA.exe on the GitHub Releases page.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Tag matches VERSION
+        shell: bash
+        run: test "v$(cat VERSION)" = "${GITHUB_REF_NAME}" || { echo "Tag ${GITHUB_REF_NAME} != VERSION $(cat VERSION)"; exit 1; }
+      - name: Build
+        shell: bash
+        run: |
+          pip install pyinstaller
+          pyinstaller --onefile --console --name JobHuntPA installer/windows_launch.py
+          pyinstaller --onefile --console --name JobHuntPA-Setup --add-data "dist/JobHuntPA.exe;." --add-data "VERSION;." installer/windows_setup.py
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/JobHuntPA-Setup.exe
+            dist/JobHuntPA.exe
+          body: |
+            **Windows:** download **JobHuntPA-Setup.exe** and run it (Windows may warn about an unknown publisher: click *More info*, then *Run anyway*). It installs everything and adds a JobHuntPA shortcut. `JobHuntPA.exe` is the app launcher (setup installs it for you).
+            **Linux / macOS:** download the source code zip below and follow the README.
