@@ -204,7 +204,8 @@ function renderJobCard(job) {
       <button class="btn btn-ghost btn-sm" type="button" data-act="rescore">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="desc">Description</button>
     </div>
-    <details class="reqs"><summary>Fit: requirements → evidence, gaps</summary><div class="fit-body"></div></details>`;
+    <details class="reqs" data-section="fit"><summary>Fit: requirements → evidence</summary><div class="fit-body"></div></details>
+    ${gapsSection(job)}`;
 
   card.querySelector('input[type="checkbox"]').addEventListener('change', (e) => {
     if (e.target.checked) state.selected.add(job.id); else state.selected.delete(job.id);
@@ -216,8 +217,11 @@ function renderJobCard(job) {
   card.querySelector('[data-act="rescore"]').addEventListener('click', (e) => rescoreJob(job, e.target));
   card.querySelector('[data-act="desc"]').addEventListener('click', () => showDescription(job));
   card.querySelector('[data-act="company"]')?.addEventListener('click', () => showCompany(job));
-  card.querySelector('details').addEventListener('toggle', (e) => {
+  card.querySelector('details[data-section="fit"]').addEventListener('toggle', (e) => {
     if (e.target.open) e.target.querySelector('.fit-body').innerHTML = fitHtml(job);
+  });
+  card.querySelector('details[data-section="gaps"]')?.addEventListener('toggle', (e) => {
+    if (e.target.open) e.target.querySelector('.gaps-body').innerHTML = gapsHtml(job);
   });
   return card;
 }
@@ -235,11 +239,32 @@ function fitHtml(job) {
     const must = r.must_have === false ? ' <span class="muted">(nice to have)</span>' : '';
     return `<li><div>${esc(r.point)} · ${tag}${must}</div>${ev ? `<ul>${ev}</ul>` : ''}</li>`;
   }).join('') || '<li class="muted">No requirement breakdown.</li>';
-  const gaps = (fit.gaps || []).map((g) => `<li class="gap">✕ ${esc(g)}</li>`).join('');
   return `${fit.summary ? `<p class="summary">${esc(fit.summary)}</p>` : ''}
     <ul>${reqs}</ul>
-    ${gaps ? `<div class="gaps-block"><strong>Gaps</strong><ul>${gaps}</ul></div>` : ''}
     <p class="muted">${esc(fit.model || '')} · ${esc(fmtDate(fit.scored_at))}${fit.stale ? ' · scored against older documents' : ''}</p>`;
+}
+
+function missingRequirements(fit) {
+  return (fit.requirements || [])
+    .filter((r) => !r.matched)
+    .sort((a, b) => (b.must_have !== false) - (a.must_have !== false));
+}
+
+function gapsSection(job) {
+  const fit = job.fit;
+  if (!fit || fit.status !== 'ok') return '';
+  const n = (fit.gaps || []).length || missingRequirements(fit).length;
+  if (!n) return '';
+  return `<details class="reqs gaps" data-section="gaps"><summary>Gaps (${n})</summary><div class="gaps-body"></div></details>`;
+}
+
+function gapsHtml(job) {
+  const fit = job.fit;
+  const gaps = (fit.gaps || []).map((g) => `<li class="gap">✕ ${esc(g)}</li>`).join('');
+  const missing = missingRequirements(fit).map((r) =>
+    `<li class="gap">${esc(r.point)}${r.must_have === false ? ' <span class="muted">(nice to have)</span>' : ' <span class="muted">(must have)</span>'}</li>`).join('');
+  return `${gaps ? `<ul>${gaps}</ul>` : ''}
+    ${missing ? `<p class="muted gaps-sub">Requirements your documents don't evidence:</p><ul>${missing}</ul>` : ''}`;
 }
 
 async function showDescription(job) {

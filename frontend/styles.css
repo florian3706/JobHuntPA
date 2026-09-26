@@ -306,3 +306,6 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; paddi
 .modal-html .sources, .modal-html .sources a { font-size: 12.5px; color: var(--accent); }
 .modal-html .notice { background: rgba(245,165,36,.12); border: 1px solid rgba(245,165,36,.5); border-radius: 8px; padding: 8px 10px; }
 .preview-text[hidden] { display: none; }
+.reqs.gaps { border-top: none; padding-top: 0; }
+.reqs.gaps summary { color: #ffb4b4; }
+.reqs .gaps-sub { margin: 8px 0 0; }
