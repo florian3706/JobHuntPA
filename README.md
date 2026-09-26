@@ -91,8 +91,19 @@ in the app folder directly: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`. Restart 
 
 ## Uninstalling
 
-Delete the app folder (on Windows by default `%LOCALAPPDATA%\JobHuntPA`) and the JobHuntPA
-shortcuts. That removes everything, including your data.
+Close JobHuntPA first, then:
+
+- **Windows:** *Settings > Apps > Installed apps > JobHuntPA > Uninstall*, or the Start-menu
+  shortcut **Uninstall JobHuntPA**.
+- **macOS:** double-click **`Uninstall JobHuntPA.command`** in the app folder (right-click > Open
+  the first time).
+- **Linux:** run `./uninstall.sh` in the app folder.
+
+The uninstaller first offers to save a **backup** (your jobs, documents, workspaces, settings and
+API key) as `JobHuntPA-backup-<date>.zip` in your Documents folder. It then removes the shortcuts
+and the app folder. It asks before removing the shared browser component, and leaves Python
+installed because other programs may use it. To restore a backup, install JobHuntPA again and
+unzip the backup into the new app folder.
 
 ## Troubleshooting
 
@@ -107,7 +118,8 @@ shortcuts. That removes everything, including your data.
 ## For developers
 
 Setup lives in one place, `installer/installer.py` (standard library only), called by `setup.sh`
-(Linux/macOS) and by `JobHuntPA-Setup.exe` (`installer/windows_setup.py`). Starting goes through
+(Linux/macOS) and by `JobHuntPA-Setup.exe` (`installer/windows_setup.py`). Removal is
+`installer/uninstaller.py`, called by `uninstall.sh` and built into `JobHuntPA-Uninstall.exe`. Starting goes through
 `installer/launch.py`, called by `start.sh` and `JobHuntPA.exe` (`installer/windows_launch.py`).
 **Any change to dependencies, configuration, data folders or how the app starts must update
 these scripts**; `.github/workflows/ci.yml` runs the real setup and launch on Linux, macOS and

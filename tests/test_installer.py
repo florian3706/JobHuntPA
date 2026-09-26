@@ -51,3 +51,52 @@ class EnvFileTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import uninstaller  # noqa: E402
+
+
+class UninstallerTest(unittest.TestCase):
+    def _app(self) -> Path:
+        root = Path(tempfile.mkdtemp()) / "JobHuntPA"
+        (root / "installer").mkdir(parents=True)
+        (root / "installer" / "launch.py").write_text("")
+        (root / "backend").mkdir()
+        (root / "data" / "uploads").mkdir(parents=True)
+        (root / "data" / "uploads" / "cv.pdf").write_text("cv")
+        (root / ".env").write_text("LLM_API_KEY=k\n")
+        return root
+
+    def test_only_real_app_folders(self):
+        self.assertTrue(uninstaller.is_app_folder(self._app()))
+        self.assertFalse(uninstaller.is_app_folder(Path(tempfile.mkdtemp())))
+
+    def test_refuses_non_app_folder(self):
+        other = Path(tempfile.mkdtemp())
+        (other / "precious.txt").write_text("keep me")
+        with mock.patch.object(sys, "argv", ["uninstaller", "--yes", "--folder", str(other)]), \
+                mock.patch.object(uninstaller, "say"):
+            self.assertEqual(uninstaller.main(), 1)
+        self.assertTrue((other / "precious.txt").exists())
+
+    def test_backup_and_remove(self):
+        app = self._app()
+        home = Path(tempfile.mkdtemp())
+        (home / "Documents").mkdir()
+        with mock.patch.object(sys, "argv", ["uninstaller", "--yes", "--folder", str(app)]), \
+                mock.patch.object(uninstaller, "say"), mock.patch.object(uninstaller, "running_ports", return_value=[]), \
+                mock.patch.object(uninstaller, "playwright_cache", return_value=home / "no-cache"), \
+                mock.patch.object(Path, "home", return_value=home):
+            self.assertEqual(uninstaller.main(), 0)
+        self.assertFalse(app.exists())
+        backups = list((home / "Documents").glob("JobHuntPA-backup-*.zip"))
+        self.assertEqual(len(backups), 1)
+        import zipfile
+        self.assertEqual(sorted(zipfile.ZipFile(backups[0]).namelist()), [".env", "data/uploads/cv.pdf"])
+
+    def test_refuses_while_running(self):
+        app = self._app()
+        with mock.patch.object(sys, "argv", ["uninstaller", "--yes", "--folder", str(app)]), \
+                mock.patch.object(uninstaller, "say"), mock.patch.object(uninstaller, "running_ports", return_value=[8000]):
+            self.assertEqual(uninstaller.main(), 1)
+        self.assertTrue(app.exists())

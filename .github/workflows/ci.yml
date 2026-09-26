@@ -38,6 +38,13 @@ jobs:
           curl -sf http://127.0.0.1:8123/api/health
           curl -sf http://127.0.0.1:8123/api/workspaces
           curl -sf http://127.0.0.1:8123/ | grep -q JobHuntPA
+      - name: Uninstall (backs up data, removes the folder)
+        run: |
+          pkill -f "uvicorn backend.app:app" || true
+          sleep 2
+          ./uninstall.sh --yes
+          test ! -d "$GITHUB_WORKSPACE/backend"
+          ls ~/Documents/JobHuntPA-backup-*.zip ~/JobHuntPA-backup-*.zip 2>/dev/null | grep -q backup
       - if: failure()
         run: cat launch.log || true
 
@@ -55,7 +62,8 @@ jobs:
         run: |
           pip install pyinstaller
           pyinstaller --onefile --console --name JobHuntPA installer/windows_launch.py
-          pyinstaller --onefile --console --name JobHuntPA-Setup --add-data "dist/JobHuntPA.exe;." --add-data "VERSION;." installer/windows_setup.py
+          pyinstaller --onefile --console --name JobHuntPA-Uninstall installer/uninstaller.py
+          pyinstaller --onefile --console --name JobHuntPA-Setup --add-data "dist/JobHuntPA.exe;." --add-data "dist/JobHuntPA-Uninstall.exe;." --add-data "VERSION;." installer/windows_setup.py
       - name: JobHuntPA.exe starts the app
         shell: pwsh
         run: |
@@ -64,3 +72,14 @@ jobs:
             try { Invoke-RestMethod http://127.0.0.1:8123/api/health; exit 0 } catch { Start-Sleep 1 }
           }
           exit 1
+      - name: JobHuntPA-Uninstall.exe removes the app
+        shell: pwsh
+        run: |
+          Get-Process JobHuntPA, python -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          $app = "$env:RUNNER_TEMP\JobHuntPA-app"
+          Copy-Item -Recurse $env:GITHUB_WORKSPACE $app
+          & dist\JobHuntPA-Uninstall.exe --yes --folder $app
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          for ($i = 0; $i -lt 30; $i++) { if (-not (Test-Path $app)) { exit 0 }; Start-Sleep 1 }
+          Write-Error "app folder still present"; exit 1

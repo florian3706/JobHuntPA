@@ -68,5 +68,5 @@ if ! "$PY" -c "import venv, ensurepip" 2>/dev/null; then
   fi
 fi
 
-chmod +x start.sh setup.sh "Setup.command" "Start JobHuntPA.command" 2>/dev/null || true
+chmod +x start.sh setup.sh uninstall.sh "Setup.command" "Start JobHuntPA.command" "Uninstall JobHuntPA.command" 2>/dev/null || true
 exec "$PY" installer/installer.py "$@"

@@ -10,3 +10,4 @@ data/uploads/*
 data/cache/*
 !data/cache/.gitkeep
 data/jobhunt.db.bak*
+data/running.json

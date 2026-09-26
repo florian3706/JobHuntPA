@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
+import os
+import signal
 import socket
 import subprocess
 import sys
@@ -23,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 print = functools.partial(print, flush=True)  # show messages immediately in the console window
 HOST = "127.0.0.1"
+RUN_FILE = ROOT / "data" / "running.json"  # lets the uninstaller find a running app
 
 
 def healthy(port: int) -> bool:
@@ -56,6 +60,13 @@ def main() -> int:
         print(f"No free port between {args.port} and {args.port + 19}.")
         return 1
     url = f"http://{HOST}:{port}"
+
+    def stop_on_signal(signum, frame):  # window closed (SIGHUP) or asked to stop (SIGTERM)
+        raise KeyboardInterrupt
+
+    for name in ("SIGTERM", "SIGHUP", "SIGBREAK"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), stop_on_signal)
     server = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "backend.app:app", "--host", HOST, "--port", str(port)],
         cwd=ROOT,
@@ -72,6 +83,10 @@ def main() -> int:
             print("JobHuntPA did not start within 60 seconds.")
             server.terminate()
             return 1
+        try:
+            RUN_FILE.write_text(json.dumps({"port": port, "pid": server.pid, "launcher_pid": os.getpid()}))
+        except OSError:
+            pass
         print("\n" + "=" * 60)
         print(f"  JobHuntPA is running at {url}")
         print("  Keep this window open while you use it.")
@@ -88,6 +103,8 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             server.kill()
         return 0
+    finally:
+        RUN_FILE.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

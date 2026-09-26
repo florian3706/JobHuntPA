@@ -7,7 +7,8 @@ JobHuntPA.exe is bundled inside. Steps:
      keeping an existing .env and data folder
   3. find Python 3.10+ or install Python 3.12 for the current user
   4. run the shared setup (installer/installer.py) with that Python
-  5. put JobHuntPA.exe in the folder and create Desktop + Start-menu shortcuts
+  5. put JobHuntPA.exe and JobHuntPA-Uninstall.exe in the folder, create
+     Desktop + Start-menu shortcuts and list the app in Settings > Apps
 """
 from __future__ import annotations
 
@@ -103,6 +104,22 @@ def make_shortcut(link: Path, target: Path, workdir: Path) -> None:
     subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], check=True)
 
 
+def register_uninstaller(target: Path, uninstaller: Path, ver: str) -> None:
+    """List JobHuntPA in Settings > Apps (per user, no admin rights needed)."""
+    import winreg
+
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\JobHuntPA"
+    size_kb = sum(f.stat().st_size for f in target.rglob("*") if f.is_file()) // 1024
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+        for name, value in (("DisplayName", "JobHuntPA"), ("DisplayVersion", ver), ("Publisher", "JobHuntPA"),
+                            ("InstallLocation", str(target)), ("DisplayIcon", str(target / "JobHuntPA.exe")),
+                            ("UninstallString", f'"{uninstaller}"'),
+                            ("URLInfoAbout", f"https://github.com/{REPO}")):
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+        for name, value in (("NoModify", 1), ("NoRepair", 1), ("EstimatedSize", size_kb)):
+            winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, value)
+
+
 def main() -> None:
     ver = version()
     print("=" * 60)
@@ -131,7 +148,13 @@ def main() -> None:
     for folder in (desktop, programs):
         if folder.exists():
             make_shortcut(folder / "JobHuntPA.lnk", launcher, target)
-    print("  Added JobHuntPA to your Desktop and Start menu.")
+    uninstaller = target / "JobHuntPA-Uninstall.exe"
+    shutil.copy2(bundled("JobHuntPA-Uninstall.exe"), uninstaller)
+    if programs.exists():
+        make_shortcut(programs / "Uninstall JobHuntPA.lnk", uninstaller, target)
+    register_uninstaller(target, uninstaller, version())
+    print("  Added JobHuntPA to your Desktop and Start menu (with an uninstaller),")
+    print("  and to Settings > Apps so it can be removed like any other app.")
 
     print("\nDone.")
     if input("Start JobHuntPA now? [Y/n] ").strip().lower() in ("", "y", "yes"):

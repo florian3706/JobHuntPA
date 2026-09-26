@@ -24,13 +24,15 @@ jobs:
         run: |
           pip install pyinstaller
           pyinstaller --onefile --console --name JobHuntPA installer/windows_launch.py
-          pyinstaller --onefile --console --name JobHuntPA-Setup --add-data "dist/JobHuntPA.exe;." --add-data "VERSION;." installer/windows_setup.py
+          pyinstaller --onefile --console --name JobHuntPA-Uninstall installer/uninstaller.py
+          pyinstaller --onefile --console --name JobHuntPA-Setup --add-data "dist/JobHuntPA.exe;." --add-data "dist/JobHuntPA-Uninstall.exe;." --add-data "VERSION;." installer/windows_setup.py
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/JobHuntPA-Setup.exe
             dist/JobHuntPA.exe
+            dist/JobHuntPA-Uninstall.exe
           body: |
-            **Windows:** download **JobHuntPA-Setup.exe** and run it (Windows may warn about an unknown publisher: click *More info*, then *Run anyway*). It installs everything and adds a JobHuntPA shortcut. `JobHuntPA.exe` is the app launcher (setup installs it for you).
+            **Windows:** download **JobHuntPA-Setup.exe** and run it (Windows may warn about an unknown publisher: click *More info*, then *Run anyway*). It installs everything and adds a JobHuntPA shortcut. `JobHuntPA.exe` (app launcher) and `JobHuntPA-Uninstall.exe` are installed by setup; to remove JobHuntPA use Settings > Apps or the Start-menu *Uninstall JobHuntPA* shortcut.
             **Linux / macOS:** download the source code zip below and follow the README.

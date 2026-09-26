@@ -12,6 +12,10 @@ working and be reflected in them**:
 - New data folder, startup step, port or entry point → `installer/installer.py`,
   `installer/launch.py`, `setup.sh`, `start.sh`, `Setup.command`, `Start JobHuntPA.command`,
   `installer/windows_setup.py`, `installer/windows_launch.py`.
+- Anything setup creates outside the app folder (shortcuts, registry entries, caches) must also be
+  removed by `installer/uninstaller.py` (`uninstall.sh`, `Uninstall JobHuntPA.command`,
+  JobHuntPA-Uninstall.exe). Anything users would want to keep belongs in `data/` or `.env`,
+  which the uninstaller backs up.
 - Update the README install/usage sections when user-visible steps change.
 - `.github/workflows/ci.yml` runs the real setup + launch on Linux, macOS and Windows; keep it
   passing. Publish Windows programs by bumping `VERSION` and pushing tag `v<VERSION>`
