@@ -42,8 +42,10 @@ jobs:
         run: |
           pkill -f "uvicorn backend.app:app" || true
           sleep 2
-          ./uninstall.sh --yes
-          test ! -d "$GITHUB_WORKSPACE/backend"
+          # Uninstall a copy: the runner's own clean-up steps need the checkout folder.
+          cp -R "$GITHUB_WORKSPACE" "$RUNNER_TEMP/JobHuntPA-app"
+          "$RUNNER_TEMP/JobHuntPA-app/uninstall.sh" --yes
+          test ! -d "$RUNNER_TEMP/JobHuntPA-app"
           ls ~/Documents/JobHuntPA-backup-*.zip ~/JobHuntPA-backup-*.zip 2>/dev/null | grep -q backup
       - if: failure()
         run: cat launch.log || true
