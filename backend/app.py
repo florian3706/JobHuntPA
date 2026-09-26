@@ -161,11 +161,11 @@ def refilter_jobs(db: Session = Depends(get_db)):
 
 def _search_then_score(progress):
     from backend.pipeline import run_search
-    from backend.scorer import ScorerError, build_profile, get_config, score_jobs, select_jobs
+    from backend.scorer import ScorerError, build_profile, config_problem, score_jobs, select_jobs
 
     summary = {"search": run_search(progress)}
-    if not get_config()["api_key"]:
-        summary["scoring"] = {"skipped": "no API key configured"}
+    if config_problem():
+        summary["scoring"] = {"skipped": config_problem()}
         return summary
     db = SessionLocal()
     try:
@@ -190,10 +190,10 @@ class ScoreRunRequest(BaseModel):
 
 @app.post("/api/score/run")
 def start_scoring(payload: ScoreRunRequest):
-    from backend.scorer import ScorerError, build_profile, get_config, score_jobs, select_jobs
+    from backend.scorer import ScorerError, build_profile, config_problem, score_jobs, select_jobs
 
-    if not get_config()["api_key"]:
-        raise HTTPException(status_code=400, detail="No API key: set MODEL_API_KEY in .env and restart the server.")
+    if config_problem():
+        raise HTTPException(status_code=400, detail=config_problem())
 
     def job(progress):
         db = SessionLocal()
@@ -251,11 +251,11 @@ def scorer_status(db: Session = Depends(get_db)):
 
 @app.post("/api/score/{job_id}")
 def score_single(job_id: int, db: Session = Depends(get_db)):
-    from backend.scorer import ScorerError, build_profile, get_config, score_one
+    from backend.scorer import ScorerError, build_profile, config_problem, get_config, score_one
 
     cfg = get_config()
-    if not cfg["api_key"]:
-        raise HTTPException(status_code=400, detail="No API key: set MODEL_API_KEY in .env and restart the server.")
+    if config_problem(cfg):
+        raise HTTPException(status_code=400, detail=config_problem(cfg))
     if db.get(Job, job_id) is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     text, phash = build_profile(db)
@@ -268,7 +268,7 @@ def score_single(job_id: int, db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# Company profiles (Muse Spark research agents)
+# Company profiles (LLM web-search research agents)
 # ---------------------------------------------------------------------------
 
 @app.get("/api/companies")
@@ -284,10 +284,10 @@ class ResearchRequest(BaseModel):
 @app.post("/api/companies/research")
 def start_research(payload: ResearchRequest):
     from backend.research import companies_to_research, job_context, research_companies
-    from backend.scorer import ScorerError, get_config
+    from backend.scorer import ScorerError, config_problem
 
-    if not get_config()["api_key"]:
-        raise HTTPException(status_code=400, detail="No API key: set MODEL_API_KEY in .env and restart the server.")
+    if config_problem():
+        raise HTTPException(status_code=400, detail=config_problem())
 
     def job(progress):
         db = SessionLocal()

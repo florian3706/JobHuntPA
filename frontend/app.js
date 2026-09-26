@@ -504,7 +504,7 @@ function showCompany(job) {
         <dt>Controversies</dt><dd>${esc(p.controversy_note || (p.controversies.length ? '' : 'None found.'))}${cons}</dd>
       </dl>
       ${p.sources.length ? `<p class="sources"><span class="muted">Sources:</span> ${linkList(p.sources)}</p>` : ''}
-      <p class="muted">Researched ${esc(fmtDate(p.researched_at))} by ${esc(p.model || 'Muse Spark')} with web search.
+      <p class="muted">Researched ${esc(fmtDate(p.researched_at))} by ${esc(p.model || 'the LLM')} with web search.
         Only links the search actually returned are shown${p.unverified_dropped ? `; ${p.unverified_dropped} unverifiable link(s) and their claims were removed` : ''}.
         Automated research can be wrong: check the linked articles.</p>
       ${researchBtn}`;
@@ -706,15 +706,15 @@ async function loadScorerStatus() {
   const badge = $('#scorer-status');
   try {
     const s = await api('/api/score/status');
-    const failing = s.has_key && s.scored === 0 && s.errors > 0;
-    badge.className = `api-status ${!s.has_key || failing ? 'is-fail' : s.scored ? 'is-ok' : 'is-unknown'}`;
-    badge.textContent = !s.has_key ? '● scorer: no API key'
+    const failing = s.configured && s.scored === 0 && s.errors > 0;
+    badge.className = `api-status ${!s.configured || failing ? 'is-fail' : s.scored ? 'is-ok' : 'is-unknown'}`;
+    badge.textContent = !s.configured ? '● LLM not configured'
       : failing ? '● scorer: failing (Search setup → Test connection)'
         : `● ${s.model}${s.scored ? '' : ' (not verified yet)'}`;
     badge.title = `${s.scored} scored, ${s.errors} failed`;
     $('#scorer-info').innerHTML = `
-      Model <strong>${esc(s.model)}</strong>${s.model_known ? '' : ' <span class="err-text">(not a known Muse Spark model id)</span>'} at ${esc(s.base_url)} ·
-      key: ${s.has_key ? esc(s.key_source) : '<span class="err-text">missing</span>'} · reasoning effort ${esc(s.reasoning_effort)}<br>
+      ${s.problem ? `<span class="err-text">${esc(s.problem)}</span><br>` : ''}
+      Model <strong>${esc(s.model || '(LLM_MODEL not set)')}</strong> at ${esc(s.base_url || '(LLM_BASE_URL not set)')}${s.reasoning_effort ? ` · reasoning effort ${esc(s.reasoning_effort)}` : ''}<br>
       ${s.scored} scored · ${s.pending} waiting to be scored · ${s.stale} stale (documents changed) · ${s.errors} failed ·
       profile ${s.profile_chars.toLocaleString()} characters`;
   } catch (e) {

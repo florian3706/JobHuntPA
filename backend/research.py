@@ -1,7 +1,7 @@
-"""Company research: one Muse Spark web-search agent per company.
+"""Company research: one LLM web-search agent per company.
 
-Each company gets its own request to Meta's Responses API with the
-built-in ``web_search`` tool (search grounding). The agent returns a JSON
+Each company gets its own request to the provider's Responses API
+(``{LLM_BASE_URL}/responses``) with the built-in ``web_search`` tool. The agent returns a JSON
 profile: business model, ownership, headquarters and controversies with
 news links.
 
@@ -28,7 +28,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from backend.db import CompanyProfile, CompanySource, Job, SessionLocal, company_key
-from backend.scorer import ScorerError, get_config
+from backend.scorer import ScorerError, config_problem, get_config
 
 log = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ def job_context(db: Session, name: str) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Muse Spark Responses API with web search
+# Responses API with web search
 # --------------------------------------------------------------------------
 
 def _post(url: str, payload: dict, cfg: dict) -> dict:
@@ -179,9 +179,10 @@ def run_agent(company: dict, cfg: dict) -> dict:
         "tools": [{"type": "web_search", "search_context_size": "medium",
                    "user_location": {"type": "approximate", "country": "AU"}}],
         "include": ["web_search_call.results"],
-        "reasoning": {"effort": cfg.get("research_effort", "low")},
         "background": True,
     }
+    if cfg.get("reasoning_effort"):
+        payload["reasoning"] = {"effort": cfg["reasoning_effort"]}
     data = _post(f"{cfg['base_url']}/responses", payload, cfg)
     waited = 0
     while data.get("status") in ("queued", "in_progress") and waited < MAX_WAIT_S:
@@ -361,8 +362,8 @@ def research_one(company: dict, cfg: dict) -> dict:
 def research_companies(companies: list[dict], progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
     """Run one research agent per company, a few in parallel."""
     cfg = get_config()
-    if not cfg["api_key"]:
-        raise ScorerError("no API key: set MODEL_API_KEY in .env", auth=True)
+    if config_problem(cfg):
+        raise ScorerError(config_problem(cfg), auth=True)
     if not companies:
         return {"requested": 0, "researched": 0, "errors": 0, "aborted": None}
     stop = threading.Event()

@@ -1,12 +1,14 @@
-"""Muse Spark fit scorer (Meta Model API, OpenAI-compatible chat completions).
+"""LLM fit scorer (any OpenAI-compatible chat-completions API).
 
 Config (``.env``):
-    MODEL_API_KEY                 API key (MUSE_SPARK_API_KEY also accepted)
-    MUSE_SPARK_BASE_URL           default https://api.meta.ai/v1
-    MUSE_SPARK_MODEL              default muse-spark-1.3-contributor
-    MUSE_SPARK_REASONING_EFFORT   minimal | low | medium | high | xhigh (default low)
-    MUSE_SPARK_TIMEOUT_S          per request, default 180
-    MUSE_SPARK_CONCURRENCY        parallel requests, default 3
+    LLM_API_KEY            API key, sent as ``Authorization: Bearer <key>`` (required)
+    LLM_BASE_URL           API base, e.g. https://api.openai.com/v1 (required);
+                           scoring POSTs to ``{base}/chat/completions``, company
+                           research to ``{base}/responses`` with the web_search tool
+    LLM_MODEL              model id (required)
+    LLM_REASONING_EFFORT   optional, e.g. low; sent only when set (reasoning models)
+    LLM_TIMEOUT_S          per request, default 180
+    LLM_CONCURRENCY        parallel requests, default 3
 
 Results live in ``fit_results``: ``status="ok"`` rows hold a score,
 ``status="error"`` rows hold the error and are retried on the next
@@ -35,10 +37,6 @@ from backend.db import Document, FitResult, Job, SessionLocal
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BASE_URL = "https://api.meta.ai/v1"
-DEFAULT_MODEL = "muse-spark-1.3-contributor"
-KNOWN_MODELS = {"muse-spark-1.3", "muse-spark-1.3-contributor", "muse-spark-1.2",
-                "muse-spark-1.2-contributor", "muse-spark-1.1"}
 MAX_RETRIES = 3
 
 
@@ -48,27 +46,40 @@ class ScorerError(Exception):
         self.auth = auth
 
 
+REQUIRED = (("LLM_API_KEY", "api_key"), ("LLM_BASE_URL", "base_url"), ("LLM_MODEL", "model"))
+
+
+def _env(name: str) -> str:
+    return (os.getenv(name) or "").strip()
+
+
 def get_config() -> dict[str, Any]:
-    key = (os.getenv("MODEL_API_KEY") or os.getenv("MUSE_SPARK_API_KEY") or "").strip()
     return {
-        "api_key": key,
-        "key_source": "MODEL_API_KEY" if os.getenv("MODEL_API_KEY") else ("MUSE_SPARK_API_KEY" if key else "none"),
-        "base_url": (os.getenv("MUSE_SPARK_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
-        "model": (os.getenv("MUSE_SPARK_MODEL") or DEFAULT_MODEL).strip(),
-        "reasoning_effort": (os.getenv("MUSE_SPARK_REASONING_EFFORT") or "low").strip(),
-        "timeout_s": float(os.getenv("MUSE_SPARK_TIMEOUT_S") or 180),
-        "concurrency": max(1, int(os.getenv("MUSE_SPARK_CONCURRENCY") or 3)),
+        "api_key": _env("LLM_API_KEY"),
+        "base_url": _env("LLM_BASE_URL").rstrip("/"),
+        "model": _env("LLM_MODEL"),
+        "reasoning_effort": _env("LLM_REASONING_EFFORT"),
+        "timeout_s": float(_env("LLM_TIMEOUT_S") or 180),
+        "concurrency": max(1, int(_env("LLM_CONCURRENCY") or 3)),
     }
+
+
+def config_problem(cfg: Optional[dict] = None) -> Optional[str]:
+    """None when the LLM is configured, else what to set."""
+    cfg = cfg or get_config()
+    missing = [name for name, key in REQUIRED if not cfg[key]]
+    if not missing:
+        return None
+    return f"Set {', '.join(missing)} in .env and restart the server."
 
 
 def public_config() -> dict[str, Any]:
     cfg = get_config()
     return {
-        "has_key": bool(cfg["api_key"]),
-        "key_source": cfg["key_source"],
+        "configured": config_problem(cfg) is None,
+        "problem": config_problem(cfg),
         "base_url": cfg["base_url"],
         "model": cfg["model"],
-        "model_known": cfg["model"] in KNOWN_MODELS,
         "reasoning_effort": cfg["reasoning_effort"],
     }
 
@@ -161,9 +172,10 @@ def call_model(messages: list[dict], cfg: dict) -> str:
     payload: dict[str, Any] = {
         "model": cfg["model"],
         "messages": messages,
-        "reasoning_effort": cfg["reasoning_effort"],
         "response_format": {"type": "json_object"},
     }
+    if cfg.get("reasoning_effort"):
+        payload["reasoning_effort"] = cfg["reasoning_effort"]
     headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
     url = f"{cfg['base_url']}/chat/completions"
     for attempt in range(1, MAX_RETRIES + 1):
@@ -328,8 +340,8 @@ def _copy_to_duplicates(dup_ids: list[int], result: dict, profile_hash: str, mod
 
 def score_jobs(job_ids: list[int], progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
     cfg = get_config()
-    if not cfg["api_key"]:
-        raise ScorerError("no API key: set MODEL_API_KEY in .env", auth=True)
+    if config_problem(cfg):
+        raise ScorerError(config_problem(cfg), auth=True)
     db = SessionLocal()
     try:
         profile_text, profile_hash = build_profile(db)
@@ -384,11 +396,11 @@ def test_connection() -> dict:
     """One tiny request to check key, endpoint and model."""
     cfg = get_config()
     out = public_config()
-    if not cfg["api_key"]:
-        return {**out, "ok": False, "message": "No API key: set MODEL_API_KEY in .env and restart."}
+    if config_problem(cfg):
+        return {**out, "ok": False, "message": config_problem(cfg)}
     messages = [{"role": "user", "content": 'Reply with the JSON object {"ok": true}.'}]
     try:
-        reply = call_model(messages, {**cfg, "reasoning_effort": "minimal", "timeout_s": 60})
+        reply = call_model(messages, {**cfg, "timeout_s": 60})
     except ScorerError as exc:
         return {**out, "ok": False, "message": str(exc)}
     return {**out, "ok": True, "message": f"Connected. Model replied: {reply[:200]}"}

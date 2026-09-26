@@ -10,14 +10,14 @@
 
 Personal job search dashboard. It collects jobs from SEEK and company careers pages, filters them
 against your search setup and location pins, and scores the rest against your uploaded documents
-with Meta's Muse Spark model.
+with an LLM of your choice (any OpenAI-compatible API).
 
 ## Run
 
 ```
 pip install -r requirements.txt
 playwright install chromium        # optional, for JavaScript-only careers pages
-cp .env.example .env               # add MODEL_API_KEY
+cp .env.example .env               # set LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 

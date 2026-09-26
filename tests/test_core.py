@@ -425,3 +425,31 @@ class ResearchV2Test(unittest.TestCase):
         db.commit()
         self.assertIn("oldco", [c["key"] for c in companies_to_research(db)])
         db.close()
+
+
+class LlmConfigTest(unittest.TestCase):
+    def test_missing_settings_named(self):
+        from unittest import mock
+        from backend.scorer import config_problem, get_config
+        with mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "", "LLM_MODEL": ""}):
+            self.assertEqual(config_problem(get_config()), "Set LLM_BASE_URL, LLM_MODEL in .env and restart the server.")
+        with mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://x/v1/", "LLM_MODEL": "m"}):
+            cfg = get_config()
+            self.assertIsNone(config_problem(cfg))
+            self.assertEqual(cfg["base_url"], "https://x/v1")
+
+    def test_reasoning_effort_only_sent_when_set(self):
+        from unittest import mock
+        import backend.scorer as sc
+        sent = []
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            sent.append(json)
+            return mock.Mock(status_code=200, text="{}", headers={},
+                             json=lambda: {"choices": [{"message": {"content": "{}"}}]})
+        cfg = {"api_key": "k", "base_url": "https://x/v1", "model": "m", "timeout_s": 5}
+        with mock.patch.object(sc.httpx, "post", side_effect=fake_post):
+            sc.call_model([], {**cfg, "reasoning_effort": ""})
+            sc.call_model([], {**cfg, "reasoning_effort": "low"})
+        self.assertNotIn("reasoning_effort", sent[0])
+        self.assertEqual(sent[1]["reasoning_effort"], "low")

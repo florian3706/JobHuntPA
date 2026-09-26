@@ -99,7 +99,7 @@ class Job(Base):
 
 
 class FitResult(Base):
-    """Muse Spark fit score per job (written by backend.scorer)."""
+    """LLM fit score per job (written by backend.scorer)."""
 
     __tablename__ = "fit_results"
 

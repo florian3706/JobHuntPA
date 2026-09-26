@@ -36,7 +36,7 @@
         <div class="toolbar-row">
           <button id="search-run" class="btn btn-primary" type="button">Run search</button>
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
-          <button id="fill-info" class="btn" type="button" title="Research every company in your job list that has no profile yet (one Muse Spark web-search agent per company)">Fill missing info</button>
+          <button id="fill-info" class="btn" type="button" title="Research every company in your job list that has no profile yet (one LLM web-search agent per company)">Fill missing info</button>
           <span id="run-status" class="muted" aria-live="polite"></span>
         </div>
         <div id="run-progress" class="progress" hidden><div class="progress-bar"></div></div>
@@ -191,7 +191,7 @@
       </div>
 
       <div class="card form-card">
-        <h3>Scorer (Muse Spark)</h3>
+        <h3>LLM (scoring and company research)</h3>
         <div id="scorer-info" class="muted"></div>
         <div class="toolbar-row" style="margin-top:10px">
           <button id="score-test" class="btn" type="button">Test connection</button>
