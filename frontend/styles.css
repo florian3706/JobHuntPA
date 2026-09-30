@@ -338,3 +338,4 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; paddi
 .upload-ad li { margin-bottom: 6px; }
 .upload-ad kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; background: #10161f; font-size: 12px; }
 .upload-ad a, .modal-html a { color: var(--accent); }
+.select-all-shown { font-size: 13px; white-space: nowrap; }

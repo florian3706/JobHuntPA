@@ -164,6 +164,9 @@ function scoreBadge(job) {
 function renderJobs() {
   renderStatusChips();
   const jobs = visibleJobs();
+  // Bulk actions only ever apply to jobs on screen: drop selections the filters now hide.
+  const shown = new Set(jobs.map((j) => j.id));
+  state.selected.forEach((id) => { if (!shown.has(id)) state.selected.delete(id); });
   const list = $('#jobs-list');
   list.innerHTML = '';
   $('#jobs-empty').hidden = jobs.length !== 0;
@@ -295,7 +298,12 @@ function renderBulkBar() {
   $('#bulk-bar').hidden = n === 0;
   $('#bulk-count').textContent = `${n} selected`;
   const vis = visibleJobs().map((j) => j.id);
-  $('#bulk-select-all').checked = vis.length > 0 && vis.every((id) => state.selected.has(id));
+  const selectedShown = vis.filter((id) => state.selected.has(id)).length;
+  ['#bulk-select-all', '#select-all-shown'].forEach((sel) => {
+    $(sel).checked = vis.length > 0 && selectedShown === vis.length;
+    $(sel).indeterminate = selectedShown > 0 && selectedShown < vis.length;
+  });
+  $('#select-all-shown').disabled = vis.length === 0;
   $('#fill-info').textContent = n ? `Fill missing info (${n} selected)` : 'Fill missing info';
   $('#bulk-unhide').hidden = !state.jobs.some((j) => j.hidden && state.selected.has(j.id));
 }
@@ -415,10 +423,10 @@ function initJobs() {
   $('#bulk-unhide').addEventListener('click', () => setHidden(Array.from(state.selected), false));
   $('#bulk-apply').addEventListener('click', bulkUpdateStatus);
   $('#bulk-clear').addEventListener('click', () => { state.selected.clear(); renderJobs(); });
-  $('#bulk-select-all').addEventListener('change', (e) => {
+  ['#bulk-select-all', '#select-all-shown'].forEach((sel) => $(sel).addEventListener('change', (e) => {
     visibleJobs().forEach((j) => (e.target.checked ? state.selected.add(j.id) : state.selected.delete(j.id)));
     renderJobs();
-  });
+  }));
   $('#search-run').addEventListener('click', () => startRun('/api/search/run', {}));
   $('#score-pending').addEventListener('click', () => startRun('/api/score/run', { mode: 'pending' }));
   $('#fill-info').addEventListener('click', () => {

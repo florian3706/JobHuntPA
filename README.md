@@ -68,8 +68,8 @@ where you can commute on the **Map**, then click **Run search** on the Jobs tab.
 can live in their own **workspaces** (switcher at the top right).
 
 - **Tracking and tidying**: set each job's status (to review, shortlisted, applied, interviewing,
-  rejected, not interested). Tick jobs (or *select all* on a filtered list) to change status or
-  **Hide** them in bulk; hidden jobs stay hidden when a search finds them again, aren't scored or
+  rejected, not interested). Tick jobs, or filter the list and tick **Select all shown**, to change
+  status or **Hide** them in bulk (only jobs on screen are ever affected); hidden jobs stay hidden when a search finds them again, aren't scored or
   researched, and come back with *Show hidden*.
 - **Full SEEK ads**: SEEK jobs marked *summary only* have an **Upload full ad** button. Save the
   ad's page from SEEK in your browser and upload it to score the job on the whole ad.
