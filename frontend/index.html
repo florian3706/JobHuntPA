@@ -87,6 +87,7 @@
           </label>
           <label class="field check-field"><input id="filter-show-excluded" type="checkbox" /> <span>Show excluded</span></label>
           <label class="field check-field"><input id="filter-show-closed" type="checkbox" /> <span>Show closed</span></label>
+          <label class="field check-field"><input id="filter-show-hidden" type="checkbox" /> <span>Show hidden</span></label>
         </div>
         <div class="toolbar-row chips-row">
           <div id="status-chips" class="chips" aria-label="Filter by status"></div>
@@ -98,9 +99,13 @@
             <option value="to_review">to review</option>
             <option value="shortlisted">shortlisted</option>
             <option value="applied">applied</option>
+            <option value="interviewing">interviewing</option>
+            <option value="rejected">rejected</option>
             <option value="not_interested">not interested</option>
           </select>
-          <button id="bulk-apply" class="btn btn-primary btn-sm" type="button">Apply to selected</button>
+          <button id="bulk-apply" class="btn btn-primary btn-sm" type="button">Set status</button>
+          <button id="bulk-hide" class="btn btn-sm" type="button" title="Hide the selected job ads. They stay hidden even if the source lists them again, and aren't scored or researched.">Hide selected</button>
+          <button id="bulk-unhide" class="btn btn-ghost btn-sm" type="button" hidden>Unhide selected</button>
           <button id="bulk-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
         </div>
       </div>

@@ -299,7 +299,7 @@ def select_jobs(db: Session, mode: str, profile_hash: str, ws: int) -> list[int]
         db.query(Job.id, FitResult.status, FitResult.profile_hash, FitResult.score)
         .outerjoin(FitResult, FitResult.job_id == Job.id)
         .filter((Job.excluded_reason.is_(None)) | (Job.excluded_reason == ""))
-        .filter(Job.closed_at.is_(None))
+        .filter(Job.closed_at.is_(None), Job.hidden.is_(False))
         .filter(Job.workspace_id == ws)
         .filter(Job.detail_status.in_(["full", "summary"]))
         .all()

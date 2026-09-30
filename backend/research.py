@@ -109,7 +109,7 @@ def companies_to_research(db: Session, ws: int, mode: str = "missing",
         q = q.filter(Job.id.in_(job_ids))
     else:
         q = (q.filter((Job.excluded_reason.is_(None)) | (Job.excluded_reason == ""))
-             .filter(Job.closed_at.is_(None)))
+             .filter(Job.closed_at.is_(None), Job.hidden.is_(False)))
     by_key: dict[str, dict] = {}
     for company, title, location, url in q.all():
         key = company_key(company or "")

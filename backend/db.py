@@ -111,11 +111,13 @@ class Job(Base):
     posted_at = Column(String, nullable=True)
     industry = Column(String, nullable=True)
     distance_km = Column(Float, nullable=True)
+    # to_review | shortlisted | applied | interviewing | rejected | not_interested
     status = Column(String, default="to_review", nullable=False)
     excluded_reason = Column(Text, nullable=True)
     first_seen = Column(DateTime, default=utcnow)
     last_seen = Column(DateTime, default=utcnow)
     closed_at = Column(DateTime, nullable=True)     # no longer listed by its source
+    hidden = Column(Boolean, nullable=False, default=False, server_default="0")  # hidden by the user
 
 
 class FitResult(Base):

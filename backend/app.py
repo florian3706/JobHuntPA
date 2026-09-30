@@ -31,7 +31,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-STATUSES = ("to_review", "applied", "shortlisted", "not_interested")
+STATUSES = ("to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested")
+Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested"]
 
 
 @asynccontextmanager
@@ -103,6 +104,7 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "first_seen": job.first_seen.isoformat() if job.first_seen else None,
         "last_seen": job.last_seen.isoformat() if job.last_seen else None,
         "closed": job.closed_at is not None,
+        "hidden": bool(job.hidden),
         "fit": _fit_dict(fit, profile_hash),
         "has_cover_letter": has_letter,
     }
@@ -135,7 +137,7 @@ def get_job(job_id: int, db: Session = Depends(get_db), ws: int = Depends(curren
 
 
 class StatusUpdate(BaseModel):
-    status: Literal["to_review", "applied", "shortlisted", "not_interested"]
+    status: Status
 
 
 class BulkStatusUpdate(StatusUpdate):
@@ -149,6 +151,21 @@ def bulk_update_status(payload: BulkStatusUpdate, db: Session = Depends(get_db),
          .update({Job.status: payload.status}, synchronize_session=False))
     db.commit()
     return {"ok": True, "updated": n}
+
+
+class HiddenUpdate(BaseModel):
+    ids: list[int]
+    hidden: bool
+
+
+@app.patch("/api/jobs/hidden")
+def set_hidden(payload: HiddenUpdate, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    """Hide (or unhide) jobs. Hidden jobs stay hidden when their source lists them
+    again, and are skipped by scoring and company research."""
+    n = (db.query(Job).filter(Job.workspace_id == ws, Job.id.in_(payload.ids))
+         .update({Job.hidden: payload.hidden}, synchronize_session=False))
+    db.commit()
+    return {"ok": True, "updated": n, "hidden": payload.hidden}
 
 
 @app.patch("/api/jobs/{job_id}/status")

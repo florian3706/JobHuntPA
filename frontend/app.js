@@ -1,14 +1,17 @@
 /* JobHuntPA dashboard — vanilla JS, no build step. Talks to backend/app.py. */
 'use strict';
 
-const STATUSES = ['to_review', 'shortlisted', 'applied', 'not_interested'];
-const STATUS_LABEL = { to_review: 'to review', shortlisted: 'shortlisted', applied: 'applied', not_interested: 'not interested' };
+const STATUSES = ['to_review', 'shortlisted', 'applied', 'interviewing', 'rejected', 'not_interested'];
+const STATUS_LABEL = {
+  to_review: 'to review', shortlisted: 'shortlisted', applied: 'applied',
+  interviewing: 'interviewing', rejected: 'rejected', not_interested: 'not interested',
+};
 const TAG_FIELDS = ['titles', 'keywords_include', 'keywords_exclude', 'dealbreaker_industries', 'dealbreaker_keywords', 'seek_locations'];
 
 const state = {
   jobs: [],
   details: new Map(), // job id -> full job (with description)
-  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, status: 'all', sort: 'score' },
+  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
   selected: new Set(),
   profile: null,
   pins: [],
@@ -113,6 +116,7 @@ function visibleJobs() {
   const list = state.jobs.filter((j) => {
     if (!f.showExcluded && j.excluded_reason) return false;
     if (!f.showClosed && j.closed) return false;
+    if (!f.showHidden && j.hidden) return false;
     if (f.status !== 'all' && j.status !== f.status) return false;
     if (f.minScore > 0 && (scoreOf(j) ?? -1) < f.minScore) return false;
     if (f.mode !== 'all' && modeOf(j) !== f.mode) return false;
@@ -134,7 +138,8 @@ function visibleJobs() {
 function renderStatusChips() {
   const box = $('#status-chips');
   box.innerHTML = '';
-  const base = state.jobs.filter((j) => (state.filter.showExcluded || !j.excluded_reason) && (state.filter.showClosed || !j.closed));
+  const base = state.jobs.filter((j) => (state.filter.showExcluded || !j.excluded_reason)
+    && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden));
   [['all', 'all'], ...STATUSES.map((s) => [s, STATUS_LABEL[s]])].forEach(([val, label]) => {
     const n = val === 'all' ? base.length : base.filter((j) => j.status === val).length;
     const b = document.createElement('button');
@@ -177,6 +182,7 @@ function renderJobCard(job) {
     job.detail_status === 'summary' ? '<span class="badge flag" title="Only the job board listing summary is available">summary only</span>' : '',
     job.detail_status === 'none' ? '<span class="badge flag" title="Description not fetched yet">no description</span>' : '',
     job.closed ? '<span class="badge flag">closed</span>' : '',
+    job.hidden ? '<span class="badge flag">hidden</span>' : '',
     job.office_days ? `<span class="badge flag" title="Days per week in the office, from the ad">${job.office_days} day${job.office_days > 1 ? 's' : ''} in office</span>` : '',
   ].join('');
   const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
@@ -205,6 +211,7 @@ function renderJobCard(job) {
       </select>
       <button class="btn btn-ghost btn-sm" type="button" data-act="rescore">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="desc">Description</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="hide">${job.hidden ? 'Unhide' : 'Hide'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="letter">${job.has_cover_letter ? 'Cover letter ✓' : 'Draft cover letter'}</button>
     </div>
     <details class="reqs" data-section="fit"><summary>Fit: requirements → evidence</summary><div class="fit-body"></div></details>
@@ -220,6 +227,7 @@ function renderJobCard(job) {
   card.querySelector('[data-act="rescore"]').addEventListener('click', (e) => rescoreJob(job, e.target));
   card.querySelector('[data-act="desc"]').addEventListener('click', () => showDescription(job));
   card.querySelector('[data-act="letter"]').addEventListener('click', () => showCoverLetter(job));
+  card.querySelector('[data-act="hide"]').addEventListener('click', () => setHidden([job.id], !job.hidden));
   card.querySelector('[data-act="company"]')?.addEventListener('click', () => showCompany(job));
   card.querySelector('details[data-section="fit"]').addEventListener('toggle', (e) => {
     if (e.target.open) e.target.querySelector('.fit-body').innerHTML = fitHtml(job);
@@ -287,6 +295,7 @@ function renderBulkBar() {
   const vis = visibleJobs().map((j) => j.id);
   $('#bulk-select-all').checked = vis.length > 0 && vis.every((id) => state.selected.has(id));
   $('#fill-info').textContent = n ? `Fill missing info (${n} selected)` : 'Fill missing info';
+  $('#bulk-unhide').hidden = !state.jobs.some((j) => j.hidden && state.selected.has(j.id));
 }
 
 async function updateJobStatus(job, next, selectEl) {
@@ -301,6 +310,18 @@ async function updateJobStatus(job, next, selectEl) {
     renderStatusChips();
     toast(`Status update failed: ${e.message}`, 'err');
   }
+}
+
+async function setHidden(ids, hidden) {
+  try {
+    await api('/api/jobs/hidden', { method: 'PATCH', body: JSON.stringify({ ids, hidden }) });
+    const set = new Set(ids);
+    state.jobs.forEach((j) => { if (set.has(j.id)) j.hidden = hidden; });
+    ids.forEach((id) => state.selected.delete(id));
+    renderJobs();
+    const n = ids.length;
+    toast(hidden ? `Hid ${n} job${n > 1 ? 's' : ''}. Tick "Show hidden" to see them again.` : `Unhid ${n} job${n > 1 ? 's' : ''}.`, 'ok', 3500);
+  } catch (e) { toast(`Could not ${hidden ? 'hide' : 'unhide'}: ${e.message}`, 'err'); }
 }
 
 async function bulkUpdateStatus() {
@@ -338,6 +359,13 @@ function initJobs() {
   $('#filter-max-dist').addEventListener('input', (e) => { const v = e.target.value === '' ? null : Number(e.target.value); state.filter.maxDist = Number.isFinite(v) ? v : null; renderJobs(); });
   $('#filter-show-excluded').addEventListener('change', (e) => { state.filter.showExcluded = e.target.checked; renderJobs(); });
   $('#filter-show-closed').addEventListener('change', (e) => { state.filter.showClosed = e.target.checked; renderJobs(); });
+  $('#filter-show-hidden').addEventListener('change', (e) => { state.filter.showHidden = e.target.checked; renderJobs(); });
+  $('#bulk-hide').addEventListener('click', () => {
+    const ids = Array.from(state.selected);
+    if (ids.length > 20 && !confirm(`Hide ${ids.length} jobs?`)) return;
+    setHidden(ids, true);
+  });
+  $('#bulk-unhide').addEventListener('click', () => setHidden(Array.from(state.selected), false));
   $('#bulk-apply').addEventListener('click', bulkUpdateStatus);
   $('#bulk-clear').addEventListener('click', () => { state.selected.clear(); renderJobs(); });
   $('#bulk-select-all').addEventListener('change', (e) => {

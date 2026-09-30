@@ -67,6 +67,10 @@ salary, work modes and company careers pages), upload your CV under **Documents*
 where you can commute on the **Map**, then click **Run search** on the Jobs tab. Separate searches
 can live in their own **workspaces** (switcher at the top right).
 
+- **Tracking and tidying**: set each job's status (to review, shortlisted, applied, interviewing,
+  rejected, not interested). Tick jobs (or *select all* on a filtered list) to change status or
+  **Hide** them in bulk; hidden jobs stay hidden when a search finds them again, aren't scored or
+  researched, and come back with *Show hidden*.
 - **Suggested job titles** (Documents tab): the AI reads your documents and suggests titles to
   search for; add them to the current search or start a new workspace with them.
 - **Cover letters**: *Draft cover letter* on any job writes a first draft from your documents

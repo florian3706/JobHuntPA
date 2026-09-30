@@ -623,3 +623,39 @@ class TitleSuggestionTest(unittest.TestCase):
         self.assertTrue(r["titles"][0]["in_search"])
         self.assertEqual(r["titles"][1]["fit"], "good")
         self.assertEqual(empty.status_code, 400)
+
+
+class StatusAndHideTest(unittest.TestCase):
+    def test_new_statuses_and_bulk_hide(self):
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import Job, SessionLocal
+        from backend.research import companies_to_research
+        from backend.scorer import select_jobs
+
+        db = SessionLocal()
+        jobs = [Job(workspace_id=1, url=f"https://hide.example/{i}", title="PM", company=f"Hide Co {i}",
+                    status="to_review", detail_status="full") for i in range(3)]
+        db.add_all(jobs); db.commit()
+        ids = [j.id for j in jobs]
+        db.close()
+        with TestClient(app) as c:
+            self.assertEqual(c.patch(f"/api/jobs/{ids[0]}/status", json={"status": "interviewing"}).status_code, 200)
+            self.assertEqual(c.patch("/api/jobs/status", json={"ids": ids[1:], "status": "rejected"}).json()["updated"], 2)
+            self.assertEqual(c.patch(f"/api/jobs/{ids[0]}/status", json={"status": "ghosted"}).status_code, 422)
+            ws2 = c.post("/api/workspaces", json={"name": "Other"}).json()["id"]
+            self.assertEqual(c.patch("/api/jobs/hidden", headers={"X-Workspace": str(ws2)},
+                                     json={"ids": ids, "hidden": True}).json()["updated"], 0)
+            c.delete(f"/api/workspaces/{ws2}")
+            self.assertEqual(c.patch("/api/jobs/hidden", json={"ids": ids[:2], "hidden": True}).json()["updated"], 2)
+            by_id = {j["id"]: j for j in c.get("/api/jobs").json()}
+        self.assertEqual((by_id[ids[0]]["status"], by_id[ids[1]]["status"]), ("interviewing", "rejected"))
+        self.assertEqual([by_id[i]["hidden"] for i in ids], [True, True, False])
+        db = SessionLocal()
+        pending = select_jobs(db, "pending", "x", 1)
+        researched = [c["key"] for c in companies_to_research(db, 1)]
+        db.close()
+        self.assertNotIn(ids[0], pending)
+        self.assertIn(ids[2], pending)
+        self.assertNotIn("hide co 0", researched)
+        self.assertIn("hide co 2", researched)
