@@ -659,3 +659,67 @@ class StatusAndHideTest(unittest.TestCase):
         self.assertIn(ids[2], pending)
         self.assertNotIn("hide co 0", researched)
         self.assertIn("hide co 2", researched)
+
+
+class SeekJobUploadTest(unittest.TestCase):
+    PAGE = {"jobdetails": {"result": {
+        "workArrangements": {"arrangements": [{"type": "HYBRID", "label": "Hybrid"}]},
+        "job": {"id": "77777777", "title": "Senior Program Manager",
+                "content": "<p>About the role</p><ul><li>Run the delivery program</li><li>3 days in the office</li></ul>",
+                "location": {"label": "Surry Hills, Sydney NSW"}, "advertiser": {"name": "Acme"},
+                "salary": {"label": "$160,000 - $180,000 per year"}, "listedAt": {"dateTimeUtc": "2026-09-28"},
+                "classifications": [{"label": "Program & Project Management"}]}}}}
+
+    def _mhtml(self, html: str) -> bytes:
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg["From"] = "<Saved by Blink>"
+        msg["Subject"] = "SEEK"
+        msg.set_content(html, subtype="html", cte="quoted-printable")
+        return bytes(msg)
+
+    def test_decode_saved_page(self):
+        from backend.scraping.saved_pages import decode_saved_page
+        html = _seek_html(self.PAGE)
+        self.assertEqual(decode_saved_page(html.encode()), html)
+        self.assertIn("SEEK_REDUX_DATA", decode_saved_page(self._mhtml(html)))
+        self.assertEqual(parse_job_page(decode_saved_page(self._mhtml(html))).external_id, "77777777")
+
+    def test_upload_updates_the_right_job_only(self):
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import Job, SessionLocal
+
+        db = SessionLocal()
+        job = Job(workspace_id=1, url="https://www.seek.com.au/job/77777777", external_id="77777777", source="seek",
+                  title="Senior Program Manager", company="Acme", description="Short teaser.", detail_status="summary",
+                  country="AU", status="to_review")
+        other = Job(workspace_id=1, url="https://www.seek.com.au/job/11111111", external_id="11111111", source="seek",
+                    title="Other role", company="Beta", description="Teaser.", detail_status="summary", status="to_review")
+        db.add_all([job, other]); db.commit()
+        job_id, other_id = job.id, other.id
+        db.close()
+        page = _seek_html(self.PAGE).encode()
+        from unittest import mock
+        import backend.pipeline as pipeline
+        with TestClient(app) as c, mock.patch.object(pipeline, "geocode", return_value=None):  # no network in tests
+            wrong = c.post(f"/api/jobs/{other_id}/import-page", files={"file": ("ad.html", page, "text/html")})
+            self.assertEqual(wrong.status_code, 422)
+            self.assertIn("different SEEK job", wrong.json()["detail"])
+            search = _seek_html({"results": {"totalPages": 1, "results": {"jobs": [{"id": "1", "title": "X"}]}}}).encode()
+            r = c.post(f"/api/jobs/{job_id}/import-page", files={"file": ("s.html", search, "text/html")})
+            self.assertIn("search results page", r.json()["detail"])
+            r = c.post(f"/api/jobs/{job_id}/import-page", files={"file": ("x.html", b"<html>hi</html>", "text/html")})
+            self.assertEqual(r.status_code, 422)
+            ws2 = c.post("/api/workspaces", json={"name": "Other"}).json()["id"]
+            r = c.post(f"/api/jobs/{job_id}/import-page", headers={"X-Workspace": str(ws2)},
+                       files={"file": ("ad.mhtml", self._mhtml(page.decode()), "multipart/related")})
+            self.assertEqual(r.status_code, 404)
+            c.delete(f"/api/workspaces/{ws2}")
+            r = c.post(f"/api/jobs/{job_id}/import-page", files={"file": ("ad.mhtml", self._mhtml(page.decode()), "multipart/related")})
+            self.assertEqual(r.status_code, 200, r.text)
+            j = r.json()
+        self.assertEqual(j["detail_status"], "full")
+        self.assertIn("- Run the delivery program", j["description"])
+        self.assertEqual((j["work_mode"], j["office_days"], j["salary_text"]), ("hybrid", 3, "$160,000 - $180,000 per year"))
+        self.assertEqual(j["location_text"], "Surry Hills, Sydney NSW")

@@ -340,7 +340,9 @@ async def import_page(file: UploadFile = File(...), ws: int = Depends(current_wo
     from backend.pipeline import import_postings
     from backend.scraping.jsonld import find_job_postings, posting_from_jsonld
 
-    raw = (await file.read()).decode("utf-8", errors="replace")
+    from backend.scraping.saved_pages import decode_saved_page
+
+    raw = decode_saved_page(await file.read())
     postings = parse_seek_page(raw)
     source = "seek"
     if not postings:
@@ -349,6 +351,32 @@ async def import_page(file: UploadFile = File(...), ws: int = Depends(current_wo
     if not postings:
         raise HTTPException(status_code=422, detail="No job data found. Save a SEEK search/job page, or a page with JobPosting data.")
     return import_postings(postings, source, ws)
+
+
+@app.post("/api/jobs/{job_id}/import-page")
+async def import_job_page(job_id: int, file: UploadFile = File(...), db: Session = Depends(get_db),
+                          ws: int = Depends(current_workspace)):
+    """Update one SEEK job with the full ad from its page, saved in the user's browser."""
+    from backend.adapters.seek import parse_job_page, parse_search_page
+    from backend.pipeline import update_job_from_posting
+    from backend.scraping.saved_pages import decode_saved_page
+
+    job = owned(db, Job, job_id, ws, "Job")
+    raw = decode_saved_page(await file.read())
+    posting = parse_job_page(raw)
+    if posting is None:
+        if parse_search_page(raw)[0]:
+            raise HTTPException(status_code=422, detail="That's a SEEK search results page. Open the job itself on SEEK, then save that page.")
+        raise HTTPException(status_code=422, detail="No SEEK job found in that file. Save the job's page from SEEK (Ctrl+S / Cmd+S) and upload it.")
+    if posting.external_id != (job.external_id or "") and posting.url != job.url:
+        raise HTTPException(status_code=422, detail=(
+            f"That page is a different SEEK job (\"{posting.title}\" at {posting.company or 'unknown'}), "
+            f"not \"{job.title}\". Open this job's link and save that page."))
+    if not posting.description:
+        raise HTTPException(status_code=422, detail="The saved page has no job description. Try saving it again once the ad has fully loaded.")
+    update_job_from_posting(db, job, posting)
+    fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
+    return job_to_dict(job, fit, _profile_hash(db, ws), full=True)
 
 
 if FRONTEND_DIR.is_dir():

@@ -71,6 +71,8 @@ can live in their own **workspaces** (switcher at the top right).
   rejected, not interested). Tick jobs (or *select all* on a filtered list) to change status or
   **Hide** them in bulk; hidden jobs stay hidden when a search finds them again, aren't scored or
   researched, and come back with *Show hidden*.
+- **Full SEEK ads**: SEEK jobs marked *summary only* have an **Upload full ad** button. Save the
+  ad's page from SEEK in your browser and upload it to score the job on the whole ad.
 - **Suggested job titles** (Documents tab): the AI reads your documents and suggests titles to
   search for; add them to the current search or start a new workspace with them.
 - **Cover letters**: *Draft cover letter* on any job writes a first draft from your documents
@@ -163,6 +165,8 @@ tag, so the tag must exist on GitHub.
   User-Agent identifies the app honestly. There is no browser impersonation, and blocks and
   CAPTCHAs are never worked around.
 - SEEK's robots.txt allows search result pages but not job pages, so SEEK jobs carry the listing
-  summary only. SEEK may also refuse automated access outright (HTTP 403). In both cases, save
-  SEEK pages from your own browser and use *Search setup → Import saved pages*.
+  summary only. For a job you care about, click **Upload full ad** on its card: open the ad on
+  SEEK, save the page (Ctrl+S / Cmd+S) and upload the file; the job is updated with the full ad,
+  re-filtered and rescored. SEEK may also refuse automated access outright (HTTP 403); then save
+  SEEK search pages yourself and use *Search setup → Import saved pages*.
 - Geocoding uses OpenStreetMap Nominatim under its usage policy (≤1 request/s, cached forever).

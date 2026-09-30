@@ -211,6 +211,7 @@ function renderJobCard(job) {
       </select>
       <button class="btn btn-ghost btn-sm" type="button" data-act="rescore">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="desc">Description</button>
+      ${job.source === 'seek' && job.detail_status === 'summary' ? '<button class="btn btn-sm" type="button" data-act="upload-ad" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>' : ''}
       <button class="btn btn-ghost btn-sm" type="button" data-act="hide">${job.hidden ? 'Unhide' : 'Hide'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="letter">${job.has_cover_letter ? 'Cover letter ✓' : 'Draft cover letter'}</button>
     </div>
@@ -228,6 +229,7 @@ function renderJobCard(job) {
   card.querySelector('[data-act="desc"]').addEventListener('click', () => showDescription(job));
   card.querySelector('[data-act="letter"]').addEventListener('click', () => showCoverLetter(job));
   card.querySelector('[data-act="hide"]').addEventListener('click', () => setHidden([job.id], !job.hidden));
+  card.querySelector('[data-act="upload-ad"]')?.addEventListener('click', () => showUploadAd(job));
   card.querySelector('[data-act="company"]')?.addEventListener('click', () => showCompany(job));
   card.querySelector('details[data-section="fit"]').addEventListener('toggle', (e) => {
     if (e.target.open) e.target.querySelector('.fit-body').innerHTML = fitHtml(job);
@@ -310,6 +312,51 @@ async function updateJobStatus(job, next, selectEl) {
     renderStatusChips();
     toast(`Status update failed: ${e.message}`, 'err');
   }
+}
+
+function showUploadAd(job) {
+  const mac = /Mac/i.test(navigator.platform);
+  openHtmlModal(`Full ad: ${job.title} at ${job.company}`, `
+    <div class="upload-ad">
+      <p>SEEK only lets the app read the short listing summary. To score this job on the full ad:</p>
+      <ol>
+        <li><a href="${esc(job.url)}" target="_blank" rel="noopener">Open the ad on SEEK ↗</a> and wait for it to load.</li>
+        <li>Save the page: press <kbd>${mac ? 'Cmd' : 'Ctrl'}</kbd>+<kbd>S</kbd> (any "Webpage" format works).</li>
+        <li>Choose the saved file here:</li>
+      </ol>
+      <input id="ad-file" type="file" accept=".html,.htm,.mhtml,.mht,text/html" />
+      <p id="ad-status" class="muted" aria-live="polite"></p>
+    </div>`);
+  $('#ad-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const status = $('#ad-status');
+    status.textContent = 'Reading the ad…';
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    try {
+      const updated = await api(`/api/jobs/${job.id}/import-page`, { method: 'POST', body: fd });
+      Object.assign(job, updated);
+      state.details.set(job.id, updated);
+      if (updated.excluded_reason) {
+        status.innerHTML = `Updated. With the full ad this job is now excluded: ${esc(updated.excluded_reason)}.`;
+        renderJobs();
+        return;
+      }
+      status.textContent = 'Updated with the full ad. Rescoring…';
+      renderJobs();
+      try {
+        Object.assign(job, await api(`/api/score/${job.id}`, { method: 'POST' }));
+        status.textContent = `Updated and rescored: ${job.fit?.score ?? '?'}.`;
+      } catch (err) {
+        status.textContent = `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
+      }
+      renderJobs();
+    } catch (err) {
+      status.innerHTML = `<span class="err-text">${esc(err.message)}</span>`;
+      e.target.value = '';
+    }
+  });
 }
 
 async function setHidden(ids, hidden) {

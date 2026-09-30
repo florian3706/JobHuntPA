@@ -154,6 +154,16 @@ def import_postings(postings: list[Posting], source: str, ws: int) -> dict:
         db.close()
 
 
+def update_job_from_posting(db: Session, job: Job, p: Posting) -> None:
+    """Replace a stored job's data with a fuller posting (e.g. a saved SEEK job
+    page for a listing we only had a summary of), then re-filter it."""
+    crit = load_criteria(db, job.workspace_id)
+    _apply_posting(job, p)
+    enrich(job, crit)
+    job.excluded_reason = exclusion_reason(job, crit, stage="full")
+    db.commit()
+
+
 def refilter(db: Session, crit: Criteria, ws: int, jobs: Optional[list[Job]] = None) -> int:
     """Re-apply filters to stored jobs (no network). Returns #changed."""
     changed = 0
