@@ -18,6 +18,7 @@ Scoring is a separate step (``backend.scorer.score_pending``).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Optional
@@ -25,7 +26,7 @@ from typing import Callable, Optional
 from sqlalchemy.orm import Session
 
 from backend.adapters.base import Adapter, Posting, SourceError
-from backend.adapters.generic import GenericAdapter
+from backend.adapters.generic import source_adapter
 from backend.adapters.seek import SeekAdapter
 from backend.db import CompanySource, Job, SessionLocal
 from backend.filters import Criteria, commute_pins, exclusion_reason, load_criteria
@@ -68,7 +69,7 @@ def build_adapters(db: Session, ws: int, client: PoliteClient) -> list[tuple[Opt
                .filter(CompanySource.workspace_id == ws, CompanySource.enabled.is_(True))
                .order_by(CompanySource.id))
     for src in sources:
-        adapters.append((src, GenericAdapter(client, src.careers_url, company=src.label or "")))
+        adapters.append((src, source_adapter(client, src.careers_url, company=src.label or "")))
     return adapters
 
 
@@ -100,11 +101,28 @@ def _apply_posting(job: Job, p: Posting) -> None:
             job.detail_fetched_at = datetime.utcnow()
 
 
+MAX_PLACES = 10
+
+
+def locate(location_text: str, pins: list[dict]) -> Optional[dict]:
+    """Coordinates for a job's location. An ad open in several places
+    ("Sydney NSW; Canberra ACT") is placed at the one nearest home; if any of
+    them can't be placed (e.g. "anywhere in NSW") the job isn't placed, so
+    the location filter can't wrongly rule it out."""
+    places = [p.strip() for p in re.split(r"\s*;\s*", location_text or "") if p.strip()]
+    if len(places) < 2 or not pins:
+        return geocode(location_text)
+    hits = [geocode(p) for p in places[:MAX_PLACES]]
+    if any(h is None for h in hits):
+        return None
+    return min(hits, key=lambda h: home_distance(h["lat"], h["lng"], pins))
+
+
 def enrich(job: Job, crit: Criteria) -> None:
     job.country = job.country or guess_country(job.location_text or "")
     # Only places in the home country need coordinates (pins, distance).
     if job.location_text and job.lat is None and job.country in ("", HOME_COUNTRY):
-        hit = geocode(job.location_text)
+        hit = locate(job.location_text, commute_pins(crit.pins))
         if hit:
             job.lat, job.lng = hit["lat"], hit["lng"]
             job.country = job.country or hit["country"]

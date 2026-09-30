@@ -76,6 +76,10 @@ can live in their own **workspaces** (switcher at the top right).
   only that rule excluded reappear, marked *shown by temporary +N office days*, and **Score them**
   scores any that were never scored. Nothing is saved: *Back to my rule*, reloading the page or
   switching workspace restores your saved limit.
+- **Government jobs**: Australian Public Service jobs come from APSJobs. Add a source such as
+  `https://www.apsjobs.gov.au/s/job-search?department=Services%20Australia` (the agency name as
+  APSJobs lists it) or `...?searchString=product%20manager` for a search across all agencies.
+  Careers pages that publish an RSS feed (e.g. SBS) can be added by the feed's URL.
 - **Full SEEK ads**: SEEK jobs marked *summary only* have an **Upload full ad** button. Save the
   ad's page from SEEK in your browser and upload it to score the job on the whole ad.
 - **Suggested job titles** (Documents tab): the AI reads your documents and suggests titles to
@@ -150,9 +154,11 @@ tag, so the tag must exist on GitHub.
 `Run search` starts a background run (`backend/tasks.py`); the page polls its progress.
 
 1. **Listing** (`backend/adapters/`): SEEK search pages, then each enabled company source. A
-   source URL is resolved in order: a known ATS board (Workable, Greenhouse, Lever, Ashby,
-   SmartRecruiters, Workday) in the URL or linked from the page; schema.org `JobPosting` data;
-   HTML job links with pagination; headless-browser rendering for JavaScript-only pages.
+   source URL is resolved in order: an APSJobs search URL (`apsjobs.py`); a known ATS board
+   (Workable, Greenhouse, Lever, Ashby, SmartRecruiters, Workday) in the URL or linked from the
+   page; an RSS/Atom job feed; schema.org `JobPosting` data; HTML job links with pagination;
+   headless-browser rendering for JavaScript-only pages. Sites that answer with a bot check
+   (Cloudflare, AWS WAF) are reported as errors, never bypassed.
 2. **Caching** (`backend/pipeline.py`): jobs are upserted by URL. A job stored with a full
    description is never fetched again. Listing pages are cached 30-60 minutes in `http_cache`.
    Detail pages are fetched only for new jobs that pass the cheap filters, at most 60 per source

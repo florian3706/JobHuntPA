@@ -9,14 +9,14 @@
 from __future__ import annotations
 
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.adapters.base import SourceError
-from backend.adapters.generic import GenericAdapter
+from backend.adapters.generic import source_adapter
 from backend.db import CompanySource, get_db
 from backend.workspaces import current_workspace, owned
 from backend.scraping.http import FetchError, PoliteClient
@@ -45,6 +45,11 @@ def normalize_url(url: str) -> str:
 
 
 def default_label(url: str) -> str:
+    from backend.adapters.apsjobs import is_apsjobs_url
+
+    if is_apsjobs_url(url):  # APSJobs search: name it after the agency or search
+        q = parse_qs(urlsplit(url).query)
+        return ", ".join(q.get("department", [])) or f"APSJobs: {(q.get('searchString') or ['all jobs'])[0]}"
     host = urlsplit(url).netloc.lower().removeprefix("www.")
     path = [s for s in urlsplit(url).path.split("/") if s]
     # apply.workable.com/<company>, jobs.lever.co/<company>, ...
@@ -111,7 +116,7 @@ def test_source(source_id: int, db: Session = Depends(get_db),
                ws: int = Depends(current_workspace)):
     src = owned(db, CompanySource, source_id, ws, "Source")
     client = PoliteClient()
-    adapter = GenericAdapter(client, src.careers_url, company=src.label or "")
+    adapter = source_adapter(client, src.careers_url, company=src.label or "")
     try:
         postings = adapter.list_postings()
     except (SourceError, FetchError) as exc:

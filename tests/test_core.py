@@ -769,3 +769,105 @@ class OfficeDaySofteningTest(unittest.TestCase):
             self.assertIn("3 office days", db.get(Job, ids["3d"]).excluded_reason)  # nothing saved
             db.close()
             c.delete(f"/api/workspaces/{ws}")
+
+
+class ApsJobsTest(unittest.TestCase):
+    JOB = {"jobId": "a05X1", "jobName": "ICT Project Manager", "departmentName": "Services Australia",
+           "jobLocation": "Adelaide SA, Sydney NSW, Various locations - VIC VIC", "officeArrangement": "On Site;Flexible",
+           "officeArrangementDetails": "Negotiable", "jobSalaryFrom": 122493.0, "jobSalaryTo": 135731.0,
+           "jobClassification": "Executive Level 1", "jobStatus": "Ongoing;Non-Ongoing", "jobType": "Full-Time",
+           "jobDuties": "<p>Lead delivery of ICT projects.</p>", "jobPostedDate": "2026-09-29",
+           "jobCloseDate": "2026-10-12", "vacancyNumber": "VN-1"}
+
+    def test_listing_to_posting(self):
+        from backend.adapters.apsjobs import is_apsjobs_url, search_url, split_locations, to_posting, work_mode
+        p = to_posting(self.JOB)
+        self.assertEqual(p.url, "https://www.apsjobs.gov.au/s/job-details?Id=a05X1")
+        self.assertEqual(p.location_text, "Adelaide SA; Sydney NSW; VIC")
+        self.assertEqual((p.work_mode, p.salary_min, p.salary_text), ("hybrid", 122493.0, "$122,493 - $135,731"))
+        self.assertEqual((p.detail_status, p.country, p.external_id), ("full", "AU", "VN-1"))
+        self.assertIn("Lead delivery of ICT projects.", p.description)
+        self.assertIn("Employment: Ongoing, Non-Ongoing, Full-Time", p.description)
+        self.assertIsNone(to_posting({"jobName": "no id"}))
+        self.assertEqual(split_locations("Canberra ACT"), ["Canberra ACT"])
+        self.assertEqual([work_mode(v) for v in ("Work From Home", "On Site", "Hybrid", "")],
+                         ["remote", "onsite", "hybrid", "unknown"])
+        self.assertTrue(is_apsjobs_url(search_url("Services Australia")))
+        self.assertFalse(is_apsjobs_url("https://www.apsjobs.gov.au/s/job-details?Id=1"))
+
+    def test_adapter_pages_and_label(self):
+        from unittest import mock
+        from backend.adapters.apsjobs import ApsJobsAdapter, search_url
+        from backend.adapters.generic import GenericAdapter, source_adapter
+        from backend.scraping.http import Response
+        from backend.sources import default_label
+
+        page = Response(url="", status=200, text='x fwuid%22%3A%22FW%22 y communityApp%22%3A%22APP%22 z')
+        seen = []
+
+        def answer(offset):
+            jobs = [{**self.JOB, "jobId": f"id{offset + i}"} for i in range(15 if offset == 0 else 5)]
+            value = {"jobListingCount": 20, "jobListings": jobs, "newOffset": offset + len(jobs)}
+            return Response(url="", status=200, text=json.dumps({"actions": [{"state": "SUCCESS", "returnValue": {"returnValue": value}}]}))
+
+        def post_form(url, data, ttl=None):
+            filt = json.loads(json.loads(data["message"])["actions"][0]["params"]["params"]["filter"])
+            seen.append((filt["department"], filt["offset"], json.loads(data["aura.context"])["fwuid"]))
+            return answer(filt["offset"])
+
+        client = mock.Mock(get=mock.Mock(return_value=page), post_form=mock.Mock(side_effect=post_form))
+        url = search_url("Services Australia")
+        adapter = source_adapter(client, url)
+        self.assertIsInstance(adapter, ApsJobsAdapter)
+        postings = adapter.list_postings()
+        self.assertEqual(len(postings), 20)
+        self.assertEqual(seen, [(["Services Australia"], 0, "FW"), (["Services Australia"], 15, "FW")])
+        self.assertTrue(adapter.complete_listing)
+        self.assertFalse(adapter.has_details)
+        self.assertEqual(default_label(url), "Services Australia")
+        self.assertIsInstance(source_adapter(client, "https://example.com/careers"), GenericAdapter)
+
+
+class FeedAndChallengeTest(unittest.TestCase):
+    def test_bot_challenge_is_a_fetch_error(self):
+        from backend.scraping.http import bot_challenge
+        self.assertTrue(bot_challenge(202, {"x-amzn-waf-action": "challenge"}, ""))
+        self.assertTrue(bot_challenge(403, {"cf-mitigated": "challenge"}, "<html>"))
+        self.assertTrue(bot_challenge(202, {}, "  "))
+        self.assertFalse(bot_challenge(200, {}, "<html>jobs</html>"))
+
+    def test_rss_feed_listing(self):
+        from backend.adapters.generic import parse_feed
+        rss = """<?xml version="1.0"?><rss version="2.0"><channel><title>Jobs</title>
+          <item><title><![CDATA[Product Manager, Streaming]]></title>
+            <link>https://careers.example.com/job-details/1/</link>
+            <description><![CDATA[<p>Own the <b>roadmap</b></p>]]></description>
+            <pubDate>Mon, 28 Sep 2026</pubDate>
+            <category><![CDATA[Australia - NSW/Sydney/North Shore]]></category></item>
+          <item><title>No link</title></item></channel></rss>"""
+        [p] = parse_feed(rss, "Example")
+        self.assertEqual((p.title, p.location_text, p.company, p.country), ("Product Manager, Streaming", "Sydney NSW", "Example", "AU"))
+        self.assertIn("Own the roadmap", p.description)
+        self.assertEqual(parse_feed("<html><body>hi</body></html>", "X"), [])
+
+    def test_detail_prefers_heading_matching_title(self):
+        html = ("<html><body><div class='search'><h1>Job Search</h1><form><input></form></div>"
+                "<main><h1>Scheduler, Planning and Operations</h1><p>" + "You will plan campaigns and lead scheduling. " * 20
+                + "</p><p>Apply now. Responsibilities include managing the schedule.</p></main></body></html>")
+        p = parse_detail(html, Posting(url="https://careers.example.com/job/1", title="Scheduler, Planning and Operations"))
+        self.assertIsNotNone(p)
+        self.assertEqual(p.title, "Scheduler, Planning and Operations")
+        self.assertIn("plan campaigns", p.description)
+
+
+class MultiPlaceTest(unittest.TestCase):
+    def test_nearest_place_or_unplaced(self):
+        from unittest import mock
+        from backend import pipeline
+        coords = {"Adelaide SA": (-34.93, 138.6), "Sydney NSW": (-33.87, 151.21), "Canberra ACT": (-35.28, 149.13)}
+        fake = lambda q: ({"lat": coords[q][0], "lng": coords[q][1], "country": "AU"} if q in coords else None)
+        with mock.patch.object(pipeline, "geocode", side_effect=fake):
+            hit = pipeline.locate("Adelaide SA; Sydney NSW; Canberra ACT", PINS)
+            self.assertEqual((hit["lat"], hit["lng"]), coords["Sydney NSW"])
+            self.assertIsNone(pipeline.locate("Canberra ACT; NSW", PINS))  # anywhere in NSW: don't rule it out
+            self.assertEqual(pipeline.locate("Canberra ACT", PINS)["lat"], coords["Canberra ACT"][0])

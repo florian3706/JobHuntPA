@@ -232,6 +232,48 @@ def parse_listing(html: str, page_url: str, company: str) -> tuple[list[Posting]
     return postings, list(dict.fromkeys(pages))
 
 
+def _title_h1(soup: BeautifulSoup, title: str) -> Optional[Tag]:
+    """The page's job-title heading: the <h1> matching the listed title if
+    there is one (pages may put a "Job Search" widget heading first)."""
+    h1s = soup.find_all("h1")
+    want = clean(title).lower()
+    return next((h for h in h1s if want and clean(h.get_text(" ")).lower() == want), h1s[0] if h1s else None)
+
+
+_FEED_RE = re.compile(r"^\s*(?:<\?xml[^>]*>\s*)?(?:<!--.*?-->\s*)*<(?:rss|feed|rdf:RDF)\b", re.S)
+_CATEGORY_PLACE_RE = re.compile(r"^(?:[A-Za-z ]+\s-\s)?([A-Z]{2,3})/([^/]+)")
+
+
+def parse_feed(xml: str, company: str) -> list[Posting]:
+    """Job postings from an RSS or Atom feed (some careers sites publish one)."""
+    if not _FEED_RE.match(xml or ""):
+        return []
+    soup = BeautifulSoup(xml, "xml")
+    out: list[Posting] = []
+    for item in soup.find_all(["item", "entry"]):
+        link = item.find("link")
+        url = clean(link.get("href") or link.get_text()) if link else ""
+        title = clean(item.title.get_text()) if item.title else ""
+        if not url.startswith("http") or not title:
+            continue
+        summary = item.find(["description", "summary", "content"])
+        location = ""
+        for cat in item.find_all("category"):
+            # "Australia - NSW/Sydney/North Shore" -> "Sydney NSW"
+            m = _CATEGORY_PLACE_RE.match(clean(cat.get_text() or cat.get("term") or ""))
+            if m:
+                location = f"{m.group(2).strip()} {m.group(1)}"
+                break
+        date = item.find(["pubDate", "published", "updated"])
+        out.append(Posting(
+            url=url, title=title, company=company, location_text=location,
+            country=guess_country(location) if location else "",
+            description=html_to_text(summary.get_text()) if summary else "",
+            posted_at=clean(date.get_text()) if date else "",
+        ))
+    return out
+
+
 def parse_detail(html: str, stub: Posting) -> Optional[Posting]:
     """Fill ``stub`` from a job detail page; None if it is not a job posting."""
     for node in find_job_postings(html):
@@ -251,7 +293,7 @@ def parse_detail(html: str, stub: Posting) -> Optional[Posting]:
             return stub
 
     soup = BeautifulSoup(html, "lxml")
-    h1 = soup.find("h1")
+    h1 = _title_h1(soup, stub.title)
     h1_text = clean(h1.get_text(" ")) if h1 else ""
     info_bits = [
         clean(el.get_text(" "))
@@ -262,7 +304,7 @@ def parse_detail(html: str, stub: Posting) -> Optional[Posting]:
     for sel in _NOISE_SELECTORS:
         for el in soup.select(sel):
             el.decompose()
-    h1 = soup.find("h1")
+    h1 = _title_h1(soup, stub.title)
     container: Optional[Tag] = None
     if h1 is not None:
         node = h1
@@ -324,6 +366,12 @@ class GenericAdapter(Adapter):
             index = self.client.get(self.careers_url, ttl=LISTING_TTL)
         except FetchError as exc:
             raise SourceError(str(exc)) from exc
+
+        # 1c. an RSS/Atom job feed
+        feed = parse_feed(index.text, self.company)
+        if feed:
+            self.method = f"RSS job feed ({_site_key(urlsplit(index.url).netloc.lower())})"
+            return feed
 
         # 1b. the careers page links to / embeds ONE ATS job board and lists
         # no jobs itself. Job boards/aggregators link to many companies'
@@ -401,3 +449,13 @@ class GenericAdapter(Adapter):
             return posting
         resp = self.client.render(posting.url) if self.render_details else self.client.get(posting.url)
         return parse_detail(resp.text, posting)
+
+
+def source_adapter(client: PoliteClient, careers_url: str, company: str = "") -> Adapter:
+    """The adapter for a source URL: APSJobs searches use the APSJobs search
+    call; every other careers page goes through the generic scraper."""
+    from backend.adapters.apsjobs import ApsJobsAdapter, is_apsjobs_url
+
+    if is_apsjobs_url(careers_url):
+        return ApsJobsAdapter(client, careers_url, company=company)
+    return GenericAdapter(client, careers_url, company=company)

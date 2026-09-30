@@ -5,6 +5,8 @@
   Disallowed URLs raise :class:`RobotsBlocked` instead of being fetched.
 - Per-host minimum interval between requests (robots ``Crawl-delay``
   honoured, capped at 30 s).
+- Bot challenges (Cloudflare, AWS WAF) are never solved or bypassed: they
+  raise :class:`FetchError` so the page isn't mistaken for an empty one.
 - Optional DB cache (``http_cache`` table) with a caller-chosen TTL, used
   for listing pages / API listings so repeated runs within the TTL cost
   nothing. Job detail pages are not cached here: the ``jobs`` table is
@@ -57,6 +59,16 @@ class Response:
 
     def json(self) -> Any:
         return json.loads(self.text)
+
+
+def bot_challenge(status: int, headers: Any, body: str) -> bool:
+    """True when a response is a bot check (to be respected, not solved)."""
+    get = headers.get
+    if (get("x-amzn-waf-action") or "").lower() in ("challenge", "captcha"):
+        return True
+    if (get("cf-mitigated") or "").lower() == "challenge":
+        return True
+    return status == 202 and not body.strip()
 
 
 def _origin(url: str) -> str:
@@ -138,16 +150,21 @@ class PoliteClient:
     def post_json(self, url: str, payload: Any, *, ttl: Optional[timedelta] = None) -> Response:
         return self.request("POST", url, json_body=payload, ttl=ttl)
 
+    def post_form(self, url: str, data: dict[str, str], *, ttl: Optional[timedelta] = None) -> Response:
+        return self.request("POST", url, form_body=data, ttl=ttl)
+
     def request(
         self,
         method: str,
         url: str,
         *,
         json_body: Any = None,
+        form_body: Optional[dict[str, str]] = None,
         ttl: Optional[timedelta] = None,
     ) -> Response:
-        cache_key = url if json_body is None else url + "#" + hashlib.sha256(
-            json.dumps(json_body, sort_keys=True).encode()).hexdigest()[:16]
+        body = json_body if form_body is None else form_body
+        cache_key = url if body is None else url + "#" + hashlib.sha256(
+            json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
         if ttl is not None:
             cached = _cache_get(cache_key, ttl)
             if cached is not None:
@@ -158,7 +175,7 @@ class PoliteClient:
             self.check_allowed(current)
             self._throttle(current, self._interval_for(current))
             try:
-                resp = self._client.request(method, current, json=json_body)
+                resp = self._client.request(method, current, json=json_body, data=form_body)
             except httpx.HTTPError as exc:
                 raise FetchError(f"{exc.__class__.__name__} fetching {current}") from exc
             if resp.is_redirect and resp.headers.get("location"):
@@ -168,6 +185,9 @@ class PoliteClient:
         else:
             raise FetchError(f"too many redirects from {url}")
 
+        if bot_challenge(resp.status_code, resp.headers, resp.text):
+            raise FetchError(f"{urlsplit(current).netloc} answered with a bot check; JobHuntPA doesn't bypass those",
+                             resp.status_code)
         if resp.status_code in (401, 403):
             raise FetchError(f"HTTP {resp.status_code}: {urlsplit(current).netloc} refused automated access", resp.status_code)
         if resp.status_code == 429:
@@ -195,12 +215,17 @@ class PoliteClient:
                 try:
                     page = browser.new_page(user_agent=USER_AGENT)
                     resp = page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                    if resp and bot_challenge(resp.status, resp.headers, "" if resp.status == 202 else "x"):
+                        raise FetchError(f"{urlsplit(url).netloc} answered with a bot check; JobHuntPA doesn't bypass those",
+                                         resp.status)
                     page.wait_for_timeout(wait_ms)
                     status = resp.status if resp else 200
                     html = page.content()
                     final_url = page.url
                 finally:
                     browser.close()
+        except FetchError:
+            raise
         except Exception as exc:
             raise FetchError(f"browser render failed: {exc}") from exc
         if status in (401, 403, 429) or status >= 400:
