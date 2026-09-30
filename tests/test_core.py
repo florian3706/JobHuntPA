@@ -723,3 +723,49 @@ class SeekJobUploadTest(unittest.TestCase):
         self.assertIn("- Run the delivery program", j["description"])
         self.assertEqual((j["work_mode"], j["office_days"], j["salary_text"]), ("hybrid", 3, "$160,000 - $180,000 per year"))
         self.assertEqual(j["location_text"], "Surry Hills, Sydney NSW")
+
+
+class OfficeDaySofteningTest(unittest.TestCase):
+    def test_temporary_softening_is_a_what_if(self):
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import Job, SessionLocal
+        from backend.scorer import select_jobs
+
+        with TestClient(app) as c:
+            ws = c.post("/api/workspaces", json={"name": "Soften"}).json()["id"]
+            h = {"X-Workspace": str(ws)}
+            c.put("/api/profile", headers=h, json={"max_office_days": 2})
+            db = SessionLocal()
+            spec = {"2d": (2, "AU"), "3d": (3, "AU"), "4d": (4, "AU"), "abroad": (3, "US")}
+            jobs = {k: Job(workspace_id=ws, url=f"https://soft.example/{k}", title="PM", company="Soft Co",
+                           work_mode="hybrid", office_days=d, country=country, status="to_review", detail_status="full")
+                    for k, (d, country) in spec.items()}
+            db.add_all(jobs.values()); db.commit()
+            ids = {k: j.id for k, j in jobs.items()}
+            db.close()
+            c.post("/api/jobs/refilter", headers=h)
+
+            def listed(slack):
+                return {j["id"]: j for j in c.get(f"/api/jobs?office_slack={slack}", headers=h).json()}
+
+            strict, plus1, plus2 = listed(0), listed(1), listed(2)
+            self.assertIsNone(strict[ids["2d"]]["excluded_reason"])
+            self.assertIn("3 office days", strict[ids["3d"]]["excluded_reason"])
+            self.assertNotIn("softened_reason", strict[ids["3d"]])
+            self.assertIsNone(plus1[ids["3d"]]["excluded_reason"])
+            self.assertIn("3 office days", plus1[ids["3d"]]["softened_reason"])
+            self.assertIn("4 office days", plus1[ids["4d"]]["excluded_reason"])
+            self.assertIsNone(plus2[ids["4d"]]["excluded_reason"])
+            self.assertIsNotNone(plus2[ids["abroad"]]["excluded_reason"])  # other rules still apply
+            self.assertNotIn("softened_reason", plus2[ids["abroad"]])
+            self.assertIsNone(c.get(f"/api/jobs/{ids['3d']}?office_slack=1", headers=h).json()["excluded_reason"])
+            self.assertEqual(c.get("/api/score/status?office_slack=1", headers=h).json()["softened_pending"], 1)
+            self.assertEqual(c.get("/api/jobs?office_slack=9", headers=h).status_code, 422)
+
+            db = SessionLocal()
+            self.assertNotIn(ids["3d"], select_jobs(db, "pending", "x", ws))
+            self.assertEqual(set(select_jobs(db, "pending", "x", ws, 1)), {ids["2d"], ids["3d"]})
+            self.assertIn("3 office days", db.get(Job, ids["3d"]).excluded_reason)  # nothing saved
+            db.close()
+            c.delete(f"/api/workspaces/{ws}")

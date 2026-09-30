@@ -10,9 +10,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env first)
@@ -20,6 +20,7 @@ from backend import tasks
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
+from backend.filters import softened_job_ids
 from backend.llm_settings import router as llm_router
 from backend.title_suggestions import router as titles_router
 from backend.profile import router as profile_router
@@ -119,21 +120,35 @@ def _profile_hash(db: Session, ws: int) -> str:
     return build_profile(db, ws)[1]
 
 
+# Temporarily raise the hybrid office-days limit by this many days (Jobs tab
+# what-if). Nothing is saved; jobs it lets through carry "softened_reason".
+OfficeSlack = Query(0, ge=0, le=5)
+
+
+def _soften(out: dict, softened: set[int]) -> dict:
+    if out["id"] in softened:
+        out["softened_reason"], out["excluded_reason"] = out["excluded_reason"], None
+    return out
+
+
 @app.get("/api/jobs")
-def list_jobs(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def list_jobs(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
+              ws: int = Depends(current_workspace)):
     phash = _profile_hash(db, ws)
     rows = (db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id)
             .filter(Job.workspace_id == ws).all())
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
                .filter(Job.workspace_id == ws)}
-    return [job_to_dict(job, fit, phash, has_letter=job.id in letters) for job, fit in rows]
+    softened = softened_job_ids(db, ws, office_slack)
+    return [_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters), softened) for job, fit in rows]
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(get_db),
+            ws: int = Depends(current_workspace)):
     job = owned(db, Job, job_id, ws, "Job")
     fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
-    return job_to_dict(job, fit, _profile_hash(db, ws), full=True)
+    return _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True), softened_job_ids(db, ws, office_slack))
 
 
 class StatusUpdate(BaseModel):
@@ -190,12 +205,12 @@ def refilter_jobs(db: Session = Depends(get_db), ws: int = Depends(current_works
 # Background runs
 # ---------------------------------------------------------------------------
 
-def _score(ws: int, mode: str, progress) -> dict:
+def _score(ws: int, mode: str, progress, office_slack: int = 0) -> dict:
     from backend.scorer import ScorerError, build_profile, score_jobs, select_jobs
 
     db = SessionLocal()
     try:
-        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws)
+        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws, office_slack)
     finally:
         db.close()
     try:
@@ -219,6 +234,7 @@ def start_search(ws: int = Depends(current_workspace)):
 
 class ScoreRunRequest(BaseModel):
     mode: Literal["pending", "stale", "all"] = "pending"
+    office_slack: int = Field(0, ge=0, le=5)
 
 
 @app.post("/api/score/run")
@@ -227,7 +243,7 @@ def start_scoring(payload: ScoreRunRequest, ws: int = Depends(current_workspace)
 
     if config_problem():
         raise HTTPException(status_code=400, detail=config_problem())
-    return tasks.start("score", lambda progress: {"scoring": _score(ws, payload.mode, progress)}, ws)
+    return tasks.start("score", lambda progress: {"scoring": _score(ws, payload.mode, progress, payload.office_slack)}, ws)
 
 
 @app.get("/api/runs/latest")
@@ -256,16 +272,19 @@ def test_scorer():
 
 
 @app.get("/api/score/status")
-def scorer_status(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def scorer_status(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
+                  ws: int = Depends(current_workspace)):
     from backend.scorer import build_profile, public_config, select_jobs
 
     text, phash = build_profile(db, ws)
     pending = len(select_jobs(db, "pending", phash, ws))
+    softened_pending = len(select_jobs(db, "pending", phash, ws, office_slack)) - pending if office_slack else 0
     fits = db.query(FitResult.status).join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws)
     return {
         **public_config(),
         "profile_chars": len(text),
         "pending": pending,
+        "softened_pending": softened_pending,
         "stale": len(select_jobs(db, "stale", phash, ws)) - pending,
         "scored": fits.filter(FitResult.status == "ok").count(),
         "errors": fits.filter(FitResult.status == "error").count(),
@@ -273,7 +292,8 @@ def scorer_status(db: Session = Depends(get_db), ws: int = Depends(current_works
 
 
 @app.post("/api/score/{job_id}")
-def score_single(job_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(get_db),
+                 ws: int = Depends(current_workspace)):
     from backend.scorer import ScorerError, build_profile, config_problem, get_config, score_one
 
     cfg = get_config("scoring")
@@ -286,7 +306,7 @@ def score_single(job_id: int, db: Session = Depends(get_db), ws: int = Depends(c
     except ScorerError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     db.expire_all()
-    return get_job(job_id, db, ws)
+    return get_job(job_id, office_slack, db, ws)
 
 
 # ---------------------------------------------------------------------------
@@ -354,8 +374,8 @@ async def import_page(file: UploadFile = File(...), ws: int = Depends(current_wo
 
 
 @app.post("/api/jobs/{job_id}/import-page")
-async def import_job_page(job_id: int, file: UploadFile = File(...), db: Session = Depends(get_db),
-                          ws: int = Depends(current_workspace)):
+async def import_job_page(job_id: int, file: UploadFile = File(...), office_slack: int = OfficeSlack,
+                          db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """Update one SEEK job with the full ad from its page, saved in the user's browser."""
     from backend.adapters.seek import parse_job_page, parse_search_page
     from backend.pipeline import update_job_from_posting
@@ -375,8 +395,7 @@ async def import_job_page(job_id: int, file: UploadFile = File(...), db: Session
     if not posting.description:
         raise HTTPException(status_code=422, detail="The saved page has no job description. Try saving it again once the ad has fully loaded.")
     update_job_from_posting(db, job, posting)
-    fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
-    return job_to_dict(job, fit, _profile_hash(db, ws), full=True)
+    return get_job(job_id, office_slack, db, ws)
 
 
 if FRONTEND_DIR.is_dir():

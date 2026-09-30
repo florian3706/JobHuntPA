@@ -71,6 +71,11 @@ can live in their own **workspaces** (switcher at the top right).
   rejected, not interested). Tick jobs, or filter the list and tick **Select all shown**, to change
   status or **Hide** them in bulk (only jobs on screen are ever affected); hidden jobs stay hidden when a search finds them again, aren't scored or
   researched, and come back with *Show hidden*.
+- **Softening the office-days rule**: if you set a maximum number of office days for hybrid roles,
+  the Jobs tab's **Office days (temporary)** menu lets you allow extra days (up to 5) for now. Jobs that
+  only that rule excluded reappear, marked *shown by temporary +N office days*, and **Score them**
+  scores any that were never scored. Nothing is saved: *Back to my rule*, reloading the page or
+  switching workspace restores your saved limit.
 - **Full SEEK ads**: SEEK jobs marked *summary only* have an **Upload full ad** button. Save the
   ad's page from SEEK in your browser and upload it to score the job on the whole ad.
 - **Suggested job titles** (Documents tab): the AI reads your documents and suggests titles to
@@ -153,7 +158,9 @@ tag, so the tag must exist on GitHub.
    Detail pages are fetched only for new jobs that pass the cheap filters, at most 60 per source
    per run (the rest follow on the next run).
 3. **Filtering** (`backend/filters.py`): dealbreakers, titles/keywords, salary floor, work mode,
-   location pins. Excluded jobs stay in the DB with a reason ("Show excluded").
+   location pins. Excluded jobs stay in the DB with a reason ("Show excluded"). The office-days
+   limit can be softened temporarily (`softened_job_ids`, `?office_slack=N` on the jobs and
+   scoring endpoints) without changing stored exclusions.
 4. **Scoring** (`backend/scorer.py`): new jobs that passed the filters are scored. Failures are
    stored as errors (not as 0) and retried next time. A rejected API key stops the batch after
    one request.

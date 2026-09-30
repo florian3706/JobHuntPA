@@ -10,7 +10,8 @@ the dealbreaker "war" does not match "software"):
   neither configured, everything passes.)
 - Salary floor: only applied when the salary is stated and parseable.
 - Hybrid office days: when the ad states days in the office and it's more
-  than your maximum, the job is excluded (unstated days pass).
+  than your maximum, the job is excluded (unstated days pass). The Jobs tab
+  can soften this limit temporarily (``softened_job_ids``) without saving it.
 - Work mode: remote needs "remote (Australia)" or "remote (global)"; roles
   based outside Australia need "remote (global)". Hybrid/onsite can be
   switched off.
@@ -26,7 +27,7 @@ detail pages of obviously irrelevant jobs are never fetched.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -165,6 +166,24 @@ def exclusion_reason(job: Any, c: Criteria, stage: str = "full") -> Optional[str
     return _location_reason(job, c)
 
 
+OFFICE_DAYS_REASON = "hybrid role needs "
+
+
+def softened_job_ids(db: Session, ws: int, extra_days: int) -> set[int]:
+    """Jobs the hybrid office-days limit excludes that would pass with the
+    limit raised by ``extra_days``. A what-if for the Jobs tab: nothing is
+    saved, and every other rule still applies."""
+    from backend.db import Job
+
+    crit = load_criteria(db, ws)
+    if extra_days <= 0 or crit.max_office_days is None:
+        return set()
+    soft = replace(crit, max_office_days=crit.max_office_days + extra_days)
+    jobs = db.query(Job).filter(Job.workspace_id == ws, Job.excluded_reason.like(OFFICE_DAYS_REASON + "%"))
+    return {j.id for j in jobs
+            if exclusion_reason(j, soft, stage="full" if j.detail_status in ("full", "summary") else "listing") is None}
+
+
 MAX_COMMUTE_RADIUS_KM = 1000
 
 
@@ -191,7 +210,7 @@ def _location_reason(job: Any, c: Criteria) -> Optional[str]:
         return "hybrid roles not wanted"
     office_days = _get(job, "office_days")
     if mode == "hybrid" and c.max_office_days is not None and office_days and office_days > c.max_office_days:
-        return f"hybrid role needs {office_days} office days a week (your max is {c.max_office_days})"
+        return f"{OFFICE_DAYS_REASON}{office_days} office days a week (your max is {c.max_office_days})"
     if mode == "onsite" and not c.allow_onsite:
         return "onsite roles not wanted"
     if abroad:

@@ -292,13 +292,20 @@ def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> d
         db.close()
 
 
-def select_jobs(db: Session, mode: str, profile_hash: str, ws: int) -> list[int]:
+def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack: int = 0) -> list[int]:
     """Job ids to score. mode: pending (never scored or errored) | stale (+ scored
-    against older documents) | all (every eligible job)."""
+    against older documents) | all (every eligible job). ``office_slack`` also
+    counts jobs a temporarily softened office-days limit lets through."""
+    from backend.filters import softened_job_ids
+
+    eligible = (Job.excluded_reason.is_(None)) | (Job.excluded_reason == "")
+    softened = softened_job_ids(db, ws, office_slack)
+    if softened:
+        eligible = eligible | Job.id.in_(softened)
     rows = (
         db.query(Job.id, FitResult.status, FitResult.profile_hash, FitResult.score)
         .outerjoin(FitResult, FitResult.job_id == Job.id)
-        .filter((Job.excluded_reason.is_(None)) | (Job.excluded_reason == ""))
+        .filter(eligible)
         .filter(Job.closed_at.is_(None), Job.hidden.is_(False))
         .filter(Job.workspace_id == ws)
         .filter(Job.detail_status.in_(["full", "summary"]))

@@ -85,10 +85,16 @@
               <option value="distance">Distance</option>
             </select>
           </label>
+          <label class="field" id="soften-field" hidden
+                 title="What-if: temporarily allow more office days a week than your saved hybrid rule. Nothing is saved; reloading the page resets it.">
+            <span class="field-label">Office days (temporary)</span>
+            <select id="office-slack"></select>
+          </label>
           <label class="field check-field"><input id="filter-show-excluded" type="checkbox" /> <span>Show excluded</span></label>
           <label class="field check-field"><input id="filter-show-closed" type="checkbox" /> <span>Show closed</span></label>
           <label class="field check-field"><input id="filter-show-hidden" type="checkbox" /> <span>Show hidden</span></label>
         </div>
+        <div id="soften-note" class="soften-note" hidden aria-live="polite"></div>
         <div class="toolbar-row chips-row">
           <div id="status-chips" class="chips" aria-label="Filter by status"></div>
           <label class="check select-all-shown" title="Select every job the current filters show (for bulk status changes, hiding or Fill missing info)">

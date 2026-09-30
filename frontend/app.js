@@ -23,6 +23,7 @@ const state = {
   ws: 1, // current workspace id
   workspaces: [],
   titleSuggestions: [],
+  officeSlack: 0, // temporary extra office days allowed on the Jobs tab (never saved)
 };
 
 /* ---------- utils ---------- */
@@ -92,12 +93,15 @@ function initTabs() {
 }
 
 /* ================= JOBS ================= */
+// Every request that returns jobs passes the temporary office-days softening.
+const slackQuery = () => (state.officeSlack ? `?office_slack=${state.officeSlack}` : '');
+
 function scoreOf(job) { return job.fit && job.fit.status === 'ok' ? job.fit.score : null; }
 function modeOf(job) { return ['remote', 'hybrid', 'onsite'].includes(job.work_mode) ? job.work_mode : 'unknown'; }
 
 async function loadJobs() {
   try {
-    state.jobs = await api('/api/jobs');
+    state.jobs = await api(`/api/jobs${slackQuery()}`);
     const ids = new Set(state.jobs.map((j) => j.id));
     state.selected.forEach((id) => { if (!ids.has(id)) state.selected.delete(id); });
     state.details.clear();
@@ -161,8 +165,44 @@ function scoreBadge(job) {
   return `<span class="score ${cls}${stale}" title="${esc(title)}">${fit.score}${fit.stale ? '*' : ''}</span>`;
 }
 
+function renderSoftenControl() {
+  const p = state.profile;
+  const base = p && p.allow_hybrid ? p.max_office_days : null;
+  const field = $('#soften-field');
+  field.hidden = base === null || base === undefined || base >= 5;
+  if (field.hidden) { state.officeSlack = 0; return; }
+  if (base + state.officeSlack > 5) state.officeSlack = 5 - base;
+  const opts = [`<option value="0">Your rule: max ${base}</option>`];
+  for (let n = 1; base + n <= 5; n++) opts.push(`<option value="${n}">+${n}: up to ${base + n} day${base + n > 1 ? 's' : ''}</option>`);
+  $('#office-slack').innerHTML = opts.join('');
+  $('#office-slack').value = String(state.officeSlack);
+}
+
+function renderSoftenNote() {
+  const note = $('#soften-note');
+  const base = state.profile?.max_office_days;
+  if (!state.officeSlack || base === null || base === undefined) { note.hidden = true; return; }
+  const extra = state.jobs.filter((j) => j.softened_reason && !j.closed && !j.hidden);
+  const unscored = extra.filter((j) => (!j.fit || j.fit.status === 'error') && j.detail_status !== 'none').length;
+  const max = base + state.officeSlack;
+  note.innerHTML = `<span>Temporarily allowing hybrid roles with up to <strong>${max}</strong> office days a week
+    (your saved rule: ${base}). <strong>${extra.length}</strong> more job${extra.length === 1 ? '' : 's'} shown${unscored ? `, ${unscored} not scored yet` : ''}.</span>
+    ${unscored ? '<button class="btn btn-primary btn-sm" type="button" data-act="score-softened">Score them</button>' : ''}
+    <button class="btn btn-ghost btn-sm" type="button" data-act="reset-softened">Back to my rule</button>`;
+  note.hidden = false;
+  note.querySelector('[data-act="score-softened"]')?.addEventListener('click', () => startRun('/api/score/run', { mode: 'pending', office_slack: state.officeSlack }));
+  note.querySelector('[data-act="reset-softened"]').addEventListener('click', () => setOfficeSlack(0));
+}
+
+function setOfficeSlack(n) {
+  state.officeSlack = n;
+  $('#office-slack').value = String(n);
+  loadJobs();
+}
+
 function renderJobs() {
   renderStatusChips();
+  renderSoftenNote();
   const jobs = visibleJobs();
   // Bulk actions only ever apply to jobs on screen: drop selections the filters now hide.
   const shown = new Set(jobs.map((j) => j.id));
@@ -187,6 +227,7 @@ function renderJobCard(job) {
     job.closed ? '<span class="badge flag">closed</span>' : '',
     job.hidden ? '<span class="badge flag">hidden</span>' : '',
     job.office_days ? `<span class="badge flag" title="Days per week in the office, from the ad">${job.office_days} day${job.office_days > 1 ? 's' : ''} in office</span>` : '',
+    job.softened_reason ? `<span class="badge soft" title="${esc(`Your saved rule excludes this: ${job.softened_reason}`)}">shown by temporary +${state.officeSlack} office day${state.officeSlack > 1 ? 's' : ''}</span>` : '',
   ].join('');
   const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
   const fitErr = job.fit && job.fit.error ? `<p class="hint err-text">Scoring failed: ${esc(job.fit.error.slice(0, 240))}</p>` : '';
@@ -286,7 +327,7 @@ function gapsHtml(job) {
 
 async function showDescription(job) {
   try {
-    const full = state.details.get(job.id) || await api(`/api/jobs/${job.id}`);
+    const full = state.details.get(job.id) || await api(`/api/jobs/${job.id}${slackQuery()}`);
     state.details.set(job.id, full);
     const note = full.detail_status === 'summary' ? '[Listing summary only; open the job link for the full ad]\n\n' : '';
     openModal(`${full.title} — ${full.company}`, note + (full.description || '(no description stored)'));
@@ -343,7 +384,7 @@ function showUploadAd(job) {
     const fd = new FormData();
     fd.append('file', file, file.name);
     try {
-      const updated = await api(`/api/jobs/${job.id}/import-page`, { method: 'POST', body: fd });
+      const updated = await api(`/api/jobs/${job.id}/import-page${slackQuery()}`, { method: 'POST', body: fd });
       Object.assign(job, updated);
       state.details.set(job.id, updated);
       if (updated.excluded_reason) {
@@ -354,7 +395,7 @@ function showUploadAd(job) {
       status.textContent = 'Updated with the full ad. Rescoring…';
       renderJobs();
       try {
-        Object.assign(job, await api(`/api/score/${job.id}`, { method: 'POST' }));
+        Object.assign(job, await api(`/api/score/${job.id}${slackQuery()}`, { method: 'POST' }));
         status.textContent = `Updated and rescored: ${job.fit?.score ?? '?'}.`;
       } catch (err) {
         status.textContent = `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
@@ -395,7 +436,7 @@ async function rescoreJob(job, btn) {
   btn.disabled = true;
   btn.textContent = 'Scoring…';
   try {
-    const updated = await api(`/api/score/${job.id}`, { method: 'POST' });
+    const updated = await api(`/api/score/${job.id}${slackQuery()}`, { method: 'POST' });
     Object.assign(job, updated);
     toast(`${job.title}: ${updated.fit?.score ?? '?'}`, 'ok');
   } catch (e) {
@@ -428,7 +469,8 @@ function initJobs() {
     renderJobs();
   }));
   $('#search-run').addEventListener('click', () => startRun('/api/search/run', {}));
-  $('#score-pending').addEventListener('click', () => startRun('/api/score/run', { mode: 'pending' }));
+  $('#score-pending').addEventListener('click', () => startRun('/api/score/run', { mode: 'pending', office_slack: state.officeSlack }));
+  $('#office-slack').addEventListener('change', (e) => setOfficeSlack(Number(e.target.value)));
   $('#fill-info').addEventListener('click', () => {
     const ids = Array.from(state.selected);
     startRun('/api/companies/research', ids.length ? { mode: 'missing', job_ids: ids } : { mode: 'missing' });
@@ -818,6 +860,7 @@ async function loadSetup() {
     $('#allow-hybrid').checked = profile.allow_hybrid;
     $('#max-office-days').value = profile.max_office_days ?? '';
     $('#allow-onsite').checked = profile.allow_onsite;
+    renderSoftenControl();
     $('#seek-enabled').checked = profile.seek_enabled;
     $('#search-error').hidden = true;
   } catch (e) {
@@ -851,7 +894,12 @@ const saveSetup = debounce(async () => {
     ]);
     const { changed } = await api('/api/jobs/refilter', { method: 'POST' });
     status.textContent = `Saved ${new Date().toLocaleTimeString()}${changed ? ` · filters re-applied to ${changed} job(s)` : ''}`;
-    if (changed) loadJobs();
+    const slack = state.officeSlack;
+    // A new saved rule starts from scratch: the softening was relative to the old one.
+    if (state.profile?.max_office_days !== profile.max_office_days || state.profile?.allow_hybrid !== profile.allow_hybrid) state.officeSlack = 0;
+    state.profile = { ...state.profile, ...profile };
+    renderSoftenControl();
+    if (changed || slack !== state.officeSlack) loadJobs();
   } catch (e) {
     status.textContent = 'Save failed';
     toast(`Saving search setup failed: ${e.message}`, 'err');
@@ -1198,6 +1246,7 @@ async function loadWorkspaces() {
 
 async function switchWorkspace(id) {
   state.ws = Number(id);
+  state.officeSlack = 0;
   try { localStorage.setItem('jobhunt.ws', String(state.ws)); } catch { /* private mode */ }
   clearTimeout(state.pollTimer);
   state.selected.clear();
