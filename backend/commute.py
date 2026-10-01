@@ -321,6 +321,7 @@ def commute_for(db: Session, job: Job) -> dict:
         "day": f"{day:%A} {day.day} {day:%B}",
         "arrive_by": prof["commute_arrive_by"], "leave_at": prof["commute_leave_at"],
         "home": home, "office": office, "transit": trips, "car": car, "notes": notes, "from_stations": from_stations,
+        "stations": prof["commute_from"] or [],
         "links": {"transit": _maps_link(starts[0], office, "transit"), "car": _maps_link(home, office, "driving")},
     }
 

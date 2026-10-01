@@ -147,7 +147,8 @@ async function loadCommute() {
     : carHtml(c.car.there, `There (arrive by ${esc(c.arrive_by)}):`) + carHtml(c.car.back, `Back (leave ${esc(c.leave_at)}):`);
   box.innerHTML = `
     <p class="muted">${esc(c.day)}: arriving by ${esc(c.arrive_by)}, leaving at ${esc(c.leave_at)}.
-      ${c.from_stations ? "Public transport times start at the station (getting there isn't included)." : 'Public transport starts at your home pin; set stations under Search setup > Commute.'}</p>
+      ${c.from_stations ? "Public transport times start at the station (getting there isn't included)."
+        : c.stations.length ? '' : 'Public transport starts at your home pin; set stations under Search setup > Commute.'}</p>
     ${c.notes.map((n) => `<p class="notice">${esc(n)}</p>`).join('')}
     ${transit}
     <div class="commute-from"><h4>By car from ${esc(c.home.name)}</h4>${car}</div>
