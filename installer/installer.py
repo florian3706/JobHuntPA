@@ -8,15 +8,17 @@ Steps:
   1. create a private Python environment in .venv
   2. install the Python packages from requirements.txt
   3. download the Chromium browser used for JavaScript-only careers pages
-  4. ask for the LLM settings and write .env (kept if already filled in)
+  4. ask for the LLM settings and the optional commute keys, and write .env
+     (kept if already filled in)
   5. add a menu shortcut (Linux)
   6. check the app imports
 
 Standard library only: this runs before any dependency is installed.
 
 Options:
-  --non-interactive   never prompt (LLM settings from LLM_* environment variables, else left blank)
-  --reconfigure       ask for the LLM settings again even if .env has them
+  --non-interactive   never prompt (settings from LLM_*, TFNSW_API_KEY and TOMTOM_API_KEY
+                      environment variables, else left blank)
+  --reconfigure       ask for the LLM settings and commute keys again even if .env has them
   --skip-browser      don't download Chromium
 """
 from __future__ import annotations
@@ -171,6 +173,35 @@ def configure_llm(interactive: bool, reconfigure: bool) -> None:
     say("  Saved to .env. Reasoning levels can be set in the app (Search setup > LLM).")
 
 
+COMMUTE_KEYS = (
+    ("TFNSW_API_KEY", "Transport for NSW API key, for public-transport commute times (free:",
+     "https://opendata.transport.nsw.gov.au, sign up, create an application, copy its API key)"),
+    ("TOMTOM_API_KEY", "TomTom API key, for driving times in peak traffic (free:",
+     "https://developer.tomtom.com, sign up, copy the default key)"),
+)
+
+
+def configure_commute(interactive: bool, reconfigure: bool) -> None:
+    """Optional keys for the commute on each job's page. Asked once: a key
+    left blank stays blank (the line in .env records that it was asked)."""
+    env_path = ROOT / ".env"
+    lines, values = read_env(env_path)
+    names = [name for name, _, _ in COMMUTE_KEYS]
+    if all(name in values for name in names) and not reconfigure:
+        return
+    if not interactive:
+        write_env(env_path, lines, {n: os.environ.get(n, values.get(n, "")) for n in names})
+        return
+    say("  Optional: commute times on each job's page. Press Enter to skip; you can add them later.")
+    updates = {}
+    for name, what, where in COMMUTE_KEYS:
+        say(f"  {what}")
+        say(f"    {where}")
+        updates[name] = ask(name, values.get(name, ""))
+    write_env(env_path, lines, updates)
+    say("  Saved to .env.")
+
+
 def ensure_dirs() -> None:
     for sub in ("data", "data/uploads", "data/cache"):
         (ROOT / sub).mkdir(parents=True, exist_ok=True)
@@ -223,9 +254,10 @@ def main() -> None:
         say("  Skipped.")
     else:
         install_browser()
-    step(4, total, "LLM settings")
+    step(4, total, "LLM and commute settings")
     ensure_dirs()
     configure_llm(interactive, args.reconfigure)
+    configure_commute(interactive, args.reconfigure)
     step(5, total, "Shortcut")
     create_shortcut()
     step(6, total, "Checking the app...")

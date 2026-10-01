@@ -1090,3 +1090,227 @@ class JobChatTest(unittest.TestCase):
             self.assertEqual(c.delete(f"/api/chats/{chat['id']}", headers=h).status_code, 200)
             self.assertEqual(c.get(f"/api/chats/{chat['id']}", headers=h).status_code, 404)
             c.delete(f"/api/workspaces/{ws}")
+
+
+class GeocoderPrecisionTest(unittest.TestCase):
+    def test_suburb_beats_council_area(self):
+        from unittest import mock
+        import backend.geo as geo
+        council = {"addresstype": "administrative", "place_rank": 12, "importance": 0.46, "lat": "-33.57", "lon": "151.13",
+                   "display_name": "The Council of the Shire of Hornsby, Sydney", "address": {"country_code": "au"}}
+        town = {"addresstype": "town", "place_rank": 18, "importance": 0.2, "lat": "-33.70", "lon": "151.10",
+                "display_name": "Hornsby, New South Wales", "address": {"country_code": "au"}}
+        self.assertEqual(geo._pick([council, town])["addresstype"], "town")
+        self.assertIsNone(geo._pick([{"addresstype": "state", "place_rank": 8, "importance": 0.9}]))
+        answers = {"Hornsby, Sydney NSW": [council], "Hornsby, NSW": [council, town]}
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            return mock.Mock(json=lambda: answers[params["q"]], raise_for_status=lambda: None)
+        with mock.patch.object(geo.httpx, "get", side_effect=fake_get), mock.patch.object(geo, "_geo_last", 0.0):
+            hit = geo.geocode("Hornsby, Sydney NSW")
+        self.assertEqual((hit["lat"], hit["type"]), (-33.70, "town"))
+
+    def test_city_only(self):
+        from backend.geo import is_city_only
+        for text in ("Sydney NSW", "Sydney, , Australia", "Australia - Sydney - New South Wales",
+                     "Sydney - Australia - Sydney, 2000 Australia; Remote - Remote", "Adelaide SA; Sydney NSW"):
+            self.assertTrue(is_city_only(text), text)
+        for text in ("Eveleigh, Sydney NSW", "Sydney CBD", "Remote", "", "Hornsby, Sydney NSW"):
+            self.assertFalse(is_city_only(text), text)
+
+    def test_location_verdict(self):
+        c = Criteria(allow_hybrid=True, pins=PINS)
+        far = {"title": "PM", "work_mode": "hybrid", "lat": -37.8, "lng": 144.9, "location_text": "Melbourne VIC", "country": "AU"}
+        self.assertIn("outside your pin radii", exclusion_reason(far, c, stage="full"))
+        self.assertIsNone(exclusion_reason({**far, "location_verdict": "ok"}, c, stage="full"))
+        self.assertEqual(exclusion_reason({**far, "lat": -33.87, "lng": 151.21, "location_verdict": "too_far"}, c, stage="full"),
+                         "you marked the office as too far")
+
+
+def _fake_geocode(places):
+    """geocode() stand-in: {query: (lat, lng)}; anything else is unknown."""
+    def geocode(text):
+        for key, (lat, lng) in places.items():
+            if key.lower() in (text or "").lower():
+                return {"lat": lat, "lng": lng, "country": "AU", "type": "suburb"}
+        return None
+    return geocode
+
+
+class OfficeTest(unittest.TestCase):
+    PLACES = {"North Sydney": (-33.839, 151.207), "Macquarie Park": (-33.781, 151.126), "Sydney NSW": (-33.87, 151.21),
+              "Perth": (-31.95, 115.86)}
+
+    def patched(self):
+        from unittest import mock
+        import backend.offices as of
+        import backend.pipeline as pl
+        fake = _fake_geocode(self.PLACES)
+        return mock.patch.object(of, "geocode", side_effect=fake), mock.patch.object(pl, "geocode", side_effect=fake)
+
+    def test_queries_and_ad_check(self):
+        from backend.db import Job
+        from backend.offices import office_in_ad, office_queries
+        job = Job(location_text="Sydney NSW")
+        self.assertEqual(office_queries("Suite 2, L1, 30-32 Market Street, Sydney NSW 2000", job),
+                         ["30-32 Market Street, Sydney NSW 2000", "30 Market Street, Sydney NSW 2000", "Sydney NSW 2000"])
+        self.assertEqual(office_queries("Level 5, 1 Denison St, North Sydney", job)[0], "1 Denison St, North Sydney, NSW")
+        self.assertEqual(office_in_ad("Macquarie Park", "Join us at our Macquarie Park campus."), "Macquarie Park")
+        self.assertEqual(office_in_ad("Parramatta", "Join us in Sydney."), "")  # not in the ad: invented
+
+    def test_sources_api_and_flags(self):
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import Job, SessionLocal
+        from backend.offices import set_office
+
+        a, b = self.patched()
+        with a, b, TestClient(app) as c:
+            ws = c.post("/api/workspaces", json={"name": "Offices"}).json()["id"]
+            h = {"X-Workspace": str(ws)}
+            c.post("/api/pins", headers=h, json={"label": "Home", "kind": "home", "lat": -33.84, "lng": 151.21, "radius_km": 5})
+            db = SessionLocal()
+            job = Job(workspace_id=ws, url="https://office.example/1", title="PM", company="Acme", location_text="Sydney NSW",
+                      work_mode="hybrid", country="AU", status="to_review", detail_status="full", lat=-33.87, lng=151.21)
+            db.add(job); db.commit()
+            job_id = job.id
+            self.assertTrue([j for j in c.get("/api/jobs", headers=h).json() if j["id"] == job_id][0]["office_unknown"])
+            self.assertTrue(set_office(db, job, "Macquarie Park", "company"))
+            self.assertEqual((job.lat, job.office_source), (-33.781, "company"))
+            self.assertIn("outside your pin radii", job.excluded_reason)  # 7 km from the 5 km home pin
+            set_office(db, job, "North Sydney", "ad")  # the ad beats company research
+            self.assertEqual((job.office_text, job.excluded_reason), ("North Sydney", None))
+            self.assertFalse(set_office(db, job, "Perth", "user"))  # 3,300 km from Sydney: not this job's office
+            db.commit(); db.close()
+
+            r = c.put(f"/api/jobs/{job_id}/office", headers=h, json={"office": "Nowhere Street"})
+            self.assertEqual(r.status_code, 422)
+            r = c.put(f"/api/jobs/{job_id}/office", headers=h, json={"office": "Macquarie Park"}).json()
+            self.assertEqual((r["office_source"], r["office_unknown"]), ("user", False))
+            self.assertIn("outside your pin radii", r["excluded_reason"])
+            r = c.put(f"/api/jobs/{job_id}/office", headers=h, json={"verdict": "ok"}).json()
+            self.assertEqual((r["location_verdict"], r["excluded_reason"], r["office_text"]), ("ok", None, "Macquarie Park"))
+            r = c.put(f"/api/jobs/{job_id}/office", headers=h, json={"office": None, "verdict": None}).json()
+            self.assertEqual((r["office_text"], r["location_verdict"], r["office_unknown"]), (None, None, True))
+            self.assertEqual(c.put(f"/api/jobs/{job_id}/office", json={"verdict": "ok"}).status_code, 404)  # other workspace
+            c.delete(f"/api/workspaces/{ws}")
+
+    def test_scoring_reads_the_office(self):
+        from unittest import mock
+        from backend.db import Job, SessionLocal
+        import backend.scorer as sc
+
+        a, b = self.patched()
+        db = SessionLocal()
+        job = Job(workspace_id=1, url="https://office.example/scored", title="PM", company="Acme", location_text="Sydney NSW",
+                  work_mode="hybrid", country="AU", status="to_review", detail_status="full",
+                  description="You'll be based in our North Sydney office three days a week.")
+        db.add(job); db.commit()
+        reply = json.dumps({"score": 70, "requirements": [], "gaps": [], "summary": "ok", "office_location": "North Sydney"})
+        with a, b, mock.patch.object(sc, "call_model", return_value=reply):
+            result = sc.score_one(job.id, "cv", "h", {"model": "m"})
+        self.assertNotIn("office_location", result)
+        db.expire_all()
+        job = db.get(Job, job.id)
+        self.assertEqual((job.office_text, job.office_source, job.lat), ("North Sydney", "ad", -33.839))
+        self.assertIsNotNone(job.office_checked_at)
+        db.close()
+
+    def test_fill_missing_info_finds_offices(self):
+        from unittest import mock
+        from backend.db import CompanyProfile, Job, SessionLocal
+        import backend.offices as of
+
+        a, b = self.patched()
+        db = SessionLocal()
+        jobs = {name: Job(workspace_id=1, url=f"https://office.example/find/{name}", title="PM", company=name,
+                          location_text="Sydney NSW", work_mode="hybrid", country="AU", status="to_review",
+                          detail_status="summary", lat=-33.87, lng=151.21)
+                for name in ("Solo Office Co", "Hays Recruitment", "Agency Pty")}
+        db.add_all(jobs.values()); db.commit()
+        ids = [j.id for j in jobs.values()]
+        db.close()
+        answers = {"Solo Office Co": {"is_recruiter": False, "offices": [{"name": "HQ", "address": "1 Miller St, North Sydney", "url": "u"}]},
+                   "Agency Pty": {"is_recruiter": True, "offices": [{"name": "Us", "address": "Macquarie Park", "url": "u"}]}}
+        with a, b, mock.patch.object(of, "research_offices", side_effect=lambda company, city, cfg: answers[company]), \
+                mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://x/v1", "LLM_MODEL": "m"}):
+            out = of.find_offices(1, ids)
+        self.assertEqual((out["from_companies"], out["recruiters"], out["unknown"]), (1, 2, 2))
+        db = SessionLocal()
+        self.assertEqual(db.get(Job, jobs["Solo Office Co"].id).office_source, "company")
+        self.assertIsNone(db.get(Job, jobs["Agency Pty"].id).office_text)  # the agency's own office isn't the job's
+        self.assertTrue(db.get(CompanyProfile, "agency pty").is_recruiter)
+        db.close()
+
+
+TFNSW_TRIP = {"journeys": [
+    {"legs": [
+        {"origin": {"disassembledName": "Gosford Station", "departureTimePlanned": "2026-10-05T20:10:00Z"},
+         "destination": {"disassembledName": "Central Station", "arrivalTimePlanned": "2026-10-05T21:35:00Z"},
+         "transportation": {"disassembledName": "CCN", "name": "Central Coast & Newcastle Line",
+                            "product": {"class": 1}, "destination": {"name": "Central"}},
+         "duration": 5100, "coords": [[-33.4253, 151.3417], [-33.8833, 151.2061]]},
+        {"origin": {"name": "Central Station", "departureTimePlanned": "2026-10-05T21:38:00Z"},
+         "destination": {"name": "Office", "arrivalTimePlanned": "2026-10-05T21:50:00Z"},
+         "transportation": {"product": {"class": 100}}, "duration": 720, "coords": [[-33.8833, 151.2061], [-33.87, 151.21]]}]},
+    {"legs": [
+        {"origin": {"disassembledName": "Gosford Station", "departureTimePlanned": "2026-10-05T20:40:00Z"},
+         "destination": {"disassembledName": "Office", "arrivalTimePlanned": "2026-10-05T22:20:00Z"},
+         "transportation": {"disassembledName": "CCN", "product": {"class": 1}}, "duration": 6000, "coords": []}]},
+]}
+
+
+class CommuteTest(unittest.TestCase):
+    def test_peak_day_and_journeys(self):
+        from datetime import date, datetime
+        from backend.commute import TZ, best_journey, peak_day
+        self.assertEqual(peak_day(date(2026, 10, 1)), date(2026, 10, 6))  # Thursday -> next Tuesday
+        self.assertEqual(peak_day(date(2026, 10, 6)), date(2026, 10, 13))
+        best = best_journey(TFNSW_TRIP, datetime(2026, 10, 6, 9, 0, tzinfo=TZ))
+        self.assertEqual((best["depart"], best["arrive"], best["minutes"], best["changes"]), ("07:10", "08:50", 100, 0))
+        self.assertEqual(best["summary"], "Train CCN")
+        self.assertEqual([l["mode"] for l in best["legs"]], ["Train", "Walk"])
+        later = best_journey(TFNSW_TRIP)  # leaving after a time: the first to arrive
+        self.assertEqual(later["arrive"], "08:50")
+
+    def test_commute_endpoint(self):
+        from unittest import mock
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import Job, SessionLocal
+        import backend.commute as cm
+
+        def fake_get(url, params, headers=None, what=""):
+            if "stop_finder" in url:
+                return {"locations": [{"type": "stop", "isBest": True, "id": "2250", "disassembledName": "Gosford Station",
+                                       "coord": [-33.4253, 151.3417]}]}
+            if url.endswith("trip"):
+                self.assertEqual(headers["Authorization"], "apikey t-key")
+                return TFNSW_TRIP
+            return {"routes": [{"duration": 3960, "distance": 73200,
+                                "geometry": {"coordinates": [[151.34, -33.42], [151.21, -33.87]]}}]}
+        with TestClient(app) as c, mock.patch.object(cm, "_get", side_effect=fake_get), \
+                mock.patch.dict(os.environ, {"TFNSW_API_KEY": "t-key", "TOMTOM_API_KEY": ""}):
+            ws = c.post("/api/workspaces", json={"name": "Commute"}).json()["id"]
+            h = {"X-Workspace": str(ws)}
+            prof = c.get("/api/profile", headers=h).json()
+            self.assertEqual(c.put("/api/profile", headers=h, json={**prof, "commute_arrive_by": "9am"}).status_code, 422)
+            c.put("/api/profile", headers=h, json={**prof, "commute_from": ["Gosford Station"], "commute_arrive_by": "08:30"})
+            db = SessionLocal()
+            job = Job(workspace_id=ws, url="https://commute.example/1", title="PM", company="Acme", location_text="Sydney NSW",
+                      work_mode="hybrid", status="to_review", detail_status="full", lat=-33.87, lng=151.21)
+            db.add(job); db.commit()
+            job_id = job.id
+            db.close()
+            self.assertEqual(c.get(f"/api/jobs/{job_id}/commute", headers=h).status_code, 409)  # no home pin yet
+            c.post("/api/pins", headers=h, json={"label": "Home", "kind": "onsite", "lat": -33.39, "lng": 151.34, "radius_km": 10})
+            r = c.get(f"/api/jobs/{job_id}/commute", headers=h)
+            self.assertEqual(r.status_code, 200, r.text)
+            out = r.json()
+            self.assertEqual((out["arrive_by"], out["from_stations"], out["office"]["precise"]), ("08:30", True, False))
+            self.assertEqual(out["transit"][0]["from"], "Gosford Station")
+            self.assertEqual(out["car"]["there"]["minutes"], 66)
+            self.assertFalse(out["car"]["there"]["traffic"])
+            self.assertTrue(any("only a city" in n for n in out["notes"]))
+            self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": False})
+            c.delete(f"/api/workspaces/{ws}")

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Job · JobHuntPA</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="job-page">
+  <header class="app-header">
+    <div class="header-inner">
+      <a class="brand brand-link" href="./#jobs" title="Back to the dashboard">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <div>
+          <h1>JobHuntPA</h1>
+          <p id="ws-name" class="subtitle">Job</p>
+        </div>
+      </a>
+    </div>
+  </header>
+
+  <main class="main job-main">
+    <div id="job-error" class="error" hidden></div>
+    <section id="job-head" class="card job-head" aria-live="polite"><p class="muted">Loading…</p></section>
+
+    <div class="job-cols">
+      <div class="job-col">
+        <section class="card job-section">
+          <h2>Office and commute</h2>
+          <div id="job-office"></div>
+          <div id="commute-map" class="map commute-map" aria-label="Map of the office and commute"></div>
+          <div id="job-commute"><p class="muted">Working out the commute…</p></div>
+        </section>
+        <section class="card job-section">
+          <h2 id="company-title">Company</h2>
+          <div id="job-company" class="modal-html company-body"></div>
+          <p id="company-status" class="muted" aria-live="polite"></p>
+        </section>
+      </div>
+      <div class="job-col">
+        <section class="card job-section">
+          <h2>Fit</h2>
+          <div id="job-fit" class="reqs"></div>
+        </section>
+        <section class="card job-section">
+          <h2>The ad</h2>
+          <div id="job-ad" class="job-ad"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="assertive"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="./common.js"></script>
+  <script src="./job.js"></script>
+</body>
+</html>

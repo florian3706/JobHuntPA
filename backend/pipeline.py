@@ -17,6 +17,7 @@ Scoring is a separate step (``backend.scorer.score_pending``).
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -120,8 +121,11 @@ def locate(location_text: str, pins: list[dict]) -> Optional[dict]:
 
 def enrich(job: Job, crit: Criteria) -> None:
     job.country = job.country or guess_country(job.location_text or "")
+    # A known office (backend.offices) beats the ad's location, which is often just a city.
+    if job.office_lat is not None:
+        job.lat, job.lng = job.office_lat, job.office_lng
     # Only places in the home country need coordinates (pins, distance).
-    if job.location_text and job.lat is None and job.country in ("", HOME_COUNTRY):
+    elif job.location_text and job.lat is None and job.country in ("", HOME_COUNTRY):
         hit = locate(job.location_text, commute_pins(crit.pins))
         if hit:
             job.lat, job.lng = hit["lat"], hit["lng"]
@@ -179,6 +183,44 @@ def update_job_from_posting(db: Session, job: Job, p: Posting) -> None:
     _apply_posting(job, p)
     enrich(job, crit)
     job.excluded_reason = exclusion_reason(job, crit, stage="full")
+    db.commit()
+
+
+def replace_jobs(db: Session, ws: int, crit: Criteria, queries: set[str]) -> int:
+    """Geocode again the jobs whose location was one of these (dropped)
+    geocoder queries. Returns how many moved."""
+    from backend.geo import _geocode_query
+
+    moved = 0
+    for job in db.query(Job).filter(Job.workspace_id == ws, Job.location_text.isnot(None), Job.office_lat.is_(None)):
+        places = re.split(r"\s*;\s*", job.location_text)
+        if any(_geocode_query(place).lower() in queries for place in places):
+            job.lat = job.lng = None
+            enrich(job, crit)
+            moved += 1
+    db.commit()
+    return moved
+
+
+def repair_geocodes(db: Session, ws: int, crit: Criteria, progress: Progress) -> None:
+    """Jobs placed at a council area's centre instead of the suburb (before
+    the geocoder preferred suburbs) are placed again, once per workspace."""
+    from backend.db import AppSetting
+    from backend.geo import purge_area_geocodes
+
+    def setting(key: str) -> list:
+        row = db.get(AppSetting, key)
+        return json.loads(row.value_json) if row else []
+
+    done = set(setting("geocode_repair_workspaces"))
+    if ws in done:
+        return
+    # The cache is shared, so remember what was dropped for the other workspaces.
+    queries = set(setting("geocode_repair_queries")) | purge_area_geocodes()
+    progress("placing suburbs that were mapped to council areas", {})
+    replace_jobs(db, ws, crit, queries)
+    db.merge(AppSetting(key="geocode_repair_queries", value_json=json.dumps(sorted(queries))))
+    db.merge(AppSetting(key="geocode_repair_workspaces", value_json=json.dumps(sorted(done | {ws}))))
     db.commit()
 
 
@@ -264,6 +306,7 @@ def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
     client = PoliteClient()
     try:
         crit = load_criteria(db, ws)
+        repair_geocodes(db, ws, crit, progress)
         reports: list[SourceReport] = []
         for src, adapter in build_adapters(db, ws, client):
             label = (src.label or src.careers_url) if src is not None else "SEEK"

@@ -100,6 +100,18 @@ can live in their own **workspaces** (switcher at the top right).
   (*Same job: merge* / *Different jobs*). Your status, cover letter and score carry over to the
   merged card. *split* under *Also on* undoes a merge; **Merge as one job** (tick two or more
   jobs) merges ads the app missed.
+- **Job page**: *Open ↗* on a job opens it in a new tab: the whole ad, the fit and gaps, a map of
+  the office, the company profile, and the commute there and back at peak times (arriving by 9:00,
+  leaving at 17:00 on a Tuesday; change these under Search setup > Commute). Public transport is
+  planned from the stations you list there (e.g. Gosford Station, Narara Station), including
+  changes, metro, buses and walking at the other end; driving starts at your home pin. See
+  [Commute times](#commute-times-optional) for the two free keys this needs.
+- **Office locations**: most ads only say "Sydney NSW". Instead of assuming the CBD, such jobs show
+  **office unknown** until the office is found: the scorer reads it from the full ad, and
+  **Fill missing info** looks up the employer's offices in that city (one web-search agent per
+  employer). Recruitment agencies rarely name the client, so their ads are left to you: on the job
+  page set the office (address or suburb, or one of the employer's offices), or make the call with
+  **Location OK** / **Too far**. The office then drives the location filter and distance.
 - **Reasoning level** (Search setup > LLM): how long the AI thinks, set separately for scoring,
   cover letters, company research and job chat. *Detect supported levels* shows what your model accepts.
 
@@ -116,6 +128,17 @@ Your settings, documents, jobs and API key are kept.
 Run setup again with `--reconfigure` (macOS/Linux: `./setup.sh --reconfigure`; Windows: run
 JobHuntPA-Setup.exe again and edit the `.env` file in the install folder), or edit the `.env` file
 in the app folder directly: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`. Restart the app afterwards.
+
+## Commute times (optional)
+
+The commute on each job's page uses two free services; setup asks for their keys (press Enter to
+skip), or add them to `.env` later and restart the app:
+
+- `TFNSW_API_KEY`: public transport in NSW. Sign up at https://opendata.transport.nsw.gov.au,
+  create an application, and copy its API key. Without it the page shows driving only.
+- `TOMTOM_API_KEY`: driving times with peak-hour traffic. Sign up at
+  https://developer.tomtom.com and copy the default key. Without it, driving times come from
+  OSRM's public server and ignore traffic (the page says so).
 
 ## Uninstalling
 
@@ -186,7 +209,8 @@ tag, so the tag must exist on GitHub.
    Doubtful pairs are stored in `job_duplicates` as suggestions; the user's "different jobs"
    answers are kept there too and never suggested again.
 5. **Scoring** (`backend/scorer.py`): new jobs that passed the filters are scored (merged copies
-   aren't). Failures are stored as errors (not as 0) and retried next time. A rejected API key
+   aren't). The scorer also reports the office named in the ad (`backend/offices.py`); an ad that
+   names only a city keeps the city's coordinates and is flagged "office unknown". Failures are stored as errors (not as 0) and retried next time. A rejected API key
    stops the batch after one request.
 
 ## Scraping rules

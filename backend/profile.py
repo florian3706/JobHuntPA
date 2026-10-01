@@ -34,6 +34,10 @@ class ProfileSchema(BaseModel):
     allow_onsite: bool = True
     seek_enabled: bool = True
     seek_locations: list[str] = Field(default_factory=list)
+    # Commute: public transport starts at these stations (empty = home pin)
+    commute_from: list[str] = Field(default_factory=list)
+    commute_arrive_by: str = Field(default="09:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    commute_leave_at: str = Field(default="17:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class DealbreakersSchema(BaseModel):
@@ -88,6 +92,9 @@ def get_profile(db: Session, ws: int) -> dict[str, Any]:
         "allow_onsite": bool(row.allow_onsite),
         "seek_enabled": bool(row.seek_enabled),
         "seek_locations": list(row.seek_locations or []),
+        "commute_from": list(row.commute_from or []),
+        "commute_arrive_by": row.commute_arrive_by or "09:00",
+        "commute_leave_at": row.commute_leave_at or "17:00",
     }
 
 
@@ -107,6 +114,8 @@ def save_profile(db: Session, ws: int, data: ProfileSchema) -> dict[str, Any]:
     row.allow_onsite = data.allow_onsite
     row.seek_enabled = data.seek_enabled
     row.seek_locations = _clean_tags(data.seek_locations)
+    row.commute_from = _clean_tags(data.commute_from)
+    row.commute_arrive_by, row.commute_leave_at = data.commute_arrive_by, data.commute_leave_at
     db.commit()
     return get_profile(db, ws)
 

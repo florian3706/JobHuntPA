@@ -1,12 +1,7 @@
 /* JobHuntPA dashboard — vanilla JS, no build step. Talks to backend/app.py. */
 'use strict';
 
-const STATUSES = ['to_review', 'shortlisted', 'applied', 'interviewing', 'rejected', 'not_interested'];
-const STATUS_LABEL = {
-  to_review: 'to review', shortlisted: 'shortlisted', applied: 'applied',
-  interviewing: 'interviewing', rejected: 'rejected', not_interested: 'not interested',
-};
-const TAG_FIELDS = ['titles', 'keywords_include', 'keywords_exclude', 'dealbreaker_industries', 'dealbreaker_keywords', 'seek_locations'];
+const TAG_FIELDS = ['titles', 'keywords_include', 'keywords_exclude', 'dealbreaker_industries', 'dealbreaker_keywords', 'seek_locations', 'commute_from'];
 
 const state = {
   jobs: [],
@@ -27,43 +22,6 @@ const state = {
   dupes: { suggested: [], auto_merged: [] }, // duplicate ads to check
   chat: null, // the open job chat: { jobIds, jobs, threadId, threads, messages, busy }
 };
-
-/* ---------- utils ---------- */
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-function toast(msg, kind = '', ms = 5000) {
-  const el = document.createElement('div');
-  el.className = `toast ${kind}`.trim();
-  el.textContent = msg;
-  $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), ms);
-}
-
-async function api(url, opts = {}) {
-  const isForm = opts.body instanceof FormData;
-  const headers = { 'X-Workspace': String(state.ws), ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...(opts.headers || {}) };
-  const res = await fetch(url, { ...opts, headers });
-  const text = await res.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  if (!res.ok) {
-    const detail = data && typeof data === 'object' && data.detail ? data.detail : text;
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
-  }
-  return data;
-}
-
-const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
-function fmtDate(iso) {
-  if (!iso) return '';
-  const d = new Date(/T\d\d:\d\d/.test(iso) && !/(Z|[+-]\d\d:?\d\d)$/.test(iso) ? `${iso}Z` : iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
 
 function openModal(title, text) {
   $('#modal-title').textContent = title;
@@ -97,9 +55,6 @@ function initTabs() {
 /* ================= JOBS ================= */
 // Every request that returns jobs passes the temporary office-days softening.
 const slackQuery = () => (state.officeSlack ? `?office_slack=${state.officeSlack}` : '');
-
-function scoreOf(job) { return job.fit && job.fit.status === 'ok' ? job.fit.score : null; }
-function modeOf(job) { return ['remote', 'hybrid', 'onsite'].includes(job.work_mode) ? job.work_mode : 'unknown'; }
 
 async function loadJobs() {
   try {
@@ -157,16 +112,6 @@ function renderStatusChips() {
     b.addEventListener('click', () => { state.filter.status = val; renderJobs(); });
     box.appendChild(b);
   });
-}
-
-function scoreBadge(job) {
-  const fit = job.fit;
-  if (!fit) return `<span class="score none" title="Not scored yet">–</span>`;
-  if (fit.status === 'error') return `<span class="score err" title="${esc(fit.error || 'error')}">!</span>`;
-  const cls = fit.score >= 75 ? 'high' : fit.score >= 45 ? 'mid' : 'low';
-  const stale = fit.stale ? ' stale' : '';
-  const title = fit.stale ? 'Scored against older documents' : `Scored ${fmtDate(fit.scored_at)}`;
-  return `<span class="score ${cls}${stale}" title="${esc(title)}">${fit.score}${fit.stale ? '*' : ''}</span>`;
 }
 
 function renderSoftenControl() {
@@ -232,6 +177,9 @@ function renderJobCard(job) {
     job.closed ? '<span class="badge flag">closed</span>' : '',
     job.hidden ? '<span class="badge flag">hidden</span>' : '',
     job.office_days ? `<span class="badge flag" title="Days per week in the office, from the ad">${job.office_days} day${job.office_days > 1 ? 's' : ''} in office</span>` : '',
+    job.office_unknown ? `<span class="badge soft" title="${esc(job.recruiter
+      ? "A recruiter's ad naming only a city: the client's office isn't known. Open the job to set it, or mark the location OK or too far."
+      : 'The ad names only a city, so the location filter assumes the city centre. Fill missing info looks for the office, or open the job to set it.')}">office unknown${job.recruiter ? ' · recruiter' : ''}</span>` : '',
     job.softened_reason ? `<span class="badge soft" title="${esc(`Your saved rule excludes this: ${job.softened_reason}`)}">shown by temporary +${state.officeSlack} office day${state.officeSlack > 1 ? 's' : ''}</span>` : '',
   ].join('');
   const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
@@ -255,6 +203,7 @@ function renderJobCard(job) {
       ${job.salary_text ? `<span>💰 ${esc(job.salary_text)}</span>` : ''}
       <span class="muted">${esc(sourceLabel(job.source))}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>
     </div>
+    ${officeHtml(job) ? `<div class="job-office">${officeHtml(job)}</div>` : ''}
     ${also ? `<div class="also-on" title="The same job advertised on other sites, merged into this card"><span class="muted">Also on:</span> ${also}</div>` : ''}
     ${excl}${fitErr}
     <div class="job-actions">
@@ -267,6 +216,7 @@ function renderJobCard(job) {
       <button class="btn btn-ghost btn-sm" type="button" data-act="hide">${job.hidden ? 'Unhide' : 'Hide'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="letter">${job.has_cover_letter ? 'Cover letter ✓' : 'Draft cover letter'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="chat" title="Ask questions about this job in a chat on the right">Chat</button>
+      <a class="btn btn-ghost btn-sm" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Full page in a new tab: the whole ad, office map, commute and company details">Open ↗</a>
     </div>
     <details class="reqs" data-section="fit"><summary>Fit: requirements → evidence</summary><div class="fit-body"></div></details>
     ${gapsSection(job)}`;
@@ -293,47 +243,6 @@ function renderJobCard(job) {
     if (e.target.open) e.target.querySelector('.gaps-body').innerHTML = gapsHtml(job);
   });
   return card;
-}
-
-function fitHtml(job) {
-  const fit = job.fit;
-  if (!fit) return '<p class="muted">Not scored yet.</p>';
-  if (fit.status === 'error') return `<p class="hint err-text">${esc(fit.error || 'Scoring failed')}</p>`;
-  const reqs = (fit.requirements || []).map((r) => {
-    const ev = (r.evidence || []).map((e) => {
-      const subs = (e.sub_bullets || []).map((s) => `<li>${esc(s)}</li>`).join('');
-      return `<li class="ev">✓ ${esc(e.bullet)}${subs ? `<ul>${subs}</ul>` : ''}</li>`;
-    }).join('');
-    const tag = r.matched ? '<span class="ok-text">matched</span>' : '<span class="err-text">missing</span>';
-    const must = r.must_have === false ? ' <span class="muted">(nice to have)</span>' : '';
-    return `<li><div>${esc(r.point)} · ${tag}${must}</div>${ev ? `<ul>${ev}</ul>` : ''}</li>`;
-  }).join('') || '<li class="muted">No requirement breakdown.</li>';
-  return `${fit.summary ? `<p class="summary">${esc(fit.summary)}</p>` : ''}
-    <ul>${reqs}</ul>
-    <p class="muted">${esc(fit.model || '')} · ${esc(fmtDate(fit.scored_at))}${fit.stale ? ' · scored against older documents' : ''}</p>`;
-}
-
-function missingRequirements(fit) {
-  return (fit.requirements || [])
-    .filter((r) => !r.matched)
-    .sort((a, b) => (b.must_have !== false) - (a.must_have !== false));
-}
-
-function gapsSection(job) {
-  const fit = job.fit;
-  if (!fit || fit.status !== 'ok') return '';
-  const n = (fit.gaps || []).length || missingRequirements(fit).length;
-  if (!n) return '';
-  return `<details class="reqs gaps" data-section="gaps"><summary>Gaps (${n})</summary><div class="gaps-body"></div></details>`;
-}
-
-function gapsHtml(job) {
-  const fit = job.fit;
-  const gaps = (fit.gaps || []).map((g) => `<li class="gap">✕ ${esc(g)}</li>`).join('');
-  const missing = missingRequirements(fit).map((r) =>
-    `<li class="gap">${esc(r.point)}${r.must_have === false ? ' <span class="muted">(nice to have)</span>' : ' <span class="muted">(must have)</span>'}</li>`).join('');
-  return `${gaps ? `<ul>${gaps}</ul>` : ''}
-    ${missing ? `<p class="muted gaps-sub">Requirements your documents don't evidence:</p><ul>${missing}</ul>` : ''}`;
 }
 
 async function showDescription(job) {
@@ -530,6 +439,7 @@ function finishRun(run) {
   } else {
     $('#run-status').textContent = runSummaryText(run);
     const sc = run.summary?.scoring || run.summary?.research;
+    if (run.summary?.offices?.aborted) toast(`Office search stopped: ${run.summary.offices.aborted}`, 'err', 12000);
     if (sc?.aborted) toast(`Stopped: ${sc.aborted}`, 'err', 12000);
     else if (sc?.first_error) toast(`Some failed: ${sc.first_error}`, 'err', 9000);
   }
@@ -556,6 +466,11 @@ function runSummaryText(run) {
   if (rs) {
     if (rs.aborted) bits.push('research stopped (see error)');
     else bits.push(`researched ${rs.researched}/${rs.requested} companies${rs.errors ? `, ${rs.errors} failed` : ''}`);
+  }
+  const of = run.summary?.offices;
+  if (of && !of.aborted) {
+    const found = of.from_ads + of.from_companies;
+    bits.push(`offices found for ${found} job${found === 1 ? '' : 's'}${of.unknown ? `, ${of.unknown} still unknown${of.recruiters ? ` (${of.recruiters} recruiter ads: your call)` : ''}` : ''}`);
   }
   return `${RUN_LABEL[run.kind] || 'Run'} finished ${fmtDate(run.finished_at)}: ${bits.join(' · ')}`;
 }
@@ -604,69 +519,16 @@ function companyIcon(job) {
   return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}" aria-label="Company info">ⓘ${count}</button>`;
 }
 
-function linkList(sources) {
-  return (sources || []).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.url)}</a>`).join(' · ');
-}
-
-function glassdoorLink(p, name) {
-  if (p?.glassdoor_url) {
-    return `<a class="glassdoor" href="${esc(p.glassdoor_url)}" target="_blank" rel="noopener noreferrer">Glassdoor page ↗</a>`;
-  }
-  // No verified page: a Glassdoor search for the name (built here, not by the model).
-  const q = encodeURIComponent(p?.official_name || name);
-  return `<a class="glassdoor" href="https://www.glassdoor.com.au/Search/results.htm?keyword=${q}" target="_blank" rel="noopener noreferrer">Search Glassdoor ↗</a>`;
-}
-
-function sentimentHtml(p) {
-  const s = p.sentiment;
-  if (!s) return '<span class="muted">Not researched yet: click Research again (or Fill missing info) to add it.</span>';
-  const list = (items, cls, mark) => (items.length ? `<ul class="themes ${cls}">${items.map((t) => `<li>${mark} ${esc(t)}</li>`).join('')}</ul>` : '');
-  return `
-    ${s.rating ? `<div><strong>${esc(s.rating)}</strong></div>` : ''}
-    <div>${esc(s.summary || 'No employee reviews found.')}</div>
-    ${list(s.positives, 'pos', '+')}${list(s.negatives, 'neg', '−')}
-    ${s.sources.length ? `<div class="sources">${linkList(s.sources)}</div>` : ''}`;
-}
-
 function showCompany(job) {
   const p = state.companies[job.company_key];
-  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>`;
-  let body;
-  if (!p) {
-    body = `<p class="muted">Not researched yet. <strong>Fill missing info</strong> researches every company in your list, or research just this one:</p>${researchBtn}`;
-  } else if (p.status === 'error') {
-    body = `<p class="err-text">Research failed: ${esc(p.error)}</p>${researchBtn}`;
-  } else if (p.status === 'skipped') {
-    body = `<p class="muted">"${esc(p.name)}" isn't an identifiable organisation (for example an anonymous advertiser).</p>${researchBtn}`;
-  } else {
-    const cons = p.controversies.length
-      ? `<ul class="controversies">${p.controversies.map((c) => `
-          <li><strong>${esc(c.title)}</strong>${c.year ? ` <span class="muted">(${esc(c.year)})</span>` : ''}
-            <div>${esc(c.summary)}</div><div class="sources">${linkList(c.sources)}</div></li>`).join('')}</ul>`
-      : '';
-    body = `
-      ${p.is_recruiter ? '<p class="notice">This is a recruitment agency. The employer behind the ad is usually not disclosed; ask the recruiter who the client is.</p>' : ''}
-      <dl class="profile">
-        <dt>How they make money</dt><dd>${esc(p.business_model || 'Unknown')}</dd>
-        <dt>Ownership</dt><dd>${esc(p.ownership || 'Unknown')}</dd>
-        <dt>Headquarters</dt><dd>${esc(p.headquarters || 'Unknown')}</dd>
-        <dt>Employees</dt><dd>${esc(p.employee_count || (p.research_version >= 2 ? 'Unknown' : 'Not researched yet'))}</dd>
-        <dt>Employee sentiment</dt><dd>${sentimentHtml(p)}</dd>
-        <dt>Controversies</dt><dd>${esc(p.controversy_note || (p.controversies.length ? '' : 'None found.'))}${cons}</dd>
-      </dl>
-      ${p.sources.length ? `<p class="sources"><span class="muted">Sources:</span> ${linkList(p.sources)}</p>` : ''}
-      <p class="muted">Researched ${esc(fmtDate(p.researched_at))} by ${esc(p.model || 'the LLM')} with web search.
-        Only links the search actually returned are shown${p.unverified_dropped ? `; ${p.unverified_dropped} unverifiable link(s) and their claims were removed` : ''}.
-        Automated research can be wrong: check the linked articles.</p>
-      ${researchBtn}`;
-  }
-  const skipped = p?.status === 'skipped';
-  openHtmlModal(p?.official_name || job.company, (skipped ? '' : `<p class="modal-links">${glassdoorLink(p, job.company)}</p>`) + body);
+  openHtmlModal(p?.official_name || job.company, companyProfileHtml(p, job.company));
   $('#company-research').addEventListener('click', () => {
     $('#modal').hidden = true;
     startRun('/api/companies/research', { name: job.company });
   });
 }
+
+function currentWorkspace() { return state.ws; }
 
 /* ================= COVER LETTERS ================= */
 async function showCoverLetter(job) {
@@ -726,19 +588,6 @@ async function showCoverLetter(job) {
     try { await navigator.clipboard.writeText($('#cl-text').value); toast('Copied', 'ok', 1500); }
     catch { $('#cl-text').select(); toast('Press Ctrl+C to copy', '', 2500); }
   });
-}
-
-/* ================= SOURCES ================= */
-function sourceLabel(src) {
-  const s = String(src || '');
-  if (s === 'seek') return 'SEEK';
-  if (s === 'import') return 'imported page';
-  const i = s.indexOf(':');
-  if (i < 0) return s;
-  const kind = s.slice(0, i), rest = s.slice(i + 1);
-  if (kind === 'apsjobs') return 'APSJobs';
-  if (kind === 'site' || kind === 'generic') return rest;
-  return `${rest.split('/')[0]} (${kind[0].toUpperCase()}${kind.slice(1)})`;
 }
 
 /* ================= DUPLICATE ADS ================= */
@@ -875,48 +724,6 @@ async function splitCopy(id) {
     toast('Split out: it is its own card again and won\'t be merged with that job again.', 'ok');
     loadJobs();
   } catch (e) { toast(`Split failed: ${e.message}`, 'err'); }
-}
-
-/* ================= MARKDOWN (chat answers) ================= */
-function mdInline(s) { // s is already HTML-escaped
-  return s
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\w)/g, '$1<em>$2</em>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+[^\s<).,;:])/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
-}
-
-function mdTable(rows) {
-  const cells = (r) => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => mdInline(c.trim()));
-  const body = rows.filter((r) => !/^\s*\|?\s*:?-{2,}/.test(r));
-  if (!body.length) return '';
-  const [head, ...rest] = body;
-  return `<table><thead><tr>${cells(head).map((c) => `<th>${c}</th>`).join('')}</tr></thead>
-    <tbody>${rest.map((r) => `<tr>${cells(r).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-}
-
-function mdToHtml(text) {
-  const lines = esc(text).split('\n');
-  let html = '', list = null, para = [], table = [];
-  const flushPara = () => { if (para.length) { html += `<p>${mdInline(para.join('<br>'))}</p>`; para = []; } };
-  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
-  const flushTable = () => { if (table.length) { html += mdTable(table); table = []; } };
-  const startList = (kind) => { flushPara(); flushTable(); if (list !== kind) { closeList(); html += `<${kind}>`; list = kind; } };
-  for (const raw of lines) {
-    const line = raw.trimEnd();
-    let m;
-    if (/^\s*\|.*\|\s*$/.test(line)) { flushPara(); closeList(); table.push(line); continue; }
-    flushTable();
-    if (!line.trim()) { flushPara(); closeList(); continue; }
-    if ((m = line.match(/^\s*#{1,6}\s+(.*)$/))) { flushPara(); closeList(); html += `<h4>${mdInline(m[1])}</h4>`; continue; }
-    if ((m = line.match(/^\s*[-*•]\s+(.*)$/))) { startList('ul'); html += `<li>${mdInline(m[1])}</li>`; continue; }
-    if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) { startList('ol'); html += `<li>${mdInline(m[1])}</li>`; continue; }
-    closeList();
-    para.push(line);
-  }
-  flushPara(); flushTable(); closeList();
-  return html;
 }
 
 /* ================= JOB CHAT ================= */
@@ -1239,7 +1046,15 @@ async function loadSetup() {
   try {
     const [profile, dealbreakers] = await Promise.all([api('/api/profile'), api('/api/dealbreakers')]);
     state.profile = profile;
-    ['titles', 'keywords_include', 'keywords_exclude', 'seek_locations'].forEach((f) => setTags(f, profile[f]));
+    ['titles', 'keywords_include', 'keywords_exclude', 'seek_locations', 'commute_from'].forEach((f) => setTags(f, profile[f]));
+    $('#commute-arrive').value = profile.commute_arrive_by || '09:00';
+    api('/api/commute/status').then((k) => {
+      $('#commute-keys').innerHTML = `Public transport: ${k.transit ? '<span class="ok-text">Transport for NSW ✓</span>'
+        : 'needs a free Transport for NSW API key (<code>TFNSW_API_KEY</code>; see the README)'}.
+        Driving: ${k.traffic ? '<span class="ok-text">TomTom, with peak traffic ✓</span>'
+        : 'without traffic (a free TomTom key, <code>TOMTOM_API_KEY</code>, adds peak-hour traffic)'}.`;
+    }).catch(() => {});
+    $('#commute-leave').value = profile.commute_leave_at || '17:00';
     setTags('dealbreaker_industries', dealbreakers.industries);
     setTags('dealbreaker_keywords', dealbreakers.keywords);
     $('#salary-floor').value = profile.salary_floor ?? '';
@@ -1273,6 +1088,9 @@ const saveSetup = debounce(async () => {
     allow_onsite: $('#allow-onsite').checked,
     seek_enabled: $('#seek-enabled').checked,
     seek_locations: getTags('seek_locations'),
+    commute_from: getTags('commute_from'),
+    commute_arrive_by: $('#commute-arrive').value || '09:00',
+    commute_leave_at: $('#commute-leave').value || '17:00',
   };
   const dealbreakers = { industries: getTags('dealbreaker_industries'), keywords: getTags('dealbreaker_keywords') };
   try {
@@ -1311,7 +1129,7 @@ function initSetup() {
     input.addEventListener('blur', () => { if (input.value.trim()) { addTag(field, input.value); input.value = ''; } });
   });
   ['#salary-floor'].forEach((s) => $(s).addEventListener('input', saveSetup));
-  ['#remote-aus', '#remote-global', '#allow-hybrid', '#allow-onsite', '#seek-enabled', '#max-office-days'].forEach((s) => $(s).addEventListener('change', saveSetup));
+  ['#remote-aus', '#remote-global', '#allow-hybrid', '#allow-onsite', '#seek-enabled', '#max-office-days', '#commute-arrive', '#commute-leave'].forEach((s) => $(s).addEventListener('change', saveSetup));
   $('#search-form').addEventListener('submit', (e) => e.preventDefault());
   $('#import-form').addEventListener('submit', importPages);
 }

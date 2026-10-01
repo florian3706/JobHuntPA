@@ -419,3 +419,46 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; paddi
 .chat-form-row .muted { flex: 1; font-size: 12.5px; }
 .job-card.flash { animation: card-flash 1.4s ease-out; }
 @keyframes card-flash { 0% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: var(--shadow); } }
+
+/* Office on job cards */
+input[type="time"] {
+  background: #10161f; color: var(--text); color-scheme: dark;
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 14px;
+}
+.job-office { font-size: 13px; }
+.modal-html .offices { margin: 4px 0 0; padding-left: 18px; }
+
+/* Job page (job.html) */
+.brand-link { color: inherit; text-decoration: none; }
+.job-main { max-width: 1400px; }
+.job-head { margin-bottom: 16px; display: flex; flex-direction: column; gap: 10px; }
+.job-head[hidden] { display: none; }
+.job-page-title { margin: 4px 0; font-size: 24px; line-height: 1.25; }
+.job-page-title a { color: inherit; text-decoration: none; }
+.job-page-title a:hover { text-decoration: underline; }
+.job-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .job-cols { grid-template-columns: minmax(0, 1fr); } }
+.job-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.job-section h2 { margin: 0 0 10px; font-size: 17px; }
+.job-section .reqs { border-top: none; padding-top: 0; }
+.job-page .notice {
+  background: rgba(245,165,36,.10); border: 1px solid rgba(245,165,36,.45); border-radius: 8px;
+  padding: 8px 10px; font-size: 13.5px; margin: 6px 0;
+}
+.job-page .company-body { padding: 0; overflow: visible; }
+.commute-map { height: 380px; margin: 10px 0; }
+.job-ad .ad-text { white-space: pre-wrap; font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+.office-form { margin: 8px 0; }
+.verdict-row { align-items: center; gap: 8px; }
+.office-cands { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; font-size: 13px; }
+.commute-from h4 { margin: 14px 0 4px; font-size: 14px; }
+.trip { font-size: 13.5px; margin: 6px 0; line-height: 1.5; }
+.trip summary { cursor: pointer; }
+.legs { margin: 6px 0 0; padding-left: 22px; font-size: 13px; }
+.legs li { margin-bottom: 4px; }
+.leg-mode { display: inline-block; border-left: 4px solid var(--c); padding-left: 6px; font-weight: 600; }
+.commute-links { font-size: 13px; margin-top: 12px; }
+.commute-links a { color: var(--accent); }
+.gaps-title { font-size: 14px; margin: 14px 0 4px; color: #ffb4b4; }
+.job-head .job-actions select { flex: 0 1 260px; }
+a.btn { text-decoration: none; display: inline-block; }

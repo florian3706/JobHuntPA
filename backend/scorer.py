@@ -128,7 +128,8 @@ Return ONLY a JSON object, no markdown, with exactly this shape:
      "evidence": [{"bullet": "string", "sub_bullets": ["string"]}]}
   ],
   "gaps": ["string"],
-  "summary": "string"
+  "summary": "string",
+  "office_location": "string"
 }
 
 Rules:
@@ -139,7 +140,8 @@ Rules:
 5. "score": integer 0-100. Must-haves dominate; 90+ means every must-have is evidenced; below 40 means major must-haves are missing.
 6. "summary": 2-4 sentences: overall fit, strongest evidence, biggest gaps.
 7. The resume is the primary source. Other documents (cover letters, interview answers, transcripts) are supporting evidence only.
-8. If the job text is only a short listing summary, assess what is stated and say in the summary that the full description was not available."""
+8. If the job text is only a short listing summary, assess what is stated and say in the summary that the full description was not available.
+9. "office_location": where the candidate would work, as stated in the job posting: a street address or suburb (e.g. "1 Denison St, North Sydney" or "Macquarie Park"). Empty if the posting names only a city or no place. Not head office elsewhere, other offices or clients' sites."""
 
 
 def build_job_text(job: Job) -> str:
@@ -216,7 +218,8 @@ def call_model(messages: list[dict], cfg: dict, *, json_mode: bool = True) -> st
 # Result parsing
 # --------------------------------------------------------------------------
 
-def parse_result(raw: str) -> dict:
+def parse_json(raw: str) -> dict:
+    """The JSON object in a model's answer (fences and trailing commas allowed)."""
     text = (raw or "").strip()
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S | re.I)
     if fence:
@@ -228,6 +231,13 @@ def parse_result(raw: str) -> dict:
         obj = json.loads(re.sub(r",\s*([}\]])", r"\1", text[start:end + 1]))
     except ValueError as exc:
         raise ScorerError(f"invalid JSON from model: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise ScorerError(f"model did not return a JSON object: {raw[:300]}")
+    return obj
+
+
+def parse_result(raw: str) -> dict:
+    obj = parse_json(raw)
     try:
         score = max(0, min(100, int(round(float(obj.get("score", 0))))))
     except (TypeError, ValueError):
@@ -247,7 +257,8 @@ def parse_result(raw: str) -> dict:
         reqs.append({"point": str(r["point"]).strip(), "must_have": r.get("must_have") is not False,
                      "matched": matched, "evidence": evidence})
     gaps = [str(g).strip() for g in obj.get("gaps") or [] if str(g).strip()]
-    return {"score": score, "requirements": reqs, "gaps": gaps, "summary": str(obj.get("summary") or "").strip()}
+    return {"score": score, "requirements": reqs, "gaps": gaps, "summary": str(obj.get("summary") or "").strip(),
+            "office_location": str(obj.get("office_location") or "").strip()}
 
 
 # --------------------------------------------------------------------------
@@ -286,7 +297,13 @@ def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> d
         except ScorerError as exc:
             _store(db, job_id, error=str(exc))
             raise
+        office = result.pop("office_location", "")
         _store(db, job_id, result=result, profile_hash=profile_hash, model=cfg["model"])
+        if job.detail_status == "full":
+            from backend.offices import from_ad
+
+            from_ad(db, job, office)
+            db.commit()
         return result
     finally:
         db.close()

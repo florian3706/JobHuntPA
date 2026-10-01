@@ -123,7 +123,7 @@ def companies_to_research(db: Session, ws: int, mode: str = "missing",
     out = []
     for key, entry in by_key.items():
         p = profiles.get(key)
-        if mode == "all" or p is None or p.status == "error" or (
+        if mode == "all" or p is None or p.status not in ("done", "skipped") or (
                 p.status == "done" and ((p.researched_at and p.researched_at < stale_before)
                                         or (p.research_version or 1) < RESEARCH_VERSION)):
             out.append(entry)

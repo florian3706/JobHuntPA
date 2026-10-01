@@ -213,6 +213,11 @@ def _location_reason(job: Any, c: Criteria) -> Optional[str]:
         return f"{OFFICE_DAYS_REASON}{office_days} office days a week (your max is {c.max_office_days})"
     if mode == "onsite" and not c.allow_onsite:
         return "onsite roles not wanted"
+    verdict = _get(job, "location_verdict")  # the user's own call on the office location
+    if verdict == "too_far":
+        return "you marked the office as too far"
+    if verdict == "ok":
+        return None
     if abroad:
         return f"based outside Australia ({where})"
 

@@ -48,6 +48,16 @@ class EnvFileTest(unittest.TestCase):
         values = self._configure(["s"])
         self.assertEqual(values.get("LLM_API_KEY"), "")
 
+    def test_commute_keys_asked_once(self):
+        def run(answers, reconfigure=False):
+            with mock.patch.object(installer, "ROOT", self.dir), \
+                    mock.patch("builtins.input", side_effect=answers), mock.patch.object(installer, "say"):
+                installer.configure_commute(interactive=True, reconfigure=reconfigure)
+            return installer.read_env(self.env)[1]
+        self.assertEqual(run(["tfnsw-key", ""]), {"TFNSW_API_KEY": "tfnsw-key", "TOMTOM_API_KEY": ""})
+        self.assertEqual(run([])["TFNSW_API_KEY"], "tfnsw-key")  # not asked again
+        self.assertEqual(run(["", "tt"], reconfigure=True)["TOMTOM_API_KEY"], "tt")
+
 
 if __name__ == "__main__":
     unittest.main()

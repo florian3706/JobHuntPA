@@ -43,7 +43,7 @@
         <div class="toolbar-row">
           <button id="search-run" class="btn btn-primary" type="button">Run search</button>
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
-          <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile: the ticked jobs' companies, or every company in your list when none are ticked (one LLM web-search agent per company)">Fill missing info</button>
+          <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
           <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
           <span id="run-status" class="muted" aria-live="polite"></span>
         </div>
@@ -211,6 +211,26 @@
       </div>
 
       <div class="card form-card">
+        <h3>Commute</h3>
+        <p class="hint">Used on each job's full page (Open ↗): public transport and driving times to the office at peak times, there and back.</p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Public transport from</label>
+            <div class="tag-input" data-field="commute_from"><div class="tags"></div><input type="text" placeholder="e.g. Gosford Station + Enter" /></div>
+            <small class="hint">Stations you'd walk or drive to; each gets its own journey. Empty = from your home pin. Driving always starts at the home pin.</small>
+          </div>
+          <div class="form-group">
+            <label for="commute-arrive">Arrive at work by</label>
+            <input id="commute-arrive" type="time" value="09:00" />
+            <label for="commute-leave">Leave work at</label>
+            <input id="commute-leave" type="time" value="17:00" />
+            <small class="hint">Times are for the next Tuesday, a typical office day.</small>
+          </div>
+        </div>
+        <p id="commute-keys" class="hint"></p>
+      </div>
+
+      <div class="card form-card">
         <h3>Company sources</h3>
         <p class="hint">Careers pages or job boards. The app detects Workable/Greenhouse/Lever/Ashby/SmartRecruiters/Workday boards,
           otherwise it scrapes the page's HTML, respecting robots.txt and crawl delays.</p>
@@ -350,6 +370,7 @@
   <div id="toasts" class="toasts" aria-live="assertive"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="./common.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

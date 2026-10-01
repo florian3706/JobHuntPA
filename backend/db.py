@@ -122,6 +122,16 @@ class Job(Base):
     # the copy keeps its row so later searches recognise its URL, but only the
     # job it points to is listed, scored and researched.
     duplicate_of = Column(Integer, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Where the office actually is, when the ad's location is only a city
+    # (backend.offices). Its coordinates replace the listing's for the
+    # location filter and distance.
+    office_text = Column(String, nullable=True)     # address or suburb
+    office_lat = Column(Float, nullable=True)
+    office_lng = Column(Float, nullable=True)
+    office_source = Column(String, nullable=True)   # ad | company | user
+    office_checked_at = Column(DateTime, nullable=True)  # ad read for an office (found or not)
+    # The user's own call on the location: ok (passes the location filter) | too_far
+    location_verdict = Column(String, nullable=True)
 
 
 class JobDuplicate(Base):
@@ -218,6 +228,11 @@ class UserProfile(Base):
     seek_enabled = Column(Boolean, nullable=False, default=True, server_default="1")
     seek_locations = Column(JSON, nullable=True)
     seek_max_pages = Column(Integer, nullable=False, default=1, server_default="1")  # unused (SEEK pagination is off-limits)
+    # Commute (backend.commute): public transport starts at these stations
+    # (empty = the home pin); peak trips arrive by / leave at these times.
+    commute_from = Column(JSON, nullable=True)
+    commute_arrive_by = Column(String, nullable=False, default="09:00", server_default="09:00")
+    commute_leave_at = Column(String, nullable=False, default="17:00", server_default="17:00")
 
 
 class DealbreakerSet(Base):
@@ -302,6 +317,9 @@ class CompanyProfile(Base):
     glassdoor_url = Column(String, nullable=True)      # verified company page, if found
     sentiment_json = Column(Text, nullable=True)       # employee sentiment summary + sources
     research_version = Column(Integer, nullable=False, default=1, server_default="1")
+    # [{name, address, city}] offices found by web search (backend.offices)
+    offices_json = Column(Text, nullable=True)
+    offices_checked_at = Column(DateTime, nullable=True)
     unverified_dropped = Column(Integer, nullable=False, default=0, server_default="0")
     error = Column(Text, nullable=True)
     model = Column(String, nullable=True)
@@ -324,6 +342,7 @@ class CompanyProfile(Base):
             "glassdoor_url": self.glassdoor_url,
             "sentiment": json.loads(self.sentiment_json) if self.sentiment_json else None,
             "research_version": self.research_version or 1,
+            "offices": json.loads(self.offices_json) if self.offices_json else None,
             "unverified_dropped": self.unverified_dropped or 0,
             "error": self.error,
             "model": self.model,
@@ -432,6 +451,16 @@ class HttpCache(Base):
     fetched_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class CommuteCache(Base):
+    """Journey planner / routing answers (backend.commute), refreshed weekly."""
+
+    __tablename__ = "commute_cache"
+
+    key = Column(String, primary_key=True)
+    result_json = Column(Text, nullable=False, default="null")
+    fetched_at = Column(DateTime, nullable=False, default=utcnow)
+
+
 class GeocodeCache(Base):
     """Nominatim results, cached forever (their usage policy requires it)."""
 
@@ -442,6 +471,7 @@ class GeocodeCache(Base):
     lng = Column(Float, nullable=True)
     country = Column(String, nullable=True)
     display_name = Column(String, nullable=True)
+    place_type = Column(String, nullable=True)  # Nominatim addresstype ("suburb", "city", ...)
     fetched_at = Column(DateTime, nullable=False, default=utcnow)
 
 

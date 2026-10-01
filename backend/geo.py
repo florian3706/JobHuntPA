@@ -120,7 +120,8 @@ _AU_STATES = {"NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"}
 
 
 def geocode(location_text: str) -> Optional[dict[str, Any]]:
-    """{lat, lng, country} for a location string (cached), or None."""
+    """{lat, lng, country, type} for a location string (cached), or None.
+    ``type`` is Nominatim's addresstype ("suburb", "city", ...) when known."""
     query = _geocode_query(location_text)
     if not query or _NOT_A_PLACE.match(query):
         return None
@@ -129,19 +130,55 @@ def geocode(location_text: str) -> Optional[dict[str, Any]]:
     try:
         row = db.get(GeocodeCache, key)
         if row is not None:
-            return None if row.lat is None else {"lat": row.lat, "lng": row.lng, "country": row.country or ""}
+            return None if row.lat is None else {"lat": row.lat, "lng": row.lng, "country": row.country or "",
+                                                 "type": row.place_type}
         result = _nominatim(query)
+        if result and result["area"]:
+            # "Hornsby, Sydney NSW" only finds Hornsby Shire, whose centre is
+            # 13 km from Hornsby; "Hornsby, NSW" finds the suburb itself.
+            alt = _without_city(query)
+            better = _nominatim(alt) if alt else None
+            if better and not better["area"]:
+                result = better
         if result is False:  # transient failure: don't cache
             return None
         row = GeocodeCache(query=key)
         if result:
-            row.lat, row.lng, row.country, row.display_name = (
-                result["lat"], result["lng"], result["country"], result["display_name"])
+            row.lat, row.lng, row.country, row.display_name, row.place_type = (
+                result["lat"], result["lng"], result["country"], result["display_name"], result["type"])
         db.add(row)
         db.commit()
-        return None if not result else {"lat": result["lat"], "lng": result["lng"], "country": result["country"]}
+        return None if not result else {"lat": result["lat"], "lng": result["lng"], "country": result["country"],
+                                        "type": result["type"]}
     finally:
         db.close()
+
+
+_STATE_IN = re.compile(r"\b(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\b")
+
+
+def _without_city(query: str) -> str:
+    """"Hornsby, Sydney NSW" -> "Hornsby, NSW" ('' if there's no city part)."""
+    parts = [p.strip() for p in query.split(",") if p.strip()]
+    state = _STATE_IN.search(parts[-1]) if len(parts) >= 2 else None
+    return f"{parts[0]}, {state.group(1)}" if state else ""
+
+
+# Places a commute can be measured to; plus buildings and addresses (rank 26+).
+_SETTLEMENTS = {"city", "town", "suburb", "village", "hamlet", "neighbourhood", "quarter", "city_district",
+                "borough", "locality", "isolated_dwelling"}
+_TOO_BROAD = {"country", "state", "region", "continent"}
+
+
+def _pick(hits: list[dict]) -> Optional[dict]:
+    """The place meant: a town, suburb or address before a council area named
+    after it, then the most important one ("Melbourne, Australia" is the city,
+    not Melbourne Point, WA). "Australia" or "Victoria" is not a place you can
+    measure a commute to."""
+    hits = [h for h in hits if h.get("addresstype") not in _TOO_BROAD]
+    precise = [h for h in hits if h.get("addresstype") in _SETTLEMENTS or int(h.get("place_rank") or 0) >= 26]
+    pool = precise or hits
+    return max(pool, key=lambda h: float(h.get("importance") or 0)) if pool else None
 
 
 def _nominatim(query: str):
@@ -162,20 +199,64 @@ def _nominatim(query: str):
         except (httpx.HTTPError, ValueError) as exc:
             log.warning("geocode failed for %r: %s", query, exc)
             return False
-    if not hits:
+    hit = _pick(hits or [])
+    if hit is None:
         return None
-    # The first hit can be an obscure landmark ("Melbourne Point, WA" for
-    # "Melbourne, Australia"); the most important place is the one meant.
-    hit = max(hits, key=lambda h: float(h.get("importance") or 0))
-    # "Australia" or "Victoria" is not a place you can measure a commute to.
-    if hit.get("addresstype") in ("country", "state", "region", "continent"):
-        return None
+    kind = hit.get("addresstype") or ""
     return {
         "lat": float(hit["lat"]),
         "lng": float(hit["lon"]),
         "country": ((hit.get("address") or {}).get("country_code") or "").upper(),
         "display_name": hit.get("display_name") or "",
+        "type": kind,
+        # A council or district area rather than a place in it.
+        "area": kind not in _SETTLEMENTS and int(hit.get("place_rank") or 30) < 26,
     }
+
+
+_AREA_NAME = re.compile(r"^(the )?(council|city|municipality|shire|district)\b.*\bof\b|\b(council|shire)$", re.I)
+_NAMES_AREA = re.compile(r"\b(council|shire|city of|municipality|district of)\b", re.I)
+
+
+def purge_area_geocodes() -> set[str]:
+    """Forget cached results that are council areas (stored before suburbs
+    were preferred), unless the query itself asked for the council. Returns
+    the dropped queries so their jobs can be placed again."""
+    db = SessionLocal()
+    try:
+        rows = db.query(GeocodeCache).filter(GeocodeCache.display_name.isnot(None)).all()
+        dropped = {r.query for r in rows
+                   if _AREA_NAME.search(r.display_name.split(",")[0].strip()) and not _NAMES_AREA.search(r.query)}
+        if dropped:
+            db.query(GeocodeCache).filter(GeocodeCache.query.in_(dropped)).delete(synchronize_session=False)
+            db.commit()
+        return dropped
+    finally:
+        db.close()
+
+
+# Big cities: an ad that only names one of these doesn't say where the office is.
+_METRO = {"sydney", "melbourne", "brisbane", "perth", "adelaide", "canberra", "hobart", "darwin", "gold coast",
+          "newcastle", "wollongong", "central coast", "sunshine coast", "geelong", "greater sydney",
+          "greater melbourne", "greater brisbane", "auckland", "wellington", "london", "singapore"}
+_LOCATION_NOISE = re.compile(
+    r"\b(nsw|vic|qld|wa|sa|tas|act|nt|new south wales|victoria|queensland|western australia|south australia|"
+    r"tasmania|australian capital territory|northern territory|australia|au|metro|metropolitan|region|area|"
+    r"hybrid|on-?site|in-?office|in-person|office|based)\b|[^a-z ]", re.I)
+
+
+def is_city_only(location_text: str) -> bool:
+    """True when the location names only a city ("Sydney NSW", "Australia -
+    Sydney - New South Wales"), or several cities, so the office could be
+    anywhere in it. "Sydney CBD" or a suburb is specific enough."""
+    places = [" ".join(_LOCATION_NOISE.sub(" ", p.lower()).split()) for p in re.split(r"\s*;\s*", location_text or "")]
+    places = [p for p in places if p and set(p.split()) != {"remote"}]  # "Remote - Remote" alongside a city
+    if not places:
+        return False
+    for words in places:
+        if not {words, " ".join(dict.fromkeys(words.split()))} & _METRO:  # "sydney sydney" -> "sydney"
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------

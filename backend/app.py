@@ -20,10 +20,14 @@ from backend import tasks
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
+from backend.commute import router as commute_router
+from backend.commute import status_router as commute_status_router
 from backend.duplicates import router as duplicates_router
 from backend.job_chat import router as chat_router
 from backend.filters import softened_job_ids
 from backend.llm_settings import router as llm_router
+from backend.offices import looks_like_recruiter, office_unknown
+from backend.offices import router as offices_router
 from backend.title_suggestions import router as titles_router
 from backend.profile import router as profile_router
 from backend.sources import router as sources_router
@@ -55,6 +59,9 @@ app.include_router(llm_router)
 app.include_router(cover_letters_router)
 app.include_router(duplicates_router)
 app.include_router(chat_router)
+app.include_router(offices_router)
+app.include_router(commute_router)
+app.include_router(commute_status_router)
 
 
 @app.get("/api/health")
@@ -84,7 +91,7 @@ def _fit_dict(fit: Optional[FitResult], profile_hash: str) -> Optional[dict]:
 
 
 def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: bool = False,
-                has_letter: bool = False) -> dict:
+                has_letter: bool = False, recruiter: bool = False) -> dict:
     out = {
         "id": job.id,
         "source": job.source,
@@ -112,6 +119,12 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "hidden": bool(job.hidden),
         "fit": _fit_dict(fit, profile_hash),
         "has_cover_letter": has_letter,
+        "office_text": job.office_text,
+        "office_source": job.office_source,
+        "office_placed": job.office_lat is not None,
+        "office_unknown": office_unknown(job),
+        "location_verdict": job.location_verdict,
+        "recruiter": recruiter,
     }
     if full:
         out["description"] = job.description or ""
@@ -154,11 +167,13 @@ def list_jobs(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
                .filter(Job.workspace_id == ws)}
     softened = softened_job_ids(db, ws, office_slack)
+    profiles = {p.key: p for p in db.query(CompanyProfile).all()}
     copies: dict[int, list[Job]] = {}
     for job, _fit in rows:
         if job.duplicate_of:
             copies.setdefault(job.duplicate_of, []).append(job)
-    return [_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters), softened),
+    return [_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
+                                             recruiter=looks_like_recruiter(job.company or "", profiles)), softened),
                          copies.get(job.id, []))
             for job, fit in rows if not job.duplicate_of]
 
@@ -166,9 +181,16 @@ def list_jobs(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(get_db),
             ws: int = Depends(current_workspace)):
+    from backend.offices import candidates
+
     job = owned(db, Job, job_id, ws, "Job")
     fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
-    out = _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True), softened_job_ids(db, ws, office_slack))
+    profiles = {p.key: p for p in db.query(CompanyProfile).filter(CompanyProfile.key == company_key(job.company or ""))}
+    letter = db.query(CoverLetter.id).filter(CoverLetter.job_id == job_id).first() is not None
+    out = _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True, has_letter=letter,
+                              recruiter=looks_like_recruiter(job.company or "", profiles)),
+                  softened_job_ids(db, ws, office_slack))
+    out["office_candidates"] = candidates(db, job) if out["office_unknown"] or job.office_source == "company" else []
     return _with_copies(out, db.query(Job).filter(Job.duplicate_of == job_id).all())
 
 
@@ -369,9 +391,18 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
             db.close()
         progress(f"researching {len(companies)} companies", {"done": 0, "total": len(companies)})
         try:
-            return {"research": research_companies(companies, progress)}
+            summary = {"research": research_companies(companies, progress)}
         except ScorerError as exc:
             return {"research": {"aborted": str(exc)}}
+        if not payload.name and not summary["research"].get("aborted"):
+            # Fill missing info also finds offices for ads that only name a city.
+            from backend.offices import find_offices
+
+            try:
+                summary["offices"] = find_offices(ws, payload.job_ids, progress)
+            except ScorerError as exc:
+                summary["offices"] = {"aborted": str(exc)}
+        return summary
 
     return tasks.start("research", job, ws)
 
