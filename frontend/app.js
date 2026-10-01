@@ -24,6 +24,8 @@ const state = {
   workspaces: [],
   titleSuggestions: [],
   officeSlack: 0, // temporary extra office days allowed on the Jobs tab (never saved)
+  dupes: { suggested: [], auto_merged: [] }, // duplicate ads to check
+  chat: null, // the open job chat: { jobIds, jobs, threadId, threads, messages, busy }
 };
 
 /* ---------- utils ---------- */
@@ -112,6 +114,7 @@ async function loadJobs() {
   }
   renderJobs();
   drawJobMarkers();
+  loadDuplicates();
 }
 
 function visibleJobs() {
@@ -126,7 +129,8 @@ function visibleJobs() {
     if (f.mode !== 'all' && modeOf(j) !== f.mode) return false;
     if (f.maxDist !== null && (j.distance_km === null || j.distance_km > f.maxDist)) return false;
     if (q) {
-      const hay = `${j.company} ${j.title} ${j.location_text} ${j.work_mode} ${j.source}`.toLowerCase();
+      const also = (j.also_on || []).map((c) => sourceLabel(c.source)).join(' ');
+      const hay = `${j.company} ${j.title} ${j.location_text} ${j.work_mode} ${j.source} ${sourceLabel(j.source)} ${also}`.toLowerCase();
       if (!q.split(/\s+/).every((t) => hay.includes(t))) return false;
     }
     return true;
@@ -218,6 +222,7 @@ function renderJobs() {
 
 function renderJobCard(job) {
   const card = document.createElement('article');
+  card.dataset.jobId = job.id;
   card.className = `card job-card${job.excluded_reason ? ' is-excluded' : ''}${state.selected.has(job.id) ? ' is-selected' : ''}`;
   const mode = modeOf(job);
   const dist = job.distance_km === null ? '' : `<span>📍 ${job.distance_km} km</span>`;
@@ -230,6 +235,8 @@ function renderJobCard(job) {
     job.softened_reason ? `<span class="badge soft" title="${esc(`Your saved rule excludes this: ${job.softened_reason}`)}">shown by temporary +${state.officeSlack} office day${state.officeSlack > 1 ? 's' : ''}</span>` : '',
   ].join('');
   const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
+  const also = (job.also_on || []).map((c) => `<span class="also-item"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}</a>${c.closed ? ' <span class="muted">(closed)</span>' : ''}
+    <button class="link split-btn" type="button" data-split="${c.id}" title="Not the same job: show this ad as its own card again">split</button></span>`).join('');
   const fitErr = job.fit && job.fit.error ? `<p class="hint err-text">Scoring failed: ${esc(job.fit.error.slice(0, 240))}</p>` : '';
   card.innerHTML = `
     <div class="job-top">
@@ -246,8 +253,9 @@ function renderJobCard(job) {
     </div>
     <div class="job-sub">
       ${job.salary_text ? `<span>💰 ${esc(job.salary_text)}</span>` : ''}
-      <span class="muted">${esc(job.source || '')}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>
+      <span class="muted">${esc(sourceLabel(job.source))}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>
     </div>
+    ${also ? `<div class="also-on" title="The same job advertised on other sites, merged into this card"><span class="muted">Also on:</span> ${also}</div>` : ''}
     ${excl}${fitErr}
     <div class="job-actions">
       <select aria-label="Application status">
@@ -258,6 +266,7 @@ function renderJobCard(job) {
       ${job.source === 'seek' && job.detail_status === 'summary' ? '<button class="btn btn-sm" type="button" data-act="upload-ad" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>' : ''}
       <button class="btn btn-ghost btn-sm" type="button" data-act="hide">${job.hidden ? 'Unhide' : 'Hide'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="letter">${job.has_cover_letter ? 'Cover letter ✓' : 'Draft cover letter'}</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="chat" title="Ask questions about this job in a chat on the right">Chat</button>
     </div>
     <details class="reqs" data-section="fit"><summary>Fit: requirements → evidence</summary><div class="fit-body"></div></details>
     ${gapsSection(job)}`;
@@ -272,6 +281,8 @@ function renderJobCard(job) {
   card.querySelector('[data-act="rescore"]').addEventListener('click', (e) => rescoreJob(job, e.target));
   card.querySelector('[data-act="desc"]').addEventListener('click', () => showDescription(job));
   card.querySelector('[data-act="letter"]').addEventListener('click', () => showCoverLetter(job));
+  card.querySelector('[data-act="chat"]').addEventListener('click', () => openChat([job.id]));
+  card.querySelectorAll('[data-split]').forEach((b) => b.addEventListener('click', () => splitCopy(Number(b.dataset.split))));
   card.querySelector('[data-act="hide"]').addEventListener('click', () => setHidden([job.id], !job.hidden));
   card.querySelector('[data-act="upload-ad"]')?.addEventListener('click', () => showUploadAd(job));
   card.querySelector('[data-act="company"]')?.addEventListener('click', () => showCompany(job));
@@ -347,6 +358,8 @@ function renderBulkBar() {
   $('#select-all-shown').disabled = vis.length === 0;
   $('#fill-info').textContent = n ? `Fill missing info (${n} selected)` : 'Fill missing info';
   $('#bulk-unhide').hidden = !state.jobs.some((j) => j.hidden && state.selected.has(j.id));
+  $('#bulk-merge').hidden = n < 2;
+  $('#bulk-chat').textContent = n === 1 ? 'Chat about this job' : `Chat about ${n} jobs`;
 }
 
 async function updateJobStatus(job, next, selectEl) {
@@ -475,6 +488,9 @@ function initJobs() {
     const ids = Array.from(state.selected);
     startRun('/api/companies/research', ids.length ? { mode: 'missing', job_ids: ids } : { mode: 'missing' });
   });
+  $('#bulk-chat').addEventListener('click', () => openChat(Array.from(state.selected)));
+  $('#bulk-merge').addEventListener('click', mergeSelected);
+  $('#dupes-open').addEventListener('click', showDuplicates);
 }
 
 /* ================= BACKGROUND RUNS ================= */
@@ -534,6 +550,8 @@ function runSummaryText(run) {
     else if (sc.aborted) bits.push('scoring stopped (see error)');
     else if (sc.requested !== undefined) bits.push(`scored ${sc.scored}/${sc.unique_postings ?? sc.requested} unique postings${sc.errors ? `, ${sc.errors} failed` : ''}`);
   }
+  const du = run.summary?.duplicates;
+  if (du && (du.merged || du.suggested)) bits.push(`${du.merged} duplicate ad${du.merged === 1 ? '' : 's'} merged${du.suggested ? `, ${du.suggested} possible duplicate${du.suggested === 1 ? '' : 's'} to check` : ''}`);
   const rs = run.summary?.research;
   if (rs) {
     if (rs.aborted) bits.push('research stopped (see error)');
@@ -707,6 +725,376 @@ async function showCoverLetter(job) {
   $('#cl-copy').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText($('#cl-text').value); toast('Copied', 'ok', 1500); }
     catch { $('#cl-text').select(); toast('Press Ctrl+C to copy', '', 2500); }
+  });
+}
+
+/* ================= SOURCES ================= */
+function sourceLabel(src) {
+  const s = String(src || '');
+  if (s === 'seek') return 'SEEK';
+  if (s === 'import') return 'imported page';
+  const i = s.indexOf(':');
+  if (i < 0) return s;
+  const kind = s.slice(0, i), rest = s.slice(i + 1);
+  if (kind === 'apsjobs') return 'APSJobs';
+  if (kind === 'site' || kind === 'generic') return rest;
+  return `${rest.split('/')[0]} (${kind[0].toUpperCase()}${kind.slice(1)})`;
+}
+
+/* ================= DUPLICATE ADS ================= */
+async function loadDuplicates() {
+  try { state.dupes = await api('/api/duplicates'); } catch { state.dupes = { suggested: [], auto_merged: [] }; }
+  renderDupeNote();
+}
+
+function renderDupeNote() {
+  const n = state.dupes.suggested.length;
+  const m = state.dupes.auto_merged.length;
+  const note = $('#dupe-note');
+  note.hidden = !n && !m;
+  $('#dupes-open').textContent = n ? `Duplicates (${n} to check)` : 'Duplicates';
+  if (note.hidden) return;
+  const parts = [];
+  if (n) parts.push(`<strong>${n}</strong> possible duplicate ad${n === 1 ? '' : 's'} to check`);
+  if (m) parts.push(`${m} ad${m === 1 ? ' was' : 's were'} merged automatically`);
+  note.innerHTML = `<span>The same job on several sites is shown as one card. ${parts.join(' · ')}.</span>
+    <button class="btn btn-sm" type="button" data-act="review">Review</button>`;
+  note.querySelector('[data-act="review"]').addEventListener('click', showDuplicates);
+}
+
+function dupeSide(j) {
+  const flags = [j.closed ? 'closed' : '', j.hidden ? 'hidden' : '', j.excluded_reason ? 'excluded by your filters' : '',
+    j.detail_status === 'summary' ? 'listing summary only' : '', j.detail_status === 'none' ? 'no description' : ''].filter(Boolean);
+  return `<div class="dupe-side">
+    <div class="muted">${esc(sourceLabel(j.source))}${flags.length ? ` · ${esc(flags.join(' · '))}` : ''}</div>
+    <a href="${esc(j.url)}" target="_blank" rel="noopener"><strong>${esc(j.title || '—')}</strong></a>
+    <div>${esc(j.company || '—')}</div>
+    <div class="muted">${esc(j.location_text || 'location not stated')}${j.salary_text ? ` · ${esc(j.salary_text)}` : ''}</div>
+    <div class="muted">${esc(STATUS_LABEL[j.status] || j.status)}${j.score !== null && j.score !== undefined ? ` · score ${j.score}` : ''} · first seen ${esc(fmtDate(j.first_seen).split(',')[0])}</div>
+    <details><summary>Ad text</summary><div class="dupe-desc">${esc(j.description || '(no description stored)')}</div></details>
+  </div>`;
+}
+
+function dupePairHtml(p, kind) {
+  const buttons = kind === 'suggested'
+    ? `<button class="btn btn-primary btn-sm" type="button" data-d="merge">Same job: merge</button>
+       <button class="btn btn-sm" type="button" data-d="distinct">Different jobs</button>`
+    : `<button class="btn btn-sm" type="button" data-d="confirm">Correct</button>
+       <button class="btn btn-sm" type="button" data-d="distinct">Not the same job: split</button>`;
+  return `<div class="dupe-pair" data-a="${p.a.id}" data-b="${p.b.id}">
+    <div class="dupe-why"><span class="badge ${p.score >= 90 ? 'fit-strong' : p.score >= 75 ? 'fit-good' : 'fit-stretch'}">${p.score}% likely</span>
+      ${p.reasons.map((r) => `<span class="badge flag">${esc(r)}</span>`).join('')}</div>
+    <div class="dupe-sides">${dupeSide(p.a)}${dupeSide(p.b)}</div>
+    <div class="toolbar-row">${buttons}</div>
+  </div>`;
+}
+
+function renderDupeLists() {
+  const { suggested, auto_merged: auto } = state.dupes;
+  $('#dupes-suggested').innerHTML = suggested.length ? suggested.map((p) => dupePairHtml(p, 'suggested')).join('')
+    : '<p class="muted">Nothing to check.</p>';
+  $('#dupes-auto').innerHTML = auto.length ? auto.map((p) => dupePairHtml(p, 'auto')).join('')
+    : '<p class="muted">No automatic merges waiting for a check.</p>';
+  $('#dupes-n-suggested').textContent = suggested.length;
+  $('#dupes-n-auto').textContent = auto.length;
+  $('#dupes-confirm-all').hidden = auto.length < 2;
+  $$('.dupe-pair [data-d]').forEach((btn) => btn.addEventListener('click', async () => {
+    const pair = btn.closest('.dupe-pair');
+    pair.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    try {
+      await decideDuplicate(Number(pair.dataset.a), Number(pair.dataset.b), btn.dataset.d);
+      await loadDuplicates();
+      renderDupeLists();
+      loadJobs();
+    } catch (e) {
+      toast(`Could not save that: ${e.message}`, 'err');
+      pair.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+    }
+  }));
+}
+
+function decideDuplicate(a, b, decision) {
+  return api('/api/duplicates/decide', { method: 'POST', body: JSON.stringify({ a, b, decision }) });
+}
+
+function showDuplicates() {
+  openHtmlModal('Duplicate job ads', `
+    <div class="dupes">
+      <p class="hint">When the same job is advertised on several sites, the app shows it as one card with the other sites under
+        "Also on". It merges ads it's sure about (same employer, title and place, and matching ad text or a very specific title)
+        and asks you about the rest. Your status, cover letter and score carry over to the merged card.</p>
+      <div class="toolbar-row">
+        <button id="dupes-scan" class="btn btn-sm" type="button">Check for duplicates now</button>
+        <span id="dupes-status" class="muted" aria-live="polite"></span>
+      </div>
+      <h4>Possible duplicates to check (<span id="dupes-n-suggested">0</span>)</h4>
+      <div id="dupes-suggested"></div>
+      <h4>Merged automatically (<span id="dupes-n-auto">0</span>)</h4>
+      <p class="hint">Only merges of jobs in your list are shown. Split any that aren't the same job.</p>
+      <button id="dupes-confirm-all" class="btn btn-ghost btn-sm" type="button" hidden>All of these are correct</button>
+      <div id="dupes-auto"></div>
+    </div>`);
+  renderDupeLists();
+  $('#dupes-scan').addEventListener('click', async () => {
+    const btn = $('#dupes-scan');
+    btn.disabled = true;
+    $('#dupes-status').textContent = 'Comparing ads…';
+    try {
+      const r = await api('/api/duplicates/scan', { method: 'POST' });
+      $('#dupes-status').textContent = `Merged ${r.merged} ad${r.merged === 1 ? '' : 's'}; ${r.suggested} possible duplicate${r.suggested === 1 ? '' : 's'} to check.`;
+      await loadDuplicates();
+      renderDupeLists();
+      loadJobs();
+    } catch (e) { $('#dupes-status').textContent = `Failed: ${e.message}`; }
+    btn.disabled = false;
+  });
+  $('#dupes-confirm-all').addEventListener('click', async () => {
+    try {
+      for (const p of state.dupes.auto_merged) await decideDuplicate(p.a.id, p.b.id, 'confirm');
+    } catch (e) { toast(`Could not save that: ${e.message}`, 'err'); }
+    await loadDuplicates();
+    renderDupeLists();
+  });
+}
+
+async function mergeSelected() {
+  const ids = Array.from(state.selected);
+  if (ids.length < 2) return;
+  if (!confirm(`Merge these ${ids.length} ads into one job? Use this when they're the same job advertised on different sites.`)) return;
+  try {
+    await api('/api/jobs/merge', { method: 'POST', body: JSON.stringify({ ids }) });
+    state.selected.clear();
+    toast(`Merged ${ids.length} ads into one card. Use "split" under "Also on" to undo.`, 'ok');
+    loadJobs();
+  } catch (e) { toast(`Merge failed: ${e.message}`, 'err'); }
+}
+
+async function splitCopy(id) {
+  try {
+    await api(`/api/jobs/${id}/unmerge`, { method: 'POST' });
+    toast('Split out: it is its own card again and won\'t be merged with that job again.', 'ok');
+    loadJobs();
+  } catch (e) { toast(`Split failed: ${e.message}`, 'err'); }
+}
+
+/* ================= MARKDOWN (chat answers) ================= */
+function mdInline(s) { // s is already HTML-escaped
+  return s
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\w)/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+[^\s<).,;:])/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
+}
+
+function mdTable(rows) {
+  const cells = (r) => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => mdInline(c.trim()));
+  const body = rows.filter((r) => !/^\s*\|?\s*:?-{2,}/.test(r));
+  if (!body.length) return '';
+  const [head, ...rest] = body;
+  return `<table><thead><tr>${cells(head).map((c) => `<th>${c}</th>`).join('')}</tr></thead>
+    <tbody>${rest.map((r) => `<tr>${cells(r).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+
+function mdToHtml(text) {
+  const lines = esc(text).split('\n');
+  let html = '', list = null, para = [], table = [];
+  const flushPara = () => { if (para.length) { html += `<p>${mdInline(para.join('<br>'))}</p>`; para = []; } };
+  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+  const flushTable = () => { if (table.length) { html += mdTable(table); table = []; } };
+  const startList = (kind) => { flushPara(); flushTable(); if (list !== kind) { closeList(); html += `<${kind}>`; list = kind; } };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    let m;
+    if (/^\s*\|.*\|\s*$/.test(line)) { flushPara(); closeList(); table.push(line); continue; }
+    flushTable();
+    if (!line.trim()) { flushPara(); closeList(); continue; }
+    if ((m = line.match(/^\s*#{1,6}\s+(.*)$/))) { flushPara(); closeList(); html += `<h4>${mdInline(m[1])}</h4>`; continue; }
+    if ((m = line.match(/^\s*[-*•]\s+(.*)$/))) { startList('ul'); html += `<li>${mdInline(m[1])}</li>`; continue; }
+    if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) { startList('ol'); html += `<li>${mdInline(m[1])}</li>`; continue; }
+    closeList();
+    para.push(line);
+  }
+  flushPara(); flushTable(); closeList();
+  return html;
+}
+
+/* ================= JOB CHAT ================= */
+const CHAT_MAX_JOBS = 12;
+const CHAT_STARTERS = {
+  one: ['What would I actually be doing day to day?', 'Honestly, how well do I fit? What are my biggest gaps?',
+    'How should I address my gaps in an interview?', 'What should I ask them in an interview?'],
+  many: ['Compare these jobs for me.', 'Which should I apply to first, and why?', 'Which one fits my experience best?'],
+};
+let chatToken = 0; // bumps when the panel switches jobs, so late answers for old jobs are dropped
+
+function jobLabel(j) { return { id: j.id, title: j.title, company: j.company, url: j.url }; }
+
+async function openChat(ids) {
+  const jobIds = [...new Set(ids)].sort((a, b) => a - b);
+  if (!jobIds.length) return;
+  if (jobIds.length > CHAT_MAX_JOBS) { toast(`Chat about up to ${CHAT_MAX_JOBS} jobs at a time; select fewer.`, 'err'); return; }
+  const token = ++chatToken;
+  state.chat = {
+    jobIds, threadId: null, threads: [], messages: [], busy: false,
+    jobs: jobIds.map((id) => state.jobs.find((j) => j.id === id)).filter(Boolean).map(jobLabel),
+  };
+  $('#chat-panel').hidden = false;
+  document.body.classList.add('chat-open');
+  setChatStatus('');
+  renderChat();
+  $('#chat-input').focus();
+  try {
+    const threads = await api(`/api/chats?job_ids=${jobIds.join(',')}`);
+    if (token !== chatToken) return;
+    state.chat.threads = threads;
+    if (threads.length) await loadChatThread(threads[0].id, token);
+    else renderChat();
+  } catch (e) { if (token === chatToken) setChatStatus(`Could not load earlier chats: ${e.message}`, true); }
+}
+
+async function loadChatThread(id, token = chatToken) {
+  const t = await api(`/api/chats/${id}`);
+  if (token !== chatToken) return;
+  applyThread(t);
+  renderChat();
+}
+
+function applyThread(t) {
+  const c = state.chat;
+  c.threadId = t.id;
+  c.messages = t.messages;
+  if (t.jobs.length) c.jobs = t.jobs;
+  const summary = { id: t.id, title: t.title, updated_at: t.updated_at };
+  c.threads = [summary, ...c.threads.filter((x) => x.id !== t.id)];
+}
+
+function closeChat() {
+  chatToken++;
+  state.chat = null;
+  $('#chat-panel').hidden = true;
+  document.body.classList.remove('chat-open');
+}
+
+function setChatStatus(text, isError = false) {
+  const el = $('#chat-status');
+  el.textContent = text;
+  el.classList.toggle('err-text', isError);
+}
+
+function renderChat() {
+  const c = state.chat;
+  if (!c) return;
+  const n = c.jobIds.length;
+  $('#chat-title').textContent = n === 1 ? 'Ask about this job' : `Ask about ${n} jobs`;
+  $('#chat-input').placeholder = `Ask anything about ${n === 1 ? 'this job' : 'these jobs'}… (Enter to send, Shift+Enter for a new line)`;
+  $('#chat-jobs').innerHTML = c.jobs.map((j, i) => `<button class="chat-job" type="button" data-id="${j.id}" title="Show this job's card">
+    ${n > 1 ? `<strong>${i + 1}</strong> ` : ''}${esc(j.title || '—')} · ${esc(j.company || '—')}</button>`).join('');
+  $$('#chat-jobs .chat-job').forEach((b) => b.addEventListener('click', () => showJobCard(Number(b.dataset.id))));
+  const sel = $('#chat-threads');
+  const opts = c.threads.map((t) => `<option value="${t.id}" ${t.id === c.threadId ? 'selected' : ''}>${esc(t.title || 'Chat')} · ${esc(fmtDate(t.updated_at).split(',')[0])}</option>`);
+  if (!c.threadId) opts.unshift('<option value="" selected>New chat</option>');
+  sel.innerHTML = opts.join('');
+  sel.disabled = c.busy || c.threads.length === 0;
+  $('#chat-delete').hidden = !c.threadId;
+  $('#chat-new').disabled = c.busy || !c.threadId;
+  $('#chat-send').disabled = c.busy;
+  renderChatMessages();
+}
+
+function renderChatMessages() {
+  const c = state.chat;
+  const box = $('#chat-messages');
+  if (!c.messages.length && !c.busy) {
+    const starters = CHAT_STARTERS[c.jobIds.length === 1 ? 'one' : 'many'];
+    box.innerHTML = `<p class="muted">The model sees ${c.jobIds.length === 1 ? 'the ad' : 'each ad'}, your documents, the fit assessment,
+      the company info and any cover-letter draft. Try:</p>
+      <div class="chat-starters">${starters.map((q) => `<button class="btn btn-ghost btn-sm chat-starter" type="button">${esc(q)}</button>`).join('')}</div>`;
+    box.querySelectorAll('.chat-starter').forEach((b) => b.addEventListener('click', () => sendChat(b.textContent)));
+    return;
+  }
+  box.innerHTML = c.messages.map((m) => {
+    if (m.role === 'user') return `<div class="chat-msg user">${esc(m.content)}${m.web_search ? '<div class="chat-meta">🌐 with web search</div>' : ''}</div>`;
+    const links = m.sources || [];
+    const sources = links.length
+      ? `<div class="chat-sources"><span class="muted">${links.some((x) => x.cited) ? 'Sources:' : 'Pages the web search found:'}</span>
+          ${links.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title || x.url)}</a>`).join(' · ')}</div>` : '';
+    return `<div class="chat-msg assistant">${mdToHtml(m.content)}${sources}
+      <div class="chat-meta">${esc(m.model || '')}${m.created_at ? ` · ${esc(fmtDate(m.created_at))}` : ''}
+        <button class="link chat-copy" type="button" data-id="${m.id}">Copy</button></div></div>`;
+  }).join('') + (c.busy ? '<div class="chat-msg assistant chat-thinking" aria-label="Thinking"><span></span><span></span><span></span></div>' : '');
+  box.querySelectorAll('.chat-copy').forEach((b) => b.addEventListener('click', async () => {
+    const msg = c.messages.find((m) => String(m.id) === b.dataset.id);
+    try { await navigator.clipboard.writeText(msg.content); toast('Copied', 'ok', 1500); } catch { toast('Could not copy', 'err', 2500); }
+  }));
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendChat(text) {
+  const c = state.chat;
+  text = String(text || '').trim();
+  if (!c || !text || c.busy) return;
+  const web = $('#chat-web').checked;
+  const token = chatToken;
+  c.busy = true;
+  c.messages.push({ role: 'user', content: text, web_search: web });
+  $('#chat-input').value = '';
+  setChatStatus(web ? 'Searching the web… this can take a minute or two.' : 'Thinking…');
+  renderChat();
+  try {
+    const body = JSON.stringify(c.threadId ? { message: text, web_search: web } : { job_ids: c.jobIds, message: text, web_search: web });
+    const t = await api(c.threadId ? `/api/chats/${c.threadId}/messages` : '/api/chats', { method: 'POST', body });
+    if (token !== chatToken) return;
+    applyThread(t);
+    setChatStatus('');
+  } catch (e) {
+    if (token !== chatToken) return;
+    c.messages.pop();
+    if (!$('#chat-input').value) $('#chat-input').value = text;
+    setChatStatus(`Failed: ${e.message}`, true);
+  }
+  c.busy = false;
+  renderChat();
+}
+
+function showJobCard(id) {
+  const card = document.querySelector(`.job-card[data-job-id="${id}"]`);
+  if (!card) { toast('That job is hidden by the current filters.', '', 2500); return; }
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.remove('flash');
+  void card.offsetWidth;
+  card.classList.add('flash');
+}
+
+function initChat() {
+  $('#chat-close').addEventListener('click', closeChat);
+  $('#chat-form').addEventListener('submit', (e) => { e.preventDefault(); sendChat($('#chat-input').value); });
+  $('#chat-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat($('#chat-input').value); }
+  });
+  $('#chat-new').addEventListener('click', () => {
+    const c = state.chat;
+    if (!c || c.busy) return;
+    c.threadId = null;
+    c.messages = [];
+    setChatStatus('');
+    renderChat();
+    $('#chat-input').focus();
+  });
+  $('#chat-threads').addEventListener('change', async (e) => {
+    if (!e.target.value) return;
+    try { await loadChatThread(Number(e.target.value)); } catch (err) { setChatStatus(`Could not load that chat: ${err.message}`, true); }
+  });
+  $('#chat-delete').addEventListener('click', async () => {
+    const c = state.chat;
+    if (!c?.threadId || !confirm('Delete this conversation?')) return;
+    try {
+      await api(`/api/chats/${c.threadId}`, { method: 'DELETE' });
+      c.threads = c.threads.filter((t) => t.id !== c.threadId);
+      c.threadId = null;
+      c.messages = [];
+      if (c.threads.length) await loadChatThread(c.threads[0].id); else renderChat();
+    } catch (e) { setChatStatus(`Delete failed: ${e.message}`, true); }
   });
 }
 
@@ -1259,6 +1647,8 @@ async function switchWorkspace(id) {
   $('#run-report').hidden = true;
   ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = false; });
   $('#run-progress').hidden = true;
+  closeChat();
+  state.dupes = { suggested: [], auto_merged: [] };
   await loadWorkspaces();
   loadAll();
 }
@@ -1339,6 +1729,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initJobs();
   initSetup();
   initDocs();
+  initChat();
   $('#source-add').addEventListener('click', addSource);
   $('#source-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSource(); } });
   $('#score-test').addEventListener('click', testScorer);

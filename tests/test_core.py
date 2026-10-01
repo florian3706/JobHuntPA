@@ -871,3 +871,222 @@ class MultiPlaceTest(unittest.TestCase):
             self.assertEqual((hit["lat"], hit["lng"]), coords["Sydney NSW"])
             self.assertIsNone(pipeline.locate("Canberra ACT; NSW", PINS))  # anywhere in NSW: don't rule it out
             self.assertEqual(pipeline.locate("Canberra ACT", PINS)["lat"], coords["Canberra ACT"][0])
+
+
+def _ad_job(**kw):
+    """An unsaved Job for comparing ads (scan fields filled in like the pipeline does)."""
+    from backend.db import Job
+    from backend.scraping.text import description_hash
+    kw.setdefault("company", "Acme")
+    kw.setdefault("detail_status", "full")
+    kw.setdefault("country", "AU")
+    kw.setdefault("status", "to_review")
+    job = Job(**kw)
+    job.description_hash = description_hash(job.description or "")
+    return job
+
+
+LONG_AD = ("You will own the rollout of our platform to enterprise schools, run implementation plans, "
+           "coordinate stakeholders across product, support and engineering, and report progress to executives. ") * 4
+
+
+class DuplicateCompareTest(unittest.TestCase):
+    def compare(self, a, b):
+        from backend.duplicates import Ad, compare
+        return compare(Ad(_ad_job(**a)), Ad(_ad_job(**b)))
+
+    def test_names_and_titles(self):
+        from backend.duplicates import company_names, same_company, title_words
+        self.assertTrue(same_company(company_names("Commonwealth Scientific and Industrial Research Organisation (CSIRO)"),
+                                     company_names("CSIRO")))
+        self.assertTrue(same_company(company_names("Canva Pty Ltd"), company_names("Canva")))
+        self.assertTrue(same_company(company_names("Profitable Tradie - Trades Business Specialist"), company_names("Profitable Tradie")))
+        self.assertFalse(same_company(company_names("Australian Payments Plus"), company_names("Australian Taxation Office")))
+        self.assertEqual(title_words("Program Manager - Sydney (12 month contract)", "Sydney NSW"), {"program", "manager"})
+        self.assertEqual(title_words("B2B Product Manager (Growth)"), title_words("B2B Product Manager – Growth"))
+
+    def test_tiers(self):
+        site = dict(source="site:acme.com", title="Implementation Manager, Enterprise SaaS", location_text="Sydney, NSW",
+                    description=LONG_AD, url="https://acme.com/jobs/1")
+        seek = dict(source="seek", title="Implementation Manager, Enterprise SaaS", location_text="Eveleigh, Sydney NSW",
+                    description="Lead enterprise rollouts.", detail_status="summary", url="https://seek/1")
+        self.assertEqual(self.compare(site, seek)["tier"], "sure")
+        # A generic title could be a different opening: ask.
+        generic = self.compare({**site, "title": "Product Manager"}, {**seek, "title": "Product Manager"})
+        self.assertEqual(generic["tier"], "possible")
+        # Same title at different employers: different jobs.
+        self.assertIsNone(self.compare({**seek, "title": "Product Manager"},
+                                       {**seek, "company": "Other Co", "title": "Product Manager", "url": "https://seek/2"}))
+        # One ad per office on the same site, even in the same city.
+        self.assertIsNone(self.compare({**seek, "location_text": "Bella Vista, Sydney NSW"},
+                                       {**seek, "location_text": "Chullora, Sydney NSW", "url": "https://seek/2"}))
+        # The same ad posted twice on one site.
+        twice = dict(seek, description="Lead enterprise rollouts across our schools. " * 4)
+        self.assertEqual(self.compare(twice, {**twice, "url": "https://seek/2"})["tier"], "sure")
+        # Senior vs not, other country: never sure.
+        senior = self.compare(site, {**seek, "title": "Senior Implementation Manager, Enterprise SaaS"})
+        self.assertNotEqual((senior or {}).get("tier"), "sure")
+        self.assertIsNone(self.compare(site, {**seek, "location_text": "London, United Kingdom", "country": "GB"}))
+        # Retitled copy on a job board with the same ad text.
+        board = dict(site, source="site:board.example", title="Implementation Manager", url="https://board/1",
+                     description="Apply on our board. " + LONG_AD)
+        self.assertEqual(self.compare(site, board)["tier"], "possible")
+
+
+class DuplicateMergeTest(unittest.TestCase):
+    def test_scan_merge_decide_split(self):
+        from datetime import datetime
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import CoverLetter, FitResult, Job, SessionLocal
+        from backend.duplicates import scan
+        from backend.scorer import select_jobs
+
+        with TestClient(app) as c:
+            ws = c.post("/api/workspaces", json={"name": "Dupes"}).json()["id"]
+            h = {"X-Workspace": str(ws)}
+            db = SessionLocal()
+            spec = {
+                "site": dict(source="site:acme.com", title="Implementation Manager, Enterprise SaaS", location_text="Sydney, NSW",
+                             description=LONG_AD),
+                "seek": dict(source="seek", title="Implementation Manager, Enterprise SaaS", location_text="Eveleigh, Sydney NSW",
+                             description="Lead enterprise rollouts.", detail_status="summary", status="applied",
+                             salary_text="$150k", salary_min=150000, salary_max=150000),
+                "pm_seek": dict(source="seek", title="Product Manager", location_text="Sydney NSW", description="Own the roadmap.",
+                                detail_status="summary"),
+                "pm_site": dict(source="site:acme.com", title="Product Manager", location_text="Sydney, NSW",
+                                description="Own our maths roadmap with teachers. " * 12),
+                "pm_other": dict(source="seek", company="Other Co", title="Product Manager", location_text="Sydney NSW",
+                                 description="Own the roadmap.", detail_status="summary"),
+            }
+            ids = {}
+            for name, kw in spec.items():
+                job = _ad_job(**kw)
+                job.workspace_id, job.url, job.first_seen = ws, f"https://dupes.example/{name}", datetime.utcnow()
+                db.add(job); db.commit()
+                ids[name] = job.id
+            db.add(CoverLetter(job_id=ids["seek"], text="Dear Hiring Manager"))
+            db.add(FitResult(job_id=ids["seek"], status="ok", score=70, evidence_json="{}"))
+            db.commit()
+            self.assertEqual(scan(db, ws), {"merged": 1, "suggested": 1})
+            self.assertEqual(scan(db, ws), {"merged": 0, "suggested": 1})  # stable
+            db.close()
+
+            jobs = {j["id"]: j for j in c.get("/api/jobs", headers=h).json()}
+            self.assertNotIn(ids["seek"], jobs)
+            merged = jobs[ids["site"]]  # the employer's full ad is the one listed
+            self.assertEqual([x["id"] for x in merged["also_on"]], [ids["seek"]])
+            self.assertEqual((merged["status"], merged["fit"]["score"], merged["has_cover_letter"], merged["salary_text"]),
+                             ("applied", 70, True, "$150k"))
+            dupes = c.get("/api/duplicates", headers=h).json()
+            self.assertEqual({dupes["suggested"][0]["a"]["id"], dupes["suggested"][0]["b"]["id"]}, {ids["pm_seek"], ids["pm_site"]})
+            self.assertEqual(len(dupes["auto_merged"]), 1)
+
+            # The user says the two Product Manager ads are different jobs: never suggested again.
+            r = c.post("/api/duplicates/decide", headers=h, json={"a": ids["pm_seek"], "b": ids["pm_site"], "decision": "distinct"})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(c.post("/api/duplicates/scan", headers=h).json(), {"merged": 0, "suggested": 0})
+            self.assertEqual(c.post("/api/duplicates/decide", json={"a": ids["pm_seek"], "b": ids["pm_site"],
+                                                                     "decision": "merge"}).status_code, 404)  # other workspace
+
+            # Manual merge, then split: split copies stay apart.
+            r = c.post("/api/jobs/merge", headers=h, json={"ids": [ids["pm_seek"], ids["pm_other"]]})
+            self.assertEqual(r.status_code, 200, r.text)
+            listed = {j["id"] for j in c.get("/api/jobs", headers=h).json()}
+            self.assertEqual(len(listed & {ids["pm_seek"], ids["pm_other"]}), 1)
+            db = SessionLocal()
+            pending = select_jobs(db, "pending", "x", ws)
+            db.close()
+            self.assertEqual(len(set(pending) & {ids["pm_seek"], ids["pm_other"]}), 1)
+            self.assertEqual(c.post(f"/api/jobs/{ids['seek']}/unmerge", headers=h).status_code, 200)
+            self.assertEqual(c.post(f"/api/jobs/{ids['seek']}/unmerge", headers=h).status_code, 400)
+            c.post("/api/duplicates/scan", headers=h)
+            listed = {j["id"]: j for j in c.get("/api/jobs", headers=h).json()}
+            self.assertIn(ids["seek"], listed)
+            self.assertEqual(listed[ids["site"]]["also_on"], [])
+            c.delete(f"/api/workspaces/{ws}")
+
+
+class JobChatTest(unittest.TestCase):
+    def test_chat_context_links_history_and_web_search(self):
+        from unittest import mock
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import CompanyProfile, CoverLetter, Document, FitResult, Job, SessionLocal
+        import backend.research as rs
+        import backend.scorer as sc
+
+        env = {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://llm.example/v1", "LLM_MODEL": "m"}
+        with TestClient(app) as c, mock.patch.dict(os.environ, env):
+            ws = c.post("/api/workspaces", json={"name": "Chat"}).json()["id"]
+            h = {"X-Workspace": str(ws)}
+            db = SessionLocal()
+            db.add(Document(workspace_id=ws, filename="cv.pdf", kind="resume", text="Jane Doe. Ran Mathletics releases."))
+            job = Job(workspace_id=ws, url="https://chat.example/job/1", title="Product Owner", company="Chatco Learning",
+                      description="Own the backlog for our maths platform.", status="shortlisted", detail_status="full")
+            db.add(job); db.commit()
+            copy = Job(workspace_id=ws, url="https://board.example/9", title="Product Owner", company="Chatco Learning",
+                       duplicate_of=job.id, detail_status="summary", status="to_review")
+            db.add(copy)
+            db.add(FitResult(job_id=job.id, status="ok", score=77, evidence_json=json.dumps(
+                {"summary": "Strong backlog evidence.", "requirements": [{"point": "Backlog", "matched": True}], "gaps": ["No SAFe"]})))
+            db.add(CoverLetter(job_id=job.id, text="Dear Hiring Manager, my letter."))
+            db.merge(CompanyProfile(key="chatco learning", name="Chatco Learning", status="done", business_model="Sells maths software.",
+                                    sources_json=json.dumps([{"title": "About", "url": "https://chatco.example/about"}])))
+            db.commit()
+            job_id, copy_id = job.id, copy.id
+            db.close()
+
+            sent = []
+
+            def fake_call(messages, cfg, json_mode=True):
+                sent.append(messages)
+                return ("You fit well. See [the ad](https://chat.example/job/1), [About](https://chatco.example/about/) "
+                        "and [a guess](https://made-up.example/x) or https://unknown.example/y.")
+            with mock.patch.object(sc, "call_model", side_effect=fake_call):
+                r = c.post("/api/chats", headers=h, json={"job_ids": [copy_id], "message": "How do I fit?"})
+                self.assertEqual(r.status_code, 200, r.text)
+                chat = r.json()
+                self.assertEqual(chat["job_ids"], [job_id])  # a merged copy means its job
+                answer = chat["messages"][1]["content"]
+                self.assertIn("[the ad](https://chat.example/job/1)", answer)
+                self.assertIn("[About](https://chatco.example/about/)", answer)
+                self.assertIn("a guess", answer)
+                self.assertNotIn("made-up.example", answer)
+                self.assertNotIn("unknown.example", answer)
+                context = sent[0][0]["content"]
+                for part in ("Jane Doe", "Own the backlog", "77/100", "No SAFe", "Sells maths software", "my letter",
+                             "https://board.example/9", "shortlisted"):
+                    self.assertIn(part, context)
+                r = c.post(f"/api/chats/{chat['id']}/messages", headers=h, json={"message": "And the gaps?"})
+                self.assertEqual(len(r.json()["messages"]), 4)
+                self.assertEqual([m["role"] for m in sent[1][1:]], ["user", "assistant", "user"])
+
+            calls = []
+
+            def fake_response(payload, cfg, what="web search"):
+                calls.append(payload)
+                return {"status": "completed", "output": [
+                    {"type": "web_search_call", "results": [{"url": "https://news.example/a", "title": "Chatco news"}]},
+                    {"type": "message", "content": [{"type": "output_text",
+                                                     "text": "Recent [news](https://news.example/a) and [fake](https://fake.example/b)."}]}]}
+            with mock.patch.object(rs, "run_response", side_effect=fake_response):
+                r = c.post(f"/api/chats/{chat['id']}/messages", headers=h, json={"message": "Any news?", "web_search": True})
+            self.assertEqual(r.status_code, 200, r.text)
+            last = r.json()["messages"][-1]
+            self.assertEqual(last["sources"], [{"title": "Chatco news", "url": "https://news.example/a", "cited": True}])
+            self.assertNotIn("fake.example", last["content"])
+            self.assertEqual(calls[0]["tools"][0]["type"], "web_search")
+            self.assertEqual(len(calls[0]["input"]), 5)
+            # No citations at all (some providers): list the pages the search returned instead.
+            from backend.job_chat import web_sources
+            searched = {"output": [{"type": "web_search_call", "results": [{"url": "https://a.example/1", "title": "A"}]}]}
+            self.assertEqual(web_sources(searched, "No links here.", {"https://a.example/1": "A"}),
+                             [{"title": "A", "url": "https://a.example/1", "cited": False}])
+
+            self.assertEqual([t["id"] for t in c.get(f"/api/chats?job_ids={job_id}", headers=h).json()], [chat["id"]])
+            self.assertEqual(c.get(f"/api/chats/{chat['id']}").status_code, 404)  # other workspace
+            self.assertEqual(c.post("/api/chats", headers=h, json={"job_ids": list(range(1, 14)), "message": "x"}).status_code, 400)
+            self.assertEqual(c.delete(f"/api/chats/{chat['id']}", headers=h).status_code, 200)
+            self.assertEqual(c.get(f"/api/chats/{chat['id']}", headers=h).status_code, 404)
+            c.delete(f"/api/workspaces/{ws}")

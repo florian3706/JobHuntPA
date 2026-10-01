@@ -25,5 +25,7 @@ working and be reflected in them**:
 
 - Scraping only through `backend/scraping/http.py` (robots.txt, crawl delay, honest User-Agent).
 - Every data query is scoped to a workspace (`X-Workspace` header → `current_workspace`).
+- Jobs with `duplicate_of` set are merged copies of another job (`backend/duplicates.py`): anything
+  that lists, scores or researches jobs must skip them (`Job.duplicate_of.is_(None)`).
 - LLM settings are provider-neutral `LLM_*` variables; never hard-code a provider.
 - Tests: `python3 -m unittest discover -s tests -t .`

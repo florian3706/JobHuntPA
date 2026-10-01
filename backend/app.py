@@ -20,6 +20,8 @@ from backend import tasks
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
+from backend.duplicates import router as duplicates_router
+from backend.job_chat import router as chat_router
 from backend.filters import softened_job_ids
 from backend.llm_settings import router as llm_router
 from backend.title_suggestions import router as titles_router
@@ -51,6 +53,8 @@ app.include_router(sources_router)
 app.include_router(workspaces_router)
 app.include_router(llm_router)
 app.include_router(cover_letters_router)
+app.include_router(duplicates_router)
+app.include_router(chat_router)
 
 
 @app.get("/api/health")
@@ -131,6 +135,16 @@ def _soften(out: dict, softened: set[int]) -> dict:
     return out
 
 
+def _with_copies(out: dict, copies: list[Job]) -> dict:
+    """Merged duplicates: the same ad on other sites. The job counts as
+    closed only once every copy is."""
+    out["also_on"] = [{"id": c.id, "source": c.source, "url": c.url, "title": c.title, "company": c.company,
+                       "closed": c.closed_at is not None, "detail_status": c.detail_status} for c in copies]
+    if out["closed"] and any(c.closed_at is None for c in copies):
+        out["closed"] = False
+    return out
+
+
 @app.get("/api/jobs")
 def list_jobs(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
               ws: int = Depends(current_workspace)):
@@ -140,7 +154,13 @@ def list_jobs(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
                .filter(Job.workspace_id == ws)}
     softened = softened_job_ids(db, ws, office_slack)
-    return [_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters), softened) for job, fit in rows]
+    copies: dict[int, list[Job]] = {}
+    for job, _fit in rows:
+        if job.duplicate_of:
+            copies.setdefault(job.duplicate_of, []).append(job)
+    return [_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters), softened),
+                         copies.get(job.id, []))
+            for job, fit in rows if not job.duplicate_of]
 
 
 @app.get("/api/jobs/{job_id}")
@@ -148,7 +168,8 @@ def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(
             ws: int = Depends(current_workspace)):
     job = owned(db, Job, job_id, ws, "Job")
     fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
-    return _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True), softened_job_ids(db, ws, office_slack))
+    out = _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True), softened_job_ids(db, ws, office_slack))
+    return _with_copies(out, db.query(Job).filter(Job.duplicate_of == job_id).all())
 
 
 class StatusUpdate(BaseModel):
@@ -225,7 +246,12 @@ def start_search(ws: int = Depends(current_workspace)):
     from backend.scorer import config_problem
 
     def job(progress):
+        from backend.duplicates import scan_workspace
+
         summary = {"search": run_search(ws, progress)}
+        # Before scoring, so the same ad on two sites is scored once.
+        progress("checking for duplicate ads", {})
+        summary["duplicates"] = scan_workspace(ws)
         summary["scoring"] = {"skipped": config_problem()} if config_problem() else _score(ws, "pending", progress)
         return summary
 
@@ -370,7 +396,11 @@ async def import_page(file: UploadFile = File(...), ws: int = Depends(current_wo
         source = "import"
     if not postings:
         raise HTTPException(status_code=422, detail="No job data found. Save a SEEK search/job page, or a page with JobPosting data.")
-    return import_postings(postings, source, ws)
+    from backend.duplicates import scan_workspace
+
+    result = import_postings(postings, source, ws)
+    result["duplicates"] = scan_workspace(ws)
+    return result
 
 
 @app.post("/api/jobs/{job_id}/import-page")

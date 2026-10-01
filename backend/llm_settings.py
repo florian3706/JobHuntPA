@@ -1,7 +1,7 @@
 """LLM settings made in the app (as opposed to .env): reasoning level per task.
 
-Tasks: ``scoring`` (fit scores), ``research`` (company profiles) and
-``cover_letter``. Each task's level is one of the levels the configured
+Tasks: ``scoring`` (fit scores), ``research`` (company profiles),
+``cover_letter`` and ``chat`` (questions about jobs). Each task's level is one of the levels the configured
 model accepts, or "" for the model's default (the parameter isn't sent;
 ``LLM_REASONING_EFFORT`` in .env, if set, is used instead).
 
@@ -11,7 +11,7 @@ are stored per base URL + model.
 
     GET  /api/llm                 config, detected levels, level per task
     POST /api/llm/detect-levels   probe the configured model
-    PUT  /api/llm/reasoning       {scoring?, research?, cover_letter?}
+    PUT  /api/llm/reasoning       {scoring?, research?, cover_letter?, chat?}
 """
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/llm", tags=["llm"])
 
-TASKS = ("scoring", "research", "cover_letter")
+TASKS = ("scoring", "research", "cover_letter", "chat")
 CANDIDATE_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh")
-DEFAULT_LEVELS = {"scoring": "low", "research": "low", "cover_letter": "medium"}
+DEFAULT_LEVELS = {"scoring": "low", "research": "low", "cover_letter": "medium", "chat": "low"}
 
 
 def _get(key: str, default: Any = None) -> Any:
@@ -68,7 +68,8 @@ def task_levels() -> dict[str, str]:
     saved = _get("reasoning", None)
     if saved is None:
         return dict(DEFAULT_LEVELS)
-    return {t: saved.get(t, "") for t in TASKS}
+    # Tasks added after the levels were saved start at their default.
+    return {t: saved.get(t, DEFAULT_LEVELS[t]) for t in TASKS}
 
 
 def effort_for(task: Optional[str], base_url: str, model: str) -> str:
@@ -148,6 +149,7 @@ class ReasoningUpdate(BaseModel):
     scoring: Optional[str] = None
     research: Optional[str] = None
     cover_letter: Optional[str] = None
+    chat: Optional[str] = None
 
 
 @router.put("/reasoning")

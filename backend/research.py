@@ -109,7 +109,7 @@ def companies_to_research(db: Session, ws: int, mode: str = "missing",
         q = q.filter(Job.id.in_(job_ids))
     else:
         q = (q.filter((Job.excluded_reason.is_(None)) | (Job.excluded_reason == ""))
-             .filter(Job.closed_at.is_(None), Job.hidden.is_(False)))
+             .filter(Job.closed_at.is_(None), Job.hidden.is_(False), Job.duplicate_of.is_(None)))
     by_key: dict[str, dict] = {}
     for company, title, location, url in q.all():
         key = company_key(company or "")
@@ -186,6 +186,11 @@ def run_agent(company: dict, cfg: dict) -> dict:
     }
     if cfg.get("reasoning_effort"):
         payload["reasoning"] = {"effort": cfg["reasoning_effort"]}
+    return run_response(payload, cfg, "research agent")
+
+
+def run_response(payload: dict, cfg: dict, what: str = "web search") -> dict:
+    """Start a background Responses API request and poll until it finishes."""
     data = _post(f"{cfg['base_url']}/responses", payload, cfg)
     waited = 0
     while data.get("status") in ("queued", "in_progress") and waited < MAX_WAIT_S:
@@ -194,7 +199,7 @@ def run_agent(company: dict, cfg: dict) -> dict:
         data = _get(f"{cfg['base_url']}/responses/{data['id']}", cfg)
     if data.get("status") != "completed":
         err = (data.get("error") or {}).get("message") if isinstance(data.get("error"), dict) else data.get("error")
-        raise ScorerError(f"research agent ended with status {data.get('status')}: {err or 'no details'}")
+        raise ScorerError(f"{what} ended with status {data.get('status')}: {err or 'no details'}")
     return data
 
 

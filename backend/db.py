@@ -118,6 +118,33 @@ class Job(Base):
     last_seen = Column(DateTime, default=utcnow)
     closed_at = Column(DateTime, nullable=True)     # no longer listed by its source
     hidden = Column(Boolean, nullable=False, default=False, server_default="0")  # hidden by the user
+    # Set on a copy of an ad that is merged into another job (backend.duplicates):
+    # the copy keeps its row so later searches recognise its URL, but only the
+    # job it points to is listed, scored and researched.
+    duplicate_of = Column(Integer, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+
+
+class JobDuplicate(Base):
+    """A decision about two jobs that may be the same ad (backend.duplicates).
+
+    status: suggested (likely duplicates, for the user to check) | merged |
+    distinct (the user said they are different jobs: never suggested again).
+    decided_by: auto (merged by the scan) | user. job_a < job_b.
+    """
+
+    __tablename__ = "job_duplicates"
+    __table_args__ = (UniqueConstraint("job_a", "job_b", name="uq_job_duplicates_pair"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = _workspace_fk()
+    job_a = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_b = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String, nullable=False, default="suggested")
+    decided_by = Column(String, nullable=True)
+    score = Column(Integer, nullable=True)
+    reasons_json = Column(Text, nullable=False, default="[]")
+    created_at = Column(DateTime, default=utcnow)
+    decided_at = Column(DateTime, nullable=True)
 
 
 class FitResult(Base):
@@ -322,6 +349,32 @@ class CoverLetter(Base):
     reasoning_effort = Column(String, nullable=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow)
+
+
+class ChatThread(Base):
+    """A conversation with the LLM about one or more jobs (backend.job_chat)."""
+
+    __tablename__ = "chat_threads"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = _workspace_fk()
+    job_ids_json = Column(Text, nullable=False, default="[]")  # sorted job ids
+    title = Column(String, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    thread_id = Column(Integer, ForeignKey("chat_threads.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String, nullable=False)  # user | assistant
+    content = Column(Text, nullable=False, default="")
+    sources_json = Column(Text, nullable=True)  # [{title, url}] pages the web search returned
+    web_search = Column(Boolean, nullable=False, default=False, server_default="0")
+    model = Column(String, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class AppSetting(Base):

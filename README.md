@@ -11,7 +11,8 @@
 A personal job search dashboard that runs on your own computer. It collects jobs from SEEK and
 company careers pages, filters them against your search settings and map pins, scores the rest
 against your CV with an AI model of your choice, drafts cover letters, suggests job titles to
-search for, and researches each employer.
+search for, researches each employer, merges the same job advertised on several sites into one,
+and lets you chat with the AI about any job.
 
 ## What you need
 
@@ -87,8 +88,20 @@ can live in their own **workspaces** (switcher at the top right).
 - **Cover letters**: *Draft cover letter* on any job writes a first draft from your documents
   (upload earlier cover letters as "Cover letter" documents to match your style). Edit it, then
   copy it or download it as a Word file. Always check it before sending.
+- **Chat about jobs**: *Chat* on a job (or tick several and click **Chat about N jobs**) opens a
+  chat on the right. The AI sees the ads, your documents, the fit assessment, the company info and
+  any cover-letter draft, so you can ask what the role really involves, how to handle your gaps,
+  what to ask in an interview, or which of several jobs suits you best. Tick *Search the web* for
+  things your saved data doesn't cover (news, salaries); the pages it used are listed under the
+  answer. Chats are saved per job set; *New chat* starts over.
+- **Duplicate ads**: the same job advertised on several sites (say SEEK and the employer's own
+  careers page) becomes one card, with the other sites under *Also on*. The app merges ads it's
+  sure about after each search and lists the doubtful ones under **Duplicates** for you to decide
+  (*Same job: merge* / *Different jobs*). Your status, cover letter and score carry over to the
+  merged card. *split* under *Also on* undoes a merge; **Merge as one job** (tick two or more
+  jobs) merges ads the app missed.
 - **Reasoning level** (Search setup > LLM): how long the AI thinks, set separately for scoring,
-  cover letters and company research. *Detect supported levels* shows what your model accepts.
+  cover letters, company research and job chat. *Detect supported levels* shows what your model accepts.
 
 ## Updating
 
@@ -167,9 +180,14 @@ tag, so the tag must exist on GitHub.
    location pins. Excluded jobs stay in the DB with a reason ("Show excluded"). The office-days
    limit can be softened temporarily (`softened_job_ids`, `?office_slack=N` on the jobs and
    scoring endpoints) without changing stored exclusions.
-4. **Scoring** (`backend/scorer.py`): new jobs that passed the filters are scored. Failures are
-   stored as errors (not as 0) and retried next time. A rejected API key stops the batch after
-   one request.
+4. **Duplicates** (`backend/duplicates.py`): jobs are compared in pairs (blocked by employer
+   name and title words). Sure duplicates are merged: the copy with the best data stays listed and
+   the others get `duplicate_of`, keeping their rows so later searches recognise their URLs.
+   Doubtful pairs are stored in `job_duplicates` as suggestions; the user's "different jobs"
+   answers are kept there too and never suggested again.
+5. **Scoring** (`backend/scorer.py`): new jobs that passed the filters are scored (merged copies
+   aren't). Failures are stored as errors (not as 0) and retried next time. A rejected API key
+   stops the batch after one request.
 
 ## Scraping rules
 

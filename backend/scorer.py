@@ -54,7 +54,7 @@ def _env(name: str) -> str:
 
 
 def get_config(task: Optional[str] = None) -> dict[str, Any]:
-    """LLM config; ``task`` (scoring | research | cover_letter) picks the
+    """LLM config; ``task`` (scoring | research | cover_letter | chat) picks the
     reasoning level set in the app for that task."""
     from backend.llm_settings import effort_for
 
@@ -306,7 +306,7 @@ def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack
         db.query(Job.id, FitResult.status, FitResult.profile_hash, FitResult.score)
         .outerjoin(FitResult, FitResult.job_id == Job.id)
         .filter(eligible)
-        .filter(Job.closed_at.is_(None), Job.hidden.is_(False))
+        .filter(Job.closed_at.is_(None), Job.hidden.is_(False), Job.duplicate_of.is_(None))
         .filter(Job.workspace_id == ws)
         .filter(Job.detail_status.in_(["full", "summary"]))
         .all()

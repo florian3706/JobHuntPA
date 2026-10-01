@@ -44,6 +44,7 @@
           <button id="search-run" class="btn btn-primary" type="button">Run search</button>
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
           <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile: the ticked jobs' companies, or every company in your list when none are ticked (one LLM web-search agent per company)">Fill missing info</button>
+          <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
           <span id="run-status" class="muted" aria-live="polite"></span>
         </div>
         <div id="run-progress" class="progress" hidden><div class="progress-bar"></div></div>
@@ -95,6 +96,7 @@
           <label class="field check-field"><input id="filter-show-hidden" type="checkbox" /> <span>Show hidden</span></label>
         </div>
         <div id="soften-note" class="soften-note" hidden aria-live="polite"></div>
+        <div id="dupe-note" class="dupe-note" hidden aria-live="polite"></div>
         <div class="toolbar-row chips-row">
           <div id="status-chips" class="chips" aria-label="Filter by status"></div>
           <label class="check select-all-shown" title="Select every job the current filters show (for bulk status changes, hiding or Fill missing info)">
@@ -114,6 +116,8 @@
           <button id="bulk-apply" class="btn btn-primary btn-sm" type="button">Set status</button>
           <button id="bulk-hide" class="btn btn-sm" type="button" title="Hide the selected job ads. They stay hidden even if the source lists them again, and aren't scored or researched.">Hide selected</button>
           <button id="bulk-unhide" class="btn btn-ghost btn-sm" type="button" hidden>Unhide selected</button>
+          <button id="bulk-chat" class="btn btn-sm" type="button" title="Open a chat about the selected jobs (up to 12) to ask questions or compare them">Chat about selected</button>
+          <button id="bulk-merge" class="btn btn-sm" type="button" hidden title="The selected ads are the same job on different sites: show them as one card">Merge as one job</button>
           <button id="bulk-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
         </div>
       </div>
@@ -222,7 +226,7 @@
       </div>
 
       <div class="card form-card">
-        <h3>LLM (scoring, cover letters and company research)</h3>
+        <h3>LLM (scoring, cover letters, company research and job chat)</h3>
         <div id="scorer-info" class="muted"></div>
         <div class="reasoning-settings">
           <h4>Reasoning level</h4>
@@ -232,6 +236,7 @@
             <label class="field"><span class="field-label">Fit scoring</span><select data-task="scoring"></select></label>
             <label class="field"><span class="field-label">Cover letters</span><select data-task="cover_letter"></select></label>
             <label class="field"><span class="field-label">Company research</span><select data-task="research"></select></label>
+            <label class="field"><span class="field-label">Job chat</span><select data-task="chat"></select></label>
           </div>
           <div class="toolbar-row">
             <button id="detect-levels" class="btn btn-sm" type="button">Detect supported levels</button>
@@ -318,6 +323,29 @@
       <div id="modal-html" class="modal-html" hidden></div>
     </div>
   </div>
+
+  <aside id="chat-panel" class="chat-panel" hidden aria-label="Chat about jobs">
+    <div class="chat-head">
+      <strong id="chat-title">Ask about this job</strong>
+      <button id="chat-close" class="btn btn-ghost btn-sm" type="button" aria-label="Close chat">✕</button>
+    </div>
+    <div class="chat-bar">
+      <select id="chat-threads" aria-label="Earlier chats about these jobs"></select>
+      <button id="chat-new" class="btn btn-ghost btn-sm" type="button" title="Start a new conversation about the same jobs">New chat</button>
+      <button id="chat-delete" class="btn btn-ghost btn-sm" type="button" title="Delete this conversation">Delete</button>
+    </div>
+    <div id="chat-jobs" class="chat-jobs"></div>
+    <div id="chat-messages" class="chat-messages"></div>
+    <form id="chat-form" class="chat-form" autocomplete="off">
+      <textarea id="chat-input" rows="3" placeholder="Ask anything about this job… (Enter to send, Shift+Enter for a new line)"></textarea>
+      <div class="chat-form-row">
+        <label class="check" title="Let the model search the web for things your saved data doesn't cover: company news, salaries, interview process. Slower; the pages it used are listed under the answer.">
+          <input id="chat-web" type="checkbox" /> Search the web</label>
+        <span id="chat-status" class="muted" aria-live="polite"></span>
+        <button id="chat-send" class="btn btn-primary btn-sm" type="submit">Send</button>
+      </div>
+    </form>
+  </aside>
 
   <div id="toasts" class="toasts" aria-live="assertive"></div>
 
