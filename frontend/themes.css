@@ -1,0 +1,462 @@
+/* JobHuntPA themes: every theme fills the same slots and changes nothing else.
+
+   Dark is the app's own look. The rest are ported from ProjectTimeline:
+   Light, Catppuccin's four flavours, and themes built for a way of seeing or
+   reading (Dyslexia, Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy,
+   Monochromacy), each in light and dark. Their palettes were simulated and
+   measured there, so their values are kept as they are. ProjectTimeline's
+   semantic slots map to these: success -> --ok, warning -> --warn,
+   danger -> --danger, the "decision" hue -> --info, "milestone" -> --special,
+   "info" -> --quiet. Hue never carries meaning alone: badges and dots always
+   have a label too, which the colour-vision themes rely on.
+
+   The theme is chosen per browser (Theme menu, top right) and applied before
+   first paint by a small script in each page's <head>; see common.js. */
+
+:root, [data-theme="dark"] {
+  /* Grounds: the page, chrome laid on it, cards, and wells sunk into those */
+  --bg: #0f141b;
+  --panel: #171e28;
+  --card: #1c2431;
+  --field: #10161f;
+  --border: #2b3546;
+  --border-strong: #36425a;
+  /* Ink */
+  --text: #e8edf3;
+  --muted: #9aa6b8;
+  /* The one chrome colour: primary action, active tab, focus, links */
+  --accent: #4f9cf9;
+  --accent-text: #6aacfa;
+  --accent-soft: rgba(79, 156, 249, 0.15);
+  --on-accent: #ffffff;
+  /* Data hues */
+  --ok: #34d399;
+  --warn: #f5a524;
+  --danger: #f87171;
+  --info: #7cb4fb;
+  --special: #a78bfa;
+  --quiet: #8792a3;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  /* Type (the dyslexia themes move these) */
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --leading: normal;
+  --tracking: normal;
+  --word-spacing: normal;
+  color-scheme: dark;
+}
+
+/* On paper: ProjectTimeline's own light palette. */
+[data-theme="light"] {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --field: #eef1f5;
+  --border: #e0e5ec;
+  --border-strong: #c6cdd8;
+  --text: #12161d;
+  --muted: #5d6775;
+  --accent: #4b3bf5;
+  --accent-text: #3a2be0;
+  --accent-soft: #ecebfe;
+  --on-accent: #ffffff;
+  --ok: #0a8f5c;
+  --warn: #e07a00;
+  --danger: #e11d48;
+  --info: #0891b2;
+  --special: #a21caf;
+  --quiet: #5d6775;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
+/* Catppuccin Latte: the flavour's own greys, mauve accent. */
+[data-theme="catppuccin-latte"] {
+  --bg: #e6e9ef;
+  --panel: #eff1f5;
+  --card: #eff1f5;
+  --field: #dce0e8;
+  --border: #ccd0da;
+  --border-strong: #acb0be;
+  --text: #4c4f69;
+  --muted: #6c6f85;
+  --accent: #8839ef;
+  --accent-text: #8839ef;
+  --accent-soft: #8839ef26;
+  --on-accent: #eff1f5;
+  --ok: #40a02b;
+  --warn: #fe640b;
+  --danger: #d20f39;
+  --info: #209fb5;
+  --special: #ea76cb;
+  --quiet: #8c8fa1;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
+/* Catppuccin Frappé: the softest of the dark flavours. */
+[data-theme="catppuccin-frappe"] {
+  --bg: #292c3c;
+  --panel: #303446;
+  --card: #303446;
+  --field: #232634;
+  --border: #414559;
+  --border-strong: #626880;
+  --text: #c6d0f5;
+  --muted: #a5adce;
+  --accent: #ca9ee6;
+  --accent-text: #ca9ee6;
+  --accent-soft: #ca9ee626;
+  --on-accent: #303446;
+  --ok: #a6d189;
+  --warn: #ef9f76;
+  --danger: #e78284;
+  --info: #85c1dc;
+  --special: #f4b8e4;
+  --quiet: #838ba7;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Catppuccin Macchiato: mid contrast. */
+[data-theme="catppuccin-macchiato"] {
+  --bg: #1e2030;
+  --panel: #24273a;
+  --card: #24273a;
+  --field: #181926;
+  --border: #363a4f;
+  --border-strong: #5b6078;
+  --text: #cad3f5;
+  --muted: #a5adcb;
+  --accent: #c6a0f6;
+  --accent-text: #c6a0f6;
+  --accent-soft: #c6a0f626;
+  --on-accent: #24273a;
+  --ok: #a6da95;
+  --warn: #f5a97f;
+  --danger: #ed8796;
+  --info: #7dc4e4;
+  --special: #f5bde6;
+  --quiet: #8087a2;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Catppuccin Mocha: the deepest ground. */
+[data-theme="catppuccin-mocha"] {
+  --bg: #181825;
+  --panel: #1e1e2e;
+  --card: #1e1e2e;
+  --field: #11111b;
+  --border: #313244;
+  --border-strong: #585b70;
+  --text: #cdd6f4;
+  --muted: #a6adc8;
+  --accent: #cba6f7;
+  --accent-text: #cba6f7;
+  --accent-soft: #cba6f726;
+  --on-accent: #1e1e2e;
+  --ok: #a6e3a1;
+  --warn: #fab387;
+  --danger: #f38ba8;
+  --info: #74c7ec;
+  --special: #f5c2e7;
+  --quiet: #7f849c;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Warm low-glare paper, Atkinson Hyperlegible, wider letter and word spacing, taller lines. */
+[data-theme="dyslexia"] {
+  --bg: #f3ebdd;
+  --panel: #fdf8f0;
+  --card: #fdf8f0;
+  --field: #ece2d1;
+  --border: #ded3c2;
+  --border-strong: #bcae99;
+  --text: #2b2a28;
+  --muted: #585349;
+  --accent: #1d5fb0;
+  --accent-text: #174e93;
+  --accent-soft: #dfe9f7;
+  --on-accent: #ffffff;
+  --ok: #0b7a4f;
+  --warn: #a85d00;
+  --danger: #b3143c;
+  --info: #0e6f86;
+  --special: #7a2f8f;
+  --quiet: #585349;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  --font-ui: "Atkinson Hyperlegible", Verdana, Tahoma, system-ui, sans-serif;
+  --leading: 1.8;
+  --tracking: 0.03em;
+  --word-spacing: 0.16em;
+  color-scheme: light;
+}
+
+/* The same reading settings on a warm dark ground. */
+[data-theme="dyslexia-dark"] {
+  --bg: #1a1714;
+  --panel: #221e1a;
+  --card: #221e1a;
+  --field: #2b2621;
+  --border: #3a332c;
+  --border-strong: #564c41;
+  --text: #ece4d8;
+  --muted: #b4a897;
+  --accent: #8ab4f8;
+  --accent-text: #8ab4f8;
+  --accent-soft: #1e2a3a;
+  --on-accent: #221e1a;
+  --ok: #63d3a4;
+  --warn: #f2b45c;
+  --danger: #ff8fa3;
+  --info: #6fd3e8;
+  --special: #e8a0f5;
+  --quiet: #a89c8b;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --font-ui: "Atkinson Hyperlegible", Verdana, Tahoma, system-ui, sans-serif;
+  --leading: 1.8;
+  --tracking: 0.03em;
+  --word-spacing: 0.16em;
+  color-scheme: dark;
+}
+
+/* Red-weak: blue and gold, stepped by lightness. */
+[data-theme="protanomaly"] {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --field: #eef1f5;
+  --border: #e0e5ec;
+  --border-strong: #c6cdd8;
+  --text: #12161d;
+  --muted: #55606e;
+  --accent: #1f4e8c;
+  --accent-text: #194071;
+  --accent-soft: #e3eaf4;
+  --on-accent: #ffffff;
+  --ok: #2664da;
+  --warn: #ab8300;
+  --danger: #883700;
+  --info: #2664da;
+  --special: #003178;
+  --quiet: #949494;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
+/* Red-weak, on a deep ground. */
+[data-theme="protanomaly-dark"] {
+  --bg: #090c10;
+  --panel: #0d1117;
+  --card: #0d1117;
+  --field: #141a23;
+  --border: #232b36;
+  --border-strong: #35404e;
+  --text: #e9eef5;
+  --muted: #9aa5b4;
+  --accent: #dfe4ee;
+  --accent-text: #dfe4ee;
+  --accent-soft: #1b2130;
+  --on-accent: #0d1117;
+  --ok: #4d7af4;
+  --warn: #817200;
+  --danger: #ffeba0;
+  --info: #4d7af4;
+  --special: #a7b1ff;
+  --quiet: #686868;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Green-weak: blue and gold, stepped by lightness. */
+[data-theme="deuteranomaly"] {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --field: #eef1f5;
+  --border: #e0e5ec;
+  --border-strong: #c6cdd8;
+  --text: #12161d;
+  --muted: #55606e;
+  --accent: #1f4e8c;
+  --accent-text: #194071;
+  --accent-soft: #e3eaf4;
+  --on-accent: #ffffff;
+  --ok: #2664da;
+  --warn: #ab8300;
+  --danger: #883700;
+  --info: #2664da;
+  --special: #003178;
+  --quiet: #949494;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
+/* Green-weak, on a deep ground. */
+[data-theme="deuteranomaly-dark"] {
+  --bg: #090c10;
+  --panel: #0d1117;
+  --card: #0d1117;
+  --field: #141a23;
+  --border: #232b36;
+  --border-strong: #35404e;
+  --text: #e9eef5;
+  --muted: #9aa5b4;
+  --accent: #dfe4ee;
+  --accent-text: #dfe4ee;
+  --accent-soft: #1b2130;
+  --on-accent: #0d1117;
+  --ok: #4d7af4;
+  --warn: #817200;
+  --danger: #ffeba0;
+  --info: #4d7af4;
+  --special: #a7b1ff;
+  --quiet: #686868;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Blue-weak: warm against teal, stepped by lightness. */
+[data-theme="tritanomaly"] {
+  --bg: #f5f6f7;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --field: #eef0f2;
+  --border: #e2e5e8;
+  --border-strong: #c7ccd1;
+  --text: #161719;
+  --muted: #5c6166;
+  --accent: #00595b;
+  --accent-text: #004a4c;
+  --accent-soft: #e0eeee;
+  --on-accent: #ffffff;
+  --ok: #007f7e;
+  --warn: #f65e4d;
+  --danger: #9a002e;
+  --info: #007f7e;
+  --special: #004547;
+  --quiet: #949494;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
+/* Blue-weak, on a deep ground. */
+[data-theme="tritanomaly-dark"] {
+  --bg: #090d0e;
+  --panel: #0d1113;
+  --card: #0d1113;
+  --field: #141a1c;
+  --border: #232b2d;
+  --border-strong: #354045;
+  --text: #e8eef0;
+  --muted: #97a3a6;
+  --accent: #dfe8e9;
+  --accent-text: #dfe8e9;
+  --accent-soft: #182225;
+  --on-accent: #0d1113;
+  --ok: #009b9f;
+  --warn: #ffc3bc;
+  --danger: #ff7389;
+  --info: #009b9f;
+  --special: #86fbf8;
+  --quiet: #6f6f6f;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Holds up under protanopia, deuteranopia and tritanopia. */
+[data-theme="dichromacy"] {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --field: #eef1f5;
+  --border: #e0e5ec;
+  --border-strong: #c6cdd8;
+  --text: #12161d;
+  --muted: #55606e;
+  --accent: #1f4e8c;
+  --accent-text: #194071;
+  --accent-soft: #e3eaf4;
+  --on-accent: #ffffff;
+  --ok: #2664da;
+  --warn: #ab8300;
+  --danger: #7e3b00;
+  --info: #2664da;
+  --special: #003178;
+  --quiet: #949494;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
+/* Holds up under protanopia, deuteranopia and tritanopia., on a deep ground. */
+[data-theme="dichromacy-dark"] {
+  --bg: #090c10;
+  --panel: #0d1117;
+  --card: #0d1117;
+  --field: #141a23;
+  --border: #232b36;
+  --border-strong: #35404e;
+  --text: #e9eef5;
+  --muted: #9aa5b4;
+  --accent: #dfe4ee;
+  --accent-text: #dfe4ee;
+  --accent-soft: #1b2130;
+  --on-accent: #0d1117;
+  --ok: #4d7af4;
+  --warn: #817200;
+  --danger: #ffeba0;
+  --info: #4d7af4;
+  --special: #a7b1ff;
+  --quiet: #686868;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* No hue at all: one ladder of greys; labels and icons carry the meaning. */
+[data-theme="monochromacy"] {
+  --bg: #f2f2f2;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --field: #eaeaea;
+  --border: #dcdcdc;
+  --border-strong: #bcbcbc;
+  --text: #141414;
+  --muted: #575757;
+  --accent: #1f1f1f;
+  --accent-text: #141414;
+  --accent-soft: #e4e4e4;
+  --on-accent: #ffffff;
+  --ok: #7f7f7f;
+  --warn: #5c5c5c;
+  --danger: #2b2b2b;
+  --info: #494949;
+  --special: #181818;
+  --quiet: #949494;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
+/* No hue at all, on a deep ground. */
+[data-theme="monochromacy-dark"] {
+  --bg: #0a0a0a;
+  --panel: #0d0d0d;
+  --card: #0d0d0d;
+  --field: #151515;
+  --border: #262626;
+  --border-strong: #3a3a3a;
+  --text: #f0f0f0;
+  --muted: #a0a0a0;
+  --accent: #ffffff;
+  --accent-text: #ffffff;
+  --accent-soft: #1e1e1e;
+  --on-accent: #0d0d0d;
+  --ok: #b9b9b9;
+  --warn: #9b9b9b;
+  --danger: #d7d7d7;
+  --info: #b9b9b9;
+  --special: #f1f1f1;
+  --quiet: #636363;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}

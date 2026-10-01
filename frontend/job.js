@@ -8,7 +8,11 @@ function currentWorkspace() { return WS; }
 
 let job = null;
 const view = { map: null, layer: null };
-const MODE_COLOUR = { Train: '#f5a524', Metro: '#16a3a3', 'Light rail': '#e0457b', Bus: '#4f9cf9', Coach: '#4f9cf9', Ferry: '#22c07a', Walk: '#9aa6b8', 'School bus': '#4f9cf9' };
+// Theme slot per mode of transport (the label is always shown too).
+const MODE_HUE = { Train: 'warn', Metro: 'info', 'Light rail': 'special', Bus: 'accent', Coach: 'accent', 'School bus': 'accent',
+  Ferry: 'ok', Cycle: 'ok', Walk: 'quiet' };
+const modeHue = (mode) => MODE_HUE[mode] || 'quiet';
+let lastCommute = null; // redrawn in the new colours when the theme changes
 
 function minutes(n) {
   if (n === null || n === undefined) return '';
@@ -119,7 +123,7 @@ async function saveOffice(body) {
 /* ---------- commute ---------- */
 function journeyHtml(j, label) {
   if (!j) return `<div class="trip"><strong>${label}</strong> <span class="muted">no journey found</span></div>`;
-  const legs = j.legs.map((l) => `<li><span class="leg-mode" style="--c:${MODE_COLOUR[l.mode] || '#9aa6b8'}">${esc(l.mode)}${l.line ? ` ${esc(l.line)}` : ''}</span>
+  const legs = j.legs.map((l) => `<li><span class="leg-mode" style="--c:var(--${modeHue(l.mode)})">${esc(l.mode)}${l.line ? ` ${esc(l.line)}` : ''}</span>
     ${esc(l.depart)} ${esc(l.from)} → ${esc(l.arrive)} ${esc(l.to)} <span class="muted">(${minutes(l.minutes)}${l.towards && l.mode !== 'Walk' ? `, towards ${esc(l.towards)}` : ''})</span></li>`).join('');
   return `<details class="trip"><summary><strong>${label}</strong> ${esc(j.depart)} → ${esc(j.arrive)} · <strong>${minutes(j.minutes)}</strong>
       · ${esc(j.summary)}${j.changes ? ` · ${j.changes} change${j.changes > 1 ? 's' : ''}` : ''}</summary><ol class="legs">${legs}</ol></details>`;
@@ -156,6 +160,7 @@ async function loadCommute() {
     <div class="commute-from"><h4>By car from ${esc(c.home.name)}</h4>${car}</div>
     <p class="commute-links"><a href="${esc(c.links.transit)}" target="_blank" rel="noopener">Public transport in Google Maps ↗</a> ·
       <a href="${esc(c.links.car)}" target="_blank" rel="noopener">Driving in Google Maps ↗</a></p>`;
+  lastCommute = [c, best];
   drawMap(c, best);
 }
 
@@ -175,25 +180,25 @@ function drawMap(c, best) {
   if (office.precise) {
     L.marker([office.lat, office.lng]).addTo(view.layer).bindPopup(`<b>Office</b><br>${esc(office.name)}`);
   } else {
-    L.circle([office.lat, office.lng], { radius: 4000, color: '#f5a524', weight: 1, fillOpacity: 0.12 })
+    L.circle([office.lat, office.lng], { radius: 4000, color: themeColor('warn'), weight: 1, fillOpacity: 0.12 })
       .addTo(view.layer).bindPopup(`<b>Office somewhere in ${esc(office.name)}</b><br>The ad names only the city.`);
   }
   points.push([office.lat, office.lng]);
   if (c) {
-    L.circleMarker([c.home.lat, c.home.lng], { radius: 7, color: '#22c07a', fillOpacity: 0.9 }).addTo(view.layer).bindPopup(`<b>${esc(c.home.name)}</b>`);
+    L.circleMarker([c.home.lat, c.home.lng], { radius: 7, color: themeColor('ok'), fillOpacity: 0.9 }).addTo(view.layer).bindPopup(`<b>${esc(c.home.name)}</b>`);
     points.push([c.home.lat, c.home.lng]);
     c.transit.forEach((t) => {
-      L.circleMarker([t.start.lat, t.start.lng], { radius: 5, color: '#f5a524', fillOpacity: 0.9 }).addTo(view.layer).bindPopup(esc(t.from));
+      L.circleMarker([t.start.lat, t.start.lng], { radius: 5, color: themeColor('warn'), fillOpacity: 0.9 }).addTo(view.layer).bindPopup(esc(t.from));
       points.push([t.start.lat, t.start.lng]);
     });
     (best?.there?.legs || []).forEach((l) => {
       if (l.coords.length < 2) return;
-      L.polyline(l.coords, { color: MODE_COLOUR[l.mode] || '#9aa6b8', weight: l.mode === 'Walk' ? 3 : 5, dashArray: l.mode === 'Walk' ? '4 6' : null })
+      L.polyline(l.coords, { color: themeColor(modeHue(l.mode)), weight: l.mode === 'Walk' ? 3 : 5, dashArray: l.mode === 'Walk' ? '4 6' : null })
         .addTo(view.layer).bindPopup(`${esc(l.mode)} ${esc(l.line)}: ${esc(l.from)} → ${esc(l.to)}`);
       points.push(...l.coords);
     });
     if (c.car?.there?.coords?.length) {
-      L.polyline(c.car.there.coords, { color: '#a78bfa', weight: 3, opacity: 0.8, dashArray: '8 6' }).addTo(view.layer).bindPopup('By car');
+      L.polyline(c.car.there.coords, { color: themeColor('special'), weight: 3, opacity: 0.8, dashArray: '8 6' }).addTo(view.layer).bindPopup('By car');
       points.push(...c.car.there.coords);
     }
   }
@@ -227,6 +232,8 @@ async function researchCompany() {
 
 /* ---------- boot ---------- */
 document.addEventListener('DOMContentLoaded', async () => {
+  initThemePicker($('#theme-select'));
+  document.addEventListener('themechange', () => { if (view.map) drawMap(...(lastCommute || [null])); });
   if (!JOB_ID) { showError('No job given. Open a job from the dashboard (Open ↗ on a job card).'); return; }
   try {
     const workspaces = await api('/api/workspaces');

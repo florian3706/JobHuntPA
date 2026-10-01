@@ -227,3 +227,87 @@ function officeHtml(job) {
   if (job.location_verdict === 'too_far') return '<span class="err-text">Too far (your call)</span>';
   return '';
 }
+
+/* ================= THEMES ================= */
+// A per-browser display preference, as in ProjectTimeline. The stored value may
+// be "system", which follows the OS between Light and Dark. themes.css has one
+// block per theme; each page's <head> script applies the theme before first
+// paint, and this keeps it in step afterwards (and across open tabs).
+const DYSLEXIA_FONT = 'Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400';
+const THEMES = [
+  { id: 'system', label: 'System (Light or Dark)', group: 'JobHuntPA' },
+  { id: 'dark', label: 'Dark', group: 'JobHuntPA' },
+  { id: 'light', label: 'Light', group: 'JobHuntPA' },
+  { id: 'catppuccin-latte', label: 'Catppuccin Latte', group: 'Catppuccin' },
+  { id: 'catppuccin-frappe', label: 'Catppuccin Frappé', group: 'Catppuccin' },
+  { id: 'catppuccin-macchiato', label: 'Catppuccin Macchiato', group: 'Catppuccin' },
+  { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', group: 'Catppuccin' },
+  { id: 'dyslexia', label: 'Dyslexia', group: 'Reading', font: DYSLEXIA_FONT },
+  { id: 'dyslexia-dark', label: 'Dyslexia (dark)', group: 'Reading', font: DYSLEXIA_FONT },
+  { id: 'protanomaly', label: 'Protanomaly (red-weak)', group: 'Colour vision' },
+  { id: 'protanomaly-dark', label: 'Protanomaly (dark)', group: 'Colour vision' },
+  { id: 'deuteranomaly', label: 'Deuteranomaly (green-weak)', group: 'Colour vision' },
+  { id: 'deuteranomaly-dark', label: 'Deuteranomaly (dark)', group: 'Colour vision' },
+  { id: 'tritanomaly', label: 'Tritanomaly (blue-weak)', group: 'Colour vision' },
+  { id: 'tritanomaly-dark', label: 'Tritanomaly (dark)', group: 'Colour vision' },
+  { id: 'dichromacy', label: 'Dichromacy (any)', group: 'Colour vision' },
+  { id: 'dichromacy-dark', label: 'Dichromacy (dark)', group: 'Colour vision' },
+  { id: 'monochromacy', label: 'Monochromacy (greys)', group: 'Colour vision' },
+  { id: 'monochromacy-dark', label: 'Monochromacy (dark)', group: 'Colour vision' },
+];
+const THEME_KEY = 'jobhunt.theme';
+
+function storedTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    return THEMES.some((x) => x.id === t) ? t : 'dark';
+  } catch { return 'dark'; }
+}
+
+function resolveTheme(pref) {
+  return pref === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : pref;
+}
+
+function applyTheme(pref = storedTheme()) {
+  const id = resolveTheme(pref);
+  document.documentElement.setAttribute('data-theme', id);
+  // The dyslexia themes' typeface is only downloaded while one of them is on;
+  // their font stack falls back to Verdana until it arrives (or if it can't).
+  const font = THEMES.find((t) => t.id === id)?.font;
+  let link = document.getElementById('theme-font');
+  if (!font) link?.remove();
+  else {
+    if (!link) {
+      link = document.createElement('link');
+      link.id = 'theme-font';
+      link.rel = 'stylesheet';
+      document.head.appendChild(link);
+    }
+    link.href = `https://fonts.googleapis.com/css2?family=${font}&display=swap`;
+  }
+  document.dispatchEvent(new CustomEvent('themechange', { detail: id }));
+}
+
+/* A theme colour for things drawn in script (map markers and routes). */
+function themeColor(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim() || '#888888';
+}
+
+function initThemePicker(select) {
+  const groups = [...new Set(THEMES.map((t) => t.group))];
+  select.innerHTML = groups.map((g) => `<optgroup label="${esc(g)}">${THEMES.filter((t) => t.group === g)
+    .map((t) => `<option value="${t.id}">${esc(t.label)}</option>`).join('')}</optgroup>`).join('');
+  select.value = storedTheme();
+  select.addEventListener('change', () => {
+    try { localStorage.setItem(THEME_KEY, select.value); } catch { /* still applies to this page */ }
+    applyTheme(select.value);
+  });
+  // Changed in another tab (dashboard or a job page): follow it.
+  window.addEventListener('storage', (e) => {
+    if (e.key === THEME_KEY) { select.value = storedTheme(); applyTheme(); }
+  });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (storedTheme() === 'system') applyTheme();
+  });
+  applyTheme();
+}

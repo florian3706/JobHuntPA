@@ -117,6 +117,12 @@ can live in their own **workspaces** (switcher at the top right).
   (you can pick another on the job page). Recruitment agencies rarely name the client, so their ads are left to you: on the job
   page set the office (address or suburb, or one of the employer's offices), or make the call with
   **Location OK** / **Too far**. The office then drives the location filter and distance.
+- **Themes** (top right, remembered per browser): Dark (the default), Light, or *System* to follow
+  your computer; the four Catppuccin flavours; a **Dyslexia** theme (warm low-glare background,
+  Atkinson Hyperlegible font, wider letter and word spacing) in light and dark; and colour-vision
+  themes (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and
+  dark. They're ported from ProjectTimeline; labels always accompany colours, so nothing relies on
+  colour alone.
 - **Reasoning level** (Search setup > LLM): how long the AI thinks, set separately for scoring,
   cover letters, company research and job chat. *Detect supported levels* shows what your model accepts.
 

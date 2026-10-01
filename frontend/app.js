@@ -1340,7 +1340,8 @@ function initDocs() {
 /* ================= MAP ================= */
 // Two modes: 'jobs' (read-only: jobs + pins with radii, jobs in view listed below)
 // and 'pins' (click to drop pins, drag to move, pins listed below).
-const PIN_COLOUR = { home: '#a78bfa', hybrid: '#4f9cf9', onsite: '#f5a524' };
+const PIN_HUE = { home: 'special', hybrid: 'info', onsite: 'warn' }; // theme slots
+const pinColour = (kind) => themeColor(PIN_HUE[kind] || 'accent');
 const MAP_LIST_MAX = 200;
 
 function storedMapMode() {
@@ -1407,7 +1408,7 @@ function drawJobMarkers() {
     const kept = jobs.some((j) => !j.excluded_reason);
     const n = jobs.length;
     const marker = L.circleMarker([jobs[0].lat, jobs[0].lng], {
-      radius: Math.min(16, 5 + 2.5 * Math.log2(n)), weight: 1, color: kept ? '#22c07a' : '#6b7788', fillOpacity: 0.75,
+      radius: Math.min(16, 5 + 2.5 * Math.log2(n)), weight: 1, color: themeColor(kept ? 'ok' : 'quiet'), fillOpacity: 0.75,
     });
     const rows = jobs.slice(0, 40).map((j) => `<li><b>${esc(j.title)}</b> · ${esc(j.company || '')}
       ${scoreOf(j) !== null ? ` · ${scoreOf(j)}` : ''}${j.excluded_reason ? ' <i>(excluded)</i>' : ''}<br>${jobLinkHtml(j)}
@@ -1425,9 +1426,9 @@ function drawJobMarkers() {
 function renderMapLegend() {
   const all = visibleJobs().length;
   const onMap = mapJobs().length;
-  $('#map-legend').innerHTML = `<span class="dot" style="--c:#22c07a"></span> job you'd consider
-    <span class="dot" style="--c:#6b7788"></span> excluded
-    ${Object.entries(PIN_COLOUR).map(([k, c]) => `<span class="ring" style="--c:${c}"></span> ${k} pin`).join(' ')}
+  $('#map-legend').innerHTML = `<span class="dot" style="--c:var(--ok)"></span> job you'd consider
+    <span class="dot" style="--c:var(--quiet)"></span> excluded
+    ${Object.entries(PIN_HUE).map(([k, hue]) => `<span class="ring" style="--c:var(--${hue})"></span> ${k} pin`).join(' ')}
     · ${onMap} of ${all} filtered job${all === 1 ? '' : 's'} on the map${all > onMap ? ` (${all - onMap} remote or without a location)` : ''}`;
 }
 
@@ -1467,7 +1468,7 @@ function renderMapJobs() {
 /* Pins: draggable markers in edit mode; small dots with their radius otherwise. */
 function drawPin(p) {
   const edit = state.mapMode === 'pins';
-  const colour = PIN_COLOUR[p.kind] || '#4f9cf9';
+  const colour = pinColour(p.kind);
   const circle = L.circle([p.lat, p.lng], { radius: p.radius_km * 1000, weight: 1, color: colour, fillOpacity: edit ? 0.12 : 0.06, interactive: false });
   const marker = edit
     ? L.marker([p.lat, p.lng], { draggable: true })
@@ -1552,7 +1553,7 @@ function renderPinsList() {
     row.className = 'pin-row';
     const huge = p.radius_km >= 1000 ? '<span class="err-text" title="Ignored by the location filter: a radius this large covers everywhere. Remote roles are handled by the Remote toggles in Search setup.">⚠ ignored by location filter (radius ≥ 1000 km)</span>' : '';
     row.innerHTML = `
-      <span class="pin-kind" style="border-color:${PIN_COLOUR[p.kind] || 'var(--border)'}">${esc(p.kind)}</span>
+      <span class="pin-kind" style="border-color:var(--${PIN_HUE[p.kind] || 'border'})">${esc(p.kind)}</span>
       <strong>${esc(p.label)}</strong>
       <span class="muted">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>
       <label>Radius <input type="number" min="0.1" step="0.5" value="${p.radius_km}" style="width:90px" /> km</label>
@@ -1681,6 +1682,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSetup();
   initDocs();
   initChat();
+  initThemePicker($('#theme-select'));
+  // Map markers are drawn in script, so they take the new theme's colours here.
+  document.addEventListener('themechange', () => { if (state.map) { drawPins(); drawJobMarkers(); } });
   $('#source-add').addEventListener('click', addSource);
   $('#source-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSource(); } });
   $('#score-test').addEventListener('click', testScorer);

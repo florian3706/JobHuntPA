@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>JobHuntPA</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script>
+    // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
+    (function () {
+      var t = "dark";
+      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <link rel="stylesheet" href="./themes.css" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -25,7 +35,11 @@
           <button id="ws-rename" class="btn btn-ghost btn-sm" type="button">Rename</button>
           <button id="ws-delete" class="btn btn-danger btn-sm" type="button">Delete</button>
         </div>
-        <span id="scorer-status" class="api-status is-unknown">● scorer: checking…</span>
+        <div class="theme-picker">
+          <span id="scorer-status" class="api-status is-unknown">● scorer: checking…</span>
+          <label class="muted" for="theme-select">Theme</label>
+          <select id="theme-select" aria-label="Theme"></select>
+        </div>
       </div>
     </div>
     <nav class="tabs" role="tablist" aria-label="Dashboard sections">
