@@ -320,6 +320,7 @@ class CompanyProfile(Base):
     # [{name, address, city}] offices found by web search (backend.offices)
     offices_json = Column(Text, nullable=True)
     offices_checked_at = Column(DateTime, nullable=True)
+    offices_cities = Column(Text, nullable=True)  # JSON list of cities the office search looked in
     unverified_dropped = Column(Integer, nullable=False, default=0, server_default="0")
     error = Column(Text, nullable=True)
     model = Column(String, nullable=True)

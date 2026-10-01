@@ -37,7 +37,7 @@ POLL_INTERVAL_S = 3
 MAX_WAIT_S = 600
 NOT_COMPANIES = {"private advertiser", "confidential", "confidential company", "undisclosed", ""}
 # Bump when the profile gains fields: older profiles count as missing.
-RESEARCH_VERSION = 2
+RESEARCH_VERSION = 3  # 3: office addresses
 
 INSTRUCTIONS = """You are a company research agent. Research ONE organisation using web search and return a factual profile.
 
@@ -65,6 +65,7 @@ Return ONLY a JSON object, no markdown:
      "sources": [{"title": "article title", "url": "https://..."}]}
   ],
   "controversy_note": "one sentence summarising the controversy picture, e.g. 'No significant controversies found in news coverage.'",
+  "offices": [{"name": "short label, e.g. 'Sydney office' or 'Head office'", "address": "street address with suburb, e.g. '1 Denison St, North Sydney NSW 2060'", "source_url": "page that states this address"}],
   "sources": [{"title": "page title", "url": "https://..."}]
 }
 
@@ -75,6 +76,7 @@ Rules:
 - Employee count: prefer the company's own figures, annual reports or LinkedIn; give a range when that is all you find.
 - Employee sentiment: base it on review sites and forums you actually found (up to 4 themes each way), note if reviews are few or dated, and cite the pages. If you find nothing, say so in summary and leave the lists empty.
 - is_recruiter: true for recruitment/staffing agencies (they advertise roles for undisclosed clients).
+- Offices: the organisation's offices in Australia with street addresses (up to 10), those in the cities of the job ads first, then the head office. Only addresses stated on pages your search returned (contact or locations pages, annual reports, directories); never guess one. Leave it empty for a recruitment agency: its ads are for clients' offices.
 - is_company: false if the name is not a real organisation (e.g. "Private Advertiser") - then leave the other fields empty.
 - If a fact can't be established, write "Unknown" rather than guessing."""
 
@@ -285,12 +287,27 @@ def parse_profile(text: str, seen: dict[str, str]) -> tuple[dict, int]:
         "employee_count": str(obj.get("employee_count") or "").strip(),
         "glassdoor_url": _verified_glassdoor(obj.get("glassdoor_url"), seen),
         "sentiment": _sentiment(obj.get("employee_sentiment"), verified),
+        "offices": _offices(obj.get("offices"), seen),
     }
+    dropped += sum(1 for o in obj.get("offices") or [] if isinstance(o, dict) and o.get("address")) - len(profile["offices"])
     # The rating usually comes from Glassdoor: cite the verified page with it.
     gd, sent = profile["glassdoor_url"], profile["sentiment"]
     if gd and not any("glassdoor." in urlsplit(x["url"]).netloc for x in sent["sources"]):
         sent["sources"].insert(0, {"title": "Glassdoor reviews", "url": gd})
     return profile, dropped
+
+
+def _offices(items: Any, seen: dict[str, str]) -> list[dict]:
+    """Offices whose address a searched page states: [{name, address, url}]."""
+    out = []
+    for o in items if isinstance(items, list) else []:
+        if not isinstance(o, dict) or not str(o.get("address") or "").strip():
+            continue
+        url = str(o.get("source_url") or "")
+        if _norm_url(url) in seen:
+            out.append({"name": str(o.get("name") or "").strip()[:80], "address": str(o["address"]).strip()[:200],
+                        "url": url})
+    return out[:10]
 
 
 def _verified_glassdoor(url: Any, seen: dict[str, str]) -> str:
@@ -344,6 +361,11 @@ def _save(company: dict, *, profile: Optional[dict] = None, dropped: int = 0,
             row.employee_count = profile["employee_count"] or None
             row.glassdoor_url = profile["glassdoor_url"] or None
             row.sentiment_json = json.dumps(profile["sentiment"])
+            # Keep offices an earlier office search found that research didn't list.
+            known = [o for o in (json.loads(row.offices_json) if row.offices_json else [])
+                     if o["address"].lower() not in {x["address"].lower() for x in profile["offices"]}]
+            row.offices_json = json.dumps(profile["offices"] + known)
+            row.offices_checked_at = datetime.utcnow()
             row.research_version = RESEARCH_VERSION
             row.unverified_dropped = dropped
             row.error, row.model, row.researched_at = None, model, datetime.utcnow()

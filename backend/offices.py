@@ -8,8 +8,10 @@ office is looked up, best source first:
   employer's offices (never overwritten);
 - ad: the office named in the full ad (read when the job is scored, or by
   Fill missing info for ads scored before);
-- company: the employer's only office in that city, found by a web-search
-  agent (Fill missing info).
+- company: the employer's office in that city from company research (or,
+  if research found none there, a web-search agent looking just for that
+  city). With several offices there, the one closest to the user's commute
+  pins (stations, home) is used; the user can pick another.
 
 The office's coordinates replace the ad's city for the location filter and
 distance. Ads that stay unplaced are flagged "office unknown"; recruitment
@@ -241,18 +243,48 @@ def research_offices(company: str, city: str, cfg: dict) -> dict:
 
 
 def candidates(db: Session, job: Job) -> list[dict]:
-    """The employer's known offices near the ad's city: [{name, address, url}]."""
+    """The employer's known offices near the ad's city: [{name, address, url,
+    lat, lng}], closest to the user's commute first."""
+    from backend.filters import commute_pins, load_criteria
+
     profile = db.get(CompanyProfile, company_key(job.company or ""))
     if profile is None or not profile.offices_json:
         return []
-    city = _city_point(job)
     out = []
     for o in json.loads(profile.offices_json):
-        point = place_office(o["address"], job)
-        if point and (city is None or distance_km(point["lat"], point["lng"], city["lat"], city["lng"])
-                      <= MAX_FROM_CITY_KM):
-            out.append(o)
+        point = place_office(o["address"], job)  # None when it's far from the ad's city
+        if point:
+            out.append({**o, **point})
+    pins = commute_pins(load_criteria(db, job.workspace_id).pins)
+    if pins:
+        out.sort(key=lambda o: min(distance_km(o["lat"], o["lng"], p["lat"], p["lng"]) for p in pins))
     return out
+
+
+def assign_offices(db: Session, jobs: list[Job]) -> int:
+    """Give jobs without an office from their ad the employer's office closest
+    to the user's commute. Returns how many got one."""
+    placed = 0
+    for job in jobs:
+        if job.office_source in ("ad", "user") or job.location_verdict:
+            continue
+        found = candidates(db, job)
+        if found and set_office(db, job, found[0]["address"], "company"):
+            placed += 1
+    db.commit()
+    return placed
+
+
+def assign_company(ws: int, company: str) -> int:
+    """After researching one company: place its city-only jobs in a workspace."""
+    db = SessionLocal()
+    try:
+        key = company_key(company)
+        jobs = [j for j in db.query(Job).filter(Job.workspace_id == ws, Job.duplicate_of.is_(None))
+                if company_key(j.company or "") == key and (office_unknown(j) or j.office_source == "company")]
+        return assign_offices(db, jobs)
+    finally:
+        db.close()
 
 
 # --------------------------------------------------------------------------
@@ -293,19 +325,25 @@ def find_offices(ws: int, job_ids: Optional[list[int]] = None,
             db.commit()
 
         profiles = {p.key: p for p in db.query(CompanyProfile).all()}
-        waiting: dict[tuple[str, str], list[Job]] = {}
-        for job in jobs_needing_office(db, ws, job_ids):
-            if looks_like_recruiter(job.company or "", profiles):
-                out["recruiters"] += 1
-                continue
-            waiting.setdefault((company_key(job.company or ""), _city_name(job)), []).append(job)
+        employers = [j for j in jobs_needing_office(db, ws, job_ids)
+                     if not looks_like_recruiter(j.company or "", profiles)]
+        out["recruiters"] = len(jobs_needing_office(db, ws, job_ids)) - len(employers)
+        # Offices company research already found.
+        out["from_companies"] += assign_offices(db, employers)
 
-        def fresh(key: str) -> bool:
+        waiting: dict[tuple[str, str], list[Job]] = {}
+        for job in employers:
+            if office_unknown(job):
+                waiting.setdefault((company_key(job.company or ""), _city_name(job)), []).append(job)
+
+        def searched(key: str, city: str) -> bool:
             p = profiles.get(key)
-            return bool(p and p.offices_checked_at and p.offices_checked_at > datetime.utcnow() - OFFICES_REFRESH)
+            cities = json.loads(p.offices_cities) if p is not None and p.offices_cities else []
+            return bool(p and city.lower() in cities and p.offices_checked_at
+                        and p.offices_checked_at > datetime.utcnow() - OFFICES_REFRESH)
 
         todo = list(waiting.items())
-        lookups = [(key, jobs[0].company) for key, jobs in todo if not fresh(key[0])]
+        lookups = [(key, jobs[0].company) for key, jobs in todo if not searched(*key)]
         with ThreadPoolExecutor(max_workers=cfg["concurrency"]) as pool:
             futures = {pool.submit(research_offices, company, key[1], cfg): (key, company) for key, company in lookups}
             for n, fut in enumerate(as_completed(futures), 1):
@@ -324,6 +362,7 @@ def find_offices(ws: int, job_ids: Optional[list[int]] = None,
                 seen = {o["address"].lower() for o in known}
                 row.offices_json = json.dumps(known + [o for o in found["offices"] if o["address"].lower() not in seen])
                 row.offices_checked_at = datetime.utcnow()
+                row.offices_cities = json.dumps(sorted(set(json.loads(row.offices_cities or "[]")) | {city.lower()}))
                 row.is_recruiter = bool(row.is_recruiter or found["is_recruiter"])
                 db.merge(row)
                 db.commit()
@@ -333,11 +372,7 @@ def find_offices(ws: int, job_ids: Optional[list[int]] = None,
             if looks_like_recruiter(jobs[0].company or "", profiles):
                 out["recruiters"] += len(jobs)  # its own office isn't where the job is
                 continue
-            for job in jobs:
-                found = candidates(db, job)
-                if len(found) == 1 and set_office(db, job, found[0]["address"], "company"):
-                    out["from_companies"] += 1
-        db.commit()
+            out["from_companies"] += assign_offices(db, jobs)
         out["unknown"] = len(jobs_needing_office(db, ws, job_ids))
         return out
     finally:

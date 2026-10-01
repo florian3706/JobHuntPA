@@ -85,7 +85,9 @@ function renderOffice() {
   const cands = (job.office_candidates || []).map((o, i) => `<button class="btn btn-sm" type="button" data-cand="${i}" title="${esc(o.address)}">${esc(o.name || o.address)}</button>`).join('');
   $('#job-office').innerHTML = `
     ${status}
-    ${cands ? `<div class="office-cands"><span class="muted">The employer's offices in this city:</span> ${cands}</div>` : ''}
+    ${job.office_source === 'company' && (job.office_candidates || []).length > 1
+    ? `<p class="muted">The employer has ${job.office_candidates.length} offices here; this is the closest to your commute. Pick another if you know which one it is.</p>` : ''}
+    ${cands ? `<div class="office-cands"><span class="muted">The employer's offices in this city (closest to your commute first):</span> ${cands}</div>` : ''}
     <form id="office-form" class="toolbar-row office-form">
       <label class="field search-field"><span class="field-label">Office address or suburb</span>
         <input id="office-input" type="text" placeholder="e.g. 1 Denison St, North Sydney" value="${esc(job.office_source === 'user' ? job.office_text || '' : '')}" /></label>

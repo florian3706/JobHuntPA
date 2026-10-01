@@ -462,3 +462,31 @@ input[type="time"] {
 .gaps-title { font-size: 14px; margin: 14px 0 4px; color: #ffb4b4; }
 .job-head .job-actions select { flex: 0 1 260px; }
 a.btn { text-decoration: none; display: inline-block; }
+
+/* Map tab: modes, legend, jobs in view */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; margin-left: auto; }
+.seg-btn { background: var(--panel); color: var(--text); border: none; padding: 7px 14px; font-size: 13.5px; cursor: pointer; }
+.seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+.seg-btn.active { background: var(--accent); color: #fff; }
+.map-controls[hidden], .pins-list[hidden], .map-jobs[hidden], .hint[hidden] { display: none; }
+.map-controls .pins-in-view { align-self: center; font-size: 13.5px; }
+.map.editing { cursor: crosshair; }
+.map-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 8px 0 4px; font-size: 12.5px; }
+.map-legend .dot, .map-legend .ring { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.map-legend .dot { background: var(--c); }
+.map-legend .ring { border: 2px solid var(--c); }
+.map-count { background: transparent; border: none; box-shadow: none; color: #fff; font-weight: 700; font-size: 11px; padding: 0; }
+.map-count::before { display: none; }
+.map-popup ul { margin: 6px 0 0; padding-left: 16px; }
+.map-popup li { margin-bottom: 6px; }
+.map-jobs { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.map-jobs-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 2px; }
+.map-job-row {
+  display: flex; gap: 10px; align-items: center; background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 8px 12px; font-size: 13.5px;
+}
+.map-job-row .score { margin-left: 0; }
+.map-job-main { flex: 1; min-width: 0; }
+.map-job-title { color: var(--text); font-weight: 600; text-decoration: none; }
+.map-job-title:hover { text-decoration: underline; }
+@media (max-width: 640px) { .map-job-row { flex-wrap: wrap; } }

@@ -196,7 +196,7 @@ function companyProfileHtml(p, name) {
           <div>${esc(c.summary)}</div><div class="sources">${linkList(c.sources)}</div></li>`).join('')}</ul>`
     : '';
   const offices = (p.offices || []).length
-    ? `<dt>Offices found</dt><dd><ul class="offices">${p.offices.map((o) => `<li>${esc(o.name ? `${o.name}: ` : '')}${esc(o.address)}${o.url ? ` <a href="${esc(o.url)}" target="_blank" rel="noopener noreferrer">source</a>` : ''}</li>`).join('')}</ul></dd>`
+    ? `<dt>Offices</dt><dd><ul class="offices">${p.offices.map((o) => `<li>${esc(o.name ? `${o.name}: ` : '')}${esc(o.address)}${o.url ? ` <a href="${esc(o.url)}" target="_blank" rel="noopener noreferrer">source</a>` : ''}</li>`).join('')}</ul></dd>`
     : '';
   return `
     <p class="modal-links">${glassdoorLink(p, name)}</p>
@@ -219,7 +219,7 @@ function companyProfileHtml(p, name) {
 
 /* Office line for a job: where it is, or that it's unknown. */
 function officeHtml(job) {
-  const by = { ad: 'from the ad', company: "the employer's office in that city", user: 'set by you' };
+  const by = { ad: 'from the ad', company: 'from company research', user: 'set by you' };
   if (job.office_text) {
     return `🏢 ${esc(job.office_text)} <span class="muted">(${by[job.office_source] || ''}${job.office_placed ? '' : ', not found on the map'})</span>`;
   }

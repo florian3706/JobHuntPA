@@ -394,6 +394,11 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
             summary = {"research": research_companies(companies, progress)}
         except ScorerError as exc:
             return {"research": {"aborted": str(exc)}}
+        if payload.name:  # one company: place its jobs at the offices research found
+            from backend.offices import assign_company
+
+            summary["offices"] = {"from_ads": 0, "from_companies": assign_company(ws, payload.name),
+                                  "unknown": 0, "recruiters": 0}
         if not payload.name and not summary["research"].get("aborted"):
             # Fill missing info also finds offices for ads that only name a city.
             from backend.offices import find_offices

@@ -106,10 +106,15 @@ can live in their own **workspaces** (switcher at the top right).
   planned from the stations you list there (e.g. Gosford Station, Narara Station), including
   changes, metro, buses and walking at the other end; driving starts at your home pin. See
   [Commute times](#commute-times-optional) for the two free keys this needs.
+- **Map**: two modes. **Jobs** shows the jobs your Jobs tab filters show, with your pins and their
+  radii, and lists the jobs in view under the map (click a dot or **Open ↗** for a job's full
+  page in a new tab); nothing can be changed by accident. **Edit pins** drops a pin where you
+  click (drag to move); *Only list pins in view* shortens the pin list to the area on screen.
 - **Office locations**: most ads only say "Sydney NSW". Instead of assuming the CBD, such jobs show
-  **office unknown** until the office is found: the scorer reads it from the full ad, and
-  **Fill missing info** looks up the employer's offices in that city (one web-search agent per
-  employer). Recruitment agencies rarely name the client, so their ads are left to you: on the job
+  **office unknown** until the office is found: the scorer reads it from the full ad, and company
+  research (**Fill missing info**) finds the employer's office addresses. An office named in the ad
+  wins; otherwise, with several offices in that city, the one closest to your commute pins is used
+  (you can pick another on the job page). Recruitment agencies rarely name the client, so their ads are left to you: on the job
   page set the office (address or suburb, or one of the employer's offices), or make the call with
   **Location OK** / **Too far**. The office then drives the location filter and distance.
 - **Reasoning level** (Search setup > LLM): how long the AI thinks, set separately for scoring,

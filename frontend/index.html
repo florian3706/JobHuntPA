@@ -314,21 +314,30 @@
     <!-- ============ MAP ============ -->
     <section id="tab-map" class="tab-panel" role="tabpanel" hidden>
       <div class="panel-head">
-        <h2>Location pins</h2>
-        <span class="muted">Click the map to drop a pin · drag to move</span>
+        <h2>Map</h2>
+        <div class="seg" role="group" aria-label="Map mode">
+          <button id="map-mode-jobs" class="seg-btn active" type="button" aria-pressed="true">Jobs</button>
+          <button id="map-mode-pins" class="seg-btn" type="button" aria-pressed="false">Edit pins</button>
+        </div>
       </div>
-      <p class="hint">Home pin: hybrid and onsite roles within its radius are OK. Hybrid pins (e.g. stations on your commute): hybrid roles within the radius are OK.
-        Onsite pins: onsite roles within the radius are OK. Remote roles don't need a pin. Dots are jobs (green = kept, grey = excluded).</p>
-      <div class="map-controls card">
+      <p id="map-hint-jobs" class="hint">The jobs your Jobs tab filters show, with your pins and their radii. Pan and zoom: the jobs in view are
+        listed under the map. Click a dot to see its jobs; <strong>Open ↗</strong> opens a job's full page in a new tab.</p>
+      <p id="map-hint-pins" class="hint" hidden>Click the map to drop a pin, drag a pin to move it. Home pin: hybrid and onsite roles within its radius are OK.
+        Hybrid pins (e.g. stations on your commute): hybrid roles within the radius are OK. Onsite pins: onsite roles within the radius are OK.
+        Remote roles don't need a pin.</p>
+      <div id="pin-controls" class="map-controls card" hidden>
         <label class="field"><span class="field-label">Pin kind</span>
           <select id="pin-kind"><option value="home">home</option><option value="hybrid">hybrid</option><option value="onsite">onsite</option></select></label>
         <label class="field"><span class="field-label">Radius: <output id="pin-radius-output">10 km</output></span>
           <input id="pin-radius" type="range" min="1" max="100" step="1" value="10" /></label>
         <label class="field"><span class="field-label">Label (optional)</span>
           <input id="pin-label" type="text" placeholder="e.g. Home, Office hub" /></label>
+        <label class="check pins-in-view"><input id="pins-in-view" type="checkbox" /> <span>Only list pins in view</span></label>
       </div>
       <div id="map" class="map"></div>
-      <div id="pins-list" class="pins-list"></div>
+      <div id="map-legend" class="map-legend muted"></div>
+      <div id="map-jobs" class="map-jobs"></div>
+      <div id="pins-list" class="pins-list" hidden></div>
       <div id="pins-error" class="error" hidden></div>
     </section>
   </main>

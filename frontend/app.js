@@ -12,7 +12,10 @@ const state = {
   pins: [],
   map: null,
   pinLayers: new Map(),
+  pinLayer: null,
   jobLayer: null,
+  jobMarkers: new Map(), // job id -> its map marker
+  mapMode: 'jobs', // 'jobs' (read-only) | 'pins' (edit pins)
   pollTimer: null,
   companies: {}, // company_key -> profile
   ws: 1, // current workspace id
@@ -68,7 +71,6 @@ async function loadJobs() {
     $('#jobs-error').hidden = false;
   }
   renderJobs();
-  drawJobMarkers();
   loadDuplicates();
 }
 
@@ -163,6 +165,7 @@ function renderJobs() {
   $('#jobs-count').textContent = `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}`;
   jobs.forEach((job) => list.appendChild(renderJobCard(job)));
   renderBulkBar();
+  drawJobMarkers();
 }
 
 function renderJobCard(job) {
@@ -1335,6 +1338,15 @@ function initDocs() {
 }
 
 /* ================= MAP ================= */
+// Two modes: 'jobs' (read-only: jobs + pins with radii, jobs in view listed below)
+// and 'pins' (click to drop pins, drag to move, pins listed below).
+const PIN_COLOUR = { home: '#a78bfa', hybrid: '#4f9cf9', onsite: '#f5a524' };
+const MAP_LIST_MAX = 200;
+
+function storedMapMode() {
+  try { return localStorage.getItem('jobhunt.mapMode') === 'pins' ? 'pins' : 'jobs'; } catch { return 'jobs'; }
+}
+
 function initMap() {
   if (state.map) return;
   if (typeof L === 'undefined') { $('#pins-error').textContent = 'Map library failed to load (offline?).'; $('#pins-error').hidden = false; return; }
@@ -1342,42 +1354,148 @@ function initMap() {
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(state.map);
+  state.pinLayer = L.layerGroup().addTo(state.map);
   state.jobLayer = L.layerGroup().addTo(state.map);
-  state.map.on('click', addPinAt);
+  state.map.on('click', (e) => { if (state.mapMode === 'pins') addPinAt(e); });
+  state.map.on('moveend', () => { if (state.mapMode === 'jobs') renderMapJobs(); else if ($('#pins-in-view').checked) renderPinsList(); });
   $('#pin-radius').addEventListener('input', (e) => { $('#pin-radius-output').textContent = `${e.target.value} km`; });
+  $('#pins-in-view').addEventListener('change', renderPinsList);
+  $('#map-mode-jobs').addEventListener('click', () => setMapMode('jobs'));
+  $('#map-mode-pins').addEventListener('click', () => setMapMode('pins'));
+  setMapMode(storedMapMode(), false);
   loadPins();
+}
+
+function setMapMode(mode, redraw = true) {
+  state.mapMode = mode;
+  try { localStorage.setItem('jobhunt.mapMode', mode); } catch { /* private mode */ }
+  const edit = mode === 'pins';
+  [['#map-mode-jobs', !edit], ['#map-mode-pins', edit]].forEach(([sel, on]) => {
+    $(sel).classList.toggle('active', on);
+    $(sel).setAttribute('aria-pressed', String(on));
+  });
+  $('#map-hint-jobs').hidden = edit;
+  $('#map-hint-pins').hidden = !edit;
+  $('#pin-controls').hidden = !edit;
+  $('#pins-list').hidden = !edit;
+  $('#map-jobs').hidden = edit;
+  $('#map').classList.toggle('editing', edit);
+  if (!redraw) return;
+  drawPins();
+  if (edit) renderPinsList(); else renderMapJobs();
+}
+
+/* Jobs on the map: the ones the Jobs tab's filters show, grouped by place
+   (many ads that only name a city share one point). */
+function mapJobs() { return visibleJobs().filter((j) => j.lat !== null && j.lng !== null); }
+
+function jobLinkHtml(j) {
+  return `<a href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Full page in a new tab">Open ↗</a>`;
 }
 
 function drawJobMarkers() {
   if (!state.map || !state.jobLayer) return;
   state.jobLayer.clearLayers();
-  state.jobs.filter((j) => j.lat !== null && j.lng !== null && !j.closed).forEach((j) => {
-    L.circleMarker([j.lat, j.lng], { radius: 5, weight: 1, color: j.excluded_reason ? '#6b7788' : '#22c07a', fillOpacity: 0.7 })
-      .bindPopup(`<b>${esc(j.title)}</b><br>${esc(j.company)}<br>${esc(j.location_text)}${j.excluded_reason ? `<br><i>${esc(j.excluded_reason)}</i>` : ''}`)
-      .addTo(state.jobLayer);
+  state.jobMarkers = new Map();
+  const groups = new Map();
+  mapJobs().forEach((j) => {
+    const key = `${j.lat.toFixed(4)},${j.lng.toFixed(4)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(j);
   });
+  groups.forEach((jobs, key) => {
+    const kept = jobs.some((j) => !j.excluded_reason);
+    const n = jobs.length;
+    const marker = L.circleMarker([jobs[0].lat, jobs[0].lng], {
+      radius: Math.min(16, 5 + 2.5 * Math.log2(n)), weight: 1, color: kept ? '#22c07a' : '#6b7788', fillOpacity: 0.75,
+    });
+    const rows = jobs.slice(0, 40).map((j) => `<li><b>${esc(j.title)}</b> · ${esc(j.company || '')}
+      ${scoreOf(j) !== null ? ` · ${scoreOf(j)}` : ''}${j.excluded_reason ? ' <i>(excluded)</i>' : ''}<br>${jobLinkHtml(j)}
+      · <a href="${esc(j.url)}" target="_blank" rel="noopener">ad</a></li>`).join('');
+    marker.bindPopup(`<div class="map-popup"><div class="muted">${esc(jobs[0].location_text || '')}${n > 1 ? ` · ${n} jobs` : ''}</div>
+      <ul>${rows}</ul>${n > 40 ? `<div class="muted">…and ${n - 40} more: see the list under the map.</div>` : ''}</div>`, { maxWidth: 320, maxHeight: 300 });
+    if (n > 1) marker.bindTooltip(String(n), { permanent: true, direction: 'center', className: 'map-count' });
+    marker.addTo(state.jobLayer);
+    jobs.forEach((j) => state.jobMarkers.set(j.id, marker));
+  });
+  renderMapLegend();
+  renderMapJobs();
 }
 
+function renderMapLegend() {
+  const all = visibleJobs().length;
+  const onMap = mapJobs().length;
+  $('#map-legend').innerHTML = `<span class="dot" style="--c:#22c07a"></span> job you'd consider
+    <span class="dot" style="--c:#6b7788"></span> excluded
+    ${Object.entries(PIN_COLOUR).map(([k, c]) => `<span class="ring" style="--c:${c}"></span> ${k} pin`).join(' ')}
+    · ${onMap} of ${all} filtered job${all === 1 ? '' : 's'} on the map${all > onMap ? ` (${all - onMap} remote or without a location)` : ''}`;
+}
+
+function renderMapJobs() {
+  const box = $('#map-jobs');
+  if (!state.map || state.mapMode !== 'jobs') return;
+  const bounds = state.map.getBounds();
+  const inView = mapJobs().filter((j) => bounds.contains([j.lat, j.lng]));
+  if (!inView.length) {
+    box.innerHTML = '<div class="empty">No jobs in this part of the map. Zoom out, or change the Jobs tab filters.</div>';
+    return;
+  }
+  const shown = inView.slice(0, MAP_LIST_MAX);
+  box.innerHTML = `<div class="map-jobs-head"><strong>${inView.length} job${inView.length === 1 ? '' : 's'} in view</strong>
+      <span class="muted">sorted like the Jobs tab${inView.length > MAP_LIST_MAX ? `; first ${MAP_LIST_MAX} shown, zoom in for the rest` : ''}</span></div>
+    ${shown.map((j) => `<div class="map-job-row" data-id="${j.id}">
+      ${scoreBadge(j)}
+      <div class="map-job-main">
+        <div><a class="map-job-title" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Open the full page in a new tab">${esc(j.title || '—')}</a>
+          <span class="muted">· ${esc(j.company || '—')}</span></div>
+        <div class="muted">${esc(j.location_text || '')}${j.office_unknown ? ' · office unknown' : ''}${j.distance_km !== null ? ` · 📍 ${j.distance_km} km` : ''}
+          · <span class="badge ${modeOf(j)}">${modeOf(j)}</span> · ${esc(STATUS_LABEL[j.status] || j.status)}${j.excluded_reason ? ` · excluded: ${esc(j.excluded_reason)}` : ''}</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="show" title="Show it on the map">Show</button>
+      <a class="btn btn-ghost btn-sm" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener">Open ↗</a>
+    </div>`).join('')}`;
+  box.querySelectorAll('[data-act="show"]').forEach((b) => b.addEventListener('click', () => {
+    const marker = state.jobMarkers.get(Number(b.closest('.map-job-row').dataset.id));
+    if (!marker) return;
+    // The list sits below the map: bring the map back on screen first.
+    $('#map').scrollIntoView({ block: 'center' });
+    state.map.panTo(marker.getLatLng());
+    marker.openPopup();
+  }));
+}
+
+/* Pins: draggable markers in edit mode; small dots with their radius otherwise. */
 function drawPin(p) {
-  const old = state.pinLayers.get(p.id);
-  if (old) { old.marker.remove(); old.circle.remove(); }
-  const marker = L.marker([p.lat, p.lng], { draggable: true }).addTo(state.map)
-    .bindPopup(`<b>${esc(p.label)}</b><br>${esc(p.kind)} · ${p.radius_km} km`);
-  const circle = L.circle([p.lat, p.lng], { radius: p.radius_km * 1000, weight: 1 }).addTo(state.map);
-  marker.on('dragend', async () => {
-    const ll = marker.getLatLng();
-    circle.setLatLng(ll);
-    await savePin(p, { lat: ll.lat, lng: ll.lng });
-  });
+  const edit = state.mapMode === 'pins';
+  const colour = PIN_COLOUR[p.kind] || '#4f9cf9';
+  const circle = L.circle([p.lat, p.lng], { radius: p.radius_km * 1000, weight: 1, color: colour, fillOpacity: edit ? 0.12 : 0.06, interactive: false });
+  const marker = edit
+    ? L.marker([p.lat, p.lng], { draggable: true })
+    : L.circleMarker([p.lat, p.lng], { radius: 4, weight: 2, color: colour, fillOpacity: 1 });
+  marker.bindPopup(`<b>${esc(p.label)}</b><br>${esc(p.kind)} pin · ${p.radius_km} km`);
+  if (edit) {
+    marker.on('dragend', async () => {
+      const ll = marker.getLatLng();
+      circle.setLatLng(ll);
+      await savePin(p, { lat: ll.lat, lng: ll.lng });
+    });
+  }
+  circle.addTo(state.pinLayer);
+  marker.addTo(state.pinLayer);
   state.pinLayers.set(p.id, { marker, circle });
+}
+
+function drawPins() {
+  if (!state.map) return;
+  state.pinLayer.clearLayers();
+  state.pinLayers.clear();
+  state.pins.forEach(drawPin);
 }
 
 async function loadPins() {
   try {
     state.pins = await api('/api/pins');
-    state.pinLayers.forEach(({ marker, circle }) => { marker.remove(); circle.remove(); });
-    state.pinLayers.clear();
-    state.pins.forEach(drawPin);
+    drawPins();
     const sane = state.pins.filter((p) => p.radius_km < 1000);
     if (sane.length) state.map.fitBounds(L.latLngBounds(sane.map((p) => [p.lat, p.lng])).pad(0.3));
     $('#pins-error').hidden = true;
@@ -1397,8 +1515,14 @@ async function addPinAt(e) {
 }
 
 async function savePin(p, patch) {
-  try { Object.assign(p, await api(`/api/pins/${p.id}`, { method: 'PUT', body: JSON.stringify(patch) })); drawPin(p); renderPinsList(); pinsChanged(); }
-  catch (e) { toast(`Pin update failed: ${e.message}`, 'err'); }
+  try {
+    Object.assign(p, await api(`/api/pins/${p.id}`, { method: 'PUT', body: JSON.stringify(patch) }));
+    const old = state.pinLayers.get(p.id);
+    if (old) { old.marker.remove(); old.circle.remove(); }
+    drawPin(p);
+    renderPinsList();
+    pinsChanged();
+  } catch (e) { toast(`Pin update failed: ${e.message}`, 'err'); }
 }
 
 async function deletePin(p) {
@@ -1413,13 +1537,22 @@ const pinsChanged = debounce(async () => {
 
 function renderPinsList() {
   const box = $('#pins-list');
-  box.innerHTML = state.pins.length ? '' : '<div class="empty">No pins yet. Click the map to drop one.</div>';
-  state.pins.forEach((p) => {
+  if (state.mapMode !== 'pins') return;
+  const inViewOnly = $('#pins-in-view').checked && state.map;
+  const bounds = state.map?.getBounds();
+  const pins = inViewOnly ? state.pins.filter((p) => bounds.contains([p.lat, p.lng])) : state.pins;
+  box.innerHTML = '';
+  if (!state.pins.length) { box.innerHTML = '<div class="empty">No pins yet. Click the map to drop one.</div>'; return; }
+  if (inViewOnly) {
+    box.insertAdjacentHTML('beforeend', `<div class="muted">${pins.length} of ${state.pins.length} pins in view</div>`);
+    if (!pins.length) return;
+  }
+  pins.forEach((p) => {
     const row = document.createElement('div');
     row.className = 'pin-row';
     const huge = p.radius_km >= 1000 ? '<span class="err-text" title="Ignored by the location filter: a radius this large covers everywhere. Remote roles are handled by the Remote toggles in Search setup.">⚠ ignored by location filter (radius ≥ 1000 km)</span>' : '';
     row.innerHTML = `
-      <span class="pin-kind">${esc(p.kind)}</span>
+      <span class="pin-kind" style="border-color:${PIN_COLOUR[p.kind] || 'var(--border)'}">${esc(p.kind)}</span>
       <strong>${esc(p.label)}</strong>
       <span class="muted">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>
       <label>Radius <input type="number" min="0.1" step="0.5" value="${p.radius_km}" style="width:90px" /> km</label>
@@ -1430,7 +1563,7 @@ function renderPinsList() {
       <button class="btn btn-danger btn-sm" data-act="del" type="button">Delete</button>`;
     row.querySelector('input').addEventListener('change', (e) => savePin(p, { radius_km: Number(e.target.value) }));
     row.querySelector('select').addEventListener('change', (e) => savePin(p, { kind: e.target.value }));
-    row.querySelector('[data-act="locate"]').addEventListener('click', () => { state.map.setView([p.lat, p.lng], 12); state.pinLayers.get(p.id)?.marker.openPopup(); });
+    row.querySelector('[data-act="locate"]').addEventListener('click', () => { state.map.setView([p.lat, p.lng], 14); state.pinLayers.get(p.id)?.marker.openPopup(); });
     row.querySelector('[data-act="del"]').addEventListener('click', () => deletePin(p));
     box.appendChild(row);
   });

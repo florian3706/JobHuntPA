@@ -1314,3 +1314,50 @@ class CommuteTest(unittest.TestCase):
             self.assertTrue(any("only a city" in n for n in out["notes"]))
             self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": False})
             c.delete(f"/api/workspaces/{ws}")
+
+
+class ResearchOfficesTest(unittest.TestCase):
+    def test_research_offices_verified(self):
+        from backend.research import extract, parse_profile
+        profile = {"official_name": "Acme", "is_company": True, "controversies": [], "sources": [],
+                   "offices": [{"name": "Sydney office", "address": "1 Miller St, North Sydney NSW 2060",
+                                "source_url": "https://acme.example/contact"},
+                               {"name": "Guess", "address": "9 Nowhere Rd, Parramatta NSW", "source_url": "https://made.up/x"}]}
+        response = {"output": [
+            {"type": "web_search_call", "results": [{"title": "Contact", "url": "https://acme.example/contact"}]},
+            {"type": "message", "content": [{"type": "output_text", "text": json.dumps(profile), "annotations": []}]}]}
+        p, dropped = parse_profile(*extract(response))
+        self.assertEqual([o["address"] for o in p["offices"]], ["1 Miller St, North Sydney NSW 2060"])
+        self.assertEqual(dropped, 1)
+
+    def test_closest_office_unless_the_ad_names_one(self):
+        from unittest import mock
+        from backend.db import CompanyProfile, Job, Pin, SessionLocal, Workspace
+        import backend.offices as of
+        import backend.pipeline as pl
+
+        places = {"North Sydney": (-33.839, 151.207), "Macquarie Park": (-33.781, 151.126), "Sydney NSW": (-33.87, 151.21),
+                  "Parramatta": (-33.815, 151.003)}
+        fake = _fake_geocode(places)
+        db = SessionLocal()
+        ws = Workspace(name="Closest")
+        db.add(ws); db.commit()
+        # Commute pins: home and a station near North Sydney.
+        db.add_all([Pin(workspace_id=ws.id, label="Home", kind="onsite", lat=-33.42, lng=151.34, radius_km=10),
+                    Pin(workspace_id=ws.id, label="Station", kind="hybrid", lat=-33.840, lng=151.206, radius_km=1)])
+        db.merge(CompanyProfile(key="multi office co", name="Multi Office Co", status="done", offices_json=json.dumps([
+            {"name": "West", "address": "Parramatta", "url": "u"},
+            {"name": "North", "address": "North Sydney", "url": "u"},
+            {"name": "Park", "address": "Macquarie Park", "url": "u"}])))
+        jobs = [Job(workspace_id=ws.id, url=f"https://closest.example/{i}", title="PM", company="Multi Office Co",
+                    location_text="Sydney NSW", work_mode="hybrid", country="AU", status="to_review", detail_status="full",
+                    lat=-33.87, lng=151.21) for i in range(2)]
+        db.add_all(jobs); db.commit()
+        with mock.patch.object(of, "geocode", side_effect=fake), mock.patch.object(pl, "geocode", side_effect=fake):
+            of.set_office(db, jobs[1], "Parramatta", "ad")  # the ad names the site
+            db.commit()
+            self.assertEqual(of.assign_company(ws.id, "Multi Office Co"), 1)
+        db.expire_all()
+        self.assertEqual((db.get(Job, jobs[0].id).office_text, db.get(Job, jobs[0].id).office_source), ("North Sydney", "company"))
+        self.assertEqual(db.get(Job, jobs[1].id).office_text, "Parramatta")
+        db.delete(db.get(Workspace, ws.id)); db.commit(); db.close()
