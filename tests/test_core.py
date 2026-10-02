@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 _TMP = tempfile.mkdtemp()
 os.environ["JOBHUNT_DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["JOBHUNT_SCHEDULER"] = "off"  # tests drive backend.schedule.tick() themselves
+os.environ["JOBHUNT_ENV_PATH"] = os.path.join(_TMP, "test.env")  # never read or write the real .env
 
 from backend.adapters.ats import detect_ats  # noqa: E402
 from backend.adapters.base import Posting  # noqa: E402
@@ -1392,8 +1395,313 @@ class CommuteTest(unittest.TestCase):
             self.assertEqual(out["car"]["there"]["minutes"], 66)
             self.assertFalse(out["car"]["there"]["traffic"])
             self.assertTrue(any("only a city" in n for n in out["notes"]))
+            self.assertTrue(any("TomTom" in n and "Settings tab" in n for n in out["notes"]))  # where to add the key
             self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": False})
             c.delete(f"/api/workspaces/{ws}")
+
+
+class EnvFileTest(unittest.TestCase):
+    """backend.app_settings.update_env_file: the only way the app writes .env."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.env = Path(self.dir) / ".env"
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_updates_in_place_and_keeps_everything_else(self):
+        from backend.app_settings import update_env_file
+        self.env.write_text("# my note\nLLM_API_KEY=secret-llm\n\nTFNSW_API_KEY=old-key-1234\n"
+                            "# TOMTOM_API_KEY=commented-out\nTOMTOM_API_KEY=\nJOBHUNT_USER_AGENT=custom agent\n")
+        update_env_file(self.env, {"TFNSW_API_KEY": "new.key-5678", "TOMTOM_API_KEY": "tomtom1234"})
+        self.assertEqual(self.env.read_text(), "# my note\nLLM_API_KEY=secret-llm\n\nTFNSW_API_KEY=new.key-5678\n"
+                                               "# TOMTOM_API_KEY=commented-out\nTOMTOM_API_KEY=tomtom1234\n"
+                                               "JOBHUNT_USER_AGENT=custom agent\n")
+        self.assertEqual([f.name for f in Path(self.dir).iterdir()], [".env"])  # no temp file left behind
+
+    def test_appends_when_missing_and_creates_the_file(self):
+        from backend.app_settings import update_env_file
+        update_env_file(self.env, {"TOMTOM_API_KEY": "tomtom1234"})
+        self.assertEqual(self.env.read_text(), "TOMTOM_API_KEY=tomtom1234\n")
+        self.env.write_text("LLM_API_KEY=k\n# note")  # no newline at the end, and only a comment about the key
+        update_env_file(self.env, {"TFNSW_API_KEY": "abc.def.ghi-1"})
+        self.assertEqual(self.env.read_text(), "LLM_API_KEY=k\n# note\nTFNSW_API_KEY=abc.def.ghi-1\n")
+
+    def test_clearing_keeps_an_empty_line(self):
+        from backend.app_settings import update_env_file
+        self.env.write_text("A=1\nTFNSW_API_KEY=old-key-1234\nB=2\n")
+        update_env_file(self.env, {"TFNSW_API_KEY": ""})
+        self.assertEqual(self.env.read_text(), "A=1\nTFNSW_API_KEY=\nB=2\n")  # the installer reads this as "asked, left blank"
+
+    def test_only_known_names_and_plain_values(self):
+        from backend.app_settings import update_env_file
+        start = "LLM_API_KEY=secret\nLLM_BASE_URL=https://llm.example/v1\nLLM_REASONING_EFFORT=low\n"
+        self.env.write_text(start)
+        for bad in ({"LLM_REASONING_EFFORT": "high"}, {"JOBHUNT_USER_AGENT": "x"}, {"PATH": "x"}, {"TFNSW_API_KEY ": "abcdefgh"},
+                    {"llm_base_url": "https://evil.example"}, {"": "abcdefgh"},
+                    {"TFNSW_API_KEY": "abcdefgh\nLLM_BASE_URL=https://evil.example"}, {"TFNSW_API_KEY": "abcdefgh\n"},
+                    {"TOMTOM_API_KEY": "abc def gh"}, {"TOMTOM_API_KEY": "abcdefgh=1"}, {"TOMTOM_API_KEY": "abcdefg"},
+                    {"LLM_API_KEY": "sk-abc def-1234"}, {"LLM_API_KEY": "sk-abc#def-1234"}, {"LLM_API_KEY": "sk-abcdef-1234\r\nX=1"},
+                    {"LLM_BASE_URL": "http://evil.example/v1"}, {"LLM_BASE_URL": "https://x.example/v1/"},  # http off-host; not normalised
+                    {"LLM_BASE_URL": "https://x.example/v1\nLLM_API_KEY=x"}, {"LLM_BASE_URL": "https://u:p@x.example"},
+                    {"LLM_BASE_URL": "https://x.example/v1#a"}, {"LLM_BASE_URL": 'https://x.example/"v1"'},
+                    {"LLM_MODEL": "m\nLLM_BASE_URL=https://evil.example"}, {"LLM_MODEL": "gpt 5"}, {"LLM_MODEL": "m=1"},
+                    {"LLM_MODEL": "x" * 201}, {"TFNSW_API_KEY": 12345678},
+                    {"TFNSW_API_KEY": "abcdefgh", "LLM_MODEL": "ok", "LLM_REASONING_EFFORT": "x"}):  # one bad entry stops the whole write
+            with self.assertRaises(ValueError, msg=bad):
+                update_env_file(self.env, bad)
+        self.assertEqual(self.env.read_text(), start)
+        # The LLM names it may write, with the values the app itself stores.
+        update_env_file(self.env, {"LLM_BASE_URL": "https://openrouter.ai/api/v1", "LLM_MODEL": "anthropic/claude-sonnet-5.5",
+                                   "LLM_API_KEY": "sk-or-v1-abcdef0123456789"})
+        self.assertEqual(self.env.read_text(), "LLM_API_KEY=sk-or-v1-abcdef0123456789\nLLM_BASE_URL=https://openrouter.ai/api/v1\n"
+                                               "LLM_REASONING_EFFORT=low\nLLM_MODEL=anthropic/claude-sonnet-5.5\n")
+
+    def test_keeps_the_file_mode_and_a_new_file_is_private(self):
+        from backend.app_settings import update_env_file
+        if os.name == "nt":
+            self.skipTest("POSIX permissions")
+        self.env.write_text("A=1\n")
+        self.env.chmod(0o640)
+        update_env_file(self.env, {"TOMTOM_API_KEY": "tomtom1234"})
+        self.assertEqual(self.env.stat().st_mode & 0o777, 0o640)
+        fresh = Path(self.dir) / "fresh.env"
+        update_env_file(fresh, {"TOMTOM_API_KEY": "tomtom1234"})
+        self.assertEqual(fresh.stat().st_mode & 0o777, 0o600)
+
+    def test_a_symlinked_env_is_updated_where_it_lives(self):
+        from backend.app_settings import update_env_file
+        if os.name == "nt":
+            self.skipTest("symlinks need privileges on Windows")
+        real = Path(self.dir) / "real.env"
+        real.write_text("A=1\n")
+        self.env.symlink_to(real)
+        update_env_file(self.env, {"TOMTOM_API_KEY": "tomtom1234"})
+        self.assertTrue(self.env.is_symlink())
+        self.assertEqual(real.read_text(), "A=1\nTOMTOM_API_KEY=tomtom1234\n")
+
+
+class SettingsKeysTest(unittest.TestCase):
+    JWT = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJhYmMxMjMifQ.c2lnbmF0dXJlLXBhcnQ_xyz9"
+
+    def test_keys_endpoints(self):
+        from unittest import mock
+        from fastapi.testclient import TestClient
+        from backend import commute, config
+        from backend.app import app
+
+        env = Path(tempfile.mkdtemp()) / ".env"
+        env.write_text("# keys\nLLM_API_KEY=secret-llm\nLLM_BASE_URL=https://llm.example/v1\nTFNSW_API_KEY=\nTOMTOM_API_KEY=\n")
+        before = env.read_text()
+        try:
+            with TestClient(app) as c, mock.patch.object(config, "ENV_PATH", env), \
+                    mock.patch.dict(os.environ, {"TFNSW_API_KEY": "", "TOMTOM_API_KEY": ""}):
+                none = {"set": False, "hint": None}
+                self.assertEqual(c.get("/api/settings/keys").json(), {"tfnsw": none, "tomtom": none})
+
+                # Saving takes effect at once, with no restart; the answer never holds the key.
+                r = c.put("/api/settings/keys", json={"tfnsw": self.JWT})
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertEqual(r.json(), {"tfnsw": {"set": True, "hint": "…xyz9"}, "tomtom": none})
+                self.assertNotIn(self.JWT, r.text)
+                self.assertNotIn(self.JWT, c.get("/api/settings/keys").text)
+                self.assertEqual(commute.keys()["tfnsw"], self.JWT)
+                self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": False})
+                self.assertEqual(env.read_text(), before.replace("TFNSW_API_KEY=\n", f"TFNSW_API_KEY={self.JWT}\n"))
+
+                # A short key shows at most a quarter of itself.
+                r = c.put("/api/settings/keys", json={"tomtom": "abcd1234"})
+                self.assertEqual(r.json()["tomtom"], {"set": True, "hint": "…34"})
+                self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": True})
+
+                # Nothing but a plain key gets in, and a refused request changes nothing.
+                saved = env.read_text()
+                evil = ["good-key-1234\nLLM_BASE_URL=https://evil.example", "good-key-1234\r\nLLM_API_KEY=x", "good key 1234",
+                        "good-key=1234", "good-key#1234", "'good-key-1234'", '"good-key-1234"', "good-key-1234\n", " good-key-1234",
+                        "short", "x" * 4001, "ключ-ключ-1234", "good;key-1234"]
+                for bad in evil:
+                    for field in ("tfnsw", "tomtom"):
+                        r = c.put("/api/settings/keys", json={field: bad})
+                        self.assertEqual(r.status_code, 422, (field, bad))
+                for body in ({"tfnsw": 12345678}, {"tfnsw": ["abcdefgh1"]}, {"LLM_BASE_URL": "https://evil.example"},
+                             {"llm_base_url": "https://evil.example"}, {"tfnsw": "abcdefgh1", "llm_api_key": "x"},
+                             {"tfnsw": "abcdefgh1", "tomtom": "bad key"}):
+                    self.assertEqual(c.put("/api/settings/keys", json=body).status_code, 422, body)
+                self.assertEqual(env.read_text(), saved)
+                self.assertEqual(commute.keys(), {"tfnsw": self.JWT, "tomtom": "abcd1234"})
+
+                # Omitted fields stay as they are; "" clears (the .env line stays, empty).
+                self.assertEqual(c.put("/api/settings/keys", json={}).json()["tfnsw"]["set"], True)
+                r = c.put("/api/settings/keys", json={"tfnsw": ""})
+                self.assertEqual(r.json(), {"tfnsw": none, "tomtom": {"set": True, "hint": "…34"}})
+                self.assertEqual(commute.keys(), {"tfnsw": "", "tomtom": "abcd1234"})
+                self.assertEqual(c.get("/api/commute/status").json(), {"transit": False, "traffic": True})
+                self.assertEqual(env.read_text(), before.replace("TOMTOM_API_KEY=\n", "TOMTOM_API_KEY=abcd1234\n"))
+                c.put("/api/settings/keys", json={"tomtom": ""})
+                self.assertEqual(env.read_text(), before)
+
+                # If .env can't be written the key isn't taken either, so what runs matches what a restart would.
+                with mock.patch.object(config, "ENV_PATH", env.parent / "missing-folder" / ".env"):
+                    self.assertEqual(c.put("/api/settings/keys", json={"tomtom": "abcd1234"}).status_code, 500)
+                self.assertEqual(commute.keys()["tomtom"], "")
+        finally:
+            shutil.rmtree(env.parent, ignore_errors=True)
+
+    def test_keys_test_endpoint(self):
+        from unittest import mock
+        from fastapi.testclient import TestClient
+        from backend import commute, config
+        from backend.app import app
+
+        calls = []
+
+        def fake_get(url, params, headers=None, what=""):
+            calls.append(what or url)
+            if "stop_finder" in url:
+                self.assertEqual(headers["Authorization"], "apikey tfnsw-key-1")
+                return {"locations": [{"type": "stop", "id": "10101100", "name": "Central Station"}]}
+            raise commute.CommuteError(f"TomTom: the API key was rejected (HTTP 403, key {params['key']})")
+        env = Path(tempfile.mkdtemp()) / ".env"
+        try:
+            with TestClient(app) as c, mock.patch.object(config, "ENV_PATH", env), mock.patch.object(commute, "_get", side_effect=fake_get), \
+                    mock.patch.dict(os.environ, {"TFNSW_API_KEY": "", "TOMTOM_API_KEY": ""}):
+                self.assertEqual(c.post("/api/settings/keys/test").json(), {})  # nothing saved: nothing is requested
+                self.assertEqual(calls, [])
+                c.put("/api/settings/keys", json={"tfnsw": "tfnsw-key-1", "tomtom": "tomtom-key-2"})
+                out = c.post("/api/settings/keys/test").json()
+                self.assertEqual(out["tfnsw"], {"ok": True})
+                self.assertFalse(out["tomtom"]["ok"])
+                self.assertIn("rejected", out["tomtom"]["error"])
+                self.assertNotIn("tomtom-key-2", out["tomtom"]["error"])  # an error message never carries the key
+                self.assertEqual(len(calls), 2)
+        finally:
+            shutil.rmtree(env.parent, ignore_errors=True)
+
+
+class SettingsLlmTest(unittest.TestCase):
+    """GET/PUT /api/settings/llm: the LLM address, model and key, saved to .env and used at once."""
+    OLD_KEY = "old-key-12345678"
+    OPENAI_KEY = "sk-proj-AbCdEf0123456789_-AbCdEf0123456789xyz1"
+    CLAUDE_KEY = "sk-ant-api03-AbCdEf0123456789_-AbCdEf0123456789-QwErTy"
+    START = ("# my llm\nLLM_API_KEY=old-key-12345678\nLLM_BASE_URL=https://api.openai.com/v1\nLLM_MODEL=gpt-6-luna\n"
+             "JOBHUNT_USER_AGENT=custom\n")
+
+    def test_llm_endpoints(self):
+        from unittest import mock
+        from fastapi.testclient import TestClient
+        from backend import config, llm_providers, scorer
+        from backend.app import app
+
+        env = Path(tempfile.mkdtemp()) / ".env"
+        env.write_text(self.START)
+        start_env = {"LLM_API_KEY": self.OLD_KEY, "LLM_BASE_URL": "https://api.openai.com/v1", "LLM_MODEL": "gpt-6-luna"}
+        secrets = (self.OLD_KEY, self.OPENAI_KEY, self.CLAUDE_KEY)
+        try:
+            with TestClient(app) as c, mock.patch.object(config, "ENV_PATH", env), mock.patch.dict(os.environ, start_env):
+                def put(body):
+                    r = c.put("/api/settings/llm", json=body)
+                    for secret in secrets:
+                        self.assertNotIn(secret, r.text)  # no answer ever holds a key
+                    return r
+
+                def unchanged():
+                    self.assertEqual(env.read_text(), saved)
+                    self.assertEqual({k: os.environ.get(k) for k in start_env}, now)
+
+                # GET: what is set, the presets, never the key.
+                r = c.get("/api/settings/llm")
+                self.assertEqual(r.status_code, 200, r.text)
+                out = r.json()
+                self.assertNotIn(self.OLD_KEY, r.text)
+                self.assertEqual((out["provider"], out["base_url"], out["model"]), ("openai", "https://api.openai.com/v1", "gpt-6-luna"))
+                self.assertEqual(out["key"], {"set": True, "hint": "…5678"})
+                self.assertEqual([p["id"] for p in out["presets"]], [p["id"] for p in llm_providers.PRESETS])
+                self.assertEqual(out["capabilities"]["provider"], "openai")
+                self.assertTrue(out["capabilities"]["web_search"])
+
+                # Model and key alone change nothing else; the key can change on the same server.
+                self.assertEqual(put({"model": "gpt-6-astra"}).json()["model"], "gpt-6-astra")
+                out = put({"api_key": self.OPENAI_KEY}).json()
+                self.assertEqual(out["key"], {"set": True, "hint": "…xyz1"})
+                self.assertEqual(scorer.get_config()["api_key"], self.OPENAI_KEY)
+                self.assertEqual(env.read_text(), self.START.replace("gpt-6-luna", "gpt-6-astra").replace(self.OLD_KEY, self.OPENAI_KEY))
+                # The same server written another way (case, port, slash, path) isn't a move.
+                out = put({"base_url": "https://API.openai.com:443/v1/"}).json()
+                self.assertEqual(out["base_url"], "https://API.openai.com:443/v1")
+
+                # Moving the address to another server needs the key in the same request.
+                saved, now = env.read_text(), {k: os.environ.get(k) for k in start_env}
+                for body in ({"base_url": "https://api.mistral.ai/v1"}, {"base_url": "https://api.mistral.ai/v1", "model": "m"},
+                             {"base_url": "https://evil.example/v1", "api_key": ""}, {"base_url": "https://evil.example/v1", "model": "x"}):
+                    r = put(body)
+                    self.assertEqual(r.status_code, 422, body)
+                    self.assertIn("API key", r.json()["detail"])
+                unchanged()
+                r = put({"base_url": "https://api.anthropic.com/", "model": "claude-opus-5-5", "api_key": self.CLAUDE_KEY})
+                self.assertEqual(r.status_code, 200, r.text)
+                out = r.json()
+                self.assertEqual((out["provider"], out["base_url"], out["model"], out["key"]["hint"]),
+                                 ("anthropic", "https://api.anthropic.com", "claude-opus-5-5", "…ErTy"))
+                self.assertEqual(out["capabilities"]["style"], "anthropic")
+                cfg = scorer.get_config()  # takes effect at once, no restart
+                self.assertEqual((cfg["base_url"], cfg["model"], cfg["api_key"]), ("https://api.anthropic.com", "claude-opus-5-5", self.CLAUDE_KEY))
+                self.assertIsNone(scorer.config_problem(cfg))
+                self.assertEqual(env.read_text(), "# my llm\nLLM_API_KEY=" + self.CLAUDE_KEY + "\nLLM_BASE_URL=https://api.anthropic.com\n"
+                                                  "LLM_MODEL=claude-opus-5-5\nJOBHUNT_USER_AGENT=custom\n")  # in place, other lines kept
+
+                # A server that needs no key (Ollama on this computer) drops the saved key, and none is asked for.
+                out = put({"base_url": "http://localhost:11434/v1", "model": "llama3.2:3b"}).json()
+                self.assertEqual((out["provider"], out["key"], out["capabilities"]["key_required"]), ("ollama", {"set": False, "hint": None}, False))
+                self.assertEqual(os.environ.get("LLM_API_KEY", ""), "")
+                self.assertEqual(env.read_text(), "# my llm\nLLM_API_KEY=\nLLM_BASE_URL=http://localhost:11434/v1\n"
+                                                  "LLM_MODEL=llama3.2:3b\nJOBHUNT_USER_AGENT=custom\n")
+                cfg = scorer.get_config()
+                self.assertEqual((cfg["api_key"], cfg["model"]), ("", "llama3.2:3b"))
+                self.assertIsNone(scorer.config_problem(cfg))
+                self.assertEqual(put({"base_url": "http://127.0.0.1:11434/v1/"}).json()["base_url"], "http://127.0.0.1:11434/v1")  # same machine
+
+                # Nothing is left to carry to the next server, and every move still needs its key typed.
+                saved, now = env.read_text(), {k: os.environ.get(k) for k in start_env}
+                self.assertEqual(put({"base_url": "https://api.openai.com/v1"}).status_code, 422)
+                self.assertEqual(put({"base_url": "https://api.openai.com/v1", "api_key": "short"}).status_code, 422)
+                self.assertEqual(put({"base_url": "https://api.openai.com/v1", "api_key": self.OPENAI_KEY}).status_code, 200)
+                self.assertEqual(os.environ["LLM_API_KEY"], self.OPENAI_KEY)
+
+                # Anything that isn't a plain https address (or http to this computer) is refused, and nothing changes.
+                saved, now = env.read_text(), {k: os.environ.get(k) for k in start_env}
+                bad_urls = ["ftp://api.example.com/v1", "javascript:alert(1)", "api.example.com/v1", "//api.example.com/v1", "https://",
+                            "http://api.example.com/v1", "http://192.168.1.5:11434/v1", "https://user:pw@api.example.com/v1",
+                            "https://api.example.com/v1\nLLM_API_KEY=attacker", "https://api.example.com/v1\r\nLLM_MODEL=x",
+                            "https://api.example.com/v1 ", " https://api.example.com/v1", "https://api exam.ple.com", "https://api.example.com/v1#x",
+                            "https://api.example.com/v1?key=1", 'https://api.example.com/"v1"', "https://api.example.com/'v1'",
+                            "https://api.example.com:99999/v1", "https://-bad.example.com", "https://" + "a" * 300 + ".com", "https://a\u0430.example.com"]
+                for url in bad_urls:
+                    r = put({"base_url": url, "api_key": self.OPENAI_KEY})
+                    self.assertEqual(r.status_code, 422, url)
+                for body in ({"model": "gpt 5"}, {"model": "m\nLLM_BASE_URL=https://evil.example"}, {"model": "m=1"}, {"model": 'm"x'},
+                             {"model": "m#1"}, {"model": "x" * 201}, {"model": 7}, {"api_key": "sk bad key 1234"},
+                             {"api_key": self.OPENAI_KEY + "\nLLM_BASE_URL=https://evil.example"}, {"api_key": "sk-abcdefgh\n"},
+                             {"api_key": "sk-abc=defgh"}, {"api_key": "sk-abc#defgh"}, {"api_key": "x" * 4001}, {"base_url": 5},
+                             {"llm_base_url": "https://evil.example"}, {"LLM_BASE_URL": "https://evil.example"}, {"extra": "x"},
+                             {"model": "ok-model", "api_key": "bad key"}):
+                    self.assertEqual(put(body).status_code, 422, body)
+                unchanged()
+
+                # Model ids of OpenRouter ("/") and Ollama (":"); "" clears; an empty request changes nothing.
+                self.assertEqual(put({"model": "anthropic/claude-sonnet-5.5"}).json()["model"], "anthropic/claude-sonnet-5.5")
+                self.assertEqual(put({}).json()["model"], "anthropic/claude-sonnet-5.5")
+                self.assertEqual(put({"model": ""}).json()["model"], "")
+                self.assertEqual(env.read_text().count("\nLLM_MODEL=\n"), 1)
+                self.assertEqual(put({"api_key": ""}).json()["key"], {"set": False, "hint": None})
+
+                # If .env can't be written, nothing is taken either.
+                now = {k: os.environ.get(k) for k in start_env}
+                with mock.patch.object(config, "ENV_PATH", env.parent / "missing-folder" / ".env"):
+                    self.assertEqual(put({"model": "other-model"}).status_code, 500)
+                self.assertEqual({k: os.environ.get(k) for k in start_env}, now)
+        finally:
+            shutil.rmtree(env.parent, ignore_errors=True)
 
 
 class ResearchOfficesTest(unittest.TestCase):

@@ -1,10 +1,12 @@
-"""LLM fit scorer (any OpenAI-compatible chat-completions API).
+"""LLM fit scorer (any OpenAI-compatible chat-completions API, plus Claude and Gemini).
 
 Config (``.env``):
-    LLM_API_KEY            API key, sent as ``Authorization: Bearer <key>`` (required)
+    LLM_API_KEY            API key, sent as ``Authorization: Bearer <key>`` (required, except for Ollama)
     LLM_BASE_URL           API base, e.g. https://api.openai.com/v1 (required);
                            scoring POSTs to ``{base}/chat/completions``, company
-                           research to ``{base}/responses`` with the web_search tool
+                           research to ``{base}/responses`` with the web_search tool.
+                           api.anthropic.com and generativelanguage.googleapis.com are
+                           recognised and called their own way (backend/llm_providers.py)
     LLM_MODEL              model id (required)
     LLM_REASONING_EFFORT   optional, e.g. low; sent only when set (reasoning models)
     LLM_TIMEOUT_S          per request, default 180
@@ -24,27 +26,19 @@ import logging
 import os
 import re
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-import httpx
+import httpx  # noqa: F401  (tests patch scorer.httpx; the requests are made in backend/llm_providers.py)
 from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env)
+from backend import llm_providers
 from backend.db import Document, FitResult, Job, SessionLocal
+from backend.llm_providers import MAX_RETRIES, ScorerError  # noqa: F401  (ScorerError is imported from here everywhere)
 
 log = logging.getLogger(__name__)
-
-MAX_RETRIES = 3
-
-
-class ScorerError(Exception):
-    def __init__(self, message: str, *, auth: bool = False):
-        super().__init__(message)
-        self.auth = auth
-
 
 REQUIRED = (("LLM_API_KEY", "api_key"), ("LLM_BASE_URL", "base_url"), ("LLM_MODEL", "model"))
 
@@ -72,7 +66,8 @@ def get_config(task: Optional[str] = None) -> dict[str, Any]:
 def config_problem(cfg: Optional[dict] = None) -> Optional[str]:
     """None when the LLM is configured, else what to set."""
     cfg = cfg or get_config()
-    missing = [name for name, key in REQUIRED if not cfg[key]]
+    keyless = not llm_providers.capabilities(cfg)["key_required"]  # Ollama runs on this computer
+    missing = [name for name, key in REQUIRED if not cfg[key] and not (key == "api_key" and keyless)]
     if not missing:
         return None
     return f"Set {', '.join(missing)} in .env and restart the server."
@@ -86,6 +81,8 @@ def public_config() -> dict[str, Any]:
         "base_url": cfg["base_url"],
         "model": cfg["model"],
         "reasoning_effort": cfg["reasoning_effort"],
+        "provider": llm_providers.provider_for(cfg["base_url"]),
+        "capabilities": llm_providers.capabilities(cfg),
     }
 
 
@@ -177,41 +174,8 @@ def build_messages(job: Job, profile_text: str) -> list[dict]:
 # --------------------------------------------------------------------------
 
 def call_model(messages: list[dict], cfg: dict, *, json_mode: bool = True) -> str:
-    payload: dict[str, Any] = {"model": cfg["model"], "messages": messages}
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
-    if cfg.get("reasoning_effort"):
-        payload["reasoning_effort"] = cfg["reasoning_effort"]
-    headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
-    url = f"{cfg['base_url']}/chat/completions"
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = httpx.post(url, json=payload, headers=headers, timeout=cfg["timeout_s"])
-        except httpx.HTTPError as exc:
-            if attempt == MAX_RETRIES:
-                raise ScorerError(f"connection error: {exc.__class__.__name__}: {exc}") from exc
-            time.sleep(2 ** attempt)
-            continue
-        body = resp.text[:600]
-        if resp.status_code in (401, 403):
-            raise ScorerError(f"HTTP {resp.status_code}: API key rejected by {cfg['base_url']} ({body})", auth=True)
-        if resp.status_code == 400 and "response_format" in body and "response_format" in payload:
-            payload.pop("response_format")
-            continue
-        if resp.status_code in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
-            retry_after = resp.headers.get("retry-after", "")
-            time.sleep(float(retry_after) if retry_after.replace(".", "", 1).isdigit() else 5 * attempt)
-            continue
-        if resp.status_code >= 400:
-            raise ScorerError(f"HTTP {resp.status_code}: {body}")
-        try:
-            content = resp.json()["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise ScorerError(f"unexpected response shape: {body}") from exc
-        if isinstance(content, list):
-            content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
-        return str(content or "")
-    raise ScorerError("gave up after retries")
+    """One chat answer from the configured provider (see backend/llm_providers.py for how they differ)."""
+    return llm_providers.chat(messages, cfg, json_mode=json_mode)
 
 
 # --------------------------------------------------------------------------

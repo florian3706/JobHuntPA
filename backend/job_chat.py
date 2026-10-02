@@ -3,8 +3,9 @@
 The model gets the candidate's documents and, per job: the ad, the fit
 assessment, the researched company profile and any cover-letter draft,
 then the conversation so far. With "Search the web" on, the question goes
-to the Responses API with the web_search tool (like company research);
-only links the search actually returned are kept, and they're listed as
+to the provider's web search (the Responses API's web_search tool, Claude's,
+Gemini's or OpenRouter's; like company research), which isn't offered by every
+provider; only links the search actually returned are kept, and they're listed as
 the answer's sources. Without it, links that aren't in the material are
 removed, so no link comes from the model's memory.
 
@@ -220,23 +221,22 @@ def _history(thread: Optional[ChatThread], db: Session) -> list[dict]:
 
 def ask(db: Session, ws: int, jobs: list[Job], history: list[dict], message: str, web: bool) -> dict:
     """{"text", "sources", "model"} for the next answer."""
-    from backend.research import extract, run_response
+    from backend import llm_providers
+    from backend.research import extract
     from backend.scorer import ScorerError, call_model, config_problem, get_config
 
     cfg = get_config("chat")
     if config_problem(cfg):
         raise HTTPException(status_code=400, detail=config_problem(cfg))
+    no_search = llm_providers.web_search_problem(cfg, "The chat's \"Search the web\" option") if web else None
+    if no_search:
+        raise HTTPException(status_code=400, detail=f"{no_search} Or turn that option off.")
     context = build_context(db, ws, jobs, web)
     turns = history + [{"role": "user", "content": message}]
     try:
         if web:
-            payload = {"model": cfg["model"], "instructions": context, "input": turns,
-                       "tools": [{"type": "web_search", "search_context_size": "medium",
-                                  "user_location": {"type": "approximate", "country": "AU"}}],
-                       "include": ["web_search_call.results"], "background": True}
-            if cfg.get("reasoning_effort"):
-                payload["reasoning"] = {"effort": cfg["reasoning_effort"]}
-            response = _with_retry(lambda: run_response(payload, cfg, "web search"))
+            response = _with_retry(lambda: llm_providers.web_search(
+                cfg, instructions=context, input=turns, context_size="medium", what="web search"))
             text, seen = extract(response)
             text = keep_known_links(text, set(seen) | known_links(db, jobs))
             sources = web_sources(response, text, seen)

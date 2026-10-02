@@ -7,7 +7,8 @@ What it does:
 1. Builds a NEW temporary database with tools/demo_data.py (a "Dummy workspace" full of made-up
    jobs; nothing from your real data/jobhunt.db).
 2. Starts the app on a free local port against that database, with fake LLM settings, no commute
-   API keys and the scheduler off, so nothing can reach an LLM or scrape a site.
+   API keys, a throwaway .env path (JOBHUNT_ENV_PATH, so the real .env is neither read nor written,
+   even by the Settings tab) and the scheduler off, so nothing can reach an LLM or scrape a site.
 3. Opens it in headless Chromium (Playwright) and saves the screenshots.
 4. Stops the server and deletes the temporary database.
 
@@ -17,8 +18,8 @@ fetches Leaflet (unpkg.com), map tiles (openstreetmap.org) and, for the Dyslexia
 (Google Fonts); the server asks OSRM's public server for the driving route on the job page.
 
 Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide):
-    jobs, run-report, job-page, map (light theme), search-setup, search-schedule, company-sources, themes, chat,
-    cover-letter
+    jobs, run-report, job-page, map (light theme), search-setup, company-sources, settings, search-schedule
+    (the Scheduled searches card, on the Settings tab), themes, chat, cover-letter
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = Path(__file__).resolve().parent
 REAL_DB = (ROOT / "data" / "jobhunt.db").resolve()
+REAL_ENV = (ROOT / ".env").resolve()
 DEFAULT_OUT = ROOT / "docs" / "screenshots"
 
 VIEWPORT = {"width": 1440, "height": 900}
@@ -54,8 +56,8 @@ ALLOWED_HOSTS = ("unpkg.com", "tile.openstreetmap.org", "fonts.googleapis.com", 
 
 # theme id -> shown in themes.png, in this order
 MONTAGE_THEMES = ["light", "catppuccin-mocha", "catppuccin-latte", "dyslexia", "deuteranomaly-dark", "monochromacy"]
-ALL_SHOTS = ["jobs", "run-report", "job-page", "map", "search-setup", "search-schedule", "company-sources", "themes",
-             "chat", "cover-letter"]
+ALL_SHOTS = ["jobs", "run-report", "job-page", "map", "search-setup", "company-sources", "settings", "search-schedule",
+             "themes", "chat", "cover-letter"]
 
 
 # --------------------------------------------------------------------------
@@ -68,26 +70,28 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def server_env(db: Path) -> dict:
+def server_env(db: Path, env_file: Path) -> dict:
     """The app's environment: the demo database, fake LLM settings, no commute keys, no scheduler.
-    backend/config.py only fills in .env values for keys that are missing here, so setting every
-    key keeps the real ones out."""
+    JOBHUNT_ENV_PATH makes backend/config.py read (and the Settings tab write) ``env_file``, a
+    throwaway path, instead of the real .env. Every key the shots can show is also set here, so
+    nothing real gets in even if that path were wrong."""
     env = dict(os.environ)
     env.update({
         "JOBHUNT_DB_PATH": str(db), "DATABASE_URL": f"sqlite:///{db}", "JOBHUNT_SCHEDULER": "off",
-        "LLM_API_KEY": "demo-key", "LLM_BASE_URL": "https://llm.example.com/v1", "LLM_MODEL": "example-model",
+        "JOBHUNT_ENV_PATH": str(env_file),
+        "LLM_API_KEY": "demo-key-not-real-1234", "LLM_BASE_URL": "https://llm.example.com/v1", "LLM_MODEL": "example-model",
         "LLM_REASONING_EFFORT": "", "LLM_TIMEOUT_S": "30", "LLM_CONCURRENCY": "1",
         "TFNSW_API_KEY": "", "TOMTOM_API_KEY": "",
     })
     return env
 
 
-def start_server(db: Path, port: int, log_path: Path) -> subprocess.Popen:
+def start_server(db: Path, env_file: Path, port: int, log_path: Path) -> subprocess.Popen:
     log = open(log_path, "w", encoding="utf-8")
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", str(port),
          "--log-level", "warning"],
-        cwd=ROOT, env=server_env(db), stdout=log, stderr=subprocess.STDOUT)
+        cwd=ROOT, env=server_env(db, env_file), stdout=log, stderr=subprocess.STDOUT)
     deadline = time.time() + 60
     while time.time() < deadline:
         if proc.poll() is not None:
@@ -301,15 +305,34 @@ def shot_search(s: Shooter) -> None:
     page = s.page(ctx)
     page.goto(f"{s.base}/#search")
     page.wait_for_selector("#sources-list .source-row")
-    page.wait_for_function("document.querySelector('#sched-status').textContent.includes('Next search')")
+    page.wait_for_function("document.querySelector('#commute-keys').textContent.includes('Public transport')")
     s.settle(page)
     form = s.rect(page, "#search-form")
     s.save("search-setup", s.grab(page, (CONTENT_X, 0, CONTENT_W, int(form["y"] + form["h"]) + 14)))
-    card = s.rect(page, "#schedule-card")
-    s.save("search-schedule", s.grab(page, (CONTENT_X, int(card["y"]) - 10, CONTENT_W, int(card["h"]) + 20)))
     box = page.evaluate("""() => { const r = document.querySelector('#sources-list').closest('.card').getBoundingClientRect();
         return { y: r.top + scrollY, h: r.height }; }""")
     s.save("company-sources", s.grab(page, (CONTENT_X, int(box["y"]) - 10, CONTENT_W, int(box["h"]) + 20)))
+    ctx.close()
+
+
+def shot_settings(s: Shooter) -> None:
+    """The Settings tab (Scheduled searches, LLM provider/model/key and reasoning levels, commute API keys), and the
+    Scheduled searches card alone. The demo LLM is a fake key at llm.example.com, shown as Custom; nothing calls it."""
+    ctx = s.context()
+    page = s.page(ctx)
+    page.goto(f"{s.base}/#settings")
+    page.wait_for_function("document.querySelector('#sched-status').textContent.includes('Next search')")
+    page.wait_for_function("document.querySelector('[data-task=scoring]').options.length > 1")
+    page.wait_for_function("!document.querySelector('#scorer-info').textContent.includes('(LLM_MODEL not set)') "
+                           "&& document.querySelector('#scorer-info').textContent.length > 0")
+    page.wait_for_function("[...document.querySelectorAll('.key-state')].every(e => e.textContent.trim())")
+    page.wait_for_function("document.querySelector('#llm-provider').options.length > 1 && document.querySelector('#llm-model').value")
+    s.settle(page)
+    top = s.rect(page, "#tab-settings .panel-head")
+    last = s.rect(page, "#commute-keys-card")
+    s.save("settings", s.grab(page, (CONTENT_X, int(top["y"]) - 10, CONTENT_W, int(last["y"] + last["h"] - top["y"]) + 24)))
+    card = s.rect(page, "#schedule-card")
+    s.save("search-schedule", s.grab(page, (CONTENT_X, int(card["y"]) - 10, CONTENT_W, int(card["h"]) + 20)))
     ctx.close()
 
 
@@ -386,9 +409,9 @@ def shot_themes(s: Shooter) -> None:
     ctx.close()
 
 
-SHOTS = {"jobs": shot_jobs, "run-report": shot_run_report, "job-page": shot_job_page, "map": shot_map, "search": shot_search, "chat": shot_chat,
-         "cover-letter": shot_cover_letter, "themes": shot_themes}
-GROUP = {"search-setup": "search", "search-schedule": "search", "company-sources": "search"}
+SHOTS = {"jobs": shot_jobs, "run-report": shot_run_report, "job-page": shot_job_page, "map": shot_map, "search": shot_search,
+         "settings": shot_settings, "chat": shot_chat, "cover-letter": shot_cover_letter, "themes": shot_themes}
+GROUP = {"search-setup": "search", "company-sources": "search", "search-schedule": "settings"}
 
 
 def main() -> None:
@@ -413,21 +436,27 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="jobhunt-readme-"))
     db = (work / "demo.db").resolve()
+    env_file = (work / "demo.env").resolve()  # never created unless the app writes to it
     if db == REAL_DB or REAL_DB.parent in db.parents:
         sys.exit("Refusing to use the real data folder.")
+    if env_file == REAL_ENV or ROOT in env_file.parents:
+        sys.exit("Refusing to use the real .env.")
     proc = None
     try:
         print(f"Building the demo database in {work} ...")
         subprocess.run([sys.executable, str(TOOLS / "demo_data.py"), str(db)], check=True, cwd=ROOT)
         before = counts(db)
         port = free_port()
-        proc = start_server(db, port, work / "server.log")
+        proc = start_server(db, env_file, port, work / "server.log")
         base = f"http://127.0.0.1:{port}"
         workspaces = json.load(urllib.request.urlopen(f"{base}/api/workspaces"))
         ws = next((w for w in workspaces if w["name"] == "Dummy workspace"), None)
         if ws is None or len(workspaces) != 1:
             sys.exit(f"Expected only a 'Dummy workspace', got {[w['name'] for w in workspaces]}")
-        print(f"Server on {base}, workspace {ws['id']} ({ws['jobs']} jobs). Taking screenshots ...")
+        keys = json.load(urllib.request.urlopen(f"{base}/api/settings/keys"))
+        if any(k["set"] for k in keys.values()):
+            sys.exit("The demo server has commute API keys set: something from the real environment got in.")
+        print(f"Server on {base}, workspace {ws['id']} ({ws['jobs']} jobs, no commute keys). Taking screenshots ...")
 
         with sync_playwright() as p:
             browser = p.chromium.launch()
@@ -449,6 +478,7 @@ def main() -> None:
             print("  UNEXPECTED hosts:", ", ".join(stray))
         changed = {t: (before[t], after[t]) for t in COUNTED if before[t] != after[t]}
         print("  rows added by the app while browsing (should be none):", changed or "none")
+        print("  .env written while browsing (should be none):", "YES" if env_file.exists() else "none")
         if shooter.problems:
             print("  browser problems:")
             for line in dict.fromkeys(shooter.problems):

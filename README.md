@@ -39,9 +39,10 @@ underneath.
 
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
-**Scheduled searches**: the search runs by itself at set times on workdays, skipping public holidays.
+**Settings**: scheduled searches (by themselves at set times on workdays, skipping public holidays),
+your AI provider, model and key, how long the AI thinks for each task, and the commute keys.
 
-![The Scheduled searches settings: run times, days, public holidays by state, and the next search](docs/screenshots/search-schedule.png)
+![The Settings tab: scheduled searches, the AI provider with its model, key and reasoning levels, and the commute API keys](docs/screenshots/settings.png)
 
 **Themes**: Dark (above), Light, the Catppuccin flavours, a dyslexia-friendly theme and themes for
 colour vision deficiencies.
@@ -49,11 +50,9 @@ colour vision deficiencies.
 ![The Jobs tab in six themes: Light, Catppuccin Mocha, Catppuccin Latte, Dyslexia, Deuteranomaly (dark) and Monochromacy](docs/screenshots/themes.png)
 
 <details>
-<summary>More: search setup, company sources and the per-source run report</summary>
+<summary>More: search setup and the per-source run report</summary>
 
 ![Search setup: target titles, keywords, salary floor, work modes, office days and dealbreakers](docs/screenshots/search-setup.png)
-
-![Company sources: careers pages with their last results, one blocked by the site](docs/screenshots/company-sources.png)
 
 ![The last run's per-source results: listed, new, kept and excluded jobs for each source](docs/screenshots/run-report.png)
 
@@ -62,11 +61,17 @@ colour vision deficiencies.
 ## What you need
 
 - A computer running Windows 10/11, macOS or Linux, and an internet connection.
-- An **API key for an AI model (LLM)** that offers an OpenAI-compatible API, for example the
-  [Meta Model API](https://dev.meta.ai/) (Muse Spark) or [OpenAI](https://platform.openai.com/).
-  Setup asks for three things: the provider's API address, the model name and your key. Using the
-  model costs money on your provider account. The app still collects and filters jobs without a
-  key, but scoring, cover letters, title suggestions and company research need one.
+- An **API key for an AI model (LLM)** from one of the major providers: [OpenAI](https://platform.openai.com/),
+  [Anthropic (Claude)](https://platform.claude.com/), [Google Gemini](https://aistudio.google.com/),
+  [Meta](https://dev.meta.ai/) (Muse Spark), Mistral, Groq, xAI (Grok), DeepSeek or OpenRouter, or
+  any other service with an OpenAI-compatible API. A model running on your own computer with
+  [Ollama](https://ollama.com/) needs no key. Setup lets you pick the provider, then asks for the
+  model and your key; you can change them any time under **Settings > LLM**. Using the model costs
+  money on your provider account. The app still collects and filters jobs without one, but
+  scoring, cover letters, title suggestions, chat and company research need it.
+- Company research, finding offices and *Search the web* in chats use the provider's web search,
+  which OpenAI, Claude, Gemini, Meta, xAI and OpenRouter offer. With the others everything else
+  works, and the app says when a feature needs web search.
 
 Setup takes about 5-10 minutes and needs no technical knowledge. Everything stays on your
 computer: your documents, jobs and API key are never uploaded anywhere except the requests the
@@ -109,11 +114,11 @@ the window, press Enter, then run `./setup.sh` once and `./start.sh` to start.
 ## Using it
 
 The dashboard opens at http://127.0.0.1:8000. Start in **Search setup** (job titles, keywords,
-salary, work modes and company careers pages), upload your CV under **Documents**, drop pins for
+salary, work modes and [company careers pages](#adding-company-careers-pages)), upload your CV under **Documents**, drop pins for
 where you can commute on the **Map**, then click **Run search** on the Jobs tab. Separate searches
 can live in their own **workspaces** (switcher at the top right).
 
-- **Scheduled searches** (Search setup > Scheduled searches): the search runs by itself at 10:00,
+- **Scheduled searches** (Settings > Scheduled searches): the search runs by itself at 10:00,
   12:00, 14:00 and 16:00 Monday to Friday, skipping public holidays, including substitute days
   (a holiday that falls on a weekend moves to the Monday). Change the times and days, or switch it
   off, per workspace. Pick your state: it sets which public holidays apply and the time zone of the
@@ -175,8 +180,56 @@ can live in their own **workspaces** (switcher at the top right).
   themes (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and
   dark. They're ported from ProjectTimeline; labels always accompany colours, so nothing relies on
   colour alone.
-- **Reasoning level** (Search setup > LLM): how long the AI thinks, set separately for scoring,
+- **Reasoning level** (Settings > LLM): how long the AI thinks, set separately for scoring,
   cover letters, company research and job chat. *Detect supported levels* shows what your model accepts.
+
+## Adding company careers pages
+
+SEEK has most jobs, but many employers also (or only) advertise on their own careers page. Add
+those under **Search setup > Company sources**, once per workspace:
+
+1. Find the company's page that **lists** its open jobs (usually behind "Careers", "Join us" or
+   "Open roles"): the list, not a single ad.
+2. Paste its address into **Careers page URL**, type the company's name if you like (shown on its
+   jobs when the page doesn't say), and click **Add**.
+3. Click **Test**. It shows what the app finds without saving anything: how many jobs, how it read
+   them and a few titles. It can take a minute, because the app waits between requests to a site.
+4. From now on, **Run search** and the scheduled searches collect its jobs. Untick a source to
+   skip it for a while; **Delete** removes it (its jobs stay in your list).
+
+![Company sources: careers pages with their last results, one blocked by the site](docs/screenshots/company-sources.png)
+
+**Which address to use.** Many companies run their jobs on a hosted job board. The app reads
+those boards' own job feeds, which is quick and complete, so if a careers page links to one, the
+board's address works best (the careers page itself usually works too, as the app follows the link):
+
+| Job board | Address looks like |
+| --- | --- |
+| Workable | `https://apply.workable.com/company/` |
+| Greenhouse | `https://job-boards.greenhouse.io/company` |
+| Lever | `https://jobs.lever.co/company` |
+| Ashby | `https://jobs.ashbyhq.com/company` |
+| SmartRecruiters | `https://jobs.smartrecruiters.com/Company` |
+| Workday | `https://company.wd3.myworkdayjobs.com/en-US/Careers` |
+
+Any other careers page works if its jobs are on the page or one click away: the app reads the job
+data many sites embed for search engines, or else follows the links to each ad (and "next page"
+links), and opens pages that only appear in a real browser in a hidden one. A job feed (RSS)
+can be added by its address, and for government jobs add an APSJobs search (see *Government
+jobs* above).
+
+**When a source doesn't work**, its last result in the list (and **Test**) says why:
+
+- *refused automated access* or *answered with a bot check*: the site blocks tools like this one.
+  JobHuntPA never gets around that; look for the company's job board link instead, or check the
+  site yourself now and then.
+- *robots.txt disallows ...*: the site asks automated tools to stay out of that page, and the
+  app respects it.
+- *no job postings found*: check you added the page with the list of jobs. Some sites only show
+  the list after you search: open it in your browser, click *Search* or *View all jobs*, and add the
+  address you end up on.
+
+Each source brings in at most 60 new full ads per search; the rest follow on the next search.
 
 ## Updating
 
@@ -188,14 +241,21 @@ Your settings, documents, jobs and API key are kept.
 
 ## Changing your AI provider or key
 
-Run setup again with `--reconfigure` (macOS/Linux: `./setup.sh --reconfigure`; Windows: run
-JobHuntPA-Setup.exe again and edit the `.env` file in the install folder), or edit the `.env` file
-in the app folder directly: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`. Restart the app afterwards.
+Open **Settings > LLM**: pick the provider (it fills in the API address and suggests models),
+choose the model, paste your key and click **Save**. It takes effect straight away; click
+**Detect supported levels** afterwards, as each model offers different reasoning levels, and
+**Test connection** to check the key. The key is saved in the `.env` file in the app folder and
+is never shown again in full. Changing to a provider at a different address needs the key again,
+so a saved key can't be sent anywhere new.
+
+You can also run setup again with `--reconfigure` (macOS/Linux: `./setup.sh --reconfigure`), or
+edit `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` in `.env` and restart the app.
 
 ## Commute times (optional)
 
-The commute on each job's page uses two free services; setup asks for their keys (press Enter to
-skip), or add them to `.env` later and restart the app:
+The commute on each job's page uses two free services. Add their keys under **Settings > API keys
+for commute times** (they work straight away; **Test saved keys** checks them), or when setup
+asks, or in `.env` followed by a restart:
 
 - `TFNSW_API_KEY`: public transport in NSW. Sign up at https://opendata.transport.nsw.gov.au,
   create an application, and copy its API key. Without it the page shows driving only.

@@ -7,7 +7,8 @@ model accepts, or "" for the model's default (the parameter isn't sent;
 
 Which levels a model accepts differs by provider and model, so they are
 detected: one tiny request per candidate level; the ones the API accepts
-are stored per base URL + model.
+are stored per base URL + model. The candidates depend on the provider
+(Claude takes low, medium, high, xhigh and max; see backend/llm_providers.py).
 
     GET  /api/llm                 config, detected levels, level per task
     POST /api/llm/detect-levels   probe the configured model
@@ -20,10 +21,11 @@ import logging
 import os
 from typing import Any, Optional
 
-import httpx
+import httpx  # noqa: F401  (tests patch llm_settings.httpx; the probes are sent by backend/llm_providers.py)
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from backend import llm_providers
 from backend.db import AppSetting, SessionLocal
 
 log = logging.getLogger(__name__)
@@ -31,7 +33,8 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/llm", tags=["llm"])
 
 TASKS = ("scoring", "research", "cover_letter", "chat")
-CANDIDATE_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh")
+CANDIDATE_LEVELS = llm_providers.LEVELS_OPENAI
+ALL_LEVELS = tuple(dict.fromkeys(llm_providers.LEVELS_OPENAI + llm_providers.LEVELS_ANTHROPIC))  # incl. Claude's max
 DEFAULT_LEVELS = {"scoring": "low", "research": "low", "cover_letter": "medium", "chat": "low"}
 
 
@@ -87,22 +90,16 @@ def effort_for(task: Optional[str], base_url: str, model: str) -> str:
 
 def detect_levels(cfg: dict) -> dict:
     """Send one tiny request per candidate level; keep the accepted ones."""
-    headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
-    url = f"{cfg['base_url']}/chat/completions"
     accepted, rejected = [], {}
-    for level in CANDIDATE_LEVELS:
-        payload = {"model": cfg["model"], "reasoning_effort": level,
-                   "messages": [{"role": "user", "content": "Reply with the single word OK."}]}
+    for level in llm_providers.candidate_levels(cfg):
         try:
-            resp = httpx.post(url, json=payload, headers=headers, timeout=90)
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Could not reach {cfg['base_url']}: {exc}")
-        if resp.status_code in (401, 403):
-            raise HTTPException(status_code=502, detail=f"API key rejected (HTTP {resp.status_code}).")
-        if resp.status_code == 200:
+            why_not = llm_providers.probe_level(cfg, level)
+        except llm_providers.ScorerError as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        if why_not is None:
             accepted.append(level)
         else:
-            rejected[level] = f"HTTP {resp.status_code}: {resp.text[:160]}"
+            rejected[level] = why_not
     stored = _get("reasoning_levels", {}) or {}
     stored[model_key(cfg["base_url"], cfg["model"])] = accepted
     _set("reasoning_levels", stored)
@@ -123,6 +120,8 @@ def _state() -> dict:
         "base_url": cfg["base_url"],
         "model": cfg["model"],
         "env_default": (os.getenv("LLM_REASONING_EFFORT") or "").strip(),
+        "provider": llm_providers.provider_for(cfg["base_url"]),
+        "candidates": list(llm_providers.candidate_levels(cfg)),  # what "Detect levels" will try
         "levels": supported_levels(cfg["base_url"], cfg["model"]),
         "reasoning": task_levels(),
         "effective": {t: effort_for(t, cfg["base_url"], cfg["model"]) for t in TASKS},
@@ -159,7 +158,7 @@ def update_reasoning(payload: ReasoningUpdate):
         value = getattr(payload, task)
         if value is None:
             continue
-        if value and value not in CANDIDATE_LEVELS:
+        if value and value not in ALL_LEVELS:
             raise HTTPException(status_code=422, detail=f"Unknown reasoning level {value!r}")
         current[task] = value
     _set("reasoning", current)

@@ -218,17 +218,14 @@ def _city_name(job: Job) -> str:
 
 def research_offices(company: str, city: str, cfg: dict) -> dict:
     """{"is_recruiter": bool, "offices": [{name, address, url}]} (verified links only)."""
-    from backend.research import _norm_url, extract, run_response
+    from backend import llm_providers
+    from backend.research import _norm_url, extract
     from backend.scorer import parse_json
 
-    payload = {"model": cfg["model"], "instructions": OFFICES_PROMPT,
-               "input": f"Organisation: {company}\nCity: {city}, Australia",
-               "tools": [{"type": "web_search", "search_context_size": "low",
-                          "user_location": {"type": "approximate", "country": "AU"}}],
-               "include": ["web_search_call.results"], "background": True}
-    if cfg.get("reasoning_effort"):
-        payload["reasoning"] = {"effort": cfg["reasoning_effort"]}
-    text, seen = extract(run_response(payload, cfg, "office search"))
+    response = llm_providers.web_search(
+        cfg, instructions=OFFICES_PROMPT, input=f"Organisation: {company}\nCity: {city}, Australia",
+        context_size="low", what="office search", feature="Finding offices")
+    text, seen = extract(response)
     answer = parse_json(text)
     offices = []
     for o in answer.get("offices") or []:
@@ -305,6 +302,7 @@ def find_offices(ws: int, job_ids: Optional[list[int]] = None,
                  progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
     """Read unread ads for an office, then look up employers' offices for
     the jobs still without one (recruitment agencies are left to the user)."""
+    from backend import llm_providers
     from backend.scorer import ScorerError, get_config
 
     cfg = get_config("research")
@@ -344,6 +342,8 @@ def find_offices(ws: int, job_ids: Optional[list[int]] = None,
 
         todo = list(waiting.items())
         lookups = [(key, jobs[0].company) for key, jobs in todo if not searched(*key)]
+        if lookups and llm_providers.web_search_problem(cfg, "Finding offices"):
+            lookups = []  # this provider has no web search: skip the lookups instead of failing each one
         with ThreadPoolExecutor(max_workers=cfg["concurrency"]) as pool:
             futures = {pool.submit(research_offices, company, key[1], cfg): (key, company) for key, company in lookups}
             for n, fut in enumerate(as_completed(futures), 1):

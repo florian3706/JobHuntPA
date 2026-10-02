@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env first)
 from backend import schedule, tasks
+from backend.app_settings import router as app_settings_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
@@ -58,6 +59,7 @@ app.include_router(profile_router)
 app.include_router(sources_router)
 app.include_router(workspaces_router)
 app.include_router(llm_router)
+app.include_router(app_settings_router)
 app.include_router(cover_letters_router)
 app.include_router(duplicates_router)
 app.include_router(chat_router)

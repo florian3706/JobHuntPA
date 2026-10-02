@@ -70,6 +70,7 @@ def isolate(db_path: Path) -> None:
 
     stub = types.ModuleType("backend.config")
     stub.PROJECT_ROOT = ROOT
+    stub.ENV_PATH = db_path.parent / "demo.env"  # never the real .env, in case a Settings endpoint were called
     stub.load_dotenv = lambda *args, **kwargs: None
     stub.USER_AGENT = "JobHuntPA demo seeding (offline)"
     stub.ROBOTS_AGENT = "jobhuntpa"

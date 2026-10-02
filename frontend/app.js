@@ -21,6 +21,7 @@ const state = {
   watchToken: 0, // bumped by every watchRun and workspace switch, so an older poll loop stops
   lastRun: null, // { ws, id } of the newest run this page has shown
   schedule: null, // this workspace's scheduled-search settings, as the server last returned them
+  llmCfg: null, // the LLM provider, address, model and key state (/api/settings/llm), with the provider presets
   companies: {}, // company_key -> profile
   ws: 1, // current workspace id
   workspaces: [],
@@ -48,16 +49,19 @@ function openHtmlModal(title, html) {
 
 /* ---------- tabs ---------- */
 function initTabs() {
+  const names = $$('.tab').map((b) => b.dataset.tab);
   const show = (name) => {
     $$('.tab').forEach((b) => { const on = b.dataset.tab === name; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
     $$('.tab-panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
     if (name === 'map') requestAnimationFrame(() => { initMap(); state.map?.invalidateSize(); drawJobMarkers(); });
-    if ((name === 'search' || name === 'jobs') && state.schedule) loadSchedule({ controls: false });
+    if ((name === 'settings' || name === 'jobs') && state.schedule) loadSchedule({ controls: false });
     history.replaceState(null, '', `#${name}`);
   };
   $$('.tab').forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
-  const initial = location.hash.slice(1);
-  show(['jobs', 'search', 'docs', 'map'].includes(initial) ? initial : 'jobs');
+  // #tab in the address picks the tab at load; a link to one (<a href="#settings">) or an edited address switches to it.
+  const fromHash = () => { const name = location.hash.slice(1); if (names.includes(name)) show(name); };
+  window.addEventListener('hashchange', fromHash);
+  show(names.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'jobs');
 }
 
 /* ================= JOBS ================= */
@@ -1011,7 +1015,7 @@ function initTitleSuggestions() {
 }
 
 /* ================= LLM SETTINGS ================= */
-const LEVEL_LABEL = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' };
+const LEVEL_LABEL = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 let levelsAutoDetected = false;
 
 function renderLlmSettings(st) {
@@ -1052,6 +1056,7 @@ async function detectLevels() {
   try { renderLlmSettings(await api('/api/llm/detect-levels', { method: 'POST' })); }
   catch (e) { $('#levels-status').textContent = `Detection failed: ${e.message}`; }
   btn.disabled = false;
+  btn.classList.remove('btn-primary');
 }
 
 function initLlmSettings() {
@@ -1062,6 +1067,184 @@ function initLlmSettings() {
       toast('Reasoning level saved', 'ok', 1500);
     } catch (e) { toast(`Save failed: ${e.message}`, 'err'); }
   }));
+}
+
+/* ---------- LLM provider, address, model and key (Settings > LLM) ---------- */
+// The server never sends the saved key back: only whether one is set and its last characters.
+const llmPreset = (id) => state.llmCfg?.presets.find((p) => p.id === id);
+const originOf = (url) => { try { return new URL(url).origin; } catch { return null; } };
+
+function renderLlmProvider(st) {
+  state.llmCfg = st;
+  $('#llm-provider').innerHTML = st.presets.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join('');
+  $('#llm-provider').value = st.provider;
+  $('#llm-base-url').value = st.base_url;
+  $('#llm-model').value = st.model;
+  $('#llm-key').value = '';
+  updateLlmProviderInfo();
+}
+
+// Everything under the fields that depends on the chosen provider (and on whether the address moved).
+function updateLlmProviderInfo() {
+  const st = state.llmCfg;
+  if (!st) return;
+  const preset = llmPreset($('#llm-provider').value) || st.presets[st.presets.length - 1];
+  $('#llm-models').innerHTML = preset.models.map((m) => `<option value="${esc(m)}"></option>`).join('');
+  $('#llm-model').placeholder = preset.models.length ? `e.g. ${preset.models[0]}` : 'Type the model name';
+  $('#llm-base-url').placeholder = preset.base_url || 'https://api.example.com/v1';
+  const link = preset.key_url
+    ? ` <a href="${esc(preset.key_url)}" target="_blank" rel="noopener">${preset.key_required ? 'Get a key' : 'Get Ollama'} ↗</a>` : '';
+  $('#llm-note').innerHTML = `${esc(preset.note)}${link}`;
+  const web = $('#llm-web-notice');
+  web.hidden = preset.web_search;
+  web.textContent = preset.web_search ? '' : `${preset.label} can't search the web, so company research, finding offices and "Search the web" in job chats `
+    + 'won\'t work with it. Scoring, cover letters, job titles and job chat will.';
+  const key = $('#llm-key');
+  key.placeholder = preset.key_required ? 'Paste the API key' : 'Not needed (optional)';
+  $('#llm-key-state').innerHTML = st.key.set
+    ? `<span class="ok-text">Saved</span>${st.key.hint ? ` <span class="muted">(ends in ${esc(st.key.hint)})</span>` : ''}`
+    : `<span class="muted">${preset.key_required ? 'Not set' : 'No key needed for this provider'}</span>`;
+  // Moving to another server needs the key typed again; say so before the server has to refuse.
+  const moved = originOf($('#llm-base-url').value.trim()) !== originOf(st.base_url);
+  const hint = $('#llm-key-hint');
+  hint.hidden = !(moved && preset.key_required && !key.value.trim());
+  hint.textContent = hint.hidden ? '' : 'The address changed to another server, so paste its API key again. '
+    + 'The key saved for the old address is never sent to a new one.';
+}
+
+function onLlmProviderChange() {
+  const st = state.llmCfg;
+  const preset = llmPreset($('#llm-provider').value);
+  const saved = preset.id === st.provider; // back to what is saved: restore its address and model
+  $('#llm-base-url').value = saved ? st.base_url : preset.base_url;
+  $('#llm-model').value = saved ? st.model : (preset.models[0] || '');
+  $('#llm-error').hidden = true;
+  updateLlmProviderInfo();
+  if (!$('#llm-base-url').value) $('#llm-base-url').focus(); // Custom: the address is up to you
+  else if (!$('#llm-model').value) $('#llm-model').focus();
+  else if (preset.key_required && !saved) $('#llm-key').focus();
+}
+
+async function loadLlmProvider() {
+  try { renderLlmProvider(await api('/api/settings/llm')); }
+  catch (e) { $('#llm-save-status').textContent = `Could not load the LLM provider settings: ${e.message}`; }
+}
+
+async function saveLlmProvider(e) {
+  e.preventDefault();
+  const err = $('#llm-error');
+  const body = { base_url: $('#llm-base-url').value.trim(), model: $('#llm-model').value.trim() };
+  const key = $('#llm-key').value.trim(); // pasted keys often carry a space or line break; the server accepts none
+  if (key) body.api_key = key;
+  err.hidden = true;
+  if (!body.base_url || !body.model) {
+    err.textContent = 'Fill in the API address and the model.';
+    err.hidden = false;
+    return;
+  }
+  const before = state.llmCfg;
+  const btn = $('#llm-save');
+  btn.disabled = true;
+  $('#llm-save-status').textContent = 'Saving…';
+  try {
+    const st = await api('/api/settings/llm', { method: 'PUT', body: JSON.stringify(body) });
+    renderLlmProvider(st);
+    const changed = !before || before.base_url !== st.base_url || before.model !== st.model;
+    levelsAutoDetected = true; // the user is asked to run Detect, rather than it running by itself
+    await Promise.all([loadLlmSettings(), loadScorerStatus()]); // levels for this model, header badge, model line
+    $('#llm-save-status').textContent = changed
+      ? 'Saved. Reasoning levels differ per model: run "Detect supported levels" below.' : 'Saved.';
+    if (changed) $('#detect-levels').classList.add('btn-primary');
+    toast('LLM settings saved', 'ok', 2500);
+  } catch (ex) {
+    $('#llm-save-status').textContent = '';
+    err.textContent = ex.message;
+    err.hidden = false;
+  }
+  btn.disabled = false;
+}
+
+function initLlmProvider() {
+  $('#llm-provider').addEventListener('change', onLlmProviderChange);
+  ['#llm-base-url', '#llm-key'].forEach((s) => $(s).addEventListener('input', updateLlmProviderInfo));
+  $('#llm-form').addEventListener('submit', saveLlmProvider);
+}
+
+/* ================= API KEYS (Settings) ================= */
+// The server never sends a saved key back, only whether one is set and its last characters.
+const KEY_LABEL = { tfnsw: 'Transport for NSW', tomtom: 'TomTom' };
+const keyField = (name) => document.querySelector(`.key-field[data-key="${name}"]`);
+
+function renderCommuteKeys(st) {
+  Object.keys(KEY_LABEL).forEach((name) => {
+    const info = st[name] || { set: false, hint: null };
+    const box = keyField(name);
+    box.querySelector('.key-state').innerHTML = info.set
+      ? `<span class="ok-text">Saved</span>${info.hint ? ` <span class="muted">(ends in ${esc(info.hint)})</span>` : ''}`
+      : '<span class="muted">Not set</span>';
+    box.querySelector('.key-clear').disabled = !info.set;
+  });
+  // The note under Commute in Search setup follows the same state.
+  $('#commute-keys').innerHTML = `Public transport: ${st.tfnsw?.set ? '<span class="ok-text">Transport for NSW ✓</span>'
+    : 'needs a free Transport for NSW API key (add it in <a href="#settings">Settings</a>)'}.
+    Driving: ${st.tomtom?.set ? '<span class="ok-text">TomTom, with peak traffic ✓</span>'
+    : 'without traffic (a free TomTom key, added in <a href="#settings">Settings</a>, adds peak-hour traffic)'}.`;
+}
+
+async function loadCommuteKeys() {
+  try { renderCommuteKeys(await api('/api/settings/keys')); }
+  catch (e) { $('#keys-test-status').textContent = `Could not load the key settings: ${e.message}`; }
+}
+
+async function putCommuteKey(name, value) {
+  const box = keyField(name);
+  const save = box.querySelector('.key-save');
+  const clear = box.querySelector('.key-clear');
+  const couldClear = !clear.disabled;
+  save.disabled = true;
+  clear.disabled = true;
+  try {
+    renderCommuteKeys(await api('/api/settings/keys', { method: 'PUT', body: JSON.stringify({ [name]: value }) })); // also sets Clear
+    box.querySelector('.key-input').value = '';
+    $('#keys-test-status').textContent = '';
+    toast(value ? `${KEY_LABEL[name]} key saved` : `${KEY_LABEL[name]} key removed`, 'ok', 2500);
+  } catch (e) {
+    clear.disabled = !couldClear;
+    toast(`Saving the ${KEY_LABEL[name]} key failed: ${e.message}`, 'err', 8000);
+  }
+  save.disabled = false;
+}
+
+async function testCommuteKeys() {
+  const btn = $('#keys-test');
+  const out = $('#keys-test-status');
+  btn.disabled = true;
+  out.textContent = 'Testing…';
+  try {
+    const r = await api('/api/settings/keys/test', { method: 'POST' });
+    const lines = Object.keys(KEY_LABEL).map((name) => (r[name]
+      ? (r[name].ok ? `<span class="ok-text">${KEY_LABEL[name]}: works ✓</span>` : `<span class="err-text">${esc(r[name].error || `${KEY_LABEL[name]}: failed`)}</span>`)
+      : `${KEY_LABEL[name]}: not set`));
+    out.innerHTML = lines.join(' · ');
+  } catch (e) { out.innerHTML = `<span class="err-text">Test failed: ${esc(e.message)}</span>`; }
+  btn.disabled = false;
+}
+
+function initCommuteKeys() {
+  Object.keys(KEY_LABEL).forEach((name) => {
+    const box = keyField(name);
+    const input = box.querySelector('.key-input');
+    box.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const value = input.value.trim(); // pasted keys often carry a space or line break; the server accepts none inside
+      if (!value) { toast(`Paste the ${KEY_LABEL[name]} key first.`, 'err', 3000); input.focus(); return; }
+      putCommuteKey(name, value);
+    });
+    box.querySelector('.key-clear').addEventListener('click', () => {
+      if (confirm(`Remove the saved ${KEY_LABEL[name]} key?`)) putCommuteKey(name, '');
+    });
+  });
+  $('#keys-test').addEventListener('click', testCommuteKeys);
 }
 
 /* ================= SEARCH SETUP ================= */
@@ -1087,12 +1270,6 @@ async function loadSetup() {
     state.profile = profile;
     ['titles', 'keywords_include', 'keywords_exclude', 'seek_locations', 'commute_from'].forEach((f) => setTags(f, profile[f]));
     $('#commute-arrive').value = profile.commute_arrive_by || '09:00';
-    api('/api/commute/status').then((k) => {
-      $('#commute-keys').innerHTML = `Public transport: ${k.transit ? '<span class="ok-text">Transport for NSW ✓</span>'
-        : 'needs a free Transport for NSW API key (<code>TFNSW_API_KEY</code>; see the README)'}.
-        Driving: ${k.traffic ? '<span class="ok-text">TomTom, with peak traffic ✓</span>'
-        : 'without traffic (a free TomTom key, <code>TOMTOM_API_KEY</code>, adds peak-hour traffic)'}.`;
-    }).catch(() => {});
     $('#commute-leave').value = profile.commute_leave_at || '17:00';
     setTags('dealbreaker_industries', dealbreakers.industries);
     setTags('dealbreaker_keywords', dealbreakers.keywords);
@@ -1260,7 +1437,7 @@ function renderScheduleStatus(sch) {
     lines.push(`<p class="muted">Skipping: ${sch.skipped_holidays.map((h) => `${esc(h.name)} (${esc(fmtHolidayDate(h.date))})`).join(', ')}</p>`);
   }
   lines.push(scheduledRunLine(sch.last_run));
-  if (sch.nothing_to_search) lines.push('<p class="sched-warn">Nothing to search yet, so scheduled searches are skipped. Turn on SEEK and add target job titles, or add a company source.</p>');
+  if (sch.nothing_to_search) lines.push('<p class="sched-warn">Nothing to search yet, so scheduled searches are skipped. Turn on SEEK and add target job titles, or add a company source, in Search setup.</p>');
   $('#sched-status').innerHTML = lines.join('');
 
   const note = $('#next-scheduled');
@@ -1305,7 +1482,7 @@ const flushSchedule = debounce(async () => {
   const pending = schedulePending;
   schedulePending = null;
   if (!pending) return;
-  const status = $('#search-save-status');
+  const status = $('#sched-save-status');
   status.textContent = 'Saving…';
   try {
     const sch = await api('/api/schedule', { method: 'PUT', headers: { 'X-Workspace': String(pending.ws) }, body: JSON.stringify(pending.body) });
@@ -1428,7 +1605,7 @@ async function loadScorerStatus() {
     const failing = s.configured && s.scored === 0 && s.errors > 0;
     badge.className = `api-status ${!s.configured || failing ? 'is-fail' : s.scored ? 'is-ok' : 'is-unknown'}`;
     badge.textContent = !s.configured ? '● LLM not configured'
-      : failing ? '● scorer: failing (Search setup → Test connection)'
+      : failing ? '● scorer: failing (Settings → Test connection)'
         : `● ${s.model}${s.scored ? '' : ' (not verified yet)'}`;
     badge.title = `${s.scored} scored, ${s.errors} failed`;
     $('#scorer-info').innerHTML = `
@@ -1771,6 +1948,8 @@ async function loadWorkspaces() {
   $('#ws-select').innerHTML = state.workspaces
     .map((w) => `<option value="${w.id}" ${w.id === state.ws ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
   $('#ws-delete').disabled = state.workspaces.length <= 1;
+  const current = state.workspaces.find((w) => w.id === state.ws);
+  $('#sched-scope').textContent = current ? `This workspace: ${current.name}` : 'This workspace';
 }
 
 async function switchWorkspace(id) {
@@ -1800,6 +1979,8 @@ async function switchWorkspace(id) {
 
 function loadAll() {
   loadLlmSettings();
+  loadLlmProvider();
+  loadCommuteKeys();
   loadCompanies();
   loadJobs();
   loadSetup();
@@ -1870,6 +2051,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   try { await loadWorkspaces(); } catch (e) { toast(`Could not load workspaces: ${e.message}`, 'err'); }
   initWorkspaces();
   initLlmSettings();
+  initLlmProvider();
+  initCommuteKeys();
   initTitleSuggestions();
   initTabs();
   initJobs();
@@ -1884,7 +2067,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#source-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSource(); } });
   $('#score-test').addEventListener('click', testScorer);
   $('#score-stale').addEventListener('click', () => startRun('/api/score/run', { mode: 'stale' }));
-  $('#score-all').addEventListener('click', () => { if (confirm('Rescore every job? This makes one API call per job.')) startRun('/api/score/run', { mode: 'all' }); });
+  $('#score-all').addEventListener('click', () => { if (confirm('Rescore every job in this workspace? This makes one API call per job.')) startRun('/api/score/run', { mode: 'all' }); });
   $('#modal-close').addEventListener('click', () => { $('#modal').hidden = true; });
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#modal').hidden = true; });

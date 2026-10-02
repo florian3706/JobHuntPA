@@ -136,6 +136,9 @@ function carHtml(c, label) {
   return `<div class="trip"><strong>${label}</strong> ${when}<strong>${minutes(c.minutes)}</strong>${traffic} · ${c.km} km</div>`;
 }
 
+// A commute note may point to the dashboard's Settings tab (API keys): make that a link.
+const noteHtml = (n) => esc(n).replace('the Settings tab', '<a href="./#settings" target="_blank" rel="noopener">the Settings tab</a>');
+
 async function loadCommute() {
   const box = $('#job-commute');
   box.innerHTML = '<p class="muted">Working out the commute…</p>';
@@ -155,7 +158,7 @@ async function loadCommute() {
     <p class="muted">${esc(c.day)}: arriving by ${esc(c.arrive_by)}, leaving at ${esc(c.leave_at)}.
       ${c.from_stations ? "Public transport times start at the station (getting there isn't included)."
         : c.stations.length ? '' : 'Public transport starts at your home pin; set stations under Search setup > Commute.'}</p>
-    ${c.notes.map((n) => `<p class="notice">${esc(n)}</p>`).join('')}
+    ${c.notes.map((n) => `<p class="notice">${noteHtml(n)}</p>`).join('')}
     ${transit}
     <div class="commute-from"><h4>By car from ${esc(c.home.name)}</h4>${car}</div>
     <p class="commute-links"><a href="${esc(c.links.transit)}" target="_blank" rel="noopener">Public transport in Google Maps ↗</a> ·

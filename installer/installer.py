@@ -24,21 +24,37 @@ Options:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 MIN_PYTHON = (3, 10)
 ROOT = Path(__file__).resolve().parent.parent
 IS_WINDOWS = os.name == "nt"
 
-LLM_PRESETS = [
-    ("Meta Model API (Muse Spark)", "https://api.meta.ai/v1", "muse-spark-1.3"),
-    ("OpenAI", "https://api.openai.com/v1", ""),
-    ("Another OpenAI-compatible provider", "", ""),
+# The providers offered in the LLM menu come from backend/llm_providers.py, the one list the app itself uses
+# (Settings > LLM). It is loaded by file path so nothing of the app has to be installed yet, and so the
+# Windows setup program (a frozen build of this file that runs against the downloaded source) needs no package
+# import. If that file can't be read, this short list is used instead.
+PRESETS_FILE = ROOT / "backend" / "llm_providers.py"
+FALLBACK_PRESETS = [
+    {"id": "openai", "label": "OpenAI", "base_url": "https://api.openai.com/v1", "models": ["gpt-6-luna"],
+     "key_url": "https://platform.openai.com/api-keys", "key_required": True},
+    {"id": "anthropic", "label": "Anthropic (Claude)", "base_url": "https://api.anthropic.com",
+     "models": ["claude-opus-5-5"], "key_url": "https://platform.claude.com/settings/keys", "key_required": True},
+    {"id": "gemini", "label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+     "models": ["gemini-3.8-flash"], "key_url": "https://aistudio.google.com/apikey", "key_required": True},
+    {"id": "meta", "label": "Meta (Muse Spark)", "base_url": "https://api.meta.ai/v1", "models": ["muse-spark-1.3"],
+     "key_url": "https://dev.meta.ai/", "key_required": True},
+    {"id": "ollama", "label": "Ollama (local)", "base_url": "http://localhost:11434/v1", "models": [],
+     "key_url": "https://ollama.com/download", "key_required": False},
+    {"id": "custom", "label": "Custom (OpenAI-compatible)", "base_url": "", "models": [], "key_url": "", "key_required": True},
 ]
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 def say(msg: str = "") -> None:
@@ -138,39 +154,94 @@ def ask(prompt: str, default: str = "") -> str:
     return answer or default
 
 
+def load_presets() -> list[dict]:
+    """The LLM providers for the menu: PRESETS from backend/llm_providers.py, else FALLBACK_PRESETS."""
+    name = "_jobhunt_llm_providers"
+    try:
+        spec = importlib.util.spec_from_file_location(name, PRESETS_FILE)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(name, None)
+        presets = [dict(p) for p in module.PRESETS]
+        for p in presets:  # the fields used below
+            str(p["label"]), str(p["base_url"]), list(p["models"]), str(p["key_url"]), bool(p["key_required"])
+        if presets:
+            return presets
+    except Exception:  # a missing file, an older or half-copied version: the built-in list still works
+        pass
+    return [dict(p) for p in FALLBACK_PRESETS]
+
+
+def key_needed(base_url: str, presets: list[dict]) -> bool:
+    """False for a provider that runs on this computer and takes no key (Ollama)."""
+    try:
+        got = urlsplit(base_url)
+        for p in presets:
+            if p["key_required"] or not p["base_url"]:
+                continue
+            known = urlsplit(p["base_url"])
+            same_host = got.hostname == known.hostname or (got.hostname in LOCAL_HOSTS and known.hostname in LOCAL_HOSTS)
+            if same_host and got.port == known.port:
+                return False
+    except ValueError:
+        pass
+    return True
+
+
 def configure_llm(interactive: bool, reconfigure: bool) -> None:
     env_path = ROOT / ".env"
     lines, values = read_env(env_path)
     required = ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")
-    if all(values.get(k) for k in required) and not reconfigure:
+    presets = load_presets()
+    needed = [k for k in required if k != "LLM_API_KEY" or key_needed(values.get("LLM_BASE_URL", ""), presets)]
+    if all(values.get(k) for k in needed) and not reconfigure:
         say("  LLM settings already in .env; keeping them (run setup with --reconfigure to change).")
         return
     if not interactive:
         updates = {k: os.environ.get(k, values.get(k, "")) for k in required}
         write_env(env_path, lines, updates)
-        missing = [k for k in required if not updates[k]]
+        missing = [k for k in required if not updates[k] and (k != "LLM_API_KEY" or key_needed(updates["LLM_BASE_URL"], presets))]
         say("  Wrote .env" + (f"; still to fill in: {', '.join(missing)}" if missing else "."))
         return
 
     say("  JobHuntPA uses an AI model (LLM) to score jobs, draft cover letters, suggest job titles and research companies.")
-    say("  Which provider do you have an API key for?")
-    for i, (name, _, _) in enumerate(LLM_PRESETS, 1):
-        say(f"    {i}) {name}")
-    say("    s) Skip for now (you can re-run setup later)")
+    say("  Which provider do you have an API key for? (Ollama runs on this computer and needs no key.)")
+    for i, preset in enumerate(presets, 1):
+        say(f"    {i:>2}) {preset['label']}")
+    say("     s) Skip for now (you can re-run setup later)")
     choice = ask("Choose", "1").lower()
     if choice == "s":
         write_env(env_path, lines, {k: values.get(k, "") for k in required})
         say("  Skipped. Scoring and research stay off until the LLM is configured.")
         return
     try:
-        _, base, model = LLM_PRESETS[int(choice) - 1]
+        preset = presets[int(choice) - 1]
     except (ValueError, IndexError):
-        _, base, model = LLM_PRESETS[-1]
-    base = ask("API address (base URL)", base or values.get("LLM_BASE_URL", ""))
-    model = ask("Model name", model or values.get("LLM_MODEL", ""))
-    key = ask("API key (paste it; it is stored only in the .env file on this computer)")
-    write_env(env_path, lines, {"LLM_API_KEY": key, "LLM_BASE_URL": base.rstrip("/"), "LLM_MODEL": model})
-    say("  Saved to .env. Reasoning levels can be set in the app (Search setup > LLM).")
+        preset = next((p for p in presets if p.get("id") == "custom"), presets[-1])
+    if preset["base_url"]:
+        base = preset["base_url"]
+        say(f"  API address: {base}")
+    else:
+        base = ask("API address (base URL, e.g. https://api.example.com/v1)", values.get("LLM_BASE_URL", ""))
+    base = base.strip().rstrip("/")
+    same_server = base == values.get("LLM_BASE_URL", "").rstrip("/")  # reconfiguring the same provider keeps its model and key
+    if preset["models"]:
+        say(f"  Suggested models: {', '.join(preset['models'])}")
+    model = ask("Model name", (values.get("LLM_MODEL", "") if same_server else "") or (preset["models"][0] if preset["models"] else ""))
+    if preset["key_required"]:
+        if preset["key_url"]:
+            say(f"  Get a key at {preset['key_url']}")
+        saved_key = values.get("LLM_API_KEY", "") if same_server else ""
+        key = ask("API key (paste it; it is stored only in the .env file on this computer"
+                  + ("; Enter keeps the saved one)" if saved_key else ")")) or saved_key
+    else:
+        key = ""
+        say("  No API key is needed for this provider.")
+    write_env(env_path, lines, {"LLM_API_KEY": key, "LLM_BASE_URL": base, "LLM_MODEL": model})
+    say("  Saved to .env. Provider, model, key and reasoning levels can be changed in the app (Settings > LLM).")
 
 
 COMMUTE_KEYS = (
@@ -192,7 +263,7 @@ def configure_commute(interactive: bool, reconfigure: bool) -> None:
     if not interactive:
         write_env(env_path, lines, {n: os.environ.get(n, values.get(n, "")) for n in names})
         return
-    say("  Optional: commute times on each job's page. Press Enter to skip; you can add them later.")
+    say("  Optional: commute times on each job's page. Press Enter to skip; you can add them later in the app (Settings).")
     updates = {}
     for name, what, where in COMMUTE_KEYS:
         say(f"  {what}")

@@ -47,6 +47,7 @@
       <button class="tab" role="tab" aria-selected="false" data-tab="search">Search setup</button>
       <button class="tab" role="tab" aria-selected="false" data-tab="docs">Documents</button>
       <button class="tab" role="tab" aria-selected="false" data-tab="map">Map</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="settings">Settings</button>
     </nav>
   </header>
 
@@ -225,41 +226,6 @@
         </form>
       </div>
 
-      <div id="schedule-card" class="card form-card">
-        <h3>Scheduled searches</h3>
-        <p class="hint">JobHuntPA runs this search by itself at set times while it is running; a search missed because it was closed runs if you start it within the hour.
-          Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.</p>
-        <label class="check sched-enable"><input type="checkbox" id="sched-enabled" /> Run searches automatically</label>
-        <div class="form-grid">
-          <div class="form-group">
-            <label for="sched-time-input">Run at</label>
-            <div id="sched-times" class="sched-times"></div>
-            <div class="sched-add">
-              <input id="sched-time-input" type="time" value="09:00" />
-              <button id="sched-time-add" class="btn btn-sm" type="button">Add time</button>
-            </div>
-          </div>
-          <fieldset id="sched-days" class="form-group">
-            <legend>On these days</legend>
-            <label class="check"><input type="checkbox" class="sched-day" value="0" /> Mon</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="1" /> Tue</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="2" /> Wed</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="3" /> Thu</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="4" /> Fri</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="5" /> Sat</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="6" /> Sun</label>
-          </fieldset>
-          <fieldset class="form-group">
-            <legend>Public holidays</legend>
-            <label class="check"><input type="checkbox" id="sched-holidays" /> Skip public holidays</label>
-            <select id="sched-state" aria-label="State or territory"></select>
-            <small class="hint">The state picks the holiday calendar and also the time zone the times above are in.
-              Substitute days, such as a weekend holiday moved to the Monday, are skipped too.</small>
-          </fieldset>
-        </div>
-        <div id="sched-status" class="sched-status" aria-live="polite"></div>
-      </div>
-
       <div class="card form-card">
         <h3>Commute</h3>
         <p class="hint">Used on each job's full page (Open ↗): public transport and driving times to the office at peak times, there and back.</p>
@@ -293,32 +259,6 @@
         </div>
         <div id="sources-list" class="docs-list"></div>
         <div id="sources-error" class="error" hidden></div>
-      </div>
-
-      <div class="card form-card">
-        <h3>LLM (scoring, cover letters, company research and job chat)</h3>
-        <div id="scorer-info" class="muted"></div>
-        <div class="reasoning-settings">
-          <h4>Reasoning level</h4>
-          <p class="hint">Higher levels think longer: usually better results, but slower and more expensive.
-            The choices are the levels your model accepts; use <strong>Detect</strong> after changing model.</p>
-          <div class="form-grid">
-            <label class="field"><span class="field-label">Fit scoring</span><select data-task="scoring"></select></label>
-            <label class="field"><span class="field-label">Cover letters</span><select data-task="cover_letter"></select></label>
-            <label class="field"><span class="field-label">Company research</span><select data-task="research"></select></label>
-            <label class="field"><span class="field-label">Job chat</span><select data-task="chat"></select></label>
-          </div>
-          <div class="toolbar-row">
-            <button id="detect-levels" class="btn btn-sm" type="button">Detect supported levels</button>
-            <span id="levels-status" class="muted" aria-live="polite"></span>
-          </div>
-        </div>
-        <div class="toolbar-row" style="margin-top:10px">
-          <button id="score-test" class="btn" type="button">Test connection</button>
-          <button id="score-stale" class="btn" type="button" title="Also rescore jobs scored before your documents changed">Rescore stale</button>
-          <button id="score-all" class="btn btn-ghost" type="button">Rescore all</button>
-          <span id="score-test-status" class="muted" aria-live="polite"></span>
-        </div>
       </div>
     </section>
 
@@ -389,6 +329,140 @@
       <div id="map-jobs" class="map-jobs"></div>
       <div id="pins-list" class="pins-list" hidden></div>
       <div id="pins-error" class="error" hidden></div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section id="tab-settings" class="tab-panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>Settings</h2>
+        <span class="muted">Each card says whether it applies to this workspace or to all of them</span>
+      </div>
+
+      <div id="schedule-card" class="card form-card">
+        <div class="card-head">
+          <h3>Scheduled searches <span id="sched-scope" class="scope-tag">This workspace</span></h3>
+          <span id="sched-save-status" class="muted" aria-live="polite"></span>
+        </div>
+        <p class="hint">JobHuntPA runs this search by itself at set times while it is running; a search missed because it was closed runs if you start it within the hour.
+          Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.</p>
+        <label class="check sched-enable"><input type="checkbox" id="sched-enabled" /> Run searches automatically</label>
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="sched-time-input">Run at</label>
+            <div id="sched-times" class="sched-times"></div>
+            <div class="sched-add">
+              <input id="sched-time-input" type="time" value="09:00" />
+              <button id="sched-time-add" class="btn btn-sm" type="button">Add time</button>
+            </div>
+          </div>
+          <fieldset id="sched-days" class="form-group">
+            <legend>On these days</legend>
+            <label class="check"><input type="checkbox" class="sched-day" value="0" /> Mon</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="1" /> Tue</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="2" /> Wed</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="3" /> Thu</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="4" /> Fri</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="5" /> Sat</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="6" /> Sun</label>
+          </fieldset>
+          <fieldset class="form-group">
+            <legend>Public holidays</legend>
+            <label class="check"><input type="checkbox" id="sched-holidays" /> Skip public holidays</label>
+            <select id="sched-state" aria-label="State or territory"></select>
+            <small class="hint">The state picks the holiday calendar and also the time zone the times above are in.
+              Substitute days, such as a weekend holiday moved to the Monday, are skipped too.</small>
+          </fieldset>
+        </div>
+        <div id="sched-status" class="sched-status" aria-live="polite"></div>
+      </div>
+
+      <div class="card form-card">
+        <h3>LLM (scoring, cover letters, company research and job chat) <span class="scope-tag">All workspaces</span></h3>
+        <div id="scorer-info" class="muted"></div>
+        <form id="llm-form" class="llm-form" autocomplete="off">
+          <h4>Provider, model and API key</h4>
+          <div class="form-grid">
+            <label class="field"><span class="field-label">Provider</span><select id="llm-provider"></select></label>
+            <label class="field"><span class="field-label">Model</span>
+              <input id="llm-model" type="text" list="llm-models" autocomplete="off" spellcheck="false" placeholder="Model name" /></label>
+            <label class="field"><span class="field-label">API address</span>
+              <input id="llm-base-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1" /></label>
+            <div class="field">
+              <label class="field-label" for="llm-key">API key</label>
+              <input id="llm-key" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
+              <div id="llm-key-state" class="key-state" aria-live="polite"></div>
+            </div>
+          </div>
+          <datalist id="llm-models"></datalist>
+          <p id="llm-note" class="hint"></p>
+          <p id="llm-key-hint" class="hint warn-text" hidden></p>
+          <div id="llm-web-notice" class="callout" role="note" hidden></div>
+          <div id="llm-error" class="error" role="alert" hidden></div>
+          <div class="toolbar-row">
+            <button id="llm-save" class="btn btn-primary" type="submit">Save</button>
+            <span id="llm-save-status" class="muted" aria-live="polite"></span>
+          </div>
+        </form>
+        <div class="reasoning-settings">
+          <h4>Reasoning level</h4>
+          <p class="hint">Higher levels think longer: usually better results, but slower and more expensive.
+            The choices are the levels your model accepts; use <strong>Detect</strong> after changing model.</p>
+          <div class="form-grid">
+            <label class="field"><span class="field-label">Fit scoring</span><select data-task="scoring"></select></label>
+            <label class="field"><span class="field-label">Cover letters</span><select data-task="cover_letter"></select></label>
+            <label class="field"><span class="field-label">Company research</span><select data-task="research"></select></label>
+            <label class="field"><span class="field-label">Job chat</span><select data-task="chat"></select></label>
+          </div>
+          <div class="toolbar-row">
+            <button id="detect-levels" class="btn btn-sm" type="button">Detect supported levels</button>
+            <span id="levels-status" class="muted" aria-live="polite"></span>
+          </div>
+        </div>
+        <div class="toolbar-row llm-actions">
+          <button id="score-test" class="btn" type="button">Test connection</button>
+          <button id="score-stale" class="btn" type="button" title="Also rescore this workspace's jobs that were scored before your documents changed">Rescore stale</button>
+          <button id="score-all" class="btn btn-ghost" type="button" title="Rescore every job in this workspace">Rescore all</button>
+          <span id="score-test-status" class="muted" aria-live="polite"></span>
+        </div>
+      </div>
+
+      <div id="commute-keys-card" class="card form-card">
+        <h3>API keys for commute times <span class="scope-tag">All workspaces</span></h3>
+        <p class="hint">Both keys are optional and free. They are saved in the <code>.env</code> file on this computer and work straight away,
+          with no restart. A saved key is never shown again in full, only its last few characters. Where the commute starts and when it
+          arrives is set under Search setup &gt; Commute.</p>
+        <div class="form-grid">
+          <form class="form-group key-field" data-key="tfnsw" autocomplete="off">
+            <label for="key-tfnsw">Transport for NSW key (public transport times)</label>
+            <div class="key-state" aria-live="polite"></div>
+            <div class="key-row">
+              <input id="key-tfnsw" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save</button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear</button>
+            </div>
+            <small class="hint">Free: sign up at <a href="https://opendata.transport.nsw.gov.au" target="_blank" rel="noopener">opendata.transport.nsw.gov.au</a>,
+              create an application, and copy its API key. Without it the job page shows driving only.</small>
+          </form>
+          <form class="form-group key-field" data-key="tomtom" autocomplete="off">
+            <label for="key-tomtom">TomTom key (driving with peak traffic)</label>
+            <div class="key-state" aria-live="polite"></div>
+            <div class="key-row">
+              <input id="key-tomtom" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save</button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear</button>
+            </div>
+            <small class="hint">Free: sign up at <a href="https://developer.tomtom.com" target="_blank" rel="noopener">developer.tomtom.com</a>
+              and copy the default key. Without it, driving times come from OSRM's public server and ignore traffic (the job page says so).</small>
+          </form>
+        </div>
+        <div class="toolbar-row key-test">
+          <button id="keys-test" class="btn btn-sm" type="button" title="Makes one small real request to each service with the saved key">Test saved keys</button>
+          <span id="keys-test-status" class="muted" aria-live="polite"></span>
+        </div>
+      </div>
     </section>
   </main>
 

@@ -1,9 +1,11 @@
 """Company research: one LLM web-search agent per company.
 
-Each company gets its own request to the provider's Responses API
-(``{LLM_BASE_URL}/responses``) with the built-in ``web_search`` tool. The agent returns a JSON
+Each company gets its own web-search request: the Responses API
+(``{LLM_BASE_URL}/responses``) with the built-in ``web_search`` tool, or the equivalent for
+Claude, Gemini and OpenRouter (backend/llm_providers.py ``web_search``, which hands back a
+Responses-shaped answer whatever the provider). The agent returns a JSON
 profile: business model, ownership, headquarters and controversies with
-news links.
+news links. Providers without web search (Mistral, Groq, DeepSeek, Ollama) can't research.
 
 Link integrity: the response lists every page the search tool returned
 (``web_search_call.results``) plus the citations the model attached
@@ -27,6 +29,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 from sqlalchemy.orm import Session
 
+from backend import llm_providers
 from backend.db import CompanyProfile, CompanySource, Job, SessionLocal, company_key
 from backend.scorer import ScorerError, config_problem, get_config
 
@@ -141,14 +144,14 @@ def job_context(db: Session, ws: int, name: str) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Responses API with web search
+# Web search (the Responses API transport; llm_providers.web_search picks the provider's way)
 # --------------------------------------------------------------------------
 
 def _post(url: str, payload: dict, cfg: dict) -> dict:
     headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
     for attempt in range(1, 4):
         try:
-            resp = httpx.post(url, json=payload, headers=headers, timeout=120)
+            resp = httpx.post(url, json=payload, headers=headers, timeout=cfg.get("search_timeout_s", 120))
         except httpx.HTTPError as exc:
             if attempt == 3:
                 raise ScorerError(f"connection error: {exc}") from exc
@@ -177,22 +180,15 @@ def run_agent(company: dict, cfg: dict) -> dict:
     context = "\n".join(
         f"- {j['title']} ({j.get('location') or 'location n/a'}) {j.get('url') or ''}" for j in company["jobs"]
     )
-    payload = {
-        "model": cfg["model"],
-        "instructions": INSTRUCTIONS,
-        "input": f"Organisation: {company['name']}\nJob ads we have from it (for disambiguation):\n{context or '- none'}",
-        "tools": [{"type": "web_search", "search_context_size": "medium",
-                   "user_location": {"type": "approximate", "country": "AU"}}],
-        "include": ["web_search_call.results"],
-        "background": True,
-    }
-    if cfg.get("reasoning_effort"):
-        payload["reasoning"] = {"effort": cfg["reasoning_effort"]}
-    return run_response(payload, cfg, "research agent")
+    return llm_providers.web_search(
+        cfg, instructions=INSTRUCTIONS,
+        input=f"Organisation: {company['name']}\nJob ads we have from it (for disambiguation):\n{context or '- none'}",
+        context_size="medium", what="research agent", feature="Company research")
 
 
 def run_response(payload: dict, cfg: dict, what: str = "web search") -> dict:
-    """Start a background Responses API request and poll until it finishes."""
+    """Start a background Responses API request and poll until it finishes (for providers that take
+    a plain request, the answer is already complete)."""
     data = _post(f"{cfg['base_url']}/responses", payload, cfg)
     waited = 0
     while data.get("status") in ("queued", "in_progress") and waited < MAX_WAIT_S:
@@ -396,6 +392,10 @@ def research_companies(companies: list[dict], progress: Callable[[str, dict], No
         raise ScorerError(config_problem(cfg), auth=True)
     if not companies:
         return {"requested": 0, "researched": 0, "errors": 0, "aborted": None}
+    no_search = llm_providers.web_search_problem(cfg, "Company research")
+    if no_search:  # fail fast: no request could work, and the companies aren't marked as failed
+        return {"requested": len(companies), "researched": 0, "errors": 0, "skipped": len(companies),
+                "first_error": no_search, "aborted": None}
     stop = threading.Event()
     lock = threading.Lock()
     counts = {"researched": 0, "errors": 0, "done": 0}

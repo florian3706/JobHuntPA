@@ -27,5 +27,10 @@ working and be reflected in them**:
 - Every data query is scoped to a workspace (`X-Workspace` header → `current_workspace`).
 - Jobs with `duplicate_of` set are merged copies of another job (`backend/duplicates.py`): anything
   that lists, scores or researches jobs must skip them (`Job.duplicate_of.is_(None)`).
-- LLM settings are provider-neutral `LLM_*` variables; never hard-code a provider.
+- LLM settings are the provider-neutral `LLM_*` variables. Provider differences live only in
+  `backend/llm_providers.py` (picked by `LLM_BASE_URL`'s host; `PRESETS` feeds the Settings tab and
+  setup) and `backend/llm_anthropic.py` (Claude, through the official `anthropic` SDK). Everything
+  else calls `llm_providers.chat` / `web_search`; never build provider requests elsewhere.
+- `.env` is written only through `backend/app_settings.py`, which allows a fixed list of names and
+  validates every value (the app can be reachable from other devices).
 - Tests: `python3 -m unittest discover -s tests -t .`
