@@ -652,7 +652,7 @@ class StatusAndHideTest(unittest.TestCase):
                                      json={"ids": ids, "hidden": True}).json()["updated"], 0)
             c.delete(f"/api/workspaces/{ws2}")
             self.assertEqual(c.patch("/api/jobs/hidden", json={"ids": ids[:2], "hidden": True}).json()["updated"], 2)
-            by_id = {j["id"]: j for j in c.get("/api/jobs").json()}
+            by_id = {j["id"]: j for j in c.get("/api/jobs?include=hidden").json()}  # hidden ones only on demand
         self.assertEqual((by_id[ids[0]]["status"], by_id[ids[1]]["status"]), ("interviewing", "rejected"))
         self.assertEqual([by_id[i]["hidden"] for i in ids], [True, True, False])
         db = SessionLocal()
@@ -751,7 +751,7 @@ class OfficeDaySofteningTest(unittest.TestCase):
             c.post("/api/jobs/refilter", headers=h)
 
             def listed(slack):
-                return {j["id"]: j for j in c.get(f"/api/jobs?office_slack={slack}", headers=h).json()}
+                return {j["id"]: j for j in c.get(f"/api/jobs?office_slack={slack}&include=excluded", headers=h).json()}
 
             strict, plus1, plus2 = listed(0), listed(1), listed(2)
             self.assertIsNone(strict[ids["2d"]]["excluded_reason"])
@@ -1880,7 +1880,7 @@ class ScheduleTest(unittest.TestCase):
 
 
 class JobListExcludedTest(unittest.TestCase):
-    def test_omit_only_and_count(self):
+    def test_sent_on_demand(self):
         from fastapi.testclient import TestClient
         from backend.app import app
         from backend.db import Job, SessionLocal
@@ -1909,14 +1909,15 @@ class JobListExcludedTest(unittest.TestCase):
             def titles(query):
                 r = c.get(f"/api/jobs{query}", headers=h)
                 return {j["title"] for j in r.json()}, r.headers["X-Omitted-Count"]
-            self.assertEqual(titles(""), ({"Kept", "Out", "Hybrid", "Hidden"}, "0"))  # merged copies are never listed
-            self.assertEqual(titles("?omit=excluded"), ({"Kept", "Hidden"}, "2"))
-            self.assertEqual(titles("?omit=hidden"), ({"Kept", "Out", "Hybrid"}, "1"))
-            self.assertEqual(titles("?omit=excluded,hidden"), ({"Kept"}, "3"))
+            # Excluded and hidden jobs are only sent on demand; merged copies are never listed.
+            self.assertEqual(titles(""), ({"Kept"}, "3"))
+            self.assertEqual(titles("?include=excluded"), ({"Kept", "Out", "Hybrid"}, "1"))
+            self.assertEqual(titles("?include=hidden"), ({"Kept", "Hidden"}, "2"))
+            self.assertEqual(titles("?include=excluded,hidden"), ({"Kept", "Out", "Hybrid", "Hidden"}, "0"))
             # The office-days what-if lets the hybrid job through: it isn't excluded then.
-            self.assertEqual(titles("?omit=excluded,hidden&office_slack=1"), ({"Kept", "Hybrid"}, "2"))
-            listed = c.get("/api/jobs?omit=excluded,hidden", headers=h).json()
+            self.assertEqual(titles("?office_slack=1"), ({"Kept", "Hybrid"}, "2"))
+            listed = c.get("/api/jobs", headers=h).json()
             self.assertEqual([a["title"] for a in listed[0]["also_on"]], ["Copy"])
             for bad in ("closed", "excluded,closed", "excluded,"):
-                self.assertEqual(c.get(f"/api/jobs?omit={bad}", headers=h).status_code, 422, bad)
+                self.assertEqual(c.get(f"/api/jobs?include={bad}", headers=h).status_code, 422, bad)
             c.delete(f"/api/workspaces/{ws}")

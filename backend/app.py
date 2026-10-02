@@ -168,12 +168,14 @@ def _with_copies(out: dict, copies: list[Job]) -> dict:
 
 
 @app.get("/api/jobs")
-def list_jobs(office_slack: int = OfficeSlack, omit: str = Query("", pattern=r"^((excluded|hidden)(,(excluded|hidden))?)?$"),
+def list_jobs(office_slack: int = OfficeSlack,
+              include: str = Query("", pattern=r"^((excluded|hidden)(,(excluded|hidden))?)?$"),
               db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
-    """The workspace's jobs (merged copies under ``also_on``). Most stored jobs are excluded by the
-    filters or hidden by the user, and only shown on request, so the Jobs tab leaves them out
-    (``omit=excluded,hidden``) until "Show excluded" / "Show hidden" is ticked. ``X-Omitted-Count``
-    says how many were left out. A job the office-days what-if lets through isn't excluded."""
+    """The workspace's jobs (merged copies under ``also_on``). Excluded jobs (by the filters) and
+    hidden ones (by the user) are most of them and only sent on demand: ``include=excluded``,
+    ``include=hidden`` or both, which the Jobs tab asks for while "Show excluded" / "Show hidden"
+    is ticked. ``X-Omitted-Count`` says how many were left out. A job the office-days what-if lets
+    through isn't excluded."""
     phash = _profile_hash(db, ws)
     rows = (db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id)
             .options(defer(Job.description)).filter(Job.workspace_id == ws).all())
@@ -185,7 +187,7 @@ def list_jobs(office_slack: int = OfficeSlack, omit: str = Query("", pattern=r"^
     for job, _fit in rows:
         if job.duplicate_of:
             copies.setdefault(job.duplicate_of, []).append(job)
-    leave_out = set(filter(None, omit.split(",")))
+    leave_out = {"excluded", "hidden"} - set(include.split(","))
 
     def omitted(job: Job) -> bool:
         return (("excluded" in leave_out and bool(job.excluded_reason) and job.id not in softened)

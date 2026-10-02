@@ -76,20 +76,21 @@ const slackQuery = () => (state.officeSlack ? `?office_slack=${state.officeSlack
 // A big list takes a while (the Pi, a search running): the first load shows a loading screen, and a
 // reload keeps the list up and says it's updating. An answer for an older request, or for the
 // workspace you've just left, is dropped. Excluded and hidden jobs (usually most of them) are only
-// fetched while "Show excluded" / "Show hidden" is ticked; otherwise only their number comes along.
-const omitQuery = () => [!state.filter.showExcluded && 'excluded', !state.filter.showHidden && 'hidden'].filter(Boolean).join(',');
+// sent on demand, while "Show excluded" / "Show hidden" is ticked; otherwise only their number comes along.
+const includeFor = () => [state.filter.showExcluded && 'excluded', state.filter.showHidden && 'hidden'].filter(Boolean);
 
 async function loadJobs() {
   const token = ++state.jobsToken;
   const ws = state.ws;
-  const omit = omitQuery();
+  const include = includeFor();
+  const omit = ['excluded', 'hidden'].filter((k) => !include.includes(k)).join(',');
   state.jobsRefreshing = state.jobsStatus === 'ready';
   if (state.jobsStatus === 'error') state.jobsStatus = 'loading';
   renderJobs();
   let jobs, omittedCount;
   try {
     const q = new URLSearchParams();
-    if (omit) q.set('omit', omit);
+    if (include.length) q.set('include', include.join(','));
     if (state.officeSlack) q.set('office_slack', state.officeSlack);
     const res = await apiResponse(`/api/jobs?${q}`);
     jobs = res.data;
