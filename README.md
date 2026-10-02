@@ -154,7 +154,7 @@ can live in their own **workspaces** (switcher at the top right).
 - **Job page**: *Open ↗* on a job opens it in a new tab: the whole ad, the fit and gaps, a map of
   the office, the company profile, and the commute there and back at peak times (arriving by 9:00,
   leaving at 17:00 on a Tuesday; change these under Search setup > Commute). Public transport is
-  planned from the stations you list there (e.g. Gosford Station, Narara Station), including
+  planned from the stations you list there (e.g. Hornsby Station, Asquith Station), including
   changes, metro, buses and walking at the other end; driving starts at your home pin. See
   [Commute times](#commute-times-optional) for the two free keys this needs.
 - **Map**: two modes. **Jobs** shows the jobs your Jobs tab filters show, with your pins and their
