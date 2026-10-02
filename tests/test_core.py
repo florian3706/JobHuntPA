@@ -1118,6 +1118,85 @@ class GeocoderPrecisionTest(unittest.TestCase):
             self.assertTrue(is_city_only(text), text)
         for text in ("Eveleigh, Sydney NSW", "Sydney CBD", "Remote", "", "Hornsby, Sydney NSW"):
             self.assertFalse(is_city_only(text), text)
+        # An area of a city (SEEK, when the ad names no suburb) doesn't say where the office is either.
+        for text in ("North West & Hills District, Sydney NSW", "CBD, Inner West & Eastern Suburbs, Sydney NSW",
+                     "Bayside & South Eastern Suburbs, Melbourne VIC", "Northern Suburbs & Joondalup, Perth WA"):
+            self.assertTrue(is_city_only(text), text)
+        self.assertFalse(is_city_only("Terrigal, Gosford & Central Coast NSW"))
+
+    def test_seek_regions_and_areas(self):
+        from unittest import mock
+        import backend.geo as geo
+
+        def place(kind, lat, name, rank=16):
+            return {"addresstype": kind, "place_rank": rank, "importance": 0.3, "lat": str(lat), "lon": "151.0",
+                    "display_name": name, "address": {"country_code": "au"}}
+        bus_stop = place("highway", -33.43, "Central Coast Hwy opp Woy Woy Rd, Kariong", rank=30)
+        answers = {
+            "Woy Woy, NSW": [place("town", -33.48, "Woy Woy, New South Wales")],
+            "Woy Woy, Gosford & Central Coast NSW": [bus_stop],
+            "Geraldton, WA": [place("city", -28.78, "Geraldton, Western Australia")],
+            "Gosford, NSW": [place("suburb", -33.42, "Gosford, New South Wales")],
+            "Alkimos, Perth WA": [],
+            "Alkimos, WA": [place("suburb", -31.63, "Alkimos, Western Australia")],
+            "Castle Hill, NSW": [place("suburb", -33.73, "Castle Hill, New South Wales")],
+            "Erina, NSW": [place("amenity", -33.44, "Erina High School, Erina", rank=30)],
+            "Erina, Gosford & Central Coast NSW": [place("suburb", -33.44, "Erina, New South Wales")],
+        }
+        asked = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            asked.append(params["q"])
+            return mock.Mock(json=lambda: answers.get(params["q"], []), raise_for_status=lambda: None)
+        with mock.patch.object(geo.httpx, "get", side_effect=fake_get), mock.patch.object(geo, "_geo_last", 0.0):
+            # A regional suburb is looked up in its state: the region's words found a bus stop.
+            self.assertEqual(geo.geocode("Woy Woy, Gosford & Central Coast NSW")["lat"], -33.48)
+            self.assertEqual(asked, ["Woy Woy, NSW"])
+            self.assertEqual(geo.geocode("Geraldton, Geraldton, Gascoyne & Midwest WA")["lat"], -28.78)
+            self.assertEqual(geo.geocode("Gosford & Central Coast NSW")["lat"], -33.42)  # the region's first town
+            # In a big city the full form goes first; when it finds nothing, the suburb in its state.
+            asked.clear()
+            self.assertEqual(geo.geocode("Alkimos, Perth WA")["lat"], -31.63)
+            self.assertEqual(asked, ["Alkimos, Perth WA", "Alkimos, WA"])
+            # An area of a city is placed at its main centre.
+            self.assertEqual(geo.geocode("North West & Hills District, Sydney NSW")["lat"], -33.73)
+            # A building that only shares the suburb's name isn't the suburb: the full form decides.
+            self.assertEqual(geo.geocode("Erina, Gosford & Central Coast NSW")["type"], "suburb")
+
+    def test_seek_geocode_repair(self):
+        from unittest import mock
+        import backend.geo as geo
+        from backend.db import AppSetting, GeocodeCache, Job, SessionLocal
+        from backend.filters import load_criteria
+        from backend.pipeline import repair_geocodes
+
+        db = SessionLocal()
+        db.add_all([
+            GeocodeCache(query="umina beach, gosford & central coast nsw", lat=None),
+            GeocodeCache(query="kariong, gosford & central coast nsw", lat=-33.43, lng=151.29,
+                         display_name="Central Coast Highway, Kariong, Gosford"),
+            GeocodeCache(query="lane cove, sydney nsw", lat=-33.81, lng=151.17, display_name="Lane Cove, Sydney, NSW"),
+            GeocodeCache(query="parramatta & western suburbs, sydney nsw", lat=None),
+            GeocodeCache(query="tas", lat=None),
+        ])
+        job = Job(workspace_id=1, url="https://repair.example/1", title="PM", location_text="Umina Beach, Gosford & Central Coast NSW",
+                  work_mode="onsite", status="to_review", detail_status="full")
+        db.add(job); db.commit()
+        db.query(AppSetting).filter(AppSetting.key.like("geocode_repair_seek%")).delete(synchronize_session=False)
+        db.commit()
+        town = {"addresstype": "town", "place_rank": 16, "importance": 0.3, "lat": "-33.52", "lon": "151.31",
+                "display_name": "Umina Beach, New South Wales", "address": {"country_code": "au"}}
+        with mock.patch.object(geo.httpx, "get", return_value=mock.Mock(json=lambda: [town], raise_for_status=lambda: None)), \
+                mock.patch.object(geo, "_geo_last", 0.0):
+            repair_geocodes(db, 1, load_criteria(db, 1), lambda stage, info: None)
+        db.refresh(job)
+        self.assertEqual((job.lat, job.lng), (-33.52, 151.31))
+        cached = {r.query for r in db.query(GeocodeCache)}
+        self.assertNotIn("kariong, gosford & central coast nsw", cached)  # a highway, not the suburb
+        self.assertNotIn("parramatta & western suburbs, sydney nsw", cached)
+        self.assertTrue({"lane cove, sydney nsw", "tas", "umina beach, gosford & central coast nsw"} <= cached)
+        self.assertIn(1, json.loads(db.get(AppSetting, "geocode_repair_seek_workspaces").value_json))
+        db.delete(job); db.commit(); db.close()
 
     def test_location_verdict(self):
         c = Criteria(allow_hybrid=True, pins=PINS)

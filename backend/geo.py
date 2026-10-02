@@ -132,14 +132,7 @@ def geocode(location_text: str) -> Optional[dict[str, Any]]:
         if row is not None:
             return None if row.lat is None else {"lat": row.lat, "lng": row.lng, "country": row.country or "",
                                                  "type": row.place_type}
-        result = _nominatim(query)
-        if result and result["area"]:
-            # "Hornsby, Sydney NSW" only finds Hornsby Shire, whose centre is
-            # 13 km from Hornsby; "Hornsby, NSW" finds the suburb itself.
-            alt = _without_city(query)
-            better = _nominatim(alt) if alt else None
-            if better and not better["area"]:
-                result = better
+        result = _lookup(query)
         if result is False:  # transient failure: don't cache
             return None
         row = GeocodeCache(query=key)
@@ -155,6 +148,93 @@ def geocode(location_text: str) -> Optional[dict[str, Any]]:
 
 
 _STATE_IN = re.compile(r"\b(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\b")
+
+
+# SEEK's areas of a city, for ads that name no suburb: placed at the area's main centre.
+# Areas not listed here are placed at the city's centre; either way the office is unknown.
+SEEK_AREAS = {
+    "sydney": {
+        "cbd, inner west & eastern suburbs": "Sydney",
+        "north shore & northern beaches": "Chatswood",
+        "north west & hills district": "Castle Hill",
+        "parramatta & western suburbs": "Parramatta",
+        "ryde & macquarie park": "Macquarie Park",
+        "south west & m5 corridor": "Liverpool",
+        "southern suburbs & sutherland shire": "Hurstville",
+    },
+    "melbourne": {
+        "cbd & inner suburbs": "Melbourne",
+        "bayside & south eastern suburbs": "Moorabbin",
+        "eastern suburbs": "Box Hill",
+        "northern suburbs": "Preston",
+        "western suburbs": "Footscray",
+    },
+}
+_AREA_WORDS = re.compile(r"&|\b(suburbs|district|corridor|beaches|inner)\b", re.I)
+_SEEK_LAST = re.compile(r"(.*?)\s*\b(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)", re.I)  # cached queries are lower case
+
+
+def _seek_location(query: str) -> Optional[tuple[str, str, str]]:
+    """SEEK's "Terrigal, Gosford & Central Coast NSW" as ("Terrigal", "Gosford & Central
+    Coast", "NSW"); "North West & Hills District, Sydney NSW" as ("North West & Hills
+    District", "Sydney", "NSW"); "Gosford & Central Coast NSW" as ("", "Gosford & Central
+    Coast", "NSW"). None for other forms."""
+    parts = [p.strip() for p in query.split(",") if p.strip()]
+    last = _SEEK_LAST.fullmatch(parts[-1]) if parts else None
+    if not last or not last.group(1):
+        return None
+    if len(parts) == 1:
+        return ("", last.group(1), last.group(2).upper()) if "&" in last.group(1) else None
+    return ", ".join(parts[:-1]), last.group(1), last.group(2).upper()
+
+
+def city_area(query: str) -> Optional[tuple[str, str]]:
+    """(city, area) for an ad that names only an area of a big city ("North West &
+    Hills District, Sydney NSW"), so the office could be anywhere in it."""
+    seek = _seek_location(query)
+    if not seek or seek[1].lower() not in _METRO:
+        return None
+    place, city, _ = seek
+    known = SEEK_AREAS.get(city.lower(), {})
+    return (city, place) if place.lower() in known or _AREA_WORDS.search(place) else None
+
+
+def _settlement(query: str):
+    """Nominatim's answer only if it's a town, suburb or the like: not a building,
+    road or council area that merely shares words with the query."""
+    hit = _nominatim(query)
+    return hit if not hit or hit["type"] in _SETTLEMENTS else None
+
+
+def _lookup(query: str):
+    """The place a cleaned location means, or None (False: the geocoder failed,
+    try again later)."""
+    seek = _seek_location(query)
+    if seek:
+        place, region, state = seek
+        area = city_area(query)
+        if area:  # "North West & Hills District, Sydney NSW": the area's centre, or the city's
+            centre = SEEK_AREAS.get(region.lower(), {}).get(place.lower(), region)
+            hit = _settlement(f"{centre}, {state}")
+            if hit is not None:
+                return hit
+        elif region.lower() not in _METRO:
+            # "Woy Woy, Gosford & Central Coast NSW": the region's words find the Central
+            # Coast Highway, so look for the suburb (or the region's first town) in its state.
+            hit = _settlement(f"{place or region.split('&')[0].strip()}, {state}")
+            if hit is not None:
+                return hit
+    result = _nominatim(query)
+    if result is None or (result and result["area"]):
+        # "Hornsby, Sydney NSW" only finds Hornsby Shire, whose centre is
+        # 13 km from Hornsby; "Hornsby, NSW" finds the suburb itself.
+        alt = _without_city(query)
+        better = _settlement(alt) if alt else None
+        if better is False:
+            return False
+        if better:
+            result = better
+    return result
 
 
 def _without_city(query: str) -> str:
@@ -218,6 +298,29 @@ _AREA_NAME = re.compile(r"^(the )?(council|city|municipality|shire|district)\b.*
 _NAMES_AREA = re.compile(r"\b(council|shire|city of|municipality|district of)\b", re.I)
 
 
+def purge_seek_geocodes() -> set[str]:
+    """Forget cached results for SEEK-style locations that found nothing, or found
+    something else that shares words with them ("Woy Woy, Gosford & Central Coast
+    NSW" was a bus stop on the Central Coast Highway), from before such places were
+    looked up by suburb. Returns the dropped queries so their jobs can be placed again."""
+    db = SessionLocal()
+    try:
+        dropped = set()
+        for r in db.query(GeocodeCache).all():
+            seek = _seek_location(r.query)
+            if not seek:
+                continue
+            place = (seek[0] or seek[1].split("&")[0]).strip().lower()
+            if r.lat is None or not (r.display_name or "").lower().startswith(place) or city_area(r.query):
+                dropped.add(r.query)
+        if dropped:
+            db.query(GeocodeCache).filter(GeocodeCache.query.in_(dropped)).delete(synchronize_session=False)
+            db.commit()
+        return dropped
+    finally:
+        db.close()
+
+
 def purge_area_geocodes() -> set[str]:
     """Forget cached results that are council areas (stored before suburbs
     were preferred), unless the query itself asked for the council. Returns
@@ -247,16 +350,18 @@ _LOCATION_NOISE = re.compile(
 
 def is_city_only(location_text: str) -> bool:
     """True when the location names only a city ("Sydney NSW", "Australia -
-    Sydney - New South Wales"), or several cities, so the office could be
-    anywhere in it. "Sydney CBD" or a suburb is specific enough."""
-    places = [" ".join(_LOCATION_NOISE.sub(" ", p.lower()).split()) for p in re.split(r"\s*;\s*", location_text or "")]
-    places = [p for p in places if p and set(p.split()) != {"remote"}]  # "Remote - Remote" alongside a city
-    if not places:
-        return False
-    for words in places:
-        if not {words, " ".join(dict.fromkeys(words.split()))} & _METRO:  # "sydney sydney" -> "sydney"
-            return False
-    return True
+    Sydney - New South Wales"), several cities, or an area of a city ("North
+    West & Hills District, Sydney NSW"), so the office could be anywhere in it.
+    "Sydney CBD" or a suburb is specific enough."""
+    found = False
+    for text in re.split(r"\s*;\s*", location_text or ""):
+        words = " ".join(_LOCATION_NOISE.sub(" ", text.lower()).split())
+        if not words or set(words.split()) == {"remote"}:  # "Remote - Remote" alongside a city
+            continue
+        if not ({words, " ".join(dict.fromkeys(words.split()))} & _METRO or city_area(_geocode_query(text))):
+            return False  # ("sydney sydney" -> "sydney")
+        found = True
+    return found
 
 
 # --------------------------------------------------------------------------

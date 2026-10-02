@@ -161,7 +161,8 @@ can live in their own **workspaces** (switcher at the top right).
   radii, and lists the jobs in view under the map (click a dot or **Open ↗** for a job's full
   page in a new tab); nothing can be changed by accident. **Edit pins** drops a pin where you
   click (drag to move); *Only list pins in view* shortens the pin list to the area on screen.
-- **Office locations**: most ads only say "Sydney NSW". Instead of assuming the CBD, such jobs show
+- **Office locations**: most ads only say "Sydney NSW", or an area such as "North West & Hills District"
+  (placed at its main centre, here Castle Hill, for the location filter). Instead of trusting that, such jobs show
   **office unknown** until the office is found: the scorer reads it from the full ad, and company
   research (**Fill missing info**) finds the employer's office addresses. An office named in the ad
   wins; otherwise, with several offices in that city, the one closest to your commute pins is used

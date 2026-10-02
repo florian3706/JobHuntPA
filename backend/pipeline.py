@@ -203,25 +203,30 @@ def replace_jobs(db: Session, ws: int, crit: Criteria, queries: set[str]) -> int
 
 
 def repair_geocodes(db: Session, ws: int, crit: Criteria, progress: Progress) -> None:
-    """Jobs placed at a council area's centre instead of the suburb (before
-    the geocoder preferred suburbs) are placed again, once per workspace."""
+    """Jobs placed by an older geocoder's mistakes are placed again, once per
+    workspace per repair:
+    - a council area's centre instead of the suburb (before suburbs were preferred);
+    - SEEK's "Suburb, Region STATE" not found, or found as a road or building sharing
+      the region's words (before such suburbs were looked up in their state)."""
     from backend.db import AppSetting
-    from backend.geo import purge_area_geocodes
+    from backend.geo import purge_area_geocodes, purge_seek_geocodes
 
     def setting(key: str) -> list:
         row = db.get(AppSetting, key)
         return json.loads(row.value_json) if row else []
 
-    done = set(setting("geocode_repair_workspaces"))
-    if ws in done:
-        return
-    # The cache is shared, so remember what was dropped for the other workspaces.
-    queries = set(setting("geocode_repair_queries")) | purge_area_geocodes()
-    progress("placing suburbs that were mapped to council areas", {})
-    replace_jobs(db, ws, crit, queries)
-    db.merge(AppSetting(key="geocode_repair_queries", value_json=json.dumps(sorted(queries))))
-    db.merge(AppSetting(key="geocode_repair_workspaces", value_json=json.dumps(sorted(done | {ws}))))
-    db.commit()
+    for key, purge, what in (("geocode_repair", purge_area_geocodes, "placing suburbs that were mapped to council areas"),
+                             ("geocode_repair_seek", purge_seek_geocodes, "placing SEEK suburbs the map search missed")):
+        done = set(setting(f"{key}_workspaces"))
+        if ws in done:
+            continue
+        # The cache is shared, so remember what was dropped for the other workspaces.
+        queries = set(setting(f"{key}_queries")) | purge()
+        progress(what, {})
+        replace_jobs(db, ws, crit, queries)
+        db.merge(AppSetting(key=f"{key}_queries", value_json=json.dumps(sorted(queries))))
+        db.merge(AppSetting(key=f"{key}_workspaces", value_json=json.dumps(sorted(done | {ws}))))
+        db.commit()
 
 
 def refilter(db: Session, crit: Criteria, ws: int, jobs: Optional[list[Job]] = None) -> int:
