@@ -104,7 +104,7 @@ input[type="text"], input[type="search"], input[type="number"], select {
 }
 input:focus, select:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 input[type="range"] { accent-color: var(--accent); }
-.check-field, .check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.check-field, .check { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 14px; }
 .check-field input, .check input { width: 16px; height: 16px; accent-color: var(--accent); }
 
 /* Jobs toolbar */

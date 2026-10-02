@@ -14,6 +14,51 @@ against your CV with an AI model of your choice, drafts cover letters, suggests 
 search for, researches each employer, merges the same job advertised on several sites into one,
 and lets you chat with the AI about any job.
 
+![The Jobs tab: job cards with fit scores, statuses and salaries, under the result of the last scheduled search](docs/screenshots/jobs.png)
+
+*All screenshots show a made-up job hunt in a demo workspace: the person, companies and ads are fictional.*
+
+## A quick look
+
+**A job's full page** (*Open ↗* on any job): the office on a map with the commute there and back,
+how well the job fits your CV and where the gaps are, what company research found about the
+employer, and the whole ad.
+
+<img src="docs/screenshots/job-page.png" alt="A job's full page: office map and commute, fit requirements and gaps, company profile and the ad" width="760">
+
+**Map**: the jobs your filters show, your pins with their radii, and the jobs in view listed
+underneath.
+
+![The Map tab in Jobs mode: job dots, a home pin, a hybrid pin and an onsite pin with their radii, and the list of jobs in view](docs/screenshots/map.png)
+
+**Chat about a job**: ask how well you fit, what to prepare for an interview, or compare jobs.
+
+![The job chat panel next to the job cards, answering how well the candidate fits](docs/screenshots/chat.png)
+
+**Cover letter drafts** from your own documents, to edit, copy or download as a Word file.
+
+![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
+
+**Scheduled searches**: the search runs by itself at set times on workdays, skipping public holidays.
+
+![The Scheduled searches settings: run times, days, public holidays by state, and the next search](docs/screenshots/search-schedule.png)
+
+**Themes**: Dark (above), Light, the Catppuccin flavours, a dyslexia-friendly theme and themes for
+colour vision deficiencies.
+
+![The Jobs tab in six themes: Light, Catppuccin Mocha, Catppuccin Latte, Dyslexia, Deuteranomaly (dark) and Monochromacy](docs/screenshots/themes.png)
+
+<details>
+<summary>More: search setup, company sources and the per-source run report</summary>
+
+![Search setup: target titles, keywords, salary floor, work modes, office days and dealbreakers](docs/screenshots/search-setup.png)
+
+![Company sources: careers pages with their last results, one blocked by the site](docs/screenshots/company-sources.png)
+
+![The last run's per-source results: listed, new, kept and excluded jobs for each source](docs/screenshots/run-report.png)
+
+</details>
+
 ## What you need
 
 - A computer running Windows 10/11, macOS or Linux, and an internet connection.
@@ -196,6 +241,11 @@ Windows on every push to catch breakage.
 Manual run: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, copy
 `.env.example` to `.env`, then `.venv/bin/python installer/launch.py`. Tests:
 `python3 -m unittest discover -s tests -t .`
+
+**README screenshots:** `python3 tools/readme_screenshots.py` (needs `pip install pillow`) builds a
+throwaway database of made-up data with `tools/demo_data.py`, runs the app on it with fake AI
+settings and no scheduler, and saves `docs/screenshots/*.png`. It never touches `data/` or `.env`.
+Re-run it after changing the UI; `--only jobs,map` retakes just those.
 
 **Releasing the Windows programs:** bump `VERSION`, commit, then `git tag v$(cat VERSION) && git
 push --tags`. `.github/workflows/release.yml` builds JobHuntPA-Setup.exe and JobHuntPA.exe on
