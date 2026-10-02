@@ -5,6 +5,9 @@ const TAG_FIELDS = ['titles', 'keywords_include', 'keywords_exclude', 'dealbreak
 
 const state = {
   jobs: [],
+  jobsStatus: 'loading', // 'loading' (nothing to show yet) | 'ready' | 'error' (first load failed)
+  jobsRefreshing: false, // a reload is on its way; the list on screen stays up meanwhile
+  jobsToken: 0, // bumped by every loadJobs, so only the newest answer is shown
   details: new Map(), // job id -> full job (with description)
   filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
   selected: new Set(),
@@ -68,17 +71,35 @@ function initTabs() {
 // Every request that returns jobs passes the temporary office-days softening.
 const slackQuery = () => (state.officeSlack ? `?office_slack=${state.officeSlack}` : '');
 
+// A big list takes a while (the Pi, a search running): the first load shows a loading screen, and a
+// reload keeps the list up and says it's updating. An answer for an older request, or for the
+// workspace you've just left, is dropped.
 async function loadJobs() {
+  const token = ++state.jobsToken;
+  const ws = state.ws;
+  state.jobsRefreshing = state.jobsStatus === 'ready';
+  if (state.jobsStatus === 'error') state.jobsStatus = 'loading';
+  renderJobs();
+  let jobs;
   try {
-    state.jobs = await api(`/api/jobs${slackQuery()}`);
-    const ids = new Set(state.jobs.map((j) => j.id));
-    state.selected.forEach((id) => { if (!ids.has(id)) state.selected.delete(id); });
-    state.details.clear();
-    $('#jobs-error').hidden = true;
+    jobs = await api(`/api/jobs${slackQuery()}`);
   } catch (e) {
+    if (token !== state.jobsToken || ws !== state.ws) return;
+    state.jobsRefreshing = false;
+    if (state.jobsStatus === 'loading') state.jobsStatus = 'error';
     $('#jobs-error').textContent = `Could not load jobs: ${e.message}`;
     $('#jobs-error').hidden = false;
+    renderJobs();
+    return;
   }
+  if (token !== state.jobsToken || ws !== state.ws) return;
+  state.jobs = jobs;
+  state.jobsStatus = 'ready';
+  state.jobsRefreshing = false;
+  const ids = new Set(state.jobs.map((j) => j.id));
+  state.selected.forEach((id) => { if (!ids.has(id)) state.selected.delete(id); });
+  state.details.clear();
+  $('#jobs-error').hidden = true;
   renderJobs();
   loadDuplicates();
 }
@@ -119,7 +140,7 @@ function renderStatusChips() {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = `chip${state.filter.status === val ? ' active' : ''}`;
-    b.innerHTML = `${esc(label)} <span class="n">${n}</span>`;
+    b.innerHTML = state.jobsStatus === 'ready' ? `${esc(label)} <span class="n">${n}</span>` : esc(label); // no "0" while loading
     b.addEventListener('click', () => { state.filter.status = val; renderJobs(); });
     box.appendChild(b);
   });
@@ -160,18 +181,29 @@ function setOfficeSlack(n) {
   loadJobs();
 }
 
+const LOADING_JOBS = '<div class="jobs-loading" role="status"><span class="spinner" aria-hidden="true"></span> Loading jobs…</div>';
+
 function renderJobs() {
   renderStatusChips();
   renderSoftenNote();
+  const list = $('#jobs-list');
+  list.setAttribute('aria-busy', String(state.jobsStatus === 'loading' || state.jobsRefreshing));
+  if (state.jobsStatus !== 'ready') {
+    list.innerHTML = state.jobsStatus === 'loading' ? LOADING_JOBS : '';
+    $('#jobs-empty').hidden = true;
+    $('#jobs-count').textContent = state.jobsStatus === 'loading' ? 'Loading…' : '';
+    renderBulkBar();
+    drawJobMarkers();
+    return;
+  }
   const jobs = visibleJobs();
   // Bulk actions only ever apply to jobs on screen: drop selections the filters now hide.
   const shown = new Set(jobs.map((j) => j.id));
   state.selected.forEach((id) => { if (!shown.has(id)) state.selected.delete(id); });
-  const list = $('#jobs-list');
   list.innerHTML = '';
   $('#jobs-empty').hidden = jobs.length !== 0;
   const hidden = state.jobs.length - jobs.length;
-  $('#jobs-count').textContent = `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}`;
+  $('#jobs-count').textContent = `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`;
   jobs.forEach((job) => list.appendChild(renderJobCard(job)));
   renderBulkBar();
   drawJobMarkers();
@@ -1802,6 +1834,7 @@ function renderMapJobs() {
   const box = $('#map-jobs');
   if (!state.map || state.mapMode !== 'jobs') return;
   const bounds = state.map.getBounds();
+  if (state.jobsStatus === 'loading') { box.innerHTML = LOADING_JOBS; return; }
   const inView = mapJobs().filter((j) => bounds.contains([j.lat, j.lng]));
   if (!inView.length) {
     box.innerHTML = '<div class="empty">No jobs in this part of the map. Zoom out, or change the Jobs tab filters.</div>';
@@ -1963,6 +1996,9 @@ async function switchWorkspace(id) {
   state.schedule = null;
   state.selected.clear();
   state.details.clear();
+  state.jobs = []; // the old workspace's jobs must not show under the new one's name
+  state.jobsStatus = 'loading';
+  state.jobsRefreshing = false;
   state.titleSuggestions = [];
   $('#titles-list').innerHTML = '';
   $('#titles-actions').hidden = true;

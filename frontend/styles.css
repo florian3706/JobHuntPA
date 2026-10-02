@@ -264,6 +264,12 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; paddi
 .progress-bar { height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
 .progress.indeterminate .progress-bar { width: 30% !important; animation: slide 1.2s infinite ease-in-out; }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(330%); } }
+.jobs-loading { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 48px 16px; color: var(--muted); font-size: 15px; }
+.spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent);
+  animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
 .run-report summary { cursor: pointer; color: var(--accent-text); font-size: 13.5px; }
 .report { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
 .report th, .report td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }

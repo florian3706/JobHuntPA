@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -53,6 +55,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="JobHuntPA", lifespan=lifespan)
+# The job list is several MB of JSON; compressed it is about a seventh of that (slow links, the Pi).
+app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=5)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)
 app.include_router(profile_router)
@@ -177,10 +181,13 @@ def list_jobs(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
     for job, _fit in rows:
         if job.duplicate_of:
             copies.setdefault(job.duplicate_of, []).append(job)
-    return [_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
-                                             recruiter=looks_like_recruiter(job.company or "", profiles)), softened),
-                         copies.get(job.id, []))
-            for job, fit in rows if not job.duplicate_of]
+    # Plain JSON values already: skip FastAPI's per-field encoder, which took most of the time for
+    # thousands of jobs on a Raspberry Pi.
+    return JSONResponse([_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
+                                                         recruiter=looks_like_recruiter(job.company or "", profiles)),
+                                              softened),
+                                      copies.get(job.id, []))
+                         for job, fit in rows if not job.duplicate_of])
 
 
 @app.get("/api/jobs/{job_id}")
