@@ -11,6 +11,7 @@ import unittest
 
 _TMP = tempfile.mkdtemp()
 os.environ["JOBHUNT_DB_PATH"] = os.path.join(_TMP, "test.db")
+os.environ["JOBHUNT_SCHEDULER"] = "off"  # tests drive backend.schedule.tick() themselves
 
 from backend.adapters.ats import detect_ats  # noqa: E402
 from backend.adapters.base import Posting  # noqa: E402
@@ -1361,3 +1362,131 @@ class ResearchOfficesTest(unittest.TestCase):
         self.assertEqual((db.get(Job, jobs[0].id).office_text, db.get(Job, jobs[0].id).office_source), ("North Sydney", "company"))
         self.assertEqual(db.get(Job, jobs[1].id).office_text, "Parramatta")
         db.delete(db.get(Workspace, ws.id)); db.commit(); db.close()
+
+
+class ScheduleTest(unittest.TestCase):
+    def test_preset_slots_and_holidays(self):
+        from datetime import datetime, timezone
+        from backend.schedule import ScheduleSchema, due_slot, next_run, skipped_holidays
+
+        s = ScheduleSchema()
+        self.assertEqual((s.times, s.days, s.state), (["10:00", "12:00", "14:00", "16:00"], [0, 1, 2, 3, 4], "NSW"))
+        utc = timezone.utc
+        # Fri 2 Oct 2026 16:30 Sydney: Mon 5 Oct is Labour Day, and daylight saving starts on the 4th.
+        fri = datetime(2026, 10, 2, 6, 30, tzinfo=utc)
+        self.assertEqual(next_run(s, fri).isoformat(), "2026-10-06T10:00:00+11:00")
+        self.assertEqual(next_run(s.model_copy(update={"skip_holidays": False}), fri).isoformat(), "2026-10-05T10:00:00+11:00")
+        # Christmas (Fri) and the Boxing Day substitute (Mon 28 Dec) are skipped.
+        self.assertEqual(next_run(s, datetime(2026, 12, 24, 6, 0, tzinfo=utc)).isoformat(), "2026-12-29T10:00:00+11:00")
+        self.assertEqual([h["date"] for h in skipped_holidays(s, fri.date())], ["2026-10-05", "2026-12-25", "2026-12-28"])
+        # Times are in the state's time zone: Perth is 3 hours behind Sydney in summer.
+        self.assertEqual(next_run(s.model_copy(update={"state": "WA"}), datetime(2026, 10, 6, 0, 0, tzinfo=utc)).isoformat(),
+                         "2026-10-06T10:00:00+08:00")
+
+        slot = due_slot(s, datetime(2026, 10, 2, 0, 20, tzinfo=utc), None)  # 10:20 Sydney
+        self.assertEqual(slot.isoformat(), "2026-10-02T10:00:00+10:00")
+        self.assertIsNone(due_slot(s, datetime(2026, 10, 2, 0, 20, tzinfo=utc), slot))  # already handled
+        self.assertIsNone(due_slot(s, datetime(2026, 10, 2, 1, 30, tzinfo=utc), None))  # 11:30: over an hour late
+        self.assertIsNone(due_slot(s, datetime(2026, 10, 3, 0, 20, tzinfo=utc), None))  # Saturday
+        self.assertIsNone(due_slot(s, datetime(2026, 10, 4, 23, 20, tzinfo=utc), None))  # Labour Day 10:20
+        self.assertIsNone(due_slot(s.model_copy(update={"enabled": False}), datetime(2026, 10, 2, 0, 20, tzinfo=utc), None))
+
+    def test_tick_runs_each_slot_once(self):
+        from datetime import datetime, timedelta, timezone
+        from unittest import mock
+        from backend import schedule
+        from backend.db import CompanySource, SearchRun, SearchSchedule, SessionLocal, UserProfile, Workspace
+
+        db = SessionLocal()
+        ws = Workspace(name="Scheduled")
+        db.add(ws); db.commit()
+        db.add(UserProfile(id=ws.id, titles=["Product Manager"], seek_enabled=True)); db.commit()
+        ws_id = ws.id
+        db.close()
+        started: list[int] = []
+
+        def fake_start(w):
+            started.append(w)
+            return {"id": 1000 + len(started)}
+
+        def tick(now):
+            # Only the new workspace counts here; the others belong to other tests.
+            with mock.patch.object(schedule, "nothing_to_search", side_effect=lambda d, w: w != ws_id):
+                return schedule.tick(fake_start, now)
+
+        ten20 = datetime(2026, 10, 2, 0, 20, tzinfo=timezone.utc)  # Fri 10:20 Sydney
+        try:
+            with mock.patch.object(schedule.tasks, "active_run", return_value={"id": 1}):
+                self.assertIsNone(tick(ten20))  # waits for the busy worker
+            self.assertEqual(started, [])
+            self.assertEqual(tick(ten20)["id"], 1001)
+            self.assertIsNone(tick(ten20 + timedelta(minutes=5)))  # 10:00 slot handled
+            self.assertEqual(started, [ws_id])
+            # Run search clicked at 12:01: the 12:00 slot is passed over.
+            db = SessionLocal()
+            db.add(SearchRun(workspace_id=ws_id, kind="search", state="done",
+                             started_at=datetime(2026, 10, 2, 2, 1)))
+            db.commit(); db.close()
+            self.assertIsNone(tick(datetime(2026, 10, 2, 2, 10, tzinfo=timezone.utc)))
+            self.assertEqual(started, [ws_id])
+            self.assertEqual(tick(datetime(2026, 10, 2, 4, 0, 30, tzinfo=timezone.utc))["id"], 1002)  # 14:00
+            db = SessionLocal()
+            self.assertEqual(db.get(SearchSchedule, ws_id).last_slot, datetime(2026, 10, 2, 4, 0))
+            db.close()
+        finally:
+            db = SessionLocal()
+            db.delete(db.get(UserProfile, ws_id)); db.delete(db.get(Workspace, ws_id)); db.commit()
+            self.assertIsNone(db.get(SearchSchedule, ws_id))  # cascades with the workspace
+            db.close()
+
+        # Nothing to search: SEEK without titles and no company sources.
+        db = SessionLocal()
+        ws = Workspace(name="Empty"); db.add(ws); db.commit()
+        self.assertTrue(schedule.nothing_to_search(db, ws.id))
+        db.add(CompanySource(workspace_id=ws.id, label="Acme", careers_url="https://acme.example/careers", enabled=True))
+        db.commit()
+        self.assertFalse(schedule.nothing_to_search(db, ws.id))
+        db.delete(ws); db.commit(); db.close()
+
+    def test_api(self):
+        from datetime import datetime, timezone
+        from unittest import mock
+        from fastapi.testclient import TestClient
+        from backend import schedule
+        from backend.app import app
+        from backend.db import SearchSchedule, SessionLocal
+
+        with TestClient(app) as c:
+            ws = c.post("/api/workspaces", json={"name": "Schedule API"}).json()["id"]
+            h = {"X-Workspace": str(ws)}
+            out = c.get("/api/schedule", headers=h).json()
+            self.assertTrue(out["enabled"] and out["skip_holidays"])
+            self.assertEqual((out["times"], out["days"], out["state"], out["timezone"]),
+                             (["10:00", "12:00", "14:00", "16:00"], [0, 1, 2, 3, 4], "NSW", "Australia/Sydney"))
+            self.assertEqual(len(out["states"]), 8)
+            self.assertTrue(out["nothing_to_search"])
+            self.assertIsNone(out["last_run"])
+            self.assertEqual(c.put("/api/schedule", headers=h, json={**out, "times": ["9am"]}).status_code, 422)
+            self.assertEqual(c.put("/api/schedule", headers=h, json={**out, "days": [7]}).status_code, 422)
+            self.assertEqual(c.put("/api/schedule", headers=h, json={**out, "state": "XX"}).status_code, 422)
+
+            # Switching the schedule on at Fri 10:30 Sydney doesn't run the 10:00 search there and then.
+            off = c.put("/api/schedule", headers=h, json={"enabled": False}).json()
+            self.assertIsNone(off["next_run"])
+            ten30 = datetime(2026, 10, 2, 0, 30, tzinfo=timezone.utc)
+            with mock.patch.object(schedule, "datetime", wraps=datetime) as dt:
+                dt.now.return_value = ten30
+                out = c.put("/api/schedule", headers=h, json={"enabled": True, "times": ["16:00", "10:00", "10:00"],
+                                                              "days": [4, 0, 4], "state": "VIC"}).json()
+            self.assertEqual((out["times"], out["days"], out["timezone"]), (["10:00", "16:00"], [0, 4], "Australia/Melbourne"))
+            db = SessionLocal()
+            self.assertEqual(db.get(SearchSchedule, ws).last_slot, datetime(2026, 10, 2, 0, 0))
+            db.close()
+            self.assertIsNone(schedule.due_slot(schedule.ScheduleSchema(**out), ten30,
+                                                datetime(2026, 10, 2, 0, 0, tzinfo=timezone.utc)))
+
+            copy = c.post("/api/workspaces", json={"name": "Schedule copy", "copy_from": ws}).json()["id"]
+            self.assertEqual(c.get("/api/schedule", headers={"X-Workspace": str(copy)}).json()["times"], ["10:00", "16:00"])
+            for w in (copy, ws):
+                c.delete(f"/api/workspaces/{w}")
+

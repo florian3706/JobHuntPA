@@ -68,6 +68,12 @@ salary, work modes and company careers pages), upload your CV under **Documents*
 where you can commute on the **Map**, then click **Run search** on the Jobs tab. Separate searches
 can live in their own **workspaces** (switcher at the top right).
 
+- **Scheduled searches** (Search setup > Scheduled searches): the search runs by itself at 10:00,
+  12:00, 14:00 and 16:00 Monday to Friday, skipping public holidays, including substitute days
+  (a holiday that falls on a weekend moves to the Monday). Change the times and days, or switch it
+  off, per workspace. Pick your state: it sets which public holidays apply and the time zone of the
+  times. Searches only run while JobHuntPA is running; a search missed because it was closed runs
+  if you start it within the hour. Each run scores the new jobs it finds, like **Run search**.
 - **Tracking and tidying**: set each job's status (to review, shortlisted, applied, interviewing,
   rejected, not interested). Tick jobs, or filter the list and tick **Select all shown**, to change
   status or **Hide** them in bulk (only jobs on screen are ever affected); hidden jobs stay hidden when a search finds them again, aren't scored or
@@ -199,6 +205,9 @@ tag, so the tag must exist on GitHub.
 ## How a search run works
 
 `Run search` starts a background run (`backend/tasks.py`); the page polls its progress.
+`backend/schedule.py` starts the same run at each workspace's scheduled times (public holidays
+from the `holidays` package); runs never overlap, so a due search waits up to an hour for a
+busy one.
 
 1. **Listing** (`backend/adapters/`): SEEK search pages, then each enabled company source. A
    source URL is resolved in order: an APSJobs search URL (`apsjobs.py`); a known ATS board

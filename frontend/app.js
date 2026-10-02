@@ -17,6 +17,10 @@ const state = {
   jobMarkers: new Map(), // job id -> its map marker
   mapMode: 'jobs', // 'jobs' (read-only) | 'pins' (edit pins)
   pollTimer: null,
+  watching: false, // a run is being followed by watchRun
+  watchToken: 0, // bumped by every watchRun and workspace switch, so an older poll loop stops
+  lastRun: null, // { ws, id } of the newest run this page has shown
+  schedule: null, // this workspace's scheduled-search settings, as the server last returned them
   companies: {}, // company_key -> profile
   ws: 1, // current workspace id
   workspaces: [],
@@ -48,6 +52,7 @@ function initTabs() {
     $$('.tab').forEach((b) => { const on = b.dataset.tab === name; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
     $$('.tab-panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
     if (name === 'map') requestAnimationFrame(() => { initMap(); state.map?.invalidateSize(); drawJobMarkers(); });
+    if ((name === 'search' || name === 'jobs') && state.schedule) loadSchedule({ controls: false });
     history.replaceState(null, '', `#${name}`);
   };
   $$('.tab').forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
@@ -407,6 +412,7 @@ function initJobs() {
 
 /* ================= BACKGROUND RUNS ================= */
 const RUN_LABEL = { search: 'Search', score: 'Scoring', research: 'Company research' };
+const runLabel = (run, fallback) => (run.scheduled ? 'Scheduled search' : RUN_LABEL[run.kind] || fallback);
 async function startRun(url, body) {
   try {
     const run = await api(url, { method: 'POST', body: JSON.stringify(body) });
@@ -417,16 +423,20 @@ async function startRun(url, body) {
 
 function watchRun(id) {
   clearTimeout(state.pollTimer);
+  const token = ++state.watchToken;
+  state.watching = true;
   ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = true; });
   $('#run-progress').hidden = false;
   const tick = async () => {
     let run;
-    try { run = await api(`/api/runs/${id}`); } catch (e) { state.pollTimer = setTimeout(tick, 3000); return; }
+    try { run = await api(`/api/runs/${id}`); } catch (e) { if (token === state.watchToken) state.pollTimer = setTimeout(tick, 3000); return; }
+    if (token !== state.watchToken) return; // watching another run now, or another workspace
+    state.lastRun = { ws: state.ws, id: run.id };
     const p = run.progress || {};
     const pct = p.total ? Math.round((100 * (p.done || 0)) / p.total) : null;
     $('#run-progress .progress-bar').style.width = pct === null ? '100%' : `${pct}%`;
     $('#run-progress').classList.toggle('indeterminate', pct === null);
-    $('#run-status').textContent = `${RUN_LABEL[run.kind] || 'Working'}: ${run.stage || run.state}…`;
+    $('#run-status').textContent = `${runLabel(run, 'Working')}: ${run.stage || run.state}…`;
     if (run.state === 'queued' || run.state === 'running') { state.pollTimer = setTimeout(tick, 1200); return; }
     finishRun(run);
   };
@@ -434,11 +444,13 @@ function watchRun(id) {
 }
 
 function finishRun(run) {
+  state.watching = false;
   ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = false; });
   $('#run-progress').hidden = true;
   if (run.state === 'failed') {
-    $('#run-status').textContent = `Run failed: ${run.error}`;
-    toast(`Run failed: ${run.error}`, 'err', 10000);
+    const what = run.scheduled ? 'Scheduled search' : 'Run';
+    $('#run-status').textContent = `${what} failed: ${run.error}`;
+    toast(`${what} failed: ${run.error}`, 'err', 10000);
   } else {
     $('#run-status').textContent = runSummaryText(run);
     const sc = run.summary?.scoring || run.summary?.research;
@@ -451,9 +463,14 @@ function finishRun(run) {
   loadJobs();
   loadScorerStatus();
   loadSources();
+  loadSchedule({ controls: false });
 }
 
 function runSummaryText(run) {
+  return `${runLabel(run, 'Run')} finished ${fmtDate(run.finished_at)}: ${runSummaryBits(run)}`;
+}
+
+function runSummaryBits(run) {
   const bits = [];
   const t = run.summary?.search?.totals;
   if (t) bits.push(`${t.listed} listed, ${t.new} new, ${t.kept} kept, ${t.excluded} excluded${t.closed ? `, ${t.closed} closed` : ''}${t.details_deferred ? `, ${t.details_deferred} descriptions deferred to next run` : ''}`);
@@ -475,7 +492,7 @@ function runSummaryText(run) {
     const found = of.from_ads + of.from_companies;
     bits.push(`offices found for ${found} job${found === 1 ? '' : 's'}${of.unknown ? `, ${of.unknown} still unknown${of.recruiters ? ` (${of.recruiters} recruiter ads: your call)` : ''}` : ''}`);
   }
-  return `${RUN_LABEL[run.kind] || 'Run'} finished ${fmtDate(run.finished_at)}: ${bits.join(' · ')}`;
+  return bits.join(' · ');
 }
 
 function renderRunReport(run) {
@@ -493,13 +510,32 @@ function renderRunReport(run) {
 }
 
 async function loadLatestRun() {
+  const ws = state.ws;
   try {
     const run = await api('/api/runs/latest');
+    if (ws !== state.ws) return; // switched workspace meanwhile
+    state.lastRun = { ws, id: run?.id ?? null };
     if (!run) return;
     if (run.state === 'queued' || run.state === 'running') { watchRun(run.id); return; }
-    $('#run-status').textContent = run.state === 'failed' ? `Last run failed: ${run.error}` : runSummaryText(run);
+    $('#run-status').textContent = run.state === 'failed' ? `Last ${run.scheduled ? 'scheduled search' : 'run'} failed: ${run.error}` : runSummaryText(run);
     renderRunReport(run);
   } catch { /* first launch */ }
+}
+
+/* A scheduled search starts without this page, so look for one now and then (only while nothing is
+   being watched and the tab is in view). A run that started and finished unseen refreshes the page too. */
+const IDLE_POLL_MS = 60000;
+async function pollForScheduledRun() {
+  if (state.watching || document.visibilityState !== 'visible') return;
+  if (state.schedule?.next_run && new Date(state.schedule.next_run) < Date.now()) loadSchedule({ controls: false });
+  const ws = state.ws;
+  let run;
+  try { run = await api('/api/runs/latest'); } catch { return; } // busy or restarting: next minute
+  if (ws !== state.ws || state.watching || !run) return;
+  const seen = state.lastRun;
+  state.lastRun = { ws, id: run.id };
+  if (run.state === 'queued' || run.state === 'running') watchRun(run.id);
+  else if (seen?.ws === ws && seen.id !== run.id) finishRun(run);
 }
 
 /* ================= COMPANY PROFILES ================= */
@@ -1109,6 +1145,7 @@ const saveSetup = debounce(async () => {
     state.profile = { ...state.profile, ...profile };
     renderSoftenControl();
     if (changed || slack !== state.officeSlack) loadJobs();
+    loadSchedule({ controls: false }); // titles or SEEK may have changed whether there is anything to search
   } catch (e) {
     status.textContent = 'Save failed';
     toast(`Saving search setup failed: ${e.message}`, 'err');
@@ -1155,6 +1192,157 @@ async function importPages(e) {
   status.textContent = `Imported ${total.imported} job(s): ${total.new} new, ${total.kept} pass your filters`;
   $('#import-input').value = '';
   loadJobs();
+}
+
+/* ---------- scheduled searches ---------- */
+// The schedule has its own endpoint (and needs no refilter), so it is saved apart from saveSetup().
+const SCHEDULE_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function scheduleTimes() { return $$('#sched-times .tag').map((t) => t.dataset.value); }
+
+function renderScheduleTimes(times) {
+  const sorted = [...new Set(times)].sort(); // "HH:MM" sorts as time
+  $('#sched-times').innerHTML = sorted.length
+    ? sorted.map((t) => `<span class="tag" data-value="${esc(t)}"><span>${esc(t)}</span><button type="button" aria-label="Remove ${esc(t)}">×</button></span>`).join('')
+    : '<span class="muted">No times yet</span>';
+}
+
+function renderScheduleControls(sch) {
+  $('#sched-enabled').checked = sch.enabled;
+  renderScheduleTimes(sch.times);
+  $$('.sched-day').forEach((cb) => { cb.checked = sch.days.includes(Number(cb.value)); });
+  $('#sched-holidays').checked = sch.skip_holidays;
+  $('#sched-state').innerHTML = sch.states.map((st) => `<option value="${esc(st.code)}">${esc(st.name)} (${esc(st.code)})</option>`).join('');
+  $('#sched-state').value = sch.state;
+}
+
+function dateParts(opts, date) {
+  const parts = new Intl.DateTimeFormat('en-AU', opts).formatToParts(date);
+  return Object.fromEntries(parts.map((x) => [x.type, x.value]));
+}
+
+// "Tue 6 Oct, 10:00" in the schedule's own time zone (the state's), whatever zone this browser is in.
+function fmtScheduleTime(iso, timeZone) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  const opts = { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+  let p;
+  try { p = dateParts({ ...opts, timeZone }, d); } catch { p = dateParts(opts, d); } // unknown zone name
+  return `${p.weekday} ${p.day} ${p.month}, ${p.hour}:${p.minute}`;
+}
+
+// A public holiday's date (no time or zone) as "Mon 5 Oct".
+function fmtHolidayDate(ymd) {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return String(ymd);
+  const p = dateParts({ weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }, d);
+  return `${p.weekday} ${p.day} ${p.month}`;
+}
+
+const zoneLabel = (tz) => `${String(tz || '').split('/').pop().replace(/_/g, ' ')} time`;
+
+function scheduledRunLine(run) {
+  if (!run) return '<p class="muted">Last scheduled search: none yet.</p>';
+  if (run.state === 'queued' || run.state === 'running') return '<p class="muted">Last scheduled search: running now…</p>';
+  const when = fmtDate(run.finished_at || run.started_at);
+  if (run.state === 'failed') return `<p class="muted">Last scheduled search: ${esc(when)} · <span class="err-text">failed: ${esc(run.error || 'unknown error')}</span></p>`;
+  return `<p class="muted">Last scheduled search: ${esc([when, runSummaryBits(run)].filter(Boolean).join(' · '))}</p>`;
+}
+
+// The status lines under the schedule settings, and the "next search" note on the Jobs tab.
+function renderScheduleStatus(sch) {
+  const lines = [];
+  if (!sch.enabled) lines.push('<p class="muted">Automatic searches are off.</p>');
+  else if (!sch.times.length || !sch.days.length) lines.push('<p class="muted">Add at least one time and one day: nothing is scheduled yet.</p>');
+  else if (sch.next_run) lines.push(`<p>Next search: <strong>${esc(fmtScheduleTime(sch.next_run, sch.timezone))}</strong> <span class="muted">(${esc(zoneLabel(sch.timezone))})</span></p>`);
+  else lines.push('<p class="muted">No upcoming search found.</p>');
+  if (sch.enabled && sch.skipped_holidays?.length) {
+    lines.push(`<p class="muted">Skipping: ${sch.skipped_holidays.map((h) => `${esc(h.name)} (${esc(fmtHolidayDate(h.date))})`).join(', ')}</p>`);
+  }
+  lines.push(scheduledRunLine(sch.last_run));
+  if (sch.nothing_to_search) lines.push('<p class="sched-warn">Nothing to search yet, so scheduled searches are skipped. Turn on SEEK and add target job titles, or add a company source.</p>');
+  $('#sched-status').innerHTML = lines.join('');
+
+  const note = $('#next-scheduled');
+  const show = sch.enabled && sch.next_run && !sch.nothing_to_search;
+  note.hidden = !show;
+  if (show) {
+    const away = Intl.DateTimeFormat().resolvedOptions().timeZone !== sch.timezone; // name the zone only when it isn't this browser's
+    note.textContent = `Next scheduled search: ${fmtScheduleTime(sch.next_run, sch.timezone)}${away ? ` (${zoneLabel(sch.timezone)})` : ''}`;
+  }
+}
+
+// controls: also fill in the settings (when loading); false refreshes only the status, so edits in progress stay.
+async function loadSchedule({ controls = true } = {}) {
+  const ws = state.ws;
+  const first = !state.schedule;
+  try {
+    const sch = await api('/api/schedule');
+    if (ws !== state.ws) return; // switched workspace meanwhile
+    state.schedule = sch;
+    if (controls || first) renderScheduleControls(sch);
+    renderScheduleStatus(sch);
+  } catch (e) {
+    if (!controls) return; // a failed status refresh keeps the last status
+    $('#sched-status').innerHTML = `<p class="err-text">Could not load the schedule: ${esc(e.message)}</p>`;
+    $('#next-scheduled').hidden = true;
+  }
+}
+
+function readSchedule() {
+  return {
+    enabled: $('#sched-enabled').checked,
+    times: scheduleTimes(),
+    days: $$('.sched-day:checked').map((cb) => Number(cb.value)),
+    skip_holidays: $('#sched-holidays').checked,
+    state: $('#sched-state').value,
+  };
+}
+
+// The settings are captured when edited, so a quick workspace switch can't send them to the wrong workspace.
+let schedulePending = null;
+const flushSchedule = debounce(async () => {
+  const pending = schedulePending;
+  schedulePending = null;
+  if (!pending) return;
+  const status = $('#search-save-status');
+  status.textContent = 'Saving…';
+  try {
+    const sch = await api('/api/schedule', { method: 'PUT', headers: { 'X-Workspace': String(pending.ws) }, body: JSON.stringify(pending.body) });
+    status.textContent = `Saved ${new Date().toLocaleTimeString()}`;
+    if (pending.ws === state.ws) { state.schedule = sch; renderScheduleStatus(sch); }
+  } catch (e) {
+    status.textContent = 'Save failed';
+    toast(`Saving the schedule failed: ${e.message}`, 'err');
+  }
+}, 500);
+
+function scheduleChanged() {
+  if (!state.schedule) { toast("The schedule hasn't loaded, so it can't be saved.", 'err'); return; }
+  schedulePending = { ws: state.ws, body: readSchedule() };
+  flushSchedule();
+}
+
+function addScheduleTime() {
+  const time = $('#sched-time-input').value;
+  if (!SCHEDULE_TIME_RE.test(time)) { toast('Pick a time to add first.', 'err', 3000); return; }
+  const times = scheduleTimes();
+  if (times.includes(time)) return;
+  renderScheduleTimes([...times, time]);
+  scheduleChanged();
+}
+
+function initSchedule() {
+  ['#sched-enabled', '#sched-holidays', '#sched-state', '#sched-days'].forEach((s) => $(s).addEventListener('change', scheduleChanged));
+  $('#sched-time-add').addEventListener('click', addScheduleTime);
+  $('#sched-time-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addScheduleTime(); } });
+  $('#sched-times').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    btn.closest('.tag').remove();
+    renderScheduleTimes(scheduleTimes());
+    scheduleChanged();
+  });
 }
 
 /* ---------- sources ---------- */
@@ -1204,17 +1392,18 @@ async function addSource() {
     $('#source-url').value = '';
     $('#source-label').value = '';
     loadSources();
+    loadSchedule({ controls: false });
   } catch (e) { toast(`Add source failed: ${e.message}`, 'err'); }
 }
 
 async function patchSource(id, body) {
-  try { await api(`/api/sources/${id}`, { method: 'PATCH', body: JSON.stringify(body) }); toast('Source updated', 'ok', 2000); }
+  try { await api(`/api/sources/${id}`, { method: 'PATCH', body: JSON.stringify(body) }); toast('Source updated', 'ok', 2000); loadSchedule({ controls: false }); }
   catch (e) { toast(`Update failed: ${e.message}`, 'err'); loadSources(); }
 }
 
 async function deleteSource(src) {
   if (!confirm(`Delete source "${src.label}"? Its jobs stay in the list.`)) return;
-  try { await api(`/api/sources/${src.id}`, { method: 'DELETE' }); loadSources(); }
+  try { await api(`/api/sources/${src.id}`, { method: 'DELETE' }); loadSources(); loadSchedule({ controls: false }); }
   catch (e) { toast(`Delete failed: ${e.message}`, 'err'); }
 }
 
@@ -1589,6 +1778,10 @@ async function switchWorkspace(id) {
   state.officeSlack = 0;
   try { localStorage.setItem('jobhunt.ws', String(state.ws)); } catch { /* private mode */ }
   clearTimeout(state.pollTimer);
+  state.watchToken++; // stops the old workspace's progress polling
+  state.watching = false;
+  state.lastRun = null;
+  state.schedule = null;
   state.selected.clear();
   state.details.clear();
   state.titleSuggestions = [];
@@ -1610,6 +1803,7 @@ function loadAll() {
   loadCompanies();
   loadJobs();
   loadSetup();
+  loadSchedule();
   loadSources();
   loadDocs();
   loadScorerStatus();
@@ -1680,6 +1874,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initTabs();
   initJobs();
   initSetup();
+  initSchedule();
   initDocs();
   initChat();
   initThemePicker($('#theme-select'));
@@ -1694,4 +1889,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#modal').hidden = true; });
   loadAll();
+  setInterval(pollForScheduledRun, IDLE_POLL_MS);
+  document.addEventListener('visibilitychange', pollForScheduledRun);
 });

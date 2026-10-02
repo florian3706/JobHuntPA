@@ -11,5 +11,7 @@ beautifulsoup4>=4.12,<5
 lxml>=5,<7
 # Renders JavaScript-only careers pages (setup also downloads its Chromium).
 playwright>=1.45,<2
-# Time-zone data for commute times (Linux and macOS have it built in; Windows doesn't).
+# Public holidays (incl. substitute days) per Australian state, for scheduled searches.
+holidays>=0.105,<1
+# Time-zone data for commute times and scheduled searches (Linux and macOS have it built in; Windows doesn't).
 tzdata>=2024.1; sys_platform == "win32"

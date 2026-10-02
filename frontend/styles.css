@@ -415,7 +415,7 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; paddi
 
 /* Office on job cards */
 input[type="time"] {
-  background: var(--field); color: var(--text); color-scheme: dark;
+  background: var(--field); color: var(--text);
   border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 14px;
 }
 .job-office { font-size: 13px; }
@@ -495,3 +495,15 @@ a.btn { text-decoration: none; display: inline-block; }
 /* Theme picker */
 .theme-picker { display: flex; gap: 6px; align-items: center; }
 .theme-picker select { max-width: 220px; font-size: 13px; padding: 5px 8px; }
+
+/* Scheduled searches (Search setup tab) */
+.sched-times { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-height: 28px; }
+.sched-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sched-enable { margin-bottom: 14px; }
+fieldset#sched-days { flex-direction: row; align-content: flex-start; } /* the days sit in a row, not a column like other option lists */
+.sched-status { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; overflow-wrap: anywhere; }
+.sched-status p { margin: 0; }
+.sched-warn {
+  padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent); border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}

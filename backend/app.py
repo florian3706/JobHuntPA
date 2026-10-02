@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import tasks
+from backend import schedule, tasks
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
@@ -46,7 +46,9 @@ Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejecte
 async def lifespan(app: FastAPI):
     init_db()
     tasks.mark_interrupted()
+    schedule.start_scheduler(lambda ws: start_search_run(ws, scheduled=True))
     yield
+    schedule.stop_scheduler()
 
 
 app = FastAPI(title="JobHuntPA", lifespan=lifespan)
@@ -62,6 +64,7 @@ app.include_router(chat_router)
 app.include_router(offices_router)
 app.include_router(commute_router)
 app.include_router(commute_status_router)
+app.include_router(schedule.router)
 
 
 @app.get("/api/health")
@@ -262,8 +265,9 @@ def _score(ws: int, mode: str, progress, office_slack: int = 0) -> dict:
         return {"aborted": str(exc)}
 
 
-@app.post("/api/search/run")
-def start_search(ws: int = Depends(current_workspace)):
+def start_search_run(ws: int, scheduled: bool = False) -> dict:
+    """Run search: fetch new jobs, merge duplicate ads, score what's new.
+    Also started by backend.schedule at the scheduled times."""
     from backend.pipeline import run_search
     from backend.scorer import config_problem
 
@@ -277,7 +281,12 @@ def start_search(ws: int = Depends(current_workspace)):
         summary["scoring"] = {"skipped": config_problem()} if config_problem() else _score(ws, "pending", progress)
         return summary
 
-    return tasks.start("search", job, ws)
+    return tasks.start("search", job, ws, scheduled=scheduled)
+
+
+@app.post("/api/search/run")
+def start_search(ws: int = Depends(current_workspace)):
+    return start_search_run(ws)
 
 
 class ScoreRunRequest(BaseModel):

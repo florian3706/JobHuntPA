@@ -61,6 +61,7 @@
           <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
           <span id="run-status" class="muted" aria-live="polite"></span>
         </div>
+        <div id="next-scheduled" class="muted" hidden></div>
         <div id="run-progress" class="progress" hidden><div class="progress-bar"></div></div>
         <details id="run-report" class="run-report" hidden>
           <summary>Last run: per-source results</summary>
@@ -222,6 +223,41 @@
           <button class="btn" type="submit">Import</button>
           <span id="import-status" class="muted" aria-live="polite"></span>
         </form>
+      </div>
+
+      <div id="schedule-card" class="card form-card">
+        <h3>Scheduled searches</h3>
+        <p class="hint">JobHuntPA runs this search by itself at set times while it is running; a search missed because it was closed runs if you start it within the hour.
+          Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.</p>
+        <label class="check sched-enable"><input type="checkbox" id="sched-enabled" /> Run searches automatically</label>
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="sched-time-input">Run at</label>
+            <div id="sched-times" class="sched-times"></div>
+            <div class="sched-add">
+              <input id="sched-time-input" type="time" value="09:00" />
+              <button id="sched-time-add" class="btn btn-sm" type="button">Add time</button>
+            </div>
+          </div>
+          <fieldset id="sched-days" class="form-group">
+            <legend>On these days</legend>
+            <label class="check"><input type="checkbox" class="sched-day" value="0" /> Mon</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="1" /> Tue</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="2" /> Wed</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="3" /> Thu</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="4" /> Fri</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="5" /> Sat</label>
+            <label class="check"><input type="checkbox" class="sched-day" value="6" /> Sun</label>
+          </fieldset>
+          <fieldset class="form-group">
+            <legend>Public holidays</legend>
+            <label class="check"><input type="checkbox" id="sched-holidays" /> Skip public holidays</label>
+            <select id="sched-state" aria-label="State or territory"></select>
+            <small class="hint">The state picks the holiday calendar and also the time zone the times above are in.
+              Substitute days, such as a weekend holiday moved to the Monday, are skipped too.</small>
+          </fieldset>
+        </div>
+        <div id="sched-status" class="sched-status" aria-live="polite"></div>
       </div>
 
       <div class="card form-card">

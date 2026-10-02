@@ -418,6 +418,7 @@ class SearchRun(Base):
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = _workspace_fk()
     kind = Column(String, nullable=False, default="search")  # search | score
+    scheduled = Column(Boolean, nullable=False, default=False, server_default="0")  # started by backend.schedule
     state = Column(String, nullable=False, default="queued")  # queued | running | done | failed
     stage = Column(String, nullable=True)
     progress_json = Column(Text, nullable=False, default="{}")
@@ -431,6 +432,7 @@ class SearchRun(Base):
             "id": self.id,
             "workspace_id": self.workspace_id,
             "kind": self.kind,
+            "scheduled": bool(self.scheduled),
             "state": self.state,
             "stage": self.stage,
             "progress": json.loads(self.progress_json or "{}"),
@@ -439,6 +441,21 @@ class SearchRun(Base):
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
         }
+
+
+class SearchSchedule(Base):
+    """One row per workspace (id = workspace id): when searches run by
+    themselves (backend.schedule). No row means the preset schedule."""
+
+    __tablename__ = "search_schedules"
+
+    id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    times = Column(JSON, nullable=True)             # ["10:00", ...] local time in the state's time zone
+    days = Column(JSON, nullable=True)              # weekdays, Monday = 0
+    skip_holidays = Column(Boolean, nullable=False, default=True, server_default="1")
+    state = Column(String, nullable=False, default="NSW", server_default="NSW")  # holidays + time zone
+    last_slot = Column(DateTime, nullable=True)     # UTC time of the last slot run or passed over
 
 
 class HttpCache(Base):
