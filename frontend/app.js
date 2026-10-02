@@ -8,6 +8,8 @@ const state = {
   jobsStatus: 'loading', // 'loading' (nothing to show yet) | 'ready' | 'error' (first load failed)
   jobsRefreshing: false, // a reload is on its way; the list on screen stays up meanwhile
   jobsToken: 0, // bumped by every loadJobs, so only the newest answer is shown
+  loadedOmit: 'excluded,hidden', // what the loaded list left out ("Show excluded"/"Show hidden" fetch them)
+  omittedCount: 0, // how many jobs it left out
   details: new Map(), // job id -> full job (with description)
   filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
   selected: new Set(),
@@ -73,16 +75,25 @@ const slackQuery = () => (state.officeSlack ? `?office_slack=${state.officeSlack
 
 // A big list takes a while (the Pi, a search running): the first load shows a loading screen, and a
 // reload keeps the list up and says it's updating. An answer for an older request, or for the
-// workspace you've just left, is dropped.
+// workspace you've just left, is dropped. Excluded and hidden jobs (usually most of them) are only
+// fetched while "Show excluded" / "Show hidden" is ticked; otherwise only their number comes along.
+const omitQuery = () => [!state.filter.showExcluded && 'excluded', !state.filter.showHidden && 'hidden'].filter(Boolean).join(',');
+
 async function loadJobs() {
   const token = ++state.jobsToken;
   const ws = state.ws;
+  const omit = omitQuery();
   state.jobsRefreshing = state.jobsStatus === 'ready';
   if (state.jobsStatus === 'error') state.jobsStatus = 'loading';
   renderJobs();
-  let jobs;
+  let jobs, omittedCount;
   try {
-    jobs = await api(`/api/jobs${slackQuery()}`);
+    const q = new URLSearchParams();
+    if (omit) q.set('omit', omit);
+    if (state.officeSlack) q.set('office_slack', state.officeSlack);
+    const res = await apiResponse(`/api/jobs?${q}`);
+    jobs = res.data;
+    omittedCount = Number(res.headers.get('X-Omitted-Count')) || 0;
   } catch (e) {
     if (token !== state.jobsToken || ws !== state.ws) return;
     state.jobsRefreshing = false;
@@ -94,6 +105,8 @@ async function loadJobs() {
   }
   if (token !== state.jobsToken || ws !== state.ws) return;
   state.jobs = jobs;
+  state.loadedOmit = omit;
+  state.omittedCount = omittedCount;
   state.jobsStatus = 'ready';
   state.jobsRefreshing = false;
   const ids = new Set(state.jobs.map((j) => j.id));
@@ -202,7 +215,7 @@ function renderJobs() {
   state.selected.forEach((id) => { if (!shown.has(id)) state.selected.delete(id); });
   list.innerHTML = '';
   $('#jobs-empty').hidden = jobs.length !== 0;
-  const hidden = state.jobs.length - jobs.length;
+  const hidden = state.jobs.length - jobs.length + state.omittedCount;
   $('#jobs-count').textContent = `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`;
   jobs.forEach((job) => list.appendChild(renderJobCard(job)));
   renderBulkBar();
@@ -419,9 +432,16 @@ function initJobs() {
   $('#filter-mode').addEventListener('change', (e) => { state.filter.mode = e.target.value; renderJobs(); });
   $('#sort-by').addEventListener('change', (e) => { state.filter.sort = e.target.value; renderJobs(); });
   $('#filter-max-dist').addEventListener('input', (e) => { const v = e.target.value === '' ? null : Number(e.target.value); state.filter.maxDist = Number.isFinite(v) ? v : null; renderJobs(); });
-  $('#filter-show-excluded').addEventListener('change', (e) => { state.filter.showExcluded = e.target.checked; renderJobs(); });
+  // Excluded and hidden jobs are fetched on demand (see loadJobs).
+  $('#filter-show-excluded').addEventListener('change', (e) => {
+    state.filter.showExcluded = e.target.checked;
+    if (e.target.checked && state.loadedOmit.includes('excluded')) loadJobs(); else renderJobs();
+  });
   $('#filter-show-closed').addEventListener('change', (e) => { state.filter.showClosed = e.target.checked; renderJobs(); });
-  $('#filter-show-hidden').addEventListener('change', (e) => { state.filter.showHidden = e.target.checked; renderJobs(); });
+  $('#filter-show-hidden').addEventListener('change', (e) => {
+    state.filter.showHidden = e.target.checked;
+    if (e.target.checked && state.loadedOmit.includes('hidden')) loadJobs(); else renderJobs();
+  });
   $('#bulk-hide').addEventListener('click', () => {
     const ids = Array.from(state.selected);
     if (ids.length > 20 && !confirm(`Hide ${ids.length} jobs?`)) return;
@@ -1999,6 +2019,8 @@ async function switchWorkspace(id) {
   state.jobs = []; // the old workspace's jobs must not show under the new one's name
   state.jobsStatus = 'loading';
   state.jobsRefreshing = false;
+  state.loadedOmit = 'excluded,hidden';
+  state.omittedCount = 0;
   state.titleSuggestions = [];
   $('#titles-list').innerHTML = '';
   $('#titles-actions').hidden = true;

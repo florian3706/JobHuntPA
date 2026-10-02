@@ -25,6 +25,11 @@ function toast(msg, kind = '', ms = 5000) {
 }
 
 async function api(url, opts = {}) {
+  return (await apiResponse(url, opts)).data;
+}
+
+// Like api(), plus the response headers ({ data, headers }).
+async function apiResponse(url, opts = {}) {
   const isForm = opts.body instanceof FormData;
   const headers = { 'X-Workspace': String(currentWorkspace()), ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...(opts.headers || {}) };
   const res = await fetch(url, { ...opts, headers });
@@ -35,7 +40,7 @@ async function api(url, opts = {}) {
     const detail = data && typeof data === 'object' && data.detail ? data.detail : text;
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
   }
-  return data;
+  return { data, headers: res.headers };
 }
 
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };

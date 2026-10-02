@@ -15,7 +15,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from backend import config  # noqa: F401  (loads .env first)
 from backend import schedule, tasks
@@ -168,11 +168,15 @@ def _with_copies(out: dict, copies: list[Job]) -> dict:
 
 
 @app.get("/api/jobs")
-def list_jobs(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
-              ws: int = Depends(current_workspace)):
+def list_jobs(office_slack: int = OfficeSlack, omit: str = Query("", pattern=r"^((excluded|hidden)(,(excluded|hidden))?)?$"),
+              db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    """The workspace's jobs (merged copies under ``also_on``). Most stored jobs are excluded by the
+    filters or hidden by the user, and only shown on request, so the Jobs tab leaves them out
+    (``omit=excluded,hidden``) until "Show excluded" / "Show hidden" is ticked. ``X-Omitted-Count``
+    says how many were left out. A job the office-days what-if lets through isn't excluded."""
     phash = _profile_hash(db, ws)
     rows = (db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id)
-            .filter(Job.workspace_id == ws).all())
+            .options(defer(Job.description)).filter(Job.workspace_id == ws).all())
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
                .filter(Job.workspace_id == ws)}
     softened = softened_job_ids(db, ws, office_slack)
@@ -181,13 +185,21 @@ def list_jobs(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
     for job, _fit in rows:
         if job.duplicate_of:
             copies.setdefault(job.duplicate_of, []).append(job)
+    leave_out = set(filter(None, omit.split(",")))
+
+    def omitted(job: Job) -> bool:
+        return (("excluded" in leave_out and bool(job.excluded_reason) and job.id not in softened)
+                or ("hidden" in leave_out and bool(job.hidden)))
+    everything = [(job, fit) for job, fit in rows if not job.duplicate_of]
+    listed = [(job, fit) for job, fit in everything if not omitted(job)]
     # Plain JSON values already: skip FastAPI's per-field encoder, which took most of the time for
     # thousands of jobs on a Raspberry Pi.
     return JSONResponse([_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
                                                          recruiter=looks_like_recruiter(job.company or "", profiles)),
                                               softened),
                                       copies.get(job.id, []))
-                         for job, fit in rows if not job.duplicate_of])
+                         for job, fit in listed],
+                        headers={"X-Omitted-Count": str(len(everything) - len(listed))})
 
 
 @app.get("/api/jobs/{job_id}")

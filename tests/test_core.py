@@ -1877,3 +1877,46 @@ class ScheduleTest(unittest.TestCase):
             for w in (copy, ws):
                 c.delete(f"/api/workspaces/{w}")
 
+
+
+class JobListExcludedTest(unittest.TestCase):
+    def test_omit_only_and_count(self):
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        from backend.db import Job, SessionLocal
+
+        with TestClient(app) as c:
+            ws = c.post("/api/workspaces", json={"name": "Excluded list"}).json()["id"]
+            h = {"X-Workspace": str(ws)}
+            c.put("/api/profile", headers=h, json={"max_office_days": 2})
+            db = SessionLocal()
+            kept = Job(workspace_id=ws, url="https://ex.example/1", title="Kept", status="to_review", detail_status="full")
+            out = Job(workspace_id=ws, url="https://ex.example/2", title="Out", status="to_review", detail_status="full",
+                      excluded_reason="salary below floor ($90,000 < $120,000)")
+            hybrid = Job(workspace_id=ws, url="https://ex.example/3", title="Hybrid", status="to_review", detail_status="full",
+                         work_mode="hybrid", office_days=3,
+                         excluded_reason="hybrid role needs 3 office days a week (your max is 2)")
+            db.add_all([kept, out, hybrid]); db.commit()
+            db.add(Job(workspace_id=ws, url="https://ex.example/4", title="Copy", status="to_review", detail_status="full",
+                       excluded_reason="salary below floor", duplicate_of=kept.id))
+            db.commit(); db.close()
+
+            db = SessionLocal()
+            db.add(Job(workspace_id=ws, url="https://ex.example/5", title="Hidden", status="to_review",
+                       detail_status="full", hidden=True))
+            db.commit(); db.close()
+
+            def titles(query):
+                r = c.get(f"/api/jobs{query}", headers=h)
+                return {j["title"] for j in r.json()}, r.headers["X-Omitted-Count"]
+            self.assertEqual(titles(""), ({"Kept", "Out", "Hybrid", "Hidden"}, "0"))  # merged copies are never listed
+            self.assertEqual(titles("?omit=excluded"), ({"Kept", "Hidden"}, "2"))
+            self.assertEqual(titles("?omit=hidden"), ({"Kept", "Out", "Hybrid"}, "1"))
+            self.assertEqual(titles("?omit=excluded,hidden"), ({"Kept"}, "3"))
+            # The office-days what-if lets the hybrid job through: it isn't excluded then.
+            self.assertEqual(titles("?omit=excluded,hidden&office_slack=1"), ({"Kept", "Hybrid"}, "2"))
+            listed = c.get("/api/jobs?omit=excluded,hidden", headers=h).json()
+            self.assertEqual([a["title"] for a in listed[0]["also_on"]], ["Copy"])
+            for bad in ("closed", "excluded,closed", "excluded,"):
+                self.assertEqual(c.get(f"/api/jobs?omit={bad}", headers=h).status_code, 422, bad)
+            c.delete(f"/api/workspaces/{ws}")

@@ -287,6 +287,7 @@ def shot_map(s: Shooter) -> None:
     page.goto(f"{s.base}/#jobs")
     s.wait_dashboard(page)
     page.check("#filter-show-excluded")          # grey dots for the jobs the criteria exclude
+    page.wait_for_function("() => !state.loadedOmit.includes('excluded') && !state.jobsRefreshing")  # fetched on demand
     page.click('.tab[data-tab="map"]')
     page.wait_for_selector(".map-job-row")
     s.wait_tiles(page)
