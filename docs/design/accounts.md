@@ -776,3 +776,13 @@ Every phase must leave `python3 -m unittest discover -s tests -t .` passing, kee
 - /home/florian/Projects/JobHuntPA/.github/workflows/ci.yml
 
 New modules: `backend/crypto.py`, `backend/keys.py`, `backend/sessions.py`, `backend/auth.py`, `backend/account.py`, `backend/admin.py`, `backend/access.py`, `backend/billing.py`, `backend/mailer.py`, `backend/email_templates.py`, `backend/digest.py`, `backend/migrate_encryption.py`, `backend/ratelimit.py` and `tests/helpers.py`. New pages under `frontend/`: `login.html`, `signup.html`, `first-run.html`, `forgot.html`, `reset.html`, `welcome.html`, `admin.html`, `billing.html` and `unsubscribe.html`.
+
+## 13. The user's answers to section 12 (2026-10-05)
+1. **Email resets for background-access users keep their data.** The server already holds their key. If MFA is on, a TOTP code is still required.
+2. **Digest cards show everything:**
+   - the job title as the heading
+   - every field the user listed; "work type" is remote, hybrid or onsite
+   - the fit score (0–100)
+   - the **employment type** (full-time, part-time, contract, casual). Jobs don't record this yet, so it needs a new `jobs.employment_type` column, sealed in Phase D, filled by the adapters (SEEK's work type; ATS fields where they exist). The main job cards show it too, so the digest mirrors the app.
+3. **After the 3 free searches:** jobs already found stay visible. New searches, rescoring, chat and cover letters are blocked until the person becomes a member.
+4. **Release timing:** Phase 1 and the WCAG/mobile pass ship together in one release; no push before then.
