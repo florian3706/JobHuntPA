@@ -786,3 +786,20 @@ New modules: `backend/crypto.py`, `backend/keys.py`, `backend/sessions.py`, `bac
    - the **employment type** (full-time, part-time, contract, casual). Jobs don't record this yet, so it needs a new `jobs.employment_type` column, sealed in Phase D, filled by the adapters (SEEK's work type; ATS fields where they exist). The main job cards show it too, so the digest mirrors the app.
 3. **After the 3 free searches:** jobs already found stay visible. New searches, rescoring, chat and cover letters are blocked until the person becomes a member.
 4. **Release timing:** Phase 1 and the WCAG/mobile pass ship together in one release; no push before then.
+
+## 15. Notes from the Phase B review (these bind Phases C and D)
+- **The comparator guard has blind spots.** It doesn't see a bare `order_by(col)`, `group_by(col)`, `select().distinct()` or `func.*(col)`. Phase D adds a test that greps for these on sealed columns, or adds a statement hook that refuses them.
+- **Legacy plaintext is a downgrade path.**
+  - Someone with write access could swap a ciphertext for plaintext, and it would be accepted.
+  - Once migration state is `done`, turn on a strict mode that refuses plaintext in sealed columns.
+  - Don't put `server_default` on sealed columns.
+- **Errors must not leak data.**
+  - Use `create_engine(..., hide_parameters=True)` and never `echo`, so a `StatementError` can't put plaintext bind values in logs.
+  - Re-saving a legacy row through the ORM with an unchanged value issues no UPDATE, so the migration writes with Core `update()`.
+- **The uninstaller's backup zip** will hold the key file (KEK and pepper) as well as `.env`, so Phase C writes it as 0600. On Windows the key file relies on the folder's ACLs, because `chmod` does nothing there.
+- **Choices fixed in Phase B:**
+  - Passwords are NFKC-normalised before argon2.
+  - KEK wrap labels always end in `|{kek_id}`, e.g. `totp|{uid}|{kek_id}`.
+  - Each use has its own AAD prefix (`jh-wrap|`, `jh-file|`, `jh-value|`, `jh-box|`), and columns use `jh/<table>.<column>`.
+  - The 5-byte envelope header is part of the AAD.
+- **Dependencies.** `requirements.txt` pins older `cryptography` and `argon2-cffi-bindings` on Intel Macs through environment markers, because the newest versions have no x86_64 wheels there. Keep those markers when you bump versions.
