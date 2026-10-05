@@ -266,7 +266,7 @@
     <section id="tab-docs" class="tab-panel" role="tabpanel" hidden>
       <div class="panel-head">
         <h2>Documents</h2>
-        <span class="muted">PDF / DOCX / ODT / TXT</span>
+        <span class="muted">PDF / DOCX / ODT / TXT, or notes you write here</span>
       </div>
       <form id="upload-form" class="card upload-card">
         <label class="field"><span class="field-label">Upload</span>
@@ -275,13 +275,50 @@
           <select id="upload-kind">
             <option value="resume">Resume / CV</option>
             <option value="cover_letter">Cover letter</option>
+            <option value="preferences">Preferences (private)</option>
             <option value="other">Other (supporting)</option>
           </select></label>
         <button class="btn btn-primary" type="submit">Upload</button>
-        <span id="upload-status" class="muted" aria-live="polite"></span>
+        <span id="upload-status" class="muted" role="status" aria-live="polite"></span>
       </form>
-      <p class="hint">The scorer reads resumes first, then cover letters, then other documents, and treats non-resume documents as supporting evidence only.
-        Untick "use for scoring" to keep a document out of the prompt. Changing documents marks existing scores as stale.</p>
+      <form id="note-form" class="card form-card note-form" aria-labelledby="note-form-title">
+        <h3 id="note-form-title">Write a note</h3>
+        <p class="hint">Plain text the AI reads like an uploaded document: details of a project, results you're proud of,
+          or what you want from your next job (choose <strong>Preferences</strong> for that).</p>
+        <div class="note-grid">
+          <div class="field"><label class="field-label" for="note-title">Title</label>
+            <input id="note-title" type="text" maxlength="200" autocomplete="off" required /></div>
+          <div class="field"><label class="field-label" for="note-kind">Type</label>
+            <select id="note-kind">
+              <option value="resume">Resume / CV</option>
+              <option value="cover_letter">Cover letter</option>
+              <option value="preferences">Preferences (private)</option>
+              <option value="other" selected>Other (supporting)</option>
+            </select></div>
+        </div>
+        <div class="field"><label class="field-label" for="note-text">Note</label>
+          <textarea id="note-text" class="doc-textarea" rows="6" required></textarea></div>
+        <div class="toolbar-row note-actions">
+          <label class="check"><input id="note-use" type="checkbox" checked /> use for scoring</label>
+          <button class="btn btn-primary" type="submit">Save note</button>
+          <span id="note-status" class="muted" role="status" aria-live="polite"></span>
+        </div>
+      </form>
+      <p class="hint">The scorer reads resumes first, then cover letters, then other documents and notes, and treats everything but resumes as supporting evidence only.
+        <strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
+        the chat and title suggestions use them, and cover letters never see them.
+        Untick "use for scoring" to keep a document out of every prompt. Changing documents marks existing scores as stale.</p>
+      <div class="card form-card summary-card">
+        <h3>One summary instead of many documents</h3>
+        <p class="hint">Every ticked document goes with every request to the AI, repeats and all. <strong>Create summary</strong> merges the
+          ticked documents (not preferences) into one new document: each fact once, with every employer, date, number and
+          qualification kept. It takes a few minutes. Read it through, edit it if needed, then untick the originals so they
+          aren't sent twice. Each document can also get a shorter <strong>concise version</strong> of its own: <strong>Open</strong> it below.</p>
+        <div class="toolbar-row">
+          <button id="summary-make" class="btn btn-primary" type="button">Create summary of ticked documents</button>
+          <span id="summary-status" class="muted" role="status" aria-live="polite"></span>
+        </div>
+      </div>
       <div class="card form-card titles-card">
         <h3>Suggested job titles</h3>
         <p class="hint">Reads this workspace's documents and suggests job titles to search for. Tick the ones you want,
@@ -296,8 +333,11 @@
           <button id="titles-new" class="btn btn-sm" type="button">Start a new search with selected</button>
         </div>
       </div>
+      <h3 id="docs-list-heading" class="docs-heading" tabindex="-1">Your documents</h3>
+      <div id="summary-suggest" class="summary-suggest" hidden></div>
+      <div id="docs-live" class="visually-hidden" role="status" aria-live="polite"></div>
       <div id="docs-list" class="docs-list"></div>
-      <div id="docs-empty" class="empty" hidden>No documents yet. Upload your resume to get started.</div>
+      <div id="docs-empty" class="empty" hidden>No documents yet. Upload your resume or write a note to get started.</div>
       <div id="docs-error" class="error" hidden></div>
     </section>
 

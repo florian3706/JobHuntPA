@@ -44,6 +44,7 @@ How to answer:
 - Answer the question directly first, then explain. Be candid: point out risks, gaps and red flags as well as strengths.
 - Claims about the candidate come only from their documents. Never invent experience, employers, numbers or qualifications; say when the documents don't show something.
 - Claims about a job or employer come from the material below{web}. If the answer isn't there, say so and suggest how to find out (e.g. a question for the recruiter).
+- The candidate's preferences section, if there is one, says what they want from a job: use it to judge whether a job suits them and point out conflicts, but never treat it as evidence of experience.
 - With several jobs, say which one you mean ("Job 2, Canva") and compare them side by side when asked.
 - The fit score is an automated estimate; disagree with it when the material supports that, and say why.
 - Use the spelling of the job ads (Australian English for Australian employers).
@@ -163,16 +164,26 @@ def job_block(db: Session, n: int, job: Job, ad_limit: int) -> str:
     return "\n".join(lines)
 
 
-def build_context(db: Session, ws: int, jobs: list[Job], web: bool) -> str:
+def context_parts(db: Session, ws: int, jobs: list[Job], web: bool) -> list[dict]:
+    """The chat's system prompt as two cacheable parts, most stable first: the instructions and the candidate's
+    documents (the same in every chat until the documents change), then today's date and the jobs (the same
+    for every question in this chat). Nothing that changes per question is in either."""
+    from backend.llm_providers import CACHE_CONVERSATION, cached_text
     from backend.scorer import build_profile
 
     profile_text, _ = build_profile(db, ws)
     ad_limit = 12000 if len(jobs) <= 2 else 6000 if len(jobs) <= 5 else 3000
-    parts = [SYSTEM_PROMPT.replace("{web}", WEB_NOTE if web else NO_WEB_NOTE),
-             f"Today's date: {date.today().isoformat()}.",
-             "=== CANDIDATE'S DOCUMENTS ===\n" + (profile_text or "(no documents uploaded)")]
-    parts += [job_block(db, n, job, ad_limit) for n, job in enumerate(jobs, 1)]
-    return "\n\n".join(parts)
+    stable = (SYSTEM_PROMPT.replace("{web}", WEB_NOTE if web else NO_WEB_NOTE) + "\n\n"
+              "=== CANDIDATE'S DOCUMENTS ===\n" + (profile_text or "(no documents uploaded)") + "\n\n")
+    per_chat = "\n\n".join([f"Today's date: {date.today().isoformat()}."]
+                           + [job_block(db, n, job, ad_limit) for n, job in enumerate(jobs, 1)])
+    return [cached_text(stable, CACHE_CONVERSATION), cached_text(per_chat, CACHE_CONVERSATION)]
+
+
+def build_context(db: Session, ws: int, jobs: list[Job], web: bool) -> str:
+    from backend.llm_providers import text_of
+
+    return text_of(context_parts(db, ws, jobs, web))
 
 
 def known_links(db: Session, jobs: list[Job]) -> set[str]:
@@ -225,13 +236,13 @@ def ask(db: Session, ws: int, jobs: list[Job], history: list[dict], message: str
     from backend.research import extract
     from backend.scorer import ScorerError, call_model, config_problem, get_config
 
-    cfg = get_config("chat")
+    cfg = {**get_config("chat"), "workspace_id": ws}
     if config_problem(cfg):
         raise HTTPException(status_code=400, detail=config_problem(cfg))
     no_search = llm_providers.web_search_problem(cfg, "The chat's \"Search the web\" option") if web else None
     if no_search:
         raise HTTPException(status_code=400, detail=f"{no_search} Or turn that option off.")
-    context = build_context(db, ws, jobs, web)
+    context = context_parts(db, ws, jobs, web)
     turns = history + [{"role": "user", "content": message}]
     try:
         if web:

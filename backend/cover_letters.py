@@ -8,6 +8,9 @@
 The prompt gets the resume(s) first, earlier cover letters as style
 samples, the job ad, the fit result (matched evidence and gaps) and the
 company profile when there is one. Reasoning level: task "cover_letter".
+
+Preference documents are never sent: they are the candidate's private wishes
+(pay, place, employers to avoid) and must not end up in a letter to an employer.
 """
 from __future__ import annotations
 
@@ -70,19 +73,21 @@ def _letter_dict(cl: CoverLetter) -> dict:
 
 
 def build_prompt(db: Session, job: Job, instructions: str = "") -> str:
-    docs = (db.query(Document)
-            .filter(Document.workspace_id == job.workspace_id, Document.use_for_scoring.is_(True)).all())
-    resumes = [d for d in docs if d.kind == "resume" and (d.text or "").strip()]
+    from backend.scorer import document_heading
+
+    docs = [d for d in (db.query(Document)
+                        .filter(Document.workspace_id == job.workspace_id, Document.use_for_scoring.is_(True))
+                        .order_by(Document.id))
+            if d.kind != "preferences"]  # private: never in a letter to an employer
+    resumes = [d for d in docs if d.kind == "resume" and d.text_for_llm()]
     letters = [d for d in docs if d.kind == "cover_letter" and (d.text or "").strip()]
-    others = [d for d in docs if d.kind not in ("resume", "cover_letter") and (d.text or "").strip()]
+    others = [d for d in docs if d.kind not in ("resume", "cover_letter") and d.text_for_llm()]
     if not resumes and not others:
         raise HTTPException(status_code=400, detail="Upload your resume on the Documents tab first.")
     parts = []
-    for d in resumes:
-        parts.append(f"=== RESUME / CV: {d.filename} ===\n{d.text.strip()}")
-    for d in others:
-        parts.append(f"=== SUPPORTING DOCUMENT: {d.filename} ===\n{d.text.strip()}")
-    for d in letters[:2]:
+    for d in resumes + others:  # each as chosen on the Documents tab (original or concise)
+        parts.append(f"{document_heading(d)}\n{d.text_for_llm()}")
+    for d in letters[:2]:  # style samples: the letter as written, as a concise version loses the voice
         parts.append(f"=== EARLIER COVER LETTER (style sample only): {d.filename} ===\n{d.text.strip()[:6000]}")
 
     job_lines = [f"Title: {job.title}", f"Company: {job.company}", f"Location: {job.location_text or 'not stated'}"]
@@ -132,7 +137,7 @@ def draft_cover_letter(job_id: int, payload: DraftRequest, db: Session = Depends
     from backend.scorer import ScorerError, call_model, config_problem, get_config
 
     job = owned(db, Job, job_id, ws, "Job")
-    cfg = get_config("cover_letter")
+    cfg = {**get_config("cover_letter"), "workspace_id": ws}
     if config_problem(cfg):
         raise HTTPException(status_code=400, detail=config_problem(cfg))
     messages = [{"role": "system", "content": SYSTEM_PROMPT},

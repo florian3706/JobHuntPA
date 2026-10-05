@@ -113,13 +113,22 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
         db.add(CompanySource(workspace_id=dst, label=s.label, careers_url=s.careers_url, url=s.careers_url,
                              source_type=s.source_type, enabled=s.enabled))
     if documents:
-        for d in db.query(Document).filter(Document.workspace_id == src):
+        copies: dict[int, Document] = {}
+        for d in db.query(Document).filter(Document.workspace_id == src).order_by(Document.id):
             stored = None
             if d.stored_name and (UPLOAD_DIR / d.stored_name).is_file():
                 stored = f"{uuid.uuid4().hex}{d.filetype or ''}"
                 shutil.copyfile(UPLOAD_DIR / d.stored_name, UPLOAD_DIR / stored)
-            db.add(Document(workspace_id=dst, filename=d.filename, filetype=d.filetype, stored_name=stored,
-                            text=d.text, kind=d.kind, use_for_scoring=d.use_for_scoring))
+            copies[d.id] = Document(
+                workspace_id=dst, filename=d.filename, filetype=d.filetype, stored_name=stored, text=d.text,
+                kind=d.kind, use_for_scoring=d.use_for_scoring, created_at=d.created_at, updated_at=d.updated_at,
+                concise_text=d.concise_text, use_concise=d.use_concise, concise_model=d.concise_model,
+                concise_at=d.concise_at, summary_of=d.summary_of)
+            db.add(copies[d.id])
+        db.flush()
+        for copy in copies.values():  # a summary's sources: the copies of them
+            if copy.summary_of:
+                copy.summary_of = [copies[i].id for i in copy.summary_of if i in copies]
 
 
 @router.patch("/{ws_id}")

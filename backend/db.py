@@ -177,7 +177,13 @@ class FitResult(Base):
 # Documents + search profile
 # ---------------------------------------------------------------------------
 
-DOCUMENT_KINDS = ("resume", "cover_letter", "other")
+# preferences: what the candidate wants from a job (salary, place, kind of work...). Sent to the scorer,
+# the chat and title suggestions, but never counted as experience and never sent for a cover letter.
+DOCUMENT_KINDS = ("resume", "cover_letter", "preferences", "other")
+
+# Documents without a file (``stored_name`` is empty), told apart by ``filetype``:
+NOTE_FILETYPE = "note"          # written in the app: title in ``filename``, body in ``text``
+SUMMARY_FILETYPE = "summary"    # the LLM's consolidation of several documents (backend.docs)
 
 
 class Document(Base):
@@ -185,13 +191,27 @@ class Document(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = _workspace_fk()
-    filename = Column(String, nullable=False)
-    filetype = Column(String, nullable=True)
+    filename = Column(String, nullable=False)       # the file's name, or a note's / summary's title
+    filetype = Column(String, nullable=True)        # ".pdf", ".docx", ... | "note" | "summary"
     stored_name = Column(String, nullable=True)
-    text = Column(Text, nullable=True)
-    kind = Column(String, nullable=True)            # resume | cover_letter | other
+    text = Column(Text, nullable=True)              # extracted once from the file, or the note / summary
+    kind = Column(String, nullable=True)            # one of DOCUMENT_KINDS
     use_for_scoring = Column(Boolean, nullable=False, default=True, server_default="1")
     created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, nullable=True)    # a note, summary or concise version last edited
+    # A shorter rewrite of ``text`` (LLM-written, then editable). ``use_concise`` picks which of the two
+    # the LLM is sent (text_for_llm).
+    concise_text = Column(Text, nullable=True)
+    use_concise = Column(Boolean, nullable=False, default=False, server_default="0")
+    concise_model = Column(String, nullable=True)   # model that wrote the concise version
+    concise_at = Column(DateTime, nullable=True)
+    summary_of = Column(JSON, nullable=True)        # a summary's source document ids
+
+    def text_for_llm(self) -> str:
+        """The version of this document the LLM gets: the concise one when chosen (and not empty), else the
+        original."""
+        concise = (self.concise_text or "").strip()
+        return concise if self.use_concise and concise else (self.text or "").strip()
 
 
 class SearchProfile(Base):
@@ -395,6 +415,32 @@ class ChatMessage(Base):
     web_search = Column(Boolean, nullable=False, default=False, server_default="0")
     model = Column(String, nullable=True)
     created_at = Column(DateTime, default=utcnow)
+
+
+class LlmUsage(Base):
+    """One row per answered LLM request (backend.llm_providers.record_usage), for checking that provider
+    caching works and for usage statistics. Token counts are what the provider reported (None when it
+    reported nothing):
+
+    input_tokens        every prompt token, cached or not (Anthropic's input_tokens + cache reads + cache
+                        writes; OpenAI-style prompt_tokens)
+    cached_tokens       prompt tokens read from the provider's cache (billed at a discount)
+    cache_write_tokens  prompt tokens written to it (Anthropic, OpenAI GPT-5.6+, OpenRouter)
+    """
+
+    __tablename__ = "llm_usage"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
+    # Kept when the workspace is deleted: usage happened all the same.
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
+    purpose = Column(String, nullable=True)         # scoring | chat | cover_letter | research | concise | summary ...
+    provider = Column(String, nullable=True)        # llm_providers.provider_for: openai | anthropic | ...
+    model = Column(String, nullable=True)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    cached_tokens = Column(Integer, nullable=True)
+    cache_write_tokens = Column(Integer, nullable=True)
 
 
 class AppSetting(Base):

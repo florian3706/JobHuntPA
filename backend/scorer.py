@@ -49,7 +49,9 @@ def _env(name: str) -> str:
 
 def get_config(task: Optional[str] = None) -> dict[str, Any]:
     """LLM config; ``task`` (scoring | research | cover_letter | chat) picks the
-    reasoning level set in the app for that task."""
+    reasoning level set in the app for that task, and is the ``purpose`` its
+    requests are recorded under in ``llm_usage`` (call sites may name a more
+    specific one, and add ``workspace_id``)."""
     from backend.llm_settings import effort_for
 
     base_url, model = _env("LLM_BASE_URL").rstrip("/"), _env("LLM_MODEL")
@@ -60,6 +62,7 @@ def get_config(task: Optional[str] = None) -> dict[str, Any]:
         "reasoning_effort": effort_for(task, base_url, model),
         "timeout_s": float(_env("LLM_TIMEOUT_S") or 180),
         "concurrency": max(1, int(_env("LLM_CONCURRENCY") or 3)),
+        "purpose": task or "",
     }
 
 
@@ -90,23 +93,43 @@ def public_config() -> dict[str, Any]:
 # Profile text
 # --------------------------------------------------------------------------
 
-_KIND_ORDER = {"resume": 0, "cover_letter": 1, "other": 2}
-_KIND_LABEL = {"resume": "RESUME / CV", "cover_letter": "COVER LETTER", "other": "SUPPORTING DOCUMENT"}
+_KIND_ORDER = {"resume": 0, "cover_letter": 1, "other": 2, "preferences": 3}
+_KIND_LABEL = {"resume": "RESUME / CV", "cover_letter": "COVER LETTER", "other": "SUPPORTING DOCUMENT",
+               "preferences": "PREFERENCES"}
+PREFERENCES_HEADING = ("=== CANDIDATE PREFERENCES: what the candidate wants from a job, in their own words. "
+                       "Not evidence of skills or experience. ===")
+
+
+def document_heading(d: Document) -> str:
+    """The line that introduces a document in a prompt: its kind and name (notes say they're notes)."""
+    from backend.db import NOTE_FILETYPE
+
+    note = " (candidate's note)" if d.filetype == NOTE_FILETYPE else ""
+    return f"=== {_KIND_LABEL.get(d.kind or 'other', 'DOCUMENT')}{note}: {d.filename} ==="
 
 
 def build_profile(db: Session, ws: int) -> tuple[str, str]:
-    """(profile text, hash). Resume(s) first, then cover letters, then other docs."""
+    """(profile text, hash). Resume(s) first, then cover letters, then other docs (notes and summaries are
+    documents too), then the candidate's preferences under a heading of their own. Each document is sent as
+    ``text_for_llm`` (its concise version when chosen). Any change to the text, a title, a kind or the chosen
+    version changes the hash, which marks earlier scores stale."""
     from backend.profile import get_profile
 
     docs = [d for d in db.query(Document).filter(Document.workspace_id == ws)
-            if d.use_for_scoring and (d.text or "").strip()]
+            if d.use_for_scoring and d.text_for_llm()]
     docs.sort(key=lambda d: (_KIND_ORDER.get(d.kind or "other", 2), d.id))
     parts = []
     prof = get_profile(db, ws)
     if prof["titles"]:
         parts.append("TARGET ROLES: " + ", ".join(prof["titles"]))
-    for d in docs:
-        parts.append(f"=== {_KIND_LABEL.get(d.kind or 'other', 'DOCUMENT')}: {d.filename} ===\n{d.text.strip()}")
+    evidence = [d for d in docs if d.kind != "preferences"]
+    preferences = [d for d in docs if d.kind == "preferences"]
+    for d in evidence:
+        parts.append(f"{document_heading(d)}\n{d.text_for_llm()}")
+    if preferences:
+        parts.append(PREFERENCES_HEADING)
+        for d in preferences:
+            parts.append(f"{document_heading(d)}\n{d.text_for_llm()}")
     text = "\n\n".join(parts)
     return text, hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
@@ -115,6 +138,10 @@ def build_profile(db: Session, ws: int) -> tuple[str, str]:
 # Prompt
 # --------------------------------------------------------------------------
 
+# Preferences (rule 10): the score stays a measure of how well the documents evidence the job's requirements,
+# so scores stay comparable between jobs and the evidence (which cover letters reuse) never draws on private
+# wishes. A conflict with what the candidate wants is named in the summary instead, where the user sees it.
+# This prompt is the start of every scoring request's cached prefix: keep it free of anything that varies.
 SYSTEM_PROMPT = """You are a strict, evidence-based job-fit assessor. You compare ONE job posting against ONE candidate's documents.
 
 Return ONLY a JSON object, no markdown, with exactly this shape:
@@ -136,9 +163,10 @@ Rules:
 4. "gaps": short strings naming missing or weak must-haves.
 5. "score": integer 0-100. Must-haves dominate; 90+ means every must-have is evidenced; below 40 means major must-haves are missing.
 6. "summary": 2-4 sentences: overall fit, strongest evidence, biggest gaps.
-7. The resume is the primary source. Other documents (cover letters, interview answers, transcripts) are supporting evidence only.
+7. The resume is the primary source. Other documents (cover letters, the candidate's notes, interview answers, transcripts) are supporting evidence only.
 8. If the job text is only a short listing summary, assess what is stated and say in the summary that the full description was not available.
-9. "office_location": where the candidate would work, as stated in the job posting: a street address or suburb (e.g. "1 Denison St, North Sydney" or "Macquarie Park"). Empty if the posting names only a city or no place. Not head office elsewhere, other offices or clients' sites."""
+9. "office_location": where the candidate would work, as stated in the job posting: a street address or suburb (e.g. "1 Denison St, North Sydney" or "Macquarie Park"). Empty if the posting names only a city or no place. Not head office elsewhere, other offices or clients' sites.
+10. The CANDIDATE PREFERENCES section, if present, says what the candidate wants from a job (pay, place, work mode, hours, sector, kind of role, employers to avoid). It is never evidence of skills or experience: don't use it to match requirements and don't mention it in "requirements", "evidence" or "gaps". It doesn't change the score, which measures how well the documents evidence the job's requirements. If the job conflicts with a stated preference, say so in the summary (e.g. "Conflicts with the stated preference for fully remote work.")."""
 
 
 def build_job_text(job: Job) -> str:
@@ -158,14 +186,18 @@ def build_job_text(job: Job) -> str:
 
 
 def build_messages(job: Job, profile_text: str) -> list[dict]:
-    # Stable content (instructions + candidate profile) first, job last.
+    """Stable content (instructions + candidate documents) first, ending in the part providers may cache; the job
+    last. Every job in a run gets a byte-identical prefix: nothing per job or per request goes before the mark.
+    Flattened (every provider but Claude), the user message is the one string it always was."""
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": (
-            "CANDIDATE DOCUMENTS:\n<<<\n" + (profile_text or "(no documents uploaded)") + "\n>>>\n\n"
-            "JOB POSTING:\n<<<\n" + build_job_text(job) + "\n>>>\n\n"
-            "Return only the JSON object."
-        )},
+        {"role": "user", "content": [
+            llm_providers.cached_text(
+                "CANDIDATE DOCUMENTS:\n<<<\n" + (profile_text or "(no documents uploaded)") + "\n>>>\n\n"),
+            llm_providers.text_part(
+                "JOB POSTING:\n<<<\n" + build_job_text(job) + "\n>>>\n\n"
+                "Return only the JSON object."),
+        ]},
     ]
 
 
@@ -332,7 +364,7 @@ def _copy_to_duplicates(dup_ids: list[int], result: dict, profile_hash: str, mod
 
 
 def score_jobs(ws: int, job_ids: list[int], progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
-    cfg = get_config("scoring")
+    cfg = {**get_config("scoring"), "workspace_id": ws}
     if config_problem(cfg):
         raise ScorerError(config_problem(cfg), auth=True)
     db = SessionLocal()
@@ -371,8 +403,11 @@ def score_jobs(ws: int, job_ids: list[int], progress: Callable[[str, dict], None
             counts["scored" if ok else "errors"] += 1
             progress(f"scoring {counts['done']}/{len(job_ids)}", {"done": counts["done"], "total": len(job_ids), **counts})
 
+    # The first job goes alone: a provider can only reuse the cached documents once one answer has started, so
+    # requests sent together would each pay to process (and write) the same prefix. The rest then read it.
+    work(job_ids[0])
     with ThreadPoolExecutor(max_workers=cfg["concurrency"]) as pool:
-        for fut in as_completed([pool.submit(work, j) for j in job_ids]):
+        for fut in as_completed([pool.submit(work, j) for j in job_ids[1:]]):
             fut.result()
     return {
         "requested": requested,
@@ -387,7 +422,7 @@ def score_jobs(ws: int, job_ids: list[int], progress: Callable[[str, dict], None
 
 def test_connection() -> dict:
     """One tiny request to check key, endpoint and model."""
-    cfg = get_config()
+    cfg = {**get_config(), "purpose": "connection_test"}
     out = public_config()
     if config_problem(cfg):
         return {**out, "ok": False, "message": config_problem(cfg)}

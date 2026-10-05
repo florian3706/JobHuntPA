@@ -34,6 +34,9 @@ const state = {
   officeSlack: 0, // temporary extra office days allowed on the Jobs tab (never saved)
   dupes: { suggested: [], auto_merged: [] }, // duplicate ads to check
   chat: null, // the open job chat: { jobIds, jobs, threadId, threads, messages, busy }
+  // Documents tab: the list, which rows are open, their texts, unsaved edits ("id:field"), status lines
+  // ("id:area") and actions under way ("id:act"), all for workspace `ws`.
+  docs: { ws: null, list: [], open: new Set(), text: new Map(), drafts: new Map(), status: new Map(), busy: new Set() },
 };
 
 function openModal(title, text) {
@@ -1682,10 +1685,71 @@ async function testScorer() {
 }
 
 /* ================= DOCUMENTS ================= */
+// Uploaded files, notes written here and summaries the AI wrote. Each row opens into a panel to read and edit
+// the text and its concise version. Unsaved edits live in state.docs.drafts, so a row can be redrawn (after a
+// save, a tick, a new concise version) without losing what's typed in another, and focus returns to the
+// control that had it (data-focus). Status lines are kept in state too and announced through #docs-live.
+const DOC_KINDS = [['resume', 'Resume / CV'], ['cover_letter', 'Cover letter'], ['preferences', 'Preferences (private)'], ['other', 'Other (supporting)']];
+const DOC_SOURCE = { file: 'File', note: 'Note', summary: 'Summary' };
+const KEEP_BOTH_KEY = 'jobhunt.summaryKeepBoth'; // summaries the user chose to keep ticked with their originals
+
+const docById = (id) => state.docs.list.find((d) => d.id === id);
+const docKindOptions = (selected) => DOC_KINDS.map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${esc(l)}</option>`).join('');
+const charCount = (n) => `${Number(n || 0).toLocaleString()} characters`;
+const docDraft = (id, field, saved) => (state.docs.drafts.has(`${id}:${field}`) ? state.docs.drafts.get(`${id}:${field}`) : saved);
+// A document's metadata, without the texts some answers carry along.
+const docMeta = ({ text: _t, concise_text: _c, sources: _s, ...meta }) => meta;
+
+function replaceDoc(doc) {
+  const meta = docMeta(doc);
+  state.docs.list = state.docs.list.some((d) => d.id === meta.id)
+    ? state.docs.list.map((d) => (d.id === meta.id ? meta : d)) : [meta, ...state.docs.list];
+}
+
+function announceDocs(text) {
+  const live = $('#docs-live');
+  live.textContent = '';
+  setTimeout(() => { live.textContent = text; }, 60); // cleared first, so the same message is announced again
+}
+
+function setDocStatus(id, area, text, isError = false) {
+  state.docs.status.set(`${id}:${area}`, { text, isError });
+  const el = document.getElementById(`doc-${id}-${area}-status`);
+  if (el) { el.textContent = text; el.className = isError ? 'err-text' : 'muted'; }
+  announceDocs(text);
+}
+
+function docStatusHtml(id, area) {
+  const s = state.docs.status.get(`${id}:${area}`);
+  return `<span id="doc-${id}-${area}-status" class="${s?.isError ? 'err-text' : 'muted'}">${esc(s?.text || '')}</span>`;
+}
+
+function rememberFocus(root) {
+  const el = document.activeElement;
+  if (!el || !root.contains(el) || !el.dataset.focus) return null;
+  const typed = el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text');
+  return { key: el.dataset.focus, start: typed ? el.selectionStart : null, end: typed ? el.selectionEnd : null, scroll: el.scrollTop };
+}
+
+function restoreFocus(root, saved) {
+  if (!saved) return;
+  const el = Array.from(root.querySelectorAll('[data-focus]')).find((x) => x.dataset.focus === saved.key);
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  if (saved.start !== null && el.setSelectionRange) el.setSelectionRange(saved.start, saved.end);
+  el.scrollTop = saved.scroll;
+}
+
 async function loadDocs() {
+  if (state.docs.ws !== state.ws) { // another workspace: forget what was open, typed or said
+    Object.assign(state.docs, { ws: state.ws, list: [], open: new Set(), text: new Map(), drafts: new Map(), status: new Map(), busy: new Set() });
+  }
+  const ws = state.ws;
   try {
-    const docs = await api('/api/documents');
-    renderDocs(docs);
+    const list = await api('/api/documents');
+    if (ws !== state.ws) return;
+    state.docs.list = list;
+    renderDocs();
     $('#docs-error').hidden = true;
   } catch (e) {
     $('#docs-error').textContent = `Could not load documents: ${e.message}`;
@@ -1693,50 +1757,333 @@ async function loadDocs() {
   }
 }
 
-function renderDocs(docs) {
+function renderDocs() {
   const list = $('#docs-list');
-  list.innerHTML = '';
-  $('#docs-empty').hidden = docs.length !== 0;
-  docs.forEach((doc) => {
-    const row = document.createElement('div');
-    row.className = 'doc-row';
-    row.innerHTML = `
-      <span class="doc-name">${esc(doc.filename)}</span>
-      <span class="doc-meta">${doc.text_len.toLocaleString()} chars · ${esc(fmtDate(doc.created_at))}</span>
-      <span class="spacer"></span>
-      <select aria-label="Document type">
-        <option value="resume" ${doc.kind === 'resume' ? 'selected' : ''}>Resume / CV</option>
-        <option value="cover_letter" ${doc.kind === 'cover_letter' ? 'selected' : ''}>Cover letter</option>
-        <option value="other" ${doc.kind === 'other' ? 'selected' : ''}>Other (supporting)</option>
-      </select>
-      <label class="check"><input type="checkbox" ${doc.use_for_scoring ? 'checked' : ''} /> use for scoring</label>
-      <button class="btn btn-ghost btn-sm" data-act="preview" type="button">Text</button>
-      <button class="btn btn-danger btn-sm" data-act="delete" type="button">Delete</button>`;
-    row.querySelector('select').addEventListener('change', (e) => patchDoc(doc.id, { kind: e.target.value }));
-    row.querySelector('input[type="checkbox"]').addEventListener('change', (e) => patchDoc(doc.id, { use_for_scoring: e.target.checked }));
-    row.querySelector('[data-act="preview"]').addEventListener('click', async () => {
-      try { const d = await api(`/api/documents/${doc.id}/text`); openModal(d.filename, d.text || '(no text)'); }
-      catch (e) { toast(e.message, 'err'); }
-    });
-    row.querySelector('[data-act="delete"]').addEventListener('click', async () => {
-      if (!confirm(`Delete "${doc.filename}"?`)) return;
-      try { await api(`/api/documents/${doc.id}`, { method: 'DELETE' }); loadDocs(); loadScorerStatus(); }
-      catch (e) { toast(`Delete failed: ${e.message}`, 'err'); }
-    });
-    list.appendChild(row);
-  });
+  const focus = rememberFocus(list);
+  list.replaceChildren(...state.docs.list.map(docRow));
+  $('#docs-empty').hidden = state.docs.list.length !== 0;
+  restoreFocus(list, focus);
+  renderSummarySuggestion();
 }
+
+function redrawDoc(id) {
+  const old = document.getElementById(`doc-${id}`);
+  const doc = docById(id);
+  if (!old || !doc) { renderDocs(); return; }
+  const focus = rememberFocus(old);
+  const row = docRow(doc);
+  old.replaceWith(row);
+  restoreFocus(row, focus);
+  renderSummarySuggestion();
+}
+
+function docRow(doc) {
+  const id = doc.id;
+  const open = state.docs.open.has(id);
+  const meta = [DOC_SOURCE[doc.source] || 'File', charCount(doc.text_len)];
+  if (doc.use_concise) meta.push(`the AI gets its concise version (${charCount(doc.concise_len)})`);
+  else if (doc.concise_len) meta.push('has a concise version (not used)');
+  meta.push(fmtDate(doc.updated_at || doc.created_at));
+  const sources = (doc.summary_of || []).map(docById).filter(Boolean);
+  const madeFrom = doc.source === 'summary' && (doc.summary_of || []).length
+    ? `<p class="doc-meta">Made from ${sources.length ? sources.map((d) => esc(d.filename)).join(', ') : ''}${
+      sources.length < doc.summary_of.length ? `${sources.length ? ' and ' : ''}${doc.summary_of.length - sources.length} deleted document(s)` : ''}</p>`
+    : '';
+  const row = document.createElement('article');
+  row.className = 'doc-item';
+  row.id = `doc-${id}`;
+  row.setAttribute('aria-labelledby', `doc-${id}-name`);
+  row.innerHTML = `
+    <div class="doc-head">
+      <div class="doc-title">
+        <h4 class="doc-name" id="doc-${id}-name">${esc(doc.filename)}</h4>
+        <p class="doc-meta">${esc(meta.join(' · '))}</p>
+        ${madeFrom}
+      </div>
+      <div class="doc-controls">
+        <label class="visually-hidden" for="doc-${id}-kind">Type of ${esc(doc.filename)}</label>
+        <select id="doc-${id}-kind" data-act="kind" data-focus="${id}-kind">${docKindOptions(doc.kind)}</select>
+        <label class="check"><input type="checkbox" data-act="use" data-focus="${id}-use" aria-describedby="doc-${id}-name"${doc.use_for_scoring ? ' checked' : ''} /> use for scoring</label>
+        <button class="btn btn-sm" type="button" data-act="toggle" data-focus="${id}-toggle" aria-expanded="${open}" aria-controls="doc-${id}-panel">${open ? 'Close' : 'Open'}<span class="visually-hidden"> ${esc(doc.filename)}</span></button>
+        <button class="btn btn-danger btn-sm" type="button" data-act="delete" data-focus="${id}-delete">Delete<span class="visually-hidden"> ${esc(doc.filename)}</span></button>
+      </div>
+    </div>
+    <div class="doc-panel" id="doc-${id}-panel"${open ? '' : ' hidden'}>${open ? docPanelHtml(doc) : ''}</div>`;
+  row.addEventListener('input', (e) => {
+    const field = e.target.dataset.draft;
+    if (field) state.docs.drafts.set(`${id}:${field}`, e.target.value);
+  });
+  row.addEventListener('change', (e) => {
+    const act = e.target.dataset.act;
+    if (act === 'kind') patchDoc(id, { kind: e.target.value });
+    else if (act === 'use') patchDoc(id, { use_for_scoring: e.target.checked });
+    else if (act === 'version') setDocVersion(id, e.target.value === 'concise');
+  });
+  row.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn || btn.getAttribute('aria-disabled') === 'true') return;
+    const actions = { toggle: toggleDoc, delete: deleteDoc, save: saveDoc, 'concise-make': makeConcise, 'concise-save': saveConcise };
+    actions[btn.dataset.act]?.(id);
+  });
+  return row;
+}
+
+function docPanelHtml(doc) {
+  const id = doc.id;
+  const t = state.docs.text.get(id);
+  if (!t) return '<p class="muted">Loading the text…</p>';
+  const busy = state.docs.busy.has(`${id}:concise-make`);
+  const textLabel = doc.editable ? 'Text' : 'Text taken from the file (read only; to change what the AI reads, edit a concise version below)';
+  const conciseBy = doc.concise_model ? `<p class="hint">Concise version written by ${esc(doc.concise_model)}, ${esc(fmtDate(doc.concise_at))}.</p>` : '';
+  return `
+    <div class="doc-edit">
+      <div class="field"><label class="field-label" for="doc-${id}-title">${doc.source === 'file' ? 'Name' : 'Title'}</label>
+        <input id="doc-${id}-title" type="text" maxlength="200" autocomplete="off" data-draft="title" data-focus="${id}-title" value="${esc(docDraft(id, 'title', doc.filename))}" /></div>
+      <div class="field"><label class="field-label" for="doc-${id}-text">${esc(textLabel)}</label>
+        <textarea id="doc-${id}-text" class="doc-textarea" rows="12" data-focus="${id}-text"${doc.editable ? ' data-draft="text"' : ' readonly'}>${esc(doc.editable ? docDraft(id, 'text', t.text) : t.text)}</textarea></div>
+      <div class="toolbar-row doc-actions">
+        <button class="btn btn-primary btn-sm" type="button" data-act="save" data-focus="${id}-save">${doc.editable ? 'Save' : 'Save name'}</button>
+        ${docStatusHtml(id, 'main')}
+      </div>
+    </div>
+    <section class="doc-concise" aria-labelledby="doc-${id}-concise-heading">
+      <h5 id="doc-${id}-concise-heading">Concise version</h5>
+      <p class="hint">A shorter rewrite by the AI that keeps every employer, date, number and qualification, so every request is smaller.
+        Check it against the original (the scorer quotes it as evidence) and edit it freely.</p>
+      <fieldset class="version-pick">
+        <legend>The AI gets</legend>
+        <label class="check"><input type="radio" name="doc-${id}-version" value="original" data-act="version" data-focus="${id}-v-original"${doc.use_concise ? '' : ' checked'} /> the original (${charCount(doc.text_len)})</label>
+        <label class="check"><input type="radio" name="doc-${id}-version" value="concise" data-act="version" data-focus="${id}-v-concise"${doc.use_concise ? ' checked' : ''}${doc.concise_len ? '' : ' disabled'} /> the concise version (${doc.concise_len ? charCount(doc.concise_len) : 'none yet'})</label>
+      </fieldset>
+      <div class="field"><label class="field-label" for="doc-${id}-concise">Concise text</label>
+        <textarea id="doc-${id}-concise" class="doc-textarea" rows="10" data-draft="concise" data-focus="${id}-concise" placeholder="None yet: Create concise version writes one, or type your own.">${esc(docDraft(id, 'concise', t.concise_text))}</textarea></div>
+      <div class="toolbar-row doc-actions">
+        <button class="btn btn-sm" type="button" data-act="concise-make" data-focus="${id}-concise-make"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Writing…' : t.concise_text ? 'Write it again' : 'Create concise version'}</button>
+        <button class="btn btn-sm" type="button" data-act="concise-save" data-focus="${id}-concise-save">Save concise version</button>
+        ${docStatusHtml(id, 'concise')}
+      </div>
+      ${conciseBy}
+    </section>`;
+}
+
+const docsChanged = () => { loadScorerStatus(); loadJobs(); }; // what the AI gets changed: stale scores, profile size
 
 async function patchDoc(id, body) {
   try {
-    await api(`/api/documents/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+    replaceDoc(await api(`/api/documents/${id}`, { method: 'PATCH', body: JSON.stringify(body) }));
+    redrawDoc(id);
     toast('Saved. Existing scores are now marked stale.', 'ok', 3000);
-    loadScorerStatus();
-    loadJobs();
+    docsChanged();
   } catch (e) { toast(`Update failed: ${e.message}`, 'err'); loadDocs(); }
 }
 
+async function toggleDoc(id) {
+  if (state.docs.open.has(id)) { state.docs.open.delete(id); redrawDoc(id); return; }
+  state.docs.open.add(id);
+  redrawDoc(id);
+  if (state.docs.text.has(id)) return;
+  try {
+    const d = await api(`/api/documents/${id}/text`);
+    state.docs.text.set(id, { text: d.text || '', concise_text: d.concise_text || '' });
+    replaceDoc(d);
+  } catch (e) {
+    state.docs.open.delete(id);
+    toast(`Could not open it: ${e.message}`, 'err');
+  }
+  redrawDoc(id);
+}
+
+async function deleteDoc(id) {
+  const doc = docById(id);
+  if (!doc || !confirm(`Delete "${doc.filename}"?${doc.source === 'file' ? '' : ' Its text is stored only here.'}`)) return;
+  try {
+    await api(`/api/documents/${id}`, { method: 'DELETE' });
+    state.docs.list = state.docs.list.filter((d) => d.id !== id);
+    state.docs.open.delete(id);
+    state.docs.text.delete(id);
+    renderDocs();
+    $('#docs-list-heading').focus(); // the row that had focus is gone
+    announceDocs(`Deleted ${doc.filename}.`);
+    if (doc.use_for_scoring) docsChanged(); else loadScorerStatus();
+  } catch (e) { toast(`Delete failed: ${e.message}`, 'err'); }
+}
+
+async function saveDoc(id) {
+  const doc = docById(id);
+  const t = state.docs.text.get(id);
+  const title = docDraft(id, 'title', doc.filename).trim();
+  if (!title) { setDocStatus(id, 'main', 'Give it a title first.', true); return; }
+  const body = { title };
+  if (doc.editable) {
+    body.text = docDraft(id, 'text', t.text);
+    if (!body.text.trim()) { setDocStatus(id, 'main', 'The text is empty. To remove the document, delete it instead.', true); return; }
+  }
+  try {
+    replaceDoc(await api(`/api/documents/${id}`, { method: 'PATCH', body: JSON.stringify(body) }));
+    state.docs.drafts.delete(`${id}:title`);
+    state.docs.drafts.delete(`${id}:text`);
+    if (doc.editable) t.text = body.text.trim();
+    setDocStatus(id, 'main', `Saved.${doc.use_for_scoring ? ' Existing scores are now marked stale.' : ''}`);
+    redrawDoc(id);
+    if (doc.use_for_scoring) docsChanged();
+  } catch (e) { setDocStatus(id, 'main', `Not saved: ${e.message}`, true); }
+}
+
+async function saveConcise(id) {
+  const t = state.docs.text.get(id);
+  const text = docDraft(id, 'concise', t.concise_text);
+  try {
+    const doc = await api(`/api/documents/${id}`, { method: 'PATCH', body: JSON.stringify({ concise_text: text }) });
+    replaceDoc(doc);
+    state.docs.drafts.delete(`${id}:concise`);
+    t.concise_text = text.trim();
+    setDocStatus(id, 'concise', !t.concise_text ? 'Concise version removed: the AI gets the original.'
+      : doc.use_concise ? 'Saved. The AI gets this version; existing scores are now marked stale.'
+        : 'Saved. Choose "the concise version" above to send it instead of the original.');
+    redrawDoc(id);
+    if (doc.use_for_scoring) docsChanged();
+  } catch (e) { setDocStatus(id, 'concise', `Not saved: ${e.message}`, true); }
+}
+
+async function setDocVersion(id, concise) {
+  const t = state.docs.text.get(id);
+  const body = { use_concise: concise };
+  const draft = docDraft(id, 'concise', t.concise_text);
+  if (concise && draft !== t.concise_text) body.concise_text = draft; // send what's on screen, not the older copy
+  try {
+    const doc = await api(`/api/documents/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+    replaceDoc(doc);
+    if ('concise_text' in body) { state.docs.drafts.delete(`${id}:concise`); t.concise_text = draft.trim(); }
+    setDocStatus(id, 'concise', concise ? 'The AI now gets the concise version.' : 'The AI now gets the original.');
+    redrawDoc(id);
+    if (doc.use_for_scoring) docsChanged();
+  } catch (e) {
+    setDocStatus(id, 'concise', `Not changed: ${e.message}`, true);
+    redrawDoc(id);
+  }
+}
+
+async function makeConcise(id) {
+  const t = state.docs.text.get(id);
+  const doc = docById(id);
+  if (docDraft(id, 'concise', t.concise_text).trim()
+      && !confirm('Write a new concise version from the original? It replaces the current one, including your changes to it.')) return;
+  state.docs.busy.add(`${id}:concise-make`);
+  setDocStatus(id, 'concise', 'Writing the concise version… this can take a minute or two.');
+  redrawDoc(id);
+  try {
+    const d = await api(`/api/documents/${id}/concise`, { method: 'POST' });
+    state.docs.text.set(id, { text: d.text || '', concise_text: d.concise_text || '' });
+    state.docs.drafts.delete(`${id}:concise`);
+    replaceDoc(d);
+    setDocStatus(id, 'concise', 'Done: the AI now gets the concise version. Read it against the original, then edit it, or switch back to the original if anything is missing.');
+    if (doc.use_for_scoring) docsChanged();
+  } catch (e) {
+    setDocStatus(id, 'concise', `Couldn't write it: ${e.message}`, true);
+  }
+  state.docs.busy.delete(`${id}:concise-make`);
+  redrawDoc(id);
+}
+
+function keptBoth() {
+  try { return JSON.parse(localStorage.getItem(KEEP_BOTH_KEY) || '[]'); } catch { return []; }
+}
+
+// A ticked summary whose ticked originals send the same content twice: suggest unticking them (never done silently).
+function renderSummarySuggestion() {
+  const box = $('#summary-suggest');
+  const kept = keptBoth();
+  const items = state.docs.list
+    .filter((s) => s.source === 'summary' && s.use_for_scoring && !kept.includes(s.id))
+    .map((s) => ({ s, ticked: (s.summary_of || []).map(docById).filter((d) => d && d.use_for_scoring) }))
+    .filter((x) => x.ticked.length);
+  const focus = rememberFocus(box);
+  box.innerHTML = items.map(({ s, ticked }) => {
+    const n = ticked.length;
+    return `<div class="callout">
+      <p><strong>${esc(s.filename)}</strong> is ticked, and so ${n === 1 ? 'is 1 document' : `are ${n} documents`} it was made from
+        (${ticked.map((d) => esc(d.filename)).join(', ')}): the AI gets that content twice.
+        Once you've read the summary through, untick ${n === 1 ? 'it' : 'them'}.</p>
+      <div class="toolbar-row">
+        <button class="btn btn-primary btn-sm" type="button" data-act="untick" data-id="${s.id}" data-focus="sum-${s.id}-untick">Untick the ${n === 1 ? 'original' : `${n} originals`}</button>
+        <button class="btn btn-sm" type="button" data-act="keep" data-id="${s.id}" data-focus="sum-${s.id}-keep">Keep both ticked</button>
+      </div>
+    </div>`;
+  }).join('');
+  box.hidden = !items.length;
+  restoreFocus(box, focus);
+}
+
+async function onSummarySuggestion(e) {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const summary = docById(Number(btn.dataset.id));
+  if (!summary) return;
+  if (btn.dataset.act === 'keep') {
+    try { localStorage.setItem(KEEP_BOTH_KEY, JSON.stringify([...keptBoth(), summary.id])); } catch { /* shown again next time */ }
+    renderSummarySuggestion();
+    $('#docs-list-heading').focus();
+    announceDocs(`Kept ${summary.filename} and its originals ticked.`);
+    return;
+  }
+  const ticked = (summary.summary_of || []).map(docById).filter((d) => d && d.use_for_scoring);
+  try {
+    for (const d of ticked) {
+      replaceDoc(await api(`/api/documents/${d.id}`, { method: 'PATCH', body: JSON.stringify({ use_for_scoring: false }) }));
+    }
+    renderDocs();
+    $('#docs-list-heading').focus(); // the suggestion with the button is gone
+    announceDocs(`Unticked ${ticked.length} document(s): the AI now gets ${summary.filename} instead.`);
+    docsChanged();
+  } catch (err) { toast(`Untick failed: ${err.message}`, 'err'); loadDocs(); }
+}
+
+async function makeSummary() {
+  const btn = $('#summary-make');
+  const status = $('#summary-status');
+  if (btn.getAttribute('aria-disabled') === 'true') return;
+  const ticked = state.docs.list.filter((d) => d.use_for_scoring && d.kind !== 'preferences');
+  if (!ticked.length) { status.textContent = 'Tick "use for scoring" on the documents to merge first (preferences stay separate).'; return; }
+  btn.setAttribute('aria-disabled', 'true');
+  status.textContent = `Merging ${ticked.length} document(s) into one summary… this can take a few minutes.`;
+  try {
+    const d = await api('/api/documents/summary', { method: 'POST' });
+    state.docs.text.set(d.id, { text: d.text || '', concise_text: '' });
+    state.docs.open.add(d.id);
+    replaceDoc(d);
+    renderDocs();
+    status.textContent = `Created "${d.filename}" and ticked it; it's open below. The ${d.sources.length} document(s) it was made from are still ticked: read the summary through, then untick them.`;
+    docsChanged();
+  } catch (e) { status.textContent = `Couldn't create the summary: ${e.message}`; }
+  btn.removeAttribute('aria-disabled');
+}
+
+async function saveNote(e) {
+  e.preventDefault();
+  const status = $('#note-status');
+  const title = $('#note-title').value.trim();
+  const text = $('#note-text').value.trim();
+  if (!title || !text) {
+    status.textContent = 'A note needs a title and some text.';
+    (title ? $('#note-text') : $('#note-title')).focus();
+    return;
+  }
+  const body = { title, text, kind: $('#note-kind').value, use_for_scoring: $('#note-use').checked };
+  try {
+    const doc = await api('/api/documents/notes', { method: 'POST', body: JSON.stringify(body) });
+    replaceDoc(doc);
+    renderDocs();
+    $('#note-title').value = '';
+    $('#note-text').value = '';
+    status.textContent = `Saved "${doc.filename}": it's first in the list below.`;
+    if (doc.use_for_scoring) docsChanged(); else loadScorerStatus();
+  } catch (err) { status.textContent = `Not saved: ${err.message}`; }
+}
+
 function initDocs() {
+  $('#note-form').addEventListener('submit', saveNote);
+  $('#summary-make').addEventListener('click', makeSummary);
+  $('#summary-suggest').addEventListener('click', onSummarySuggestion);
   $('#upload-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const files = Array.from($('#upload-input').files);

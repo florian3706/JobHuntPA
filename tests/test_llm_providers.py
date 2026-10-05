@@ -100,14 +100,33 @@ def api_error(cls, message="boom"):
     return cls(message, response=response, body=None)
 
 
+class FakeStream:
+    """What ``client.messages.stream(...)`` returns: a context manager with the final message."""
+
+    def __init__(self, reply):
+        self.reply = reply
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        return self.reply
+
+
 class FakeClaude:
-    """Stands in for anthropic.Anthropic: replies in order; each reply is a message or an exception to raise."""
+    """Stands in for anthropic.Anthropic: replies in order; each reply is a message or an exception to raise.
+    Streamed requests are recorded as "messages.stream" / "beta.stream"."""
 
     def __init__(self, *replies):
         self.replies = list(replies)
         self.calls: list[tuple[str, dict]] = []
-        self.messages = SimpleNamespace(create=lambda **kw: self._call("messages", kw))
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: self._call("beta", kw)))
+        self.messages = SimpleNamespace(create=lambda **kw: self._call("messages", kw),
+                                        stream=lambda **kw: FakeStream(self._call("messages.stream", kw)))
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: self._call("beta", kw),
+                                                             stream=lambda **kw: FakeStream(self._call("beta.stream", kw))))
 
     def _call(self, endpoint, kwargs):
         self.calls.append((endpoint, kwargs))
@@ -852,6 +871,297 @@ class NoWebSearchTest(ProviderTestCase):
                     self.assertIn(preset["label"], detail)
             finally:
                 c.delete(f"/api/workspaces/{ws}", headers=h)
+
+
+# --------------------------------------------------------------------------
+# Prompt caching and usage records
+# --------------------------------------------------------------------------
+
+def a_job(n: int):
+    from backend.db import Job
+    return Job(title=f"Program Manager {n}", company=f"Employer {n}", location_text="Sydney NSW", work_mode="hybrid",
+               description=f"Ad number {n}: lead programs.", detail_status="full")
+
+
+PROFILE = "=== RESUME / CV: cv.pdf ===\nJane Doe. Program lead at Foo, 2019-2025."
+DOCS_BLOCK = "CANDIDATE DOCUMENTS:\n<<<\n" + PROFILE + "\n>>>\n\n"
+json_mod = json  # for helpers whose ``json`` argument (httpx.post's) hides the module
+
+
+def usage_mark() -> int:
+    from sqlalchemy import func
+    from backend.db import LlmUsage, SessionLocal
+    db = SessionLocal()
+    try:
+        return db.query(func.max(LlmUsage.id)).scalar() or 0
+    finally:
+        db.close()
+
+
+def usage_since(mark: int) -> list[dict]:
+    from backend.db import LlmUsage, SessionLocal
+    db = SessionLocal()
+    try:
+        return [{k: getattr(r, k) for k in ("purpose", "provider", "model", "workspace_id", "input_tokens", "output_tokens",
+                                            "cached_tokens", "cache_write_tokens")}
+                for r in db.query(LlmUsage).filter(LlmUsage.id > mark).order_by(LlmUsage.id)]
+    finally:
+        db.close()
+
+
+class ClaudeCachingTest(ProviderTestCase):
+    def test_the_documents_block_carries_a_cache_breakpoint_and_the_job_comes_after_it(self):
+        fake, patch = claude(sdk_message([text_block("{}")], beta=True), sdk_message([text_block("{}")], beta=True))
+        with patch, no_http():
+            for n in (1, 2):
+                sc.call_model(sc.build_messages(a_job(n), PROFILE), CLAUDE)
+        first, second = (kw for _, kw in fake.calls)
+        self.assertEqual(first["system"], sc.SYSTEM_PROMPT)  # tools, then system, then messages: cached with the documents
+        docs_block, job_block = first["messages"][0]["content"]
+        self.assertEqual(docs_block, {"type": "text", "text": DOCS_BLOCK, "cache_control": {"type": "ephemeral"}})
+        self.assertEqual(job_block["type"], "text")
+        self.assertNotIn("cache_control", job_block)
+        self.assertTrue(job_block["text"].startswith("JOB POSTING:\n<<<\nTitle: Program Manager 1"))
+        # The prefix up to the breakpoint is identical for the next job; only the job block differs.
+        self.assertEqual((second["system"], second["messages"][0]["content"][0]), (first["system"], docs_block))
+        self.assertNotEqual(second["messages"][0]["content"][1], job_block)
+        self.assertEqual((first["output_config"] if "output_config" in first else None, first["max_tokens"]), (None, 16000))
+
+    def test_ttl_follows_how_soon_the_prefix_comes_back(self):
+        # A scoring run: 5 minutes, unless one request may run longer than that.
+        fake, patch = claude(sdk_message([text_block("{}")], beta=True))
+        with patch, no_http():
+            sc.call_model(sc.build_messages(a_job(1), PROFILE), {**CLAUDE, "timeout_s": 600})
+        self.assertEqual(fake.calls[0][1]["messages"][0]["content"][0]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
+        # The chat: the next question waits for the user, so an hour; both system parts are breakpoints.
+        parts = [lp.cached_text("INSTRUCTIONS + DOCUMENTS", lp.CACHE_CONVERSATION), lp.cached_text("JOBS", lp.CACHE_CONVERSATION)]
+        fake, patch = claude(sdk_message([text_block("answer")], beta=True))
+        with patch, no_http():
+            lp.chat([{"role": "system", "content": parts}, {"role": "user", "content": "Q1"},
+                     {"role": "assistant", "content": "A1"}, {"role": "user", "content": "Q2"}], CLAUDE, json_mode=False)
+        kw = fake.calls[0][1]
+        hour = {"type": "ephemeral", "ttl": "1h"}
+        self.assertEqual(kw["system"], [{"type": "text", "text": "INSTRUCTIONS + DOCUMENTS", "cache_control": hour},
+                                        {"type": "text", "text": "JOBS", "cache_control": hour}])
+        self.assertEqual([m["content"] for m in kw["messages"]], ["Q1", "A1", "Q2"])
+        # At most four breakpoints (the API's limit): the last four marks are kept.
+        many = [{"role": "user", "content": [lp.cached_text(f"part {i}") for i in range(6)]}]
+        system, turns = llm_anthropic.split_messages(many, CLAUDE)
+        self.assertEqual([("cache_control" in b) for b in turns[0]["content"]], [False, False, True, True, True, True])
+
+    def test_the_reasoning_effort_fallback_still_works_with_caching(self):
+        cfg = {**CLAUDE, "model": "claude-haiku-4-5", "reasoning_effort": "low"}
+        fake, patch = claude(api_error(anthropic.BadRequestError, "effort: this model does not support effort"),
+                             sdk_message([text_block("{}")]), sdk_message([text_block("{}")]))
+        with patch, no_http():
+            sc.call_model(sc.build_messages(a_job(1), PROFILE), cfg)
+            sc.call_model(sc.build_messages(a_job(2), PROFILE), cfg)
+        self.assertEqual(["output_config" in kw for _, kw in fake.calls], [True, False, False])
+        for _, kw in fake.calls:
+            self.assertEqual(kw["messages"][0]["content"][0]["cache_control"], {"type": "ephemeral"})
+
+    def test_cache_reads_and_writes_are_recorded(self):
+        mark = usage_mark()
+        usage = {"input_tokens": 120, "output_tokens": 300, "cache_read_input_tokens": 41000, "cache_creation_input_tokens": 0}
+        fake, patch = claude(sdk_message([text_block("{}")], beta=True, model="claude-opus-5-5"),
+                             sdk_message([text_block("{}")], beta=True, usage=usage))
+        cfg = {**CLAUDE, "purpose": "scoring", "workspace_id": 1}
+        with patch, no_http():
+            sc.call_model(sc.build_messages(a_job(1), PROFILE), cfg)  # usage {"input_tokens": 1, "output_tokens": 1}
+            sc.call_model(sc.build_messages(a_job(2), PROFILE), cfg)
+        rows = usage_since(mark)
+        base = {"purpose": "scoring", "provider": "anthropic", "model": "claude-opus-5-5", "workspace_id": 1}
+        self.assertEqual(rows, [{**base, "input_tokens": 1, "output_tokens": 1, "cached_tokens": None, "cache_write_tokens": None},
+                                {**base, "input_tokens": 41120, "output_tokens": 300, "cached_tokens": 41000, "cache_write_tokens": 0}])
+
+    def test_a_long_document_is_streamed_with_more_room(self):
+        fake, patch = claude(sdk_message([text_block("Long summary.")], beta=True), sdk_message([text_block("Short.")]))
+        with patch, no_http():
+            out = lp.chat([{"role": "user", "content": "Summarise"}], {**CLAUDE, "long_output": True}, json_mode=False)
+            short = lp.chat([{"role": "user", "content": "Hi"}], {**CLAUDE, "model": "claude-haiku-4-5"})
+        self.assertEqual((out, short), ("Long summary.", "Short."))
+        (endpoint, kw), (plain_endpoint, plain_kw) = fake.calls
+        self.assertEqual((endpoint, kw["max_tokens"], kw["fallbacks"]), ("beta.stream", llm_anthropic.MAX_TOKENS_LONG, "default"))
+        self.assertEqual((plain_endpoint, plain_kw["max_tokens"]), ("messages", 16000))
+
+    def test_web_search_in_the_chat_caches_the_instructions_across_a_paused_turn(self):
+        parts = [lp.cached_text("DOCS", lp.CACHE_CONVERSATION), lp.cached_text("JOBS", lp.CACHE_CONVERSATION)]
+        paused = sdk_message([text_block("Searching."), search_call()], stop="pause_turn", beta=True)
+        done = sdk_message([search_result(ClaudeWebSearchTest.PAGES), text_block("Found it.")], beta=True)
+        fake, patch = claude(paused, done)
+        with patch, no_http():
+            out = lp.web_search(CLAUDE, instructions=parts, input=[{"role": "user", "content": "News?"}])
+        self.assertEqual(rs.extract(out)[0], "Found it.")
+        for _, kw in fake.calls:  # the resent request reads the same cached prefix
+            self.assertEqual([b.get("cache_control") for b in kw["system"]], [{"type": "ephemeral", "ttl": "1h"}] * 2)
+        # Research sends plain instructions: nothing cached, exactly as before.
+        fake, patch = claude(sdk_message([text_block("{}")], beta=True))
+        with patch, no_http():
+            lp.web_search(CLAUDE, instructions="INSTRUCTIONS", input="Organisation: Acme")
+        self.assertEqual(fake.calls[0][1]["system"], "INSTRUCTIONS")
+
+
+class OpenAIStyleCachingTest(ProviderTestCase):
+    def send_two_jobs(self, cfg):
+        sent = []
+
+        def post(url, json=None, headers=None, timeout=None):
+            sent.append((json_mod.loads(json_mod.dumps(json)), dict(headers)))
+            return chat_reply("{}")
+        with mock.patch.object(httpx, "post", side_effect=post):
+            for n in (1, 2):
+                sc.call_model(sc.build_messages(a_job(n), PROFILE), cfg)
+        return sent
+
+    def test_the_prefix_is_byte_identical_across_jobs(self):
+        for base, key, header in (("https://api.openai.com/v1", True, False), ("https://api.meta.ai/v1", True, False),
+                                  ("https://api.mistral.ai/v1", True, False), ("https://api.x.ai/v1", False, True),
+                                  ("https://api.deepseek.com", False, False), ("https://api.groq.com/openai/v1", False, False),
+                                  (lp.GEMINI_OPENAI_BASE, False, False), ("http://localhost:11434/v1", False, False),
+                                  ("https://llm.example/v1", False, False)):
+            (one, h1), (two, h2) = self.send_two_jobs(cfg_for(base, "m"))
+            self.assertEqual(one["messages"][0], two["messages"][0], base)  # the system prompt
+            first, second = one["messages"][1]["content"], two["messages"][1]["content"]
+            self.assertIsInstance(first, str, base)  # flattened: no provider here needs content parts
+            # Exactly the string sent before caching existed: documents, then the job.
+            self.assertEqual(first, DOCS_BLOCK + "JOB POSTING:\n<<<\n" + sc.build_job_text(a_job(1)) + "\n>>>\n\nReturn only the JSON object.")
+            shared = len(os.path.commonprefix([json_mod.dumps(one["messages"]), json_mod.dumps(two["messages"])]))
+            self.assertGreater(shared, len(json_mod.dumps(one["messages"][0])) + len(DOCS_BLOCK), base)
+            self.assertEqual("prompt_cache_key" in one, key, base)
+            if key:
+                self.assertEqual(one["prompt_cache_key"], two["prompt_cache_key"])
+                self.assertRegex(one["prompt_cache_key"], r"^jobhuntpa-[0-9a-f]{32}$")  # a hash, never the content
+            self.assertEqual("x-grok-conv-id" in h1, header, base)
+            if header:
+                self.assertEqual(h1["x-grok-conv-id"], h2["x-grok-conv-id"])
+        # Other documents: another prefix, another key.
+        (a, _), _ = self.send_two_jobs(cfg_for("https://api.openai.com/v1", "m"))
+        with mock.patch.object(httpx, "post", return_value=chat_reply("{}")) as post:
+            sc.call_model(sc.build_messages(a_job(1), PROFILE + " PMP."), cfg_for("https://api.openai.com/v1", "m"))
+        self.assertNotEqual(post.call_args.kwargs["json"]["prompt_cache_key"], a["prompt_cache_key"])
+
+    def test_a_rejected_prompt_cache_key_is_dropped_and_remembered(self):
+        cfg = cfg_for("https://api.openai.com/v1", "older-model")
+        sent = []
+        replies = [http_reply(status=400, text='{"error": {"message": "Unrecognized request argument supplied: prompt_cache_key"}}'),
+                   chat_reply("{}"), chat_reply("{}")]
+        with mock.patch.object(httpx, "post", side_effect=lambda url, **kw: sent.append(dict(kw["json"])) or replies.pop(0)):
+            sc.call_model(sc.build_messages(a_job(1), PROFILE), cfg)
+            sc.call_model(sc.build_messages(a_job(2), PROFILE), cfg)
+        self.assertEqual(["prompt_cache_key" in p for p in sent], [True, False, False])
+        self.assertTrue(lp.param_rejected(cfg, "prompt_cache_key"))
+
+    def test_openrouter_keeps_cache_breakpoints_for_claude_only(self):
+        (claude_req, _), _ = self.send_two_jobs(cfg_for("https://openrouter.ai/api/v1", "anthropic/claude-sonnet-5.5"))
+        self.assertEqual(claude_req["messages"][1]["content"][0],
+                         {"type": "text", "text": DOCS_BLOCK, "cache_control": {"type": "ephemeral"}})
+        self.assertNotIn("cache_control", claude_req["messages"][1]["content"][1])
+        self.assertEqual(claude_req["messages"][0]["content"], sc.SYSTEM_PROMPT)
+        (gpt_req, _), _ = self.send_two_jobs(cfg_for("https://openrouter.ai/api/v1", "openai/gpt-6.1-sol"))
+        self.assertIsInstance(gpt_req["messages"][1]["content"], str)  # automatic caching there
+        self.assertNotIn("prompt_cache_key", gpt_req)
+
+    def test_a_cut_off_long_document_is_an_error(self):
+        cut = http_reply({"choices": [{"message": {"content": "SUMMARY: half"}, "finish_reason": "length"}]})
+        with mock.patch.object(httpx, "post", return_value=cut):
+            self.assertEqual(lp.chat([{"role": "user", "content": "x"}], cfg_for("https://llm.example/v1")), "SUMMARY: half")
+            with self.assertRaisesRegex(sc.ScorerError, "cut off"):
+                lp.chat([{"role": "user", "content": "x"}], cfg_for("https://llm.example/v1", long_output=True), json_mode=False)
+
+
+class UsageRecordTest(ProviderTestCase):
+    def test_openai_style_usage_and_cached_tokens(self):
+        mark = usage_mark()
+        replies = [
+            http_reply({"choices": [{"message": {"content": "{}"}}], "usage": {
+                "prompt_tokens": 45000, "completion_tokens": 900,
+                "prompt_tokens_details": {"cached_tokens": 44800, "cache_write_tokens": 0}}}),
+            http_reply({"choices": [{"message": {"content": "{}"}}], "usage": {   # DeepSeek's names
+                "prompt_tokens": 45000, "completion_tokens": 800, "prompt_cache_hit_tokens": 44928, "prompt_cache_miss_tokens": 72}}),
+        ]
+        with mock.patch.object(httpx, "post", side_effect=lambda url, **kw: replies.pop(0)):
+            sc.call_model([{"role": "user", "content": "x"}], cfg_for("https://api.openai.com/v1", "gpt-6.1-sol", purpose="scoring", workspace_id=1))
+            sc.call_model([{"role": "user", "content": "x"}], cfg_for("https://api.deepseek.com", "deepseek-flash", purpose="chat"))
+        self.assertEqual(usage_since(mark), [
+            {"purpose": "scoring", "provider": "openai", "model": "gpt-6.1-sol", "workspace_id": 1, "input_tokens": 45000,
+             "output_tokens": 900, "cached_tokens": 44800, "cache_write_tokens": 0},
+            {"purpose": "chat", "provider": "deepseek", "model": "deepseek-flash", "workspace_id": None, "input_tokens": 45000,
+             "output_tokens": 800, "cached_tokens": 44928, "cache_write_tokens": None}])
+
+    def test_missing_or_odd_usage_never_fails_a_request(self):
+        mark = usage_mark()
+        odd = [chat_reply("a"),                                                              # no usage at all
+               http_reply({"choices": [{"message": {"content": "b"}}], "usage": "n/a"}),
+               http_reply({"choices": [{"message": {"content": "c"}}], "usage": {"prompt_tokens": "lots", "prompt_tokens_details": None}})]
+        with mock.patch.object(httpx, "post", side_effect=lambda url, **kw: odd.pop(0)):
+            for want in "abc":
+                self.assertEqual(lp.chat([{"role": "user", "content": "x"}], cfg_for("https://llm.example/v1")), want)
+        rows = usage_since(mark)
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(r["input_tokens"] is None and r["cached_tokens"] is None for r in rows))
+        # Even a database that can't take the row only logs it.
+        with mock.patch("backend.db.SessionLocal", side_effect=RuntimeError("database locked")), \
+                mock.patch.object(httpx, "post", return_value=chat_reply("still answered")), self.assertLogs("backend.llm_providers", "WARNING"):
+            self.assertEqual(lp.chat([{"role": "user", "content": "x"}], cfg_for("https://llm.example/v1")), "still answered")
+        no_usage = SimpleNamespace(stop_reason="end_turn", model="claude-opus-5-5", usage=None,
+                                   content=[SimpleNamespace(type="text", text="ok")])
+        mark = usage_mark()
+        fake, patch = claude(no_usage)
+        with patch, no_http():
+            self.assertEqual(lp.chat([{"role": "user", "content": "x"}], CLAUDE), "ok")
+        self.assertEqual(usage_since(mark)[0]["input_tokens"], None)
+        fake, patch = claude(no_usage)
+        with patch, no_http(), mock.patch("backend.db.SessionLocal", side_effect=RuntimeError("gone")), self.assertLogs("backend.llm_providers", "WARNING"):
+            self.assertEqual(lp.chat([{"role": "user", "content": "x"}], CLAUDE), "ok")
+        self.assertEqual(llm_anthropic.usage_of(SimpleNamespace()), {"input_tokens": None, "output_tokens": None,
+                                                                     "cached_tokens": None, "cache_write_tokens": None})
+
+    def test_web_search_usage(self):
+        mark = usage_mark()
+        response = {"id": "r", "status": "completed", "usage": {"input_tokens": 9000, "output_tokens": 500,
+                                                                 "input_tokens_details": {"cached_tokens": 8000}},
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "{}", "annotations": []}]}]}
+        with mock.patch.object(httpx, "post", return_value=http_reply(response)):
+            lp.web_search(cfg_for("https://api.meta.ai/v1", "muse-spark-1.3", purpose="research"), instructions="I", input="Q")
+        gemini = {"candidates": [{"content": {"parts": [{"text": "{}"}]}, "finishReason": "STOP"}],
+                  "usageMetadata": {"promptTokenCount": 7000, "candidatesTokenCount": 40, "thoughtsTokenCount": 60,
+                                    "cachedContentTokenCount": 6000}}
+        with mock.patch.object(httpx, "post", return_value=http_reply(gemini)):
+            lp.web_search(GEMINI, instructions="I", input="Q")
+        rows = usage_since(mark)
+        self.assertEqual([(r["provider"], r["input_tokens"], r["output_tokens"], r["cached_tokens"]) for r in rows],
+                         [("meta", 9000, 500, 8000), ("gemini", 7000, 100, 6000)])
+        self.assertEqual(rows[0]["purpose"], "research")
+
+
+class ScoringRunTest(ProviderTestCase):
+    def test_the_first_job_goes_alone_so_the_rest_can_read_the_cache(self):
+        import threading
+        import time
+        from backend.db import Job, SessionLocal
+
+        db = SessionLocal()
+        jobs = [Job(workspace_id=1, url=f"https://warm.example/{i}", title=f"Role {i}", company=f"Co {i}", status="to_review",
+                    detail_status="full", description=f"Ad {i}", description_hash=f"warm-{i}") for i in range(5)]
+        db.add_all(jobs)
+        db.commit()
+        ids = [j.id for j in jobs]
+        db.close()
+        events, lock = [], threading.Lock()
+
+        def fake_score(job_id, profile_text, profile_hash, cfg):
+            with lock:
+                events.append(("start", job_id))
+            time.sleep(0.02)
+            with lock:
+                events.append(("end", job_id))
+            return {"score": 50, "requirements": [], "gaps": [], "summary": ""}
+        env = {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://llm.example/v1", "LLM_MODEL": "m", "LLM_CONCURRENCY": "3"}
+        with mock.patch.dict(os.environ, env), mock.patch.object(sc, "score_one", side_effect=fake_score):
+            out = sc.score_jobs(1, ids)
+        self.assertEqual(out["scored"], 5)
+        self.assertEqual(events[:2], [("start", ids[0]), ("end", ids[0])])  # alone, before any other starts
+        self.assertEqual(sorted(j for kind, j in events if kind == "start"), sorted(ids))
 
 
 if __name__ == "__main__":

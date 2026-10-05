@@ -305,7 +305,8 @@ def find_offices(ws: int, job_ids: Optional[list[int]] = None,
     from backend import llm_providers
     from backend.scorer import ScorerError, get_config
 
-    cfg = get_config("research")
+    cfg = {**get_config("research"), "purpose": "offices", "workspace_id": ws}
+    ad_cfg = {**get_config("scoring"), "purpose": "office_from_ad", "workspace_id": ws}
     db = SessionLocal()
     out = {"from_ads": 0, "from_companies": 0, "unknown": 0, "recruiters": 0, "errors": 0}
     try:
@@ -313,7 +314,7 @@ def find_offices(ws: int, job_ids: Optional[list[int]] = None,
         for i, job in enumerate(unread, 1):
             progress(f"reading ads for an office {i}/{len(unread)}", {"done": i, "total": len(unread)})
             try:
-                from_ad(db, job, read_ad(job, get_config("scoring")))
+                from_ad(db, job, read_ad(job, ad_cfg))
             except ScorerError as exc:
                 if exc.auth:
                     raise

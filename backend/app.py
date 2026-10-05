@@ -376,7 +376,7 @@ def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Dep
                  ws: int = Depends(current_workspace)):
     from backend.scorer import ScorerError, build_profile, config_problem, get_config, score_one
 
-    cfg = get_config("scoring")
+    cfg = {**get_config("scoring"), "workspace_id": ws}
     if config_problem(cfg):
         raise HTTPException(status_code=400, detail=config_problem(cfg))
     owned(db, Job, job_id, ws, "Job")

@@ -16,21 +16,30 @@ How the request differs from the OpenAI-style ones:
   * Claude Fable 5.1, Opus 5.5, Opus 5 and Sonnet 5.5 go through the beta endpoint with
     ``fallbacks="default"``, so the API reruns a refused request on a fallback model;
   * web search is the server tool ``web_search``: results, errors and citations come back in the same response,
-    and a long search ends with ``stop_reason == "pause_turn"`` until the request is sent again.
+    and a long search ends with ``stop_reason == "pause_turn"`` until the request is sent again;
+  * prompt caching: text parts marked with ``llm_providers.cached_text`` become text blocks with a
+    ``cache_control`` breakpoint (at most 4; the TTL is ``llm_providers.cache_ttl``'s, 5 minutes unless the next
+    request may come later). Render order is tools, system, messages, so a breakpoint after the documents caches
+    the instructions with them. Plain string content is sent exactly as before;
+  * ``cfg["long_output"]`` (a long document to write) streams with MAX_TOKENS_LONG, as the SDK wants for answers
+    that long, instead of a plain request capped at MAX_TOKENS;
+  * every answered request's ``usage`` goes to ``llm_providers.record_usage`` (cache reads and writes included).
 """
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 import anthropic
 
+from backend import llm_providers as lp
 from backend.llm_providers import COUNTRY, ScorerError, search_timeout, param_rejected, remember_rejected
 
 log = logging.getLogger(__name__)
 
 MAX_TOKENS = 16000
+MAX_TOKENS_LONG = 32000  # every current model takes it (older Opus 4.x models stop at 32000)
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 FALLBACK_MODELS = frozenset({"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"})
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -69,9 +78,13 @@ def _client(cfg: dict) -> "anthropic.Anthropic":
 
 def _create(cfg: dict, kwargs: dict) -> Any:
     client = _client(cfg)
-    if (cfg.get("model") or "").strip() in FALLBACK_MODELS:
-        return client.beta.messages.create(**kwargs, betas=[FALLBACK_BETA], fallbacks="default")
-    return client.messages.create(**kwargs)
+    fallback = (cfg.get("model") or "").strip() in FALLBACK_MODELS
+    api = client.beta.messages if fallback else client.messages
+    extra = {"betas": [FALLBACK_BETA], "fallbacks": "default"} if fallback else {}
+    if kwargs.get("max_tokens", 0) > MAX_TOKENS:  # a long answer: streamed, then collected
+        with api.stream(**kwargs, **extra) as stream:
+            return stream.get_final_message()
+    return api.create(**kwargs, **extra)
 
 
 def _status_error(exc: "anthropic.APIStatusError") -> ScorerError:
@@ -95,10 +108,41 @@ def _guard(call: Callable[[], Any]) -> Any:
         raise ScorerError(str(exc)) from exc
 
 
-def split_messages(messages: list[dict]) -> tuple[str, list[dict]]:
-    """(system prompt, conversation) from OpenAI-style messages."""
-    system = "\n\n".join(str(m.get("content") or "") for m in messages if m.get("role") == "system").strip()
-    turns = [{"role": m["role"], "content": m["content"]} for m in messages if m.get("role") in ("user", "assistant")]
+def _blocks(content: list, marked: set[int], ttl: Optional[str]) -> list[dict]:
+    """Text parts as text blocks; the marked ones carry a cache breakpoint. Empty parts are left out (the API
+    rejects empty text blocks)."""
+    blocks = []
+    for j, part in enumerate(p for p in content if isinstance(p, dict)):
+        text = str(part.get("text") or "")
+        if not text:
+            continue
+        block: dict[str, Any] = {"type": "text", "text": text}
+        if j in marked:
+            block["cache_control"] = lp.cache_control(ttl)
+        blocks.append(block)
+    return blocks
+
+
+def split_messages(messages: list[dict], cfg: Optional[dict] = None) -> tuple[Union[str, list], list[dict]]:
+    """(system prompt, conversation) from OpenAI-style messages. String content stays a string (the system
+    prompts joined); text parts become text blocks, with ``cache_control`` where ``cached_text`` marked them."""
+    marks = lp.cache_breakpoints(messages)
+    ttl = lp.cache_ttl(cfg or {}, messages)
+
+    def content(i: int, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return _blocks(value, {j for (mi, j) in marks if mi == i}, ttl)
+
+    systems = [(i, m.get("content")) for i, m in enumerate(messages) if m.get("role") == "system"]
+    if any(isinstance(c, list) for _, c in systems):
+        system: Union[str, list] = []
+        for i, c in systems:
+            system += content(i, c) if isinstance(c, list) else ([{"type": "text", "text": str(c)}] if c else [])
+    else:
+        system = "\n\n".join(str(c or "") for _, c in systems).strip()
+    turns = [{"role": m["role"], "content": content(i, m["content"])} for i, m in enumerate(messages)
+             if m.get("role") in ("user", "assistant")]
     while turns and turns[0]["role"] != "user":
         turns.pop(0)  # a conversation starts with the user
     if not turns:
@@ -106,8 +150,20 @@ def split_messages(messages: list[dict]) -> tuple[str, list[dict]]:
     return system, turns
 
 
-def _send(cfg: dict, system: str, messages: list[dict], *, tools: Optional[list[dict]] = None) -> Any:
-    kwargs: dict[str, Any] = {"model": cfg["model"], "max_tokens": MAX_TOKENS, "messages": messages}
+def usage_of(resp: Any) -> dict:
+    """llm_usage counts from a response's ``usage``: ``input_tokens`` there is only the uncached remainder, so the
+    prompt's size is it plus the cache reads and writes."""
+    usage = lp.field(resp, "usage")
+    plain, read, write = (lp.as_int(lp.field(usage, k)) for k in
+                          ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+    total = None if plain is None and read is None and write is None else (plain or 0) + (read or 0) + (write or 0)
+    return {"input_tokens": total, "output_tokens": lp.as_int(lp.field(usage, "output_tokens")),
+            "cached_tokens": read, "cache_write_tokens": write}
+
+
+def _send(cfg: dict, system: Union[str, list], messages: list[dict], *, tools: Optional[list[dict]] = None) -> Any:
+    max_tokens = MAX_TOKENS_LONG if cfg.get("long_output") else MAX_TOKENS
+    kwargs: dict[str, Any] = {"model": cfg["model"], "max_tokens": max_tokens, "messages": messages}
     if system:
         kwargs["system"] = system
     if tools:
@@ -116,13 +172,15 @@ def _send(cfg: dict, system: str, messages: list[dict], *, tools: Optional[list[
     if effort and not param_rejected(cfg, "reasoning_effort"):
         kwargs["output_config"] = {"effort": effort}
     try:
-        return _guard(lambda: _create(cfg, kwargs))
+        resp = _guard(lambda: _create(cfg, kwargs))
     except ScorerError as exc:
         if "output_config" not in kwargs or not str(exc).startswith("HTTP 400") or "effort" not in str(exc).lower():
             raise
         kwargs.pop("output_config")  # a model without effort (Haiku 4.5): send without, and don't try again
         remember_rejected(cfg, "reasoning_effort")
-        return _guard(lambda: _create(cfg, kwargs))
+        resp = _guard(lambda: _create(cfg, kwargs))
+    lp.record_answer(cfg, usage_of, resp, model=getattr(resp, "model", None) or cfg["model"])
+    return resp
 
 
 def _check_stop(resp: Any) -> None:
@@ -145,7 +203,7 @@ def _text(content: list) -> str:
 
 def chat(messages: list[dict], cfg: dict, *, json_mode: bool = True) -> str:
     """One answer. ``json_mode`` has no switch in this API: the prompt asks for JSON."""
-    system, turns = split_messages(messages)
+    system, turns = split_messages(messages, cfg)
     resp = _send(cfg, system, turns)
     _check_stop(resp)
     return _text(resp.content)
@@ -176,11 +234,12 @@ def probe_level(cfg: dict, level: str) -> Optional[str]:
 # Web search
 # --------------------------------------------------------------------------
 
-def web_search(cfg: dict, instructions: str, turns: list[dict], context_size: str, what: str) -> dict:
+def web_search(cfg: dict, instructions: Union[str, list], turns: list[dict], context_size: str, what: str) -> dict:
     """A search-grounded answer. The server tool runs inside the request; when it pauses the turn
-    (``pause_turn``) the request is sent again with the paused turn appended, up to MAX_CONTINUATIONS times."""
+    (``pause_turn``) the request is sent again with the paused turn appended, up to MAX_CONTINUATIONS times
+    (marked instruction parts are cached, so the resent request reads them from the cache)."""
     cfg = {**cfg, "timeout_s": search_timeout(cfg)}  # a search with many lookups takes minutes
-    system, base = split_messages([{"role": "system", "content": instructions}, *turns])
+    system, base = split_messages([{"role": "system", "content": instructions}, *turns], cfg)
     tool = {"type": search_tool_type(cfg["model"]), "name": "web_search",
             "max_uses": SEARCH_USES.get(context_size, SEARCH_USES["medium"]),
             "user_location": {"type": "approximate", "country": COUNTRY}}

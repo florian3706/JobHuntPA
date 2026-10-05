@@ -16,6 +16,12 @@ Call sites use two functions and never build a provider's request themselves:
     chat(messages, cfg, json_mode=True)  -> str    (backend.scorer.call_model is this)
     web_search(cfg, instructions=..., input=...)   -> dict (below)
 
+A message's content is a string, or a list of text parts. ``cached_text(...)`` marks the part that ends a prefix
+later requests repeat byte for byte (the instructions and the candidate's documents), so providers can cache it;
+see "Prompt caching" below for what each provider does with the mark. ``cfg`` may also carry ``purpose`` and
+``workspace_id`` (recorded with the request's token usage in ``llm_usage``) and ``long_output`` (a long text that
+must not be cut off).
+
 ``web_search`` returns the app's normalised search response, in the shape of an OpenAI Responses answer, so the
 link-integrity code (backend.research.extract / parse_profile, backend.job_chat.web_sources) works unchanged
 for every provider:
@@ -34,6 +40,7 @@ installer can import it before the app's packages exist.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -240,6 +247,7 @@ def _auth_failed(cfg: dict, status: int, body: str) -> bool:
 # Parameters some providers reject. After a 400 names one, it is dropped and the request resent; the model is
 # remembered (until the app restarts) so later requests don't send it again.
 _PARAM_HINTS = {
+    "prompt_cache_key": ("prompt_cache_key",),
     "response_format": ("response_format", "json_object", "json mode", "json_schema"),
     "reasoning_effort": ("reasoning_effort", "reasoning effort", "reasoning"),
 }
@@ -311,6 +319,220 @@ def _turns(value: Union[str, list]) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
+# Prompt caching
+# --------------------------------------------------------------------------
+#
+# Scoring sends the same instructions and candidate documents (often 40-60k tokens) with every job, and the chat
+# sends them with every question. Call sites put that stable part first, end it with a ``cached_text`` part and
+# put what changes (the job, the question) after it; nothing per-request (time, ids) goes before the mark. What
+# each provider does with it (checked against their documentation, October 2026):
+#
+#   Anthropic   cache_control breakpoints on the marked blocks (backend/llm_anthropic.py). Cache reads cost a
+#               tenth of the input price or less; writes cost 1.25x (5-minute entries) or 2x (1-hour entries).
+#               Prefixes under the model's minimum (512 tokens on current models, 4096 on Haiku 4.5) aren't
+#               cached, silently.
+#   OpenAI      automatic for prompts of 1024+ tokens; ``prompt_cache_key`` (Chat Completions) routes requests
+#               with the same key to the same cache. GPT-5.6+ bills cache writes at 1.25x, reads at 0.1x.
+#   Meta        automatic; optional ``prompt_cache_key`` (its Prompt Caching cookbook).
+#   Mistral     only with ``prompt_cache_key``; cached tokens billed at 10%.
+#   xAI         automatic; the ``x-grok-conv-id`` header sends requests to the server holding the cache.
+#   OpenRouter  passes caching through to the model's provider (automatic for OpenAI, DeepSeek, Gemini, Grok,
+#               Groq); Claude models need ``cache_control`` on content parts, so those keep their parts.
+#   Gemini      implicit caching on Gemini 2.5+ (4096+ tokens on 3.x Flash), nothing to send.
+#   DeepSeek    automatic disk cache, nothing to send; reported as ``prompt_cache_hit_tokens``.
+#   Groq        automatic on the GPT-OSS models (50% off cached tokens), nothing to send.
+#   Ollama      runs locally: llama.cpp reuses the computed prefix while the model stays loaded (nothing billed).
+#   custom      unknown host: nothing extra is sent, the prompt is flattened as before.
+#
+# Caching doesn't mean "sent once": the documents still travel with every request, the provider just processes
+# (and bills) a repeated prefix for less. Only explicit caches that hold content by reference store it once
+# (Gemini's cachedContents on its native API, not built here). Every provider except Anthropic and OpenRouter-Claude
+# gets the parts flattened into one string per message, byte for byte what was sent before parts existed.
+
+CACHE_RUN = "run"                    # the next request with this prefix follows within minutes (a scoring run)
+CACHE_CONVERSATION = "conversation"  # it waits for the user's next question (the job chat), often 5-60 minutes
+MAX_BREAKPOINTS = 4                  # Anthropic's limit, through OpenRouter too
+_CACHE_KEY_PROVIDERS = {"openai", "meta", "mistral"}  # take prompt_cache_key on /chat/completions
+_RUN_TTL_LIMIT_S = 270               # a request that may run longer than this outlives a 5-minute entry
+
+
+def text_part(text: str) -> dict:
+    return {"type": "text", "text": text}
+
+
+def cached_text(text: str, reuse: str = CACHE_RUN) -> dict:
+    """A content part ending a prefix that later requests repeat byte for byte. ``reuse`` says when the next one
+    comes: CACHE_RUN (within minutes) or CACHE_CONVERSATION (when the user asks again)."""
+    return {"type": "text", "text": text, "cache": reuse}
+
+
+def _parts(content: Any) -> list[dict]:
+    if isinstance(content, list):
+        return [p for p in content if isinstance(p, dict)]
+    return [text_part("" if content is None else str(content))]
+
+
+def text_of(content: Any) -> str:
+    """A message's content as one string (parts are joined as they are, with nothing in between)."""
+    if isinstance(content, list):
+        return "".join(str(p.get("text") or "") for p in _parts(content))
+    return "" if content is None else str(content)
+
+
+def flat_messages(messages: list[dict]) -> list[dict]:
+    """The messages with string content (how every OpenAI-style provider gets them)."""
+    return [{**m, "content": text_of(m.get("content"))} if isinstance(m.get("content"), list) else m
+            for m in messages]
+
+
+def cache_breakpoints(messages: list[dict]) -> set[tuple[int, int]]:
+    """(message index, part index) of the marked parts that get a breakpoint: the last MAX_BREAKPOINTS."""
+    marks = [(i, j) for i, m in enumerate(messages) if isinstance(m.get("content"), list)
+             for j, p in enumerate(_parts(m["content"])) if p.get("cache") and p.get("text")]
+    return set(marks[-MAX_BREAKPOINTS:])
+
+
+def cached_prefix(messages: list[dict]) -> Optional[str]:
+    """Everything up to and including the last marked part, or None when nothing is marked."""
+    marks = cache_breakpoints(messages)
+    if not marks:
+        return None
+    last_i, last_j = max(marks)
+    pieces = []
+    for i, m in enumerate(messages[:last_i + 1]):
+        parts = _parts(m.get("content"))
+        if i == last_i:
+            parts = parts[:last_j + 1]
+        pieces.append(f"{m.get('role')}\x00" + "".join(str(p.get("text") or "") for p in parts))
+    return "\x00".join(pieces)
+
+
+def cache_key(prefix: str) -> str:
+    """A stable, non-identifying key for requests sharing this prefix (a hash, never the content)."""
+    return "jobhuntpa-" + hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:32]
+
+
+def cache_ttl(cfg: dict, messages: list[dict]) -> Optional[str]:
+    """"1h" or None (the provider's 5-minute default) for the breakpoints of this request.
+
+    A cache read refreshes the entry, and its lifetime counts from the start of the request that wrote or read it.
+    In a scoring run each request starts at most one request's duration (LLM_TIMEOUT_S, 180 s by default) after
+    the previous one, so 5 minutes is enough and is the cheaper write (1.25x the input price instead of 2x). The
+    1-hour entry pays for itself when the next request may start later than that: a chat waiting for the user,
+    or requests allowed to run longer than about 4.5 minutes."""
+    reuse = {p.get("cache") for m in messages if isinstance(m.get("content"), list)
+             for p in _parts(m["content"]) if p.get("cache")}
+    if CACHE_CONVERSATION in reuse or (reuse and float(cfg.get("timeout_s") or 180) > _RUN_TTL_LIMIT_S):
+        return "1h"
+    return None
+
+
+def cache_control(ttl: Optional[str]) -> dict:
+    return {"type": "ephemeral", "ttl": ttl} if ttl else {"type": "ephemeral"}
+
+
+def _openrouter_claude(cfg: dict) -> bool:
+    return provider_for(cfg.get("base_url", "")) == "openrouter" and str(cfg.get("model", "")).startswith("anthropic/")
+
+
+def _wire_messages(messages: list[dict], cfg: dict) -> list[dict]:
+    """The messages as sent to an OpenAI-style provider: flattened, except that Claude through OpenRouter keeps
+    text parts with ``cache_control`` on the marked ones (OpenRouter's documented way to cache them)."""
+    if not _openrouter_claude(cfg):
+        return flat_messages(messages)
+    marks, ttl = cache_breakpoints(messages), cache_ttl(cfg, messages)
+    out = []
+    for i, m in enumerate(messages):
+        if not isinstance(m.get("content"), list):
+            out.append(m)
+            continue
+        parts = []
+        for j, p in enumerate(_parts(m["content"])):
+            part = text_part(str(p.get("text") or ""))
+            if (i, j) in marks:
+                part["cache_control"] = cache_control(ttl)
+            if part["text"]:
+                parts.append(part)
+        out.append({**m, "content": parts})
+    return out
+
+
+# --------------------------------------------------------------------------
+# Usage records (llm_usage)
+# --------------------------------------------------------------------------
+
+def as_int(value: Any) -> Optional[int]:
+    try:
+        return None if value is None or isinstance(value, bool) else int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def field(obj: Any, key: str) -> Any:
+    """A field of a dict or an SDK object (None when missing)."""
+    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+
+def usage_from_chat(data: Any) -> dict:
+    """Token counts from a /chat/completions answer (OpenAI and every OpenAI-compatible provider)."""
+    usage = field(data, "usage") or {}
+    details = field(usage, "prompt_tokens_details") or {}
+    cached = field(details, "cached_tokens")
+    if cached is None:
+        cached = field(usage, "prompt_cache_hit_tokens")  # DeepSeek
+    return {"input_tokens": as_int(field(usage, "prompt_tokens")),
+            "output_tokens": as_int(field(usage, "completion_tokens")),
+            "cached_tokens": as_int(cached), "cache_write_tokens": as_int(field(details, "cache_write_tokens"))}
+
+
+def usage_from_responses(data: Any) -> dict:
+    """Token counts from a Responses API answer (OpenAI, Meta, xAI, custom hosts)."""
+    usage = field(data, "usage") or {}
+    details = field(usage, "input_tokens_details") or {}
+    return {"input_tokens": as_int(field(usage, "input_tokens")),
+            "output_tokens": as_int(field(usage, "output_tokens")),
+            "cached_tokens": as_int(field(details, "cached_tokens")),
+            "cache_write_tokens": as_int(field(details, "cache_write_tokens"))}
+
+
+def usage_from_gemini(data: Any) -> dict:
+    """Token counts from a native generateContent answer (thinking tokens count as output)."""
+    meta = field(data, "usageMetadata") or {}
+    out, thoughts = as_int(field(meta, "candidatesTokenCount")), as_int(field(meta, "thoughtsTokenCount"))
+    return {"input_tokens": as_int(field(meta, "promptTokenCount")),
+            "output_tokens": None if out is None and thoughts is None else (out or 0) + (thoughts or 0),
+            "cached_tokens": as_int(field(meta, "cachedContentTokenCount")), "cache_write_tokens": None}
+
+
+def record_usage(cfg: dict, usage: Optional[dict] = None, *, model: Optional[str] = None) -> None:
+    """Store one answered request's token usage. Never raises: missing usage fields are stored as empty, and a
+    failure to store is only logged, so a request never fails because of its statistics."""
+    try:
+        from backend.db import LlmUsage, SessionLocal  # here, so the installer can import this module
+
+        counts = {k: as_int((usage or {}).get(k)) for k in
+                  ("input_tokens", "output_tokens", "cached_tokens", "cache_write_tokens")}
+        db = SessionLocal()
+        try:
+            db.add(LlmUsage(workspace_id=as_int(cfg.get("workspace_id")), purpose=cfg.get("purpose") or None,
+                            provider=provider_for(cfg.get("base_url", "")), model=model or cfg.get("model"), **counts))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001  (statistics must never break a request)
+        log.warning("could not record LLM usage", exc_info=True)
+
+
+def record_answer(cfg: dict, parse, data: Any, *, model: Optional[str] = None) -> None:
+    """record_usage for a provider's answer, read with ``parse`` (usage_from_chat, ...); never raises."""
+    try:
+        usage = parse(data)
+    except Exception:  # noqa: BLE001
+        usage = None
+    record_usage(cfg, usage, model=model)
+
+
+# --------------------------------------------------------------------------
 # Plain chat
 # --------------------------------------------------------------------------
 
@@ -331,20 +553,29 @@ def _anthropic():
 
 
 def chat(messages: list[dict], cfg: dict, *, json_mode: bool = True) -> str:
-    """One chat answer. ``messages`` use the OpenAI roles (system/user/assistant); ``json_mode`` asks for a
-    JSON object where the API has a switch for it (Claude has none: the prompts ask for JSON)."""
+    """One chat answer. ``messages`` use the OpenAI roles (system/user/assistant), with string content or text
+    parts (``cached_text`` marks a cacheable prefix); ``json_mode`` asks for a JSON object where the API has a
+    switch for it (Claude has none: the prompts ask for JSON). ``cfg["long_output"]``: the answer is a long text
+    that must not be cut off (a cut-off one is an error)."""
     if style_for(cfg["base_url"]) == STYLE_ANTHROPIC:
         return _anthropic().chat(messages, cfg, json_mode=json_mode)
     return _chat_openai(messages, cfg, json_mode)
 
 
 def _chat_openai(messages: list[dict], cfg: dict, json_mode: bool) -> str:
-    payload: dict[str, Any] = {"model": cfg["model"], "messages": messages}
+    provider = provider_for(cfg["base_url"])
+    payload: dict[str, Any] = {"model": cfg["model"], "messages": _wire_messages(messages, cfg)}
     if json_mode and not param_rejected(cfg, "response_format"):
         payload["response_format"] = {"type": "json_object"}
     if cfg.get("reasoning_effort") and not param_rejected(cfg, "reasoning_effort"):
         payload["reasoning_effort"] = cfg["reasoning_effort"]
     headers = _bearer(cfg)
+    prefix = cached_prefix(messages)
+    if prefix is not None:
+        if provider in _CACHE_KEY_PROVIDERS and not param_rejected(cfg, "prompt_cache_key"):
+            payload["prompt_cache_key"] = cache_key(prefix)
+        if provider == "xai":  # xAI's Chat Completions take the routing key as a header
+            headers["x-grok-conv-id"] = cache_key(prefix)
     url = chat_url(cfg)
     attempt = 0
     while attempt < MAX_RETRIES:
@@ -360,7 +591,7 @@ def _chat_openai(messages: list[dict], cfg: dict, json_mode: bool) -> str:
         if _auth_failed(cfg, resp.status_code, body):
             raise ScorerError(f"HTTP {resp.status_code}: API key rejected by {cfg['base_url']} ({body})", auth=True)
         if resp.status_code == 400 and _drop_rejected_param(payload, body, cfg):
-            attempt -= 1  # a provider that doesn't take response_format / reasoning_effort: resend without it
+            attempt -= 1  # a provider that doesn't take response_format / reasoning_effort / prompt_cache_key
             continue
         if resp.status_code in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
             retry_after = resp.headers.get("retry-after", "")
@@ -369,11 +600,17 @@ def _chat_openai(messages: list[dict], cfg: dict, json_mode: bool) -> str:
         if resp.status_code >= 400:
             raise ScorerError(f"HTTP {resp.status_code}: {body}")
         try:
-            content = resp.json()["choices"][0]["message"]["content"]
+            data = resp.json()
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ScorerError(f"unexpected response shape: {body}") from exc
+        record_answer(cfg, usage_from_chat, data)
         if isinstance(content, list):
             content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+        if cfg.get("long_output") and isinstance(choice, dict) and choice.get("finish_reason") == "length":
+            raise ScorerError("The answer was cut off at the model's length limit, so it is incomplete; "
+                              "try a lower reasoning level or a model with longer answers.")
         return str(content or "")
     raise ScorerError("gave up after retries")
 
@@ -404,21 +641,23 @@ def probe_level(cfg: dict, level: str) -> Optional[str]:
 # Web search
 # --------------------------------------------------------------------------
 
-def web_search(cfg: dict, *, instructions: str, input: Union[str, list], context_size: str = "medium",
+def web_search(cfg: dict, *, instructions: Union[str, list], input: Union[str, list], context_size: str = "medium",
                what: str = "web search", feature: str = "Web search") -> dict:
     """One web-search-grounded answer, in the normalised shape described in the module docstring.
 
-    ``instructions``: the system prompt; ``input``: the question (text) or the conversation (OpenAI-style
+    ``instructions``: the system prompt (a string, or text parts: Claude caches the marked ones, every other
+    provider gets them as one string); ``input``: the question (text) or the conversation (OpenAI-style
     turns); ``context_size``: low | medium | high, how much the search may read; ``what``: names the request
     in error messages; ``feature``: names the feature in the "no web search" message.
     """
     kind = search_kind(cfg)
     if kind is None:
         raise ScorerError(web_search_problem(cfg, feature) or "web search is not available")
-    if kind in (SEARCH_RESPONSES, SEARCH_RESPONSES_SYNC):
-        return _search_responses(cfg, instructions, input, context_size, what, kind)
     if kind == SEARCH_ANTHROPIC:
         return _anthropic().web_search(cfg, instructions, _turns(input), context_size, what)
+    instructions = text_of(instructions)
+    if kind in (SEARCH_RESPONSES, SEARCH_RESPONSES_SYNC):
+        return _search_responses(cfg, instructions, input, context_size, what, kind)
     if kind == SEARCH_GEMINI:
         return _search_gemini(cfg, instructions, _turns(input), what)
     return _search_openrouter(cfg, instructions, _turns(input), context_size, what)
@@ -457,6 +696,7 @@ def _search_responses(cfg: dict, instructions: str, input: Union[str, list], con
             raise
         payload.pop("reasoning")  # a model that takes no reasoning level
         response = research.run_response(payload, run_cfg, what)
+    record_answer(cfg, usage_from_responses, response)
     return _with_listed_sources(response) if provider_for(cfg["base_url"]) in ("openai", "xai") else response
 
 
@@ -499,6 +739,7 @@ def _search_gemini(cfg: dict, instructions: str, turns: list[dict], what: str) -
     headers = {"x-goog-api-key": cfg["api_key"], "Content-Type": "application/json"}
     data = _post_json(f"{GEMINI_NATIVE_BASE}/models/{quote(model, safe='')}:generateContent", body, headers, cfg,
                       search_timeout(cfg), drop=("generationConfig", "thinking"))
+    record_answer(cfg, usage_from_gemini, data)
     return gemini_to_response(data, what)
 
 
@@ -567,6 +808,7 @@ def _search_openrouter(cfg: dict, instructions: str, turns: list[dict], context_
                "messages": [{"role": "system", "content": instructions}, *turns],
                "plugins": [{"id": "web", "max_results": _OPENROUTER_RESULTS.get(context_size, 5)}]}
     data = _post_json(f"{cfg['base_url']}/chat/completions", payload, _bearer(cfg), cfg, search_timeout(cfg))
+    record_answer(cfg, usage_from_chat, data)
     try:
         message = data["choices"][0]["message"]
         text = message.get("content") or ""

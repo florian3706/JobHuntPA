@@ -1058,7 +1058,12 @@ class JobChatTest(unittest.TestCase):
                 self.assertIn("a guess", answer)
                 self.assertNotIn("made-up.example", answer)
                 self.assertNotIn("unknown.example", answer)
-                context = sent[0][0]["content"]
+                from backend.llm_providers import CACHE_CONVERSATION, text_of
+                parts = sent[0][0]["content"]  # documents first, then date and jobs: both cacheable for follow-ups
+                self.assertEqual([p.get("cache") for p in parts], [CACHE_CONVERSATION, CACHE_CONVERSATION])
+                self.assertIn("Jane Doe", parts[0]["text"])
+                self.assertNotIn("Today's date", parts[0]["text"])
+                context = text_of(parts)
                 for part in ("Jane Doe", "Own the backlog", "77/100", "No SAFe", "Sells maths software", "my letter",
                              "https://board.example/9", "shortlisted"):
                     self.assertIn(part, context)

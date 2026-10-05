@@ -198,6 +198,51 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; paddi
 .doc-name { font-weight: 600; }
 .doc-meta { color: var(--muted); font-size: 12.5px; }
 .doc-row .spacer { flex: 1; }
+.upload-card input[type="file"] { max-width: 100%; }
+
+/* Documents: notes, the summary, and each document's panel (text and concise version) */
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.note-form, .doc-edit, .doc-concise { display: flex; flex-direction: column; gap: 12px; }
+.note-form h3, .summary-card h3 { margin: 0; }
+.note-form .hint, .summary-card .hint { margin: 0; }
+.summary-card { display: flex; flex-direction: column; gap: 10px; }
+.note-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; }
+.note-grid input, .note-grid select { width: 100%; }
+.doc-textarea {
+  width: 100%; min-height: 6em; resize: vertical;
+  background: var(--field); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px; font-size: 14px; line-height: 1.5;
+}
+.doc-textarea[readonly] { background: var(--card); color: var(--text); border-style: dashed; }
+textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.docs-heading { margin: 18px 0 10px; font-size: 16px; }
+.docs-heading:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.doc-item { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.doc-head { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; }
+.doc-title { flex: 1 1 220px; min-width: 0; }
+.doc-title .doc-name { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.doc-title .doc-meta { margin: 2px 0 0; overflow-wrap: anywhere; }
+.doc-controls { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; }
+.doc-controls select { max-width: 100%; }
+.doc-item .check, .version-pick .check, .note-actions .check { min-height: 24px; }
+.doc-panel { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 12px; display: flex; flex-direction: column; gap: 18px; }
+.doc-panel[hidden], .summary-suggest[hidden] { display: none; }
+.doc-panel .field input[type="text"] { width: 100%; }
+.doc-concise h5 { margin: 0; font-size: 14px; }
+.doc-concise .hint { margin: 0; }
+.doc-actions { align-items: center; }
+fieldset.version-pick {
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 0;
+  display: flex; flex-wrap: wrap; gap: 6px 18px; min-width: 0;
+}
+.version-pick legend { padding: 0 4px; }
+.version-pick label:has(input:disabled) { color: var(--muted); }
+.summary-suggest { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.summary-suggest .callout p { margin: 0 0 8px; }
+.btn[aria-disabled="true"] { opacity: 0.65; cursor: progress; }
 
 /* Modal */
 .modal {

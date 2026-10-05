@@ -31,6 +31,7 @@ Rules:
 - Use the titles employers actually advertise (e.g. "Implementation Manager", not "Implementation Wizard"). Include common variants only when both are widely used (e.g. "Program Manager" and "Programme Manager").
 - Keep seniority realistic for their years of experience; include a level up only as "stretch".
 - Each reason must point to something in the documents; never invent experience.
+- If the documents include the candidate's preferences, favour titles that fit them and leave out kinds of role they say they don't want. Preferences are wishes, not experience.
 - Don't suggest titles already in their search list (given below) unless it's the best-fitting title overall."""
 
 
@@ -61,7 +62,7 @@ def _parse(raw: str) -> list[dict]:
 def suggest_titles(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     from backend.scorer import ScorerError, build_profile, call_model, config_problem, get_config
 
-    cfg = get_config("scoring")
+    cfg = {**get_config("scoring"), "purpose": "title_suggestions", "workspace_id": ws}
     if config_problem(cfg):
         raise HTTPException(status_code=400, detail=config_problem(cfg))
     if not db.query(Document).filter(Document.workspace_id == ws, Document.use_for_scoring.is_(True)).count():
