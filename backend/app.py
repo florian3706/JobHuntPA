@@ -151,6 +151,7 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "lat": job.lat,
         "lng": job.lng,
         "work_mode": job.work_mode or "unknown",
+        "employment_type": job.employment_type,
         "office_days": job.office_days,
         "salary_text": job.salary_text,
         "salary_min": job.salary_min,

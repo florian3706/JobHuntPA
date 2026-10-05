@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from backend import config  # noqa: F401  (loads .env)
 from backend import llm_providers
 from backend.db import Document, FitResult, Job, SessionLocal
+from backend.employment import normalise_employment_type
 from backend.llm_providers import MAX_RETRIES, ScorerError  # noqa: F401  (ScorerError is imported from here everywhere)
 from backend.threads import submit
 
@@ -154,7 +155,8 @@ Return ONLY a JSON object, no markdown, with exactly this shape:
   ],
   "gaps": ["string"],
   "summary": "string",
-  "office_location": "string"
+  "office_location": "string",
+  "employment_type": "string"
 }
 
 Rules:
@@ -167,6 +169,7 @@ Rules:
 7. The resume is the primary source. Other documents (cover letters, the candidate's notes, interview answers, transcripts) are supporting evidence only.
 8. If the job text is only a short listing summary, assess what is stated and say in the summary that the full description was not available.
 9. "office_location": where the candidate would work, as stated in the job posting: a street address or suburb (e.g. "1 Denison St, North Sydney" or "Macquarie Park"). Empty if the posting names only a city or no place. Not head office elsewhere, other offices or clients' sites.
+11. "employment_type": one of full_time, part_time, contract, casual, temporary, internship, as the posting states. Empty if it doesn't say.
 10. The CANDIDATE PREFERENCES section, if present, says what the candidate wants from a job (pay, place, work mode, hours, sector, kind of role, employers to avoid). It is never evidence of skills or experience: don't use it to match requirements and don't mention it in "requirements", "evidence" or "gaps". It doesn't change the score, which measures how well the documents evidence the job's requirements. If the job conflicts with a stated preference, say so in the summary (e.g. "Conflicts with the stated preference for fully remote work.")."""
 
 
@@ -255,7 +258,8 @@ def parse_result(raw: str) -> dict:
                      "matched": matched, "evidence": evidence})
     gaps = [str(g).strip() for g in obj.get("gaps") or [] if str(g).strip()]
     return {"score": score, "requirements": reqs, "gaps": gaps, "summary": str(obj.get("summary") or "").strip(),
-            "office_location": str(obj.get("office_location") or "").strip()}
+            "office_location": str(obj.get("office_location") or "").strip(),
+            "employment_type": normalise_employment_type(obj.get("employment_type"))}
 
 
 # --------------------------------------------------------------------------
@@ -295,7 +299,11 @@ def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> d
             _store(db, job_id, error=str(exc))
             raise
         office = result.pop("office_location", "")
+        ad_employment = result.pop("employment_type", None)
         _store(db, job_id, result=result, profile_hash=profile_hash, model=cfg["model"])
+        if ad_employment and not job.employment_type:  # adapter data wins
+            job.employment_type = ad_employment
+            db.commit()
         if job.detail_status == "full":
             from backend.offices import from_ad
 

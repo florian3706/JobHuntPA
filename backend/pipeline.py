@@ -87,6 +87,7 @@ def _apply_posting(job: Job, p: Posting) -> None:
         job.work_mode = p.work_mode
     elif p.detail_status == "full" and job.detail_status != "full":
         job.work_mode = "unknown"  # re-classify from the new description
+    job.employment_type = p.employment_type or job.employment_type
     job.salary_text = p.salary_text or job.salary_text
     if p.salary_min:
         job.salary_min = int(p.salary_min)

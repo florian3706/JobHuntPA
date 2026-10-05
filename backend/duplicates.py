@@ -306,6 +306,8 @@ def _fill_gaps(primary: Job, others: Iterable[Job]) -> None:
             primary.salary_text, primary.salary_min, primary.salary_max = o.salary_text, o.salary_min, o.salary_max
         if (primary.work_mode or "unknown") == "unknown" and (o.work_mode or "unknown") != "unknown":
             primary.work_mode = o.work_mode
+        if not primary.employment_type and o.employment_type:
+            primary.employment_type = o.employment_type
         if primary.office_days is None and o.office_days is not None:
             primary.office_days = o.office_days
         if not primary.posted_at and o.posted_at:

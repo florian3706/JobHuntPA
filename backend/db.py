@@ -97,6 +97,8 @@ class Job(Base):
     lat = Column(Float, nullable=True)
     lng = Column(Float, nullable=True)
     work_mode = Column(String, nullable=True)       # remote | hybrid | onsite | unknown
+    # backend.employment.EMPLOYMENT_TYPES, None = unknown. Never filter or sort on it in SQL (sealed in Phase D).
+    employment_type = Column(String, nullable=True)
     office_days = Column(Integer, nullable=True)    # days/week in the office, when stated
     salary_min = Column(Integer, nullable=True)
     salary_max = Column(Integer, nullable=True)
