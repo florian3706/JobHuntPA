@@ -141,6 +141,31 @@ can live in their own **workspaces** (switcher at the top right).
   ad's page from SEEK in your browser and upload it to score the job on the whole ad.
 - **Suggested job titles** (Documents tab): the AI reads your documents and suggests titles to
   search for; add them to the current search or start a new workspace with them.
+- **Notes** (Documents tab): under *Write a note*, give a note a title, type its text, pick a
+  type and click **Save note**. Use notes for things that aren't in your CV, such as a project you
+  led, or what you want from your next job. A note works like an uploaded document: tick or untick
+  *use for scoring*, **Open** it to edit its text, title or type, or **Delete** it. Notes are
+  plain text and are stored only in JobHuntPA.
+- **Preferences** (a document type for uploads and notes, shown as *Preferences (private)*): say
+  what you want from a job, such as the commute you'll accept or work you want to avoid. The AI uses
+  them when scoring jobs (it names jobs that conflict with them), in job chat and in suggested job
+  titles. They are never treated as experience, and they are never sent when drafting cover letters.
+- **Concise versions**: **Open** a document and use *Create concise version* to have the AI write a
+  shorter version of it. Read it against the original and edit it, then *Save concise version*.
+  *Write it again* replaces it. Choose whether the AI gets *the original* or *the concise
+  version*. Switching, or editing the version in use, marks existing scores as out of date, so
+  they're recalculated with the new text. For an uploaded file, only the concise version can be edited.
+- **Summary of your documents**: *Create summary of ticked documents* merges every ticked document
+  (not preferences) into one new document, with each fact once and every employer, date, number and
+  qualification kept. It takes a few minutes. The summary opens so you can read and edit it. Once
+  you're happy, click *Untick the originals* so the same facts aren't sent twice (or *Keep both ticked*).
+- **What documents cost**: your ticked documents are sent to the AI with every job it scores and
+  every chat question, so long ones add up. JobHuntPA asks providers to cache them so repeats cost
+  less. For Claude (directly or through OpenRouter) it marks the documents for caching; for
+  OpenAI, Meta and Mistral it sends a cache key. OpenAI, Meta, xAI, Gemini, DeepSeek, Groq and OpenRouter's other
+  models cache on their own, and Ollama runs on your computer. Either way the documents are still
+  sent each time; caching only makes a repeat cheaper and faster. Concise versions and a summary
+  cut the size, and with it the cost.
 - **Cover letters**: *Draft cover letter* on any job writes a first draft from your documents
   (upload earlier cover letters as "Cover letter" documents to match your style). Edit it, then
   copy it or download it as a Word file. Always check it before sending.
