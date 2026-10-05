@@ -865,7 +865,7 @@ def build(db_path: Path) -> None:
             job = Job(
                 workspace_id=ws_id, source=spec["source"], source_id=source_rows[spec["src"]].id if spec.get("src") else None,
                 external_id=spec["url"].rsplit("/", 1)[-1], company=spec["company"], title=spec["title"],
-                location_text=spec["location"], country="AU", lat=lat, lng=lng, work_mode=mode, office_days=days_in_office,
+                location_text=spec["location"], country="AU", lat=lat, lng=lng, work_mode=mode, employment_type=spec.get("employment", "full_time"), office_days=days_in_office,
                 salary_min=salary_min, salary_max=salary_max, salary_text=spec.get("salary"), url=spec["url"],
                 description=desc, description_hash=description_hash(desc), detail_status=spec["detail"],
                 detail_fetched_at=first_seen + timedelta(minutes=2) if spec["detail"] == "full" else None,

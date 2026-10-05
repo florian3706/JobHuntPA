@@ -22,6 +22,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, quote, urlsplit
 
 from backend.adapters.base import Adapter, Posting, SourceError
+from backend.employment import normalise_employment_type
 from backend.scraping.http import FetchError, PoliteClient
 from backend.scraping.text import clean, html_to_text
 
@@ -120,6 +121,7 @@ def to_posting(job: dict) -> Optional[Posting]:
         location_text="; ".join(split_locations(job.get("jobLocation") or "")),
         country="AU",
         work_mode=work_mode(job.get("officeArrangement") or ""),
+        employment_type=normalise_employment_type(job.get("jobType")),
         salary_text=salary,
         salary_min=lo,
         salary_max=hi,

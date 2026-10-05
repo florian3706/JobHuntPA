@@ -286,6 +286,7 @@ def parse_detail(html: str, stub: Posting) -> Optional[Posting]:
             stub.salary_text = p.salary_text or stub.salary_text
             stub.salary_min, stub.salary_max = p.salary_min or stub.salary_min, p.salary_max or stub.salary_max
             stub.work_mode = p.work_mode if p.work_mode != "unknown" else stub.work_mode
+            stub.employment_type = p.employment_type or stub.employment_type
             stub.posted_at = p.posted_at or stub.posted_at
             # Job boards/aggregators: the posting names the real employer.
             stub.company = p.company or stub.company
