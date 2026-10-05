@@ -179,7 +179,10 @@ def softened_job_ids(db: Session, ws: int, extra_days: int) -> set[int]:
     if extra_days <= 0 or crit.max_office_days is None:
         return set()
     soft = replace(crit, max_office_days=crit.max_office_days + extra_days)
-    jobs = db.query(Job).filter(Job.workspace_id == ws, Job.excluded_reason.like(OFFICE_DAYS_REASON + "%"))
+    # The prefix is checked here, not with LIKE: the reason may be a sealed column.
+    ids = [i for i, reason in db.query(Job.id, Job.excluded_reason)
+           .filter(Job.workspace_id == ws, Job.excluded_reason.isnot(None)) if reason.startswith(OFFICE_DAYS_REASON)]
+    jobs = db.query(Job).filter(Job.id.in_(ids)) if ids else []
     return {j.id for j in jobs
             if exclusion_reason(j, soft, stage="full" if j.detail_status in ("full", "summary") else "listing") is None}
 

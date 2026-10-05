@@ -50,11 +50,13 @@ def current_workspace(
 
 
 def owned(db: Session, model, obj_id: int, ws: int, what: str):
-    """Fetch a row by id, 404 unless it belongs to workspace ``ws``."""
-    row = db.get(model, obj_id)
-    if row is None or row.workspace_id != ws:
+    """Fetch a row by id, 404 unless it belongs to workspace ``ws``. The plaintext ``workspace_id`` is
+    checked first and the row is only loaded after that, so a row of another workspace is never opened
+    (its columns may be sealed under another user's key)."""
+    owner = db.query(model.workspace_id).filter(model.id == obj_id).scalar()
+    if owner is None or owner != ws:
         raise HTTPException(status_code=404, detail=f"{what} {obj_id} not found")
-    return row
+    return db.get(model, obj_id)
 
 
 class WorkspaceCreate(BaseModel):

@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from backend.db import CompanyProfile, Job, SessionLocal, company_key, get_db
 from backend.geo import distance_km, geocode, is_city_only
+from backend.threads import submit
 from backend.workspaces import current_workspace, owned
 
 log = logging.getLogger(__name__)
@@ -293,8 +294,7 @@ def jobs_needing_office(db: Session, ws: int, job_ids: Optional[list[int]] = Non
     if job_ids is not None:
         q = q.filter(Job.id.in_(job_ids))
     else:
-        q = q.filter((Job.excluded_reason.is_(None)) | (Job.excluded_reason == ""),
-                     Job.closed_at.is_(None), Job.hidden.is_(False))
+        q = q.filter(Job.excluded_reason.is_(None), Job.closed_at.is_(None), Job.hidden.is_(False))
     return [j for j in q.all() if office_unknown(j)]
 
 
@@ -346,7 +346,7 @@ def find_offices(ws: int, job_ids: Optional[list[int]] = None,
         if lookups and llm_providers.web_search_problem(cfg, "Finding offices"):
             lookups = []  # this provider has no web search: skip the lookups instead of failing each one
         with ThreadPoolExecutor(max_workers=cfg["concurrency"]) as pool:
-            futures = {pool.submit(research_offices, company, key[1], cfg): (key, company) for key, company in lookups}
+            futures = {submit(pool, research_offices, company, key[1], cfg): (key, company) for key, company in lookups}
             for n, fut in enumerate(as_completed(futures), 1):
                 (key, city), company = futures[fut]
                 progress(f"looking up offices {n}/{len(lookups)} (last: {company})", {"done": n, "total": len(lookups)})

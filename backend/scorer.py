@@ -37,6 +37,7 @@ from backend import config  # noqa: F401  (loads .env)
 from backend import llm_providers
 from backend.db import Document, FitResult, Job, SessionLocal
 from backend.llm_providers import MAX_RETRIES, ScorerError  # noqa: F401  (ScorerError is imported from here everywhere)
+from backend.threads import submit
 
 log = logging.getLogger(__name__)
 
@@ -311,7 +312,7 @@ def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack
     counts jobs a temporarily softened office-days limit lets through."""
     from backend.filters import softened_job_ids
 
-    eligible = (Job.excluded_reason.is_(None)) | (Job.excluded_reason == "")
+    eligible = Job.excluded_reason.is_(None)
     softened = softened_job_ids(db, ws, office_slack)
     if softened:
         eligible = eligible | Job.id.in_(softened)
@@ -407,7 +408,7 @@ def score_jobs(ws: int, job_ids: list[int], progress: Callable[[str, dict], None
     # requests sent together would each pay to process (and write) the same prefix. The rest then read it.
     work(job_ids[0])
     with ThreadPoolExecutor(max_workers=cfg["concurrency"]) as pool:
-        for fut in as_completed([pool.submit(work, j) for j in job_ids[1:]]):
+        for fut in as_completed([submit(pool, work, j) for j in job_ids[1:]]):
             fut.result()
     return {
         "requested": requested,

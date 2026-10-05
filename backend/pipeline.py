@@ -139,9 +139,23 @@ def enrich(job: Job, crit: Criteria) -> None:
     job.description_hash = description_hash(job.description or "")
 
 
+# Phase D seals jobs.url and jobs.source, which SQL can no longer compare. These two helpers are the only
+# places that do; Phase D swaps their bodies for the url_index blind index (and source_id plus a Python check).
+
+def job_by_url(db: Session, ws: int, url: Optional[str]) -> Optional[Job]:
+    """The workspace's job with this URL, if any."""
+    return db.query(Job).filter(Job.workspace_id == ws, Job.url == url).first()
+
+
+def unlisted_open_jobs(db: Session, ws: int, src: Optional[CompanySource], source: str, seen: set[str]):
+    """Query: the source's open jobs whose URL the latest complete listing did not contain."""
+    q = db.query(Job).filter(Job.workspace_id == ws, Job.closed_at.is_(None), Job.url.notin_(seen))
+    return q.filter(Job.source_id == src.id) if src is not None else q.filter(Job.source == source)
+
+
 def upsert_posting(db: Session, ws: int, p: Posting, source: str, source_id: Optional[int],
                    crit: Criteria, now: datetime) -> tuple[Job, bool]:
-    job = db.query(Job).filter(Job.workspace_id == ws, Job.url == p.url).first()
+    job = job_by_url(db, ws, p.url)
     is_new = job is None
     if is_new:
         job = Job(workspace_id=ws, url=p.url, status="to_review", first_seen=now, detail_status="none")
@@ -300,8 +314,7 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
         db.commit()
 
     if adapter.complete_listing and postings:
-        q = db.query(Job).filter(Job.workspace_id == ws, Job.closed_at.is_(None), Job.url.notin_(seen))
-        q = q.filter(Job.source_id == src.id) if src is not None else q.filter(Job.source == adapter.source)
+        q = unlisted_open_jobs(db, ws, src, adapter.source, seen)
         rep.closed = q.update({Job.closed_at: now}, synchronize_session=False)
         db.commit()
 
@@ -326,7 +339,7 @@ def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
                 rep.notes.extend(getattr(adapter, "notes", []))
             except Exception as exc:  # a bug in one source must not stop the others
                 db.rollback()
-                log.exception("source %s failed", label)
+                log.error("source %s failed: %s", src.id if src is not None else "seek", exc.__class__.__name__)
                 rep.error = f"unexpected error: {exc.__class__.__name__}: {exc}"
             if src is not None:
                 src.last_run = datetime.utcnow()
