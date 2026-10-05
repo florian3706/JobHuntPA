@@ -11,3 +11,5 @@ data/cache/*
 !data/cache/.gitkeep
 data/jobhunt.db.bak*
 data/running.json
+data/server-keys.json
+data/.server-keys.json-*.tmp
