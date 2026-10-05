@@ -117,6 +117,7 @@ process-only random key (never on disk) ─► http_cache
 ### 2.1 How it works (`backend/crypto.py`)
 - **Types.** `SealedText`, `SealedJSON`, `SealedInt` and `SealedFloat` are `TypeDecorator(LargeBinary)` with `cache_ok=True`. Because SQLite is dynamically typed, existing TEXT, INTEGER and REAL columns can hold the new blobs with no table rebuilds.
 - **NULL passes through**, so `IS NULL` filters still work. The fact that a value is null or not leaks; section 2.5 lists this.
+- **`SealedAlways` (added by §14.6)** is the variant for columns whose null-ness is itself personal: `jobs.hidden`, `jobs.excluded_reason`, `jobs.location_verdict`, the office override and the own-content columns. It writes a sealed marker for NULL and opens it back to `None`. Its comparator refuses `IS`/`IS NOT` too, so the code decides these in Python.
 - **Old plaintext is still read.** A value that is not a blob starting with `0x01` is returned as legacy plaintext and coerced to the column's type. This makes the migration resumable and lets `server_default` values still work.
 - **Comparisons are blocked.** A custom `comparator_factory` raises `TypeError` for any operator except `IS` and `IS NOT`, including `==`, `in_`, `like` and `desc`. Comparing a ciphertext in SQL is therefore a loud bug, not a silent mismatch.
 - **Key scope.** `crypto.as_user(user_id, dek)` is a context manager that sets the scope context variable. `crypto.current()` reads it. Sealing or opening with no scope raises `Locked`; a key mismatch raises `KeyMismatch`, which the exception handler turns into a 404.
@@ -139,8 +140,9 @@ process-only random key (never on disk) ─► http_cache
 | Table | Sealed | Plaintext, and why |
 |---|---|---|
 | workspaces | name | id, `owner_id` (new; used to enforce ownership), created_at |
-| jobs | source, external_id, company, title, location_text, country, lat, lng, work_mode, office_days, salary_min, salary_max, salary_text, url, description, description_hash, posted_at, industry, distance_km, status, excluded_reason, office_text, office_lat, office_lng, office_source, location_verdict | id, workspace_id, source_id, detail_status (filtered in SQL), hidden (filtered), closed_at, duplicate_of, first_seen, last_seen, detail_fetched_at, office_checked_at. New: `url_index` (blind index, unique with workspace_id) and `first_run_id` (for digests). |
-| fit_results | score, evidence_json, error | job_id, status, profile_hash (a hash of high-entropy text, not reversible), model, created_at |
+| postings (§14) | — | Every column. Public ads as scraped, shared by all users, plus pool state (first and last listed, closed and why). |
+| jobs, now the per-workspace link (§14) | status, hidden\*, excluded_reason\*, distance_km, lat, lng, location_verdict\*, office_text\*, office_lat\*, office_lng\*, office_source\*, office_checked_at\*, last_seen, and the own-content columns\* (source, external_id, company, title, location_text, country, work_mode, employment_type, office_days, salary_min, salary_max, salary_text, description, description_hash, detail_status, detail_fetched_at, posted_at, industry, closed_at: a private job's content, or this workspace's overrides such as a privately uploaded full ad). A private job's `url` is sealed too, found through `url_index`. \* = `SealedAlways` (§2.1): null-ness doesn't show. | id, workspace_id, posting_id and a pool link's url (the user decided the operator may see which postings a user has, §14.6), origin, source_id, duplicate_of (filtered in SQL by the CLAUDE.md rule), first_seen (link ids and run times reveal it anyway), posting_rev. New: `url_index` (blind index, unique with workspace_id) and `first_run_id` (for digests). |
+| fit_results | score, evidence_json, status, error | job_id, profile_hash (a hash of high-entropy text, not reversible), model, created_at |
 | job_duplicates | reasons_json | ids, status, decided_by, score (a similarity number), timestamps |
 | documents (including notes and summaries) | filename (or note/summary title), text, concise_text | filetype, kind, stored_name (a random id), use_for_scoring, use_concise, concise_model, concise_at, summary_of (ids), timestamps |
 | `data/uploads/` files | The whole file, under the DEK, as `<uuid>.sealed`. Text extraction runs on `BytesIO` in memory, so plaintext never touches disk. | — |
@@ -163,10 +165,9 @@ Notes:
 - **Leftover plaintext files.** Old `data/cache/*.html` files (from an earlier version, unused) and `data/jobhunt.db.bak-*` hold plaintext. The migration reports them and offers to delete them (section 5).
 
 ### 2.3 Code changes forced by sealing
-- **`pipeline.upsert_posting`:** `Job.url == p.url` becomes `Job.url_index == blind_index("url", p.url)`.
-- **Closing jobs no longer listed** (`pipeline._process_source`):
-  - `Job.url.notin_(seen)` becomes a `url_index` NOT IN.
-  - `Job.source == adapter.source` becomes `source_id IS NULL` plus a Python check.
+- **`pipeline.job_by_url`** (the only SQL comparison on `jobs.url`, used to find a workspace's link): `Job.url == url` becomes `Job.url_index == blind_index("url", url)`.
+- **Closing jobs no longer listed:** since §14 this works on the plaintext `postings` table (`pool.close_unlisted`, `pool.sweep`), so sealing changes nothing there.
+- **Personal link fields stay out of SQL (§14.6):** `hidden`, `excluded_reason`, `status`, `fit_results.status`/`score` and the own-content columns are decided in Python since Phase A2. Nothing to change in Phase D.
 - **`sources.create_source`:** the duplicate check uses `careers_url_index`.
 - **`excluded_reason`:**
   - Normalise `""` to `None` (a `@validates` hook) and replace `== ""` with `IS NULL` in scorer, research and offices.
@@ -182,8 +183,11 @@ Notes:
 - **`init_db`:** create workspace 1 only on a fresh database with no users.
 
 ### 2.4 Performance (Raspberry Pi)
-- **Cost.** `list_jobs` decrypts about 25 sealed columns per job. On a Pi 4 (no AES instructions) a small value costs roughly 4–8 µs including Python overhead, so 5,000 jobs would add about 0.5–1 s.
-- **Mitigation, part of Phase D:** with no `include` and `office_slack=0`, filter `excluded_reason IS NULL AND hidden = 0` in SQL. Count the omitted jobs with `COUNT(*)`, and load merged copies with `duplicate_of IN (...)`. Excluded and hidden jobs are most of the list, so this cuts decryption by about 80%.
+- **Cost (superseded by §14.6).** Before the job pool, `list_jobs` decrypted about 25 sealed columns per job. On a Pi 4 (no AES instructions) a small value costs roughly 4–8 µs including Python overhead, so 5,000 jobs would have added about 0.5–1 s.
+- **Since §14:**
+  - Postings are plaintext. A link carries about 15 sealed values, mostly NULL markers.
+  - The old SQL shortcut (`excluded_reason IS NULL AND hidden = 0`) is gone: those two columns are `SealedAlways`.
+  - `list_jobs` first loads `(id, hidden, excluded_reason, duplicate_of)` for the workspace's top-level links (about 50 ms for 5,000 links), decides in Python, then loads only the listed links in full (about 75 ms for 1,000) and their merged copies with `duplicate_of IN (...)`.
 - **Benchmark.** Add `tools/bench_jobs_list.py`. Target: under 1.5 s for 5,000 jobs on a Pi 4.
 - **Fallback if it fails:** seal the card fields as one JSON blob per row (`jobs.card_enc`). Simplicity: per-column first.
 
@@ -192,15 +196,23 @@ Notes:
 - Row counts per workspace and per user.
 - Ciphertext lengths, which equal plaintext length + 33 (for example the length of a CV).
 - All timestamps: when jobs were seen or closed, when runs, chats and sign-ins happened. `last_active_on` is stored by day only.
-- Whether each sealed column is null (for example whether a job is excluded or has an office set).
-- The plaintext flags: hidden, detail_status, document kind and filetype, pin kind, use_for_scoring, run kind and state, fit status, and model names.
+- Whether each sealed column is null, except the `SealedAlways` ones (§2.1). Whether a job is hidden or excluded, has a verdict, an office override or a privately uploaded full ad doesn't show; the ciphertext length of the own description still hints at an upload.
+- The plaintext flags: document kind and filetype, pin kind, use_for_scoring, run kind and state, and model names.
+- A workspace's own merges and splits of duplicate ads (`jobs.duplicate_of`, `job_duplicates.status` and `decided_by`).
 - Schedules, including the Australian state.
 - Membership status, plan, period and free searches used; role, MFA on or off, background access on or off; failed-login counters.
 - Shared caches: which companies were researched (not by whom) and which places were geocoded.
 - llm_usage token counts per user and purpose.
 - Uploaded file sizes.
 
-**Job postings** are public, but the operator can't tell which ones a user has: URL, title and company are sealed, and `url_index` is keyed per user.
+**Job postings (§14):**
+- **What the operator can see:** the postings are public ads in a shared plaintext pool. The user decided the operator may see which postings each user has: every link names its posting in plaintext. That also shows roughly what a user is searching for, and when each job was first linked.
+- **What the operator can't see** is what the user thinks of a posting or did with it:
+  - status, hidden, whether and why it's excluded, fit score and evidence;
+  - distance, office and location verdict;
+  - a privately uploaded full ad, cover letters and chats.
+- **Private jobs**, imported from a saved page and not in the pool, are fully sealed, URL included.
+- **Searches and pool matching:** a posting's `first_seen` and `last_listed_at` show when some search listed it. Pool matching shows each user postings that other users' searches found, but only those matching the user's own titles or keywords.
 
 **The LLM provider** sees resumes, jobs, chats and documents in plaintext during scoring, chat, cover letters and research, under the operator's API account and the provider's retention policy. Prompt-cache keys sent to providers are hashes of the user's documents.
 
@@ -317,7 +329,8 @@ Notes:
 
 **Changes to existing tables:**
 - workspaces: `owner_id`.
-- jobs: `url_index`, `first_run_id`.
+- jobs (the per-workspace link since §14, which added `posting_id`, `origin` and `posting_rev` and the shared `postings` table): `url_index`, `first_run_id`.
+- company_profiles (§14.7, Phase A2): `sentiment_researched_at`, `news_researched_at`.
 - company_sources: `careers_url_index`.
 - commute_cache: `owner_id`.
 - search_runs: `error_code`, `free_search`.
@@ -336,7 +349,7 @@ Notes:
   - Otherwise it looks up the workspace's `owner_id`; anything other than the user gives a 404 (not a 403, so it doesn't reveal that the workspace exists).
 - `list_workspaces` filters by owner.
 - Defence in depth: the request's key is always the user's own, so any slip that loads another user's row fails with `KeyMismatch`, which becomes a 404.
-- App-wide settings become admin-only through a `require_admin` dependency: `/api/settings/*` (LLM and commute keys), `/api/llm/*` (reasoning levels) and `/api/score/test`.
+- App-wide settings become admin-only through a `require_admin` dependency: `/api/settings/*` (LLM and commute keys), `/api/llm/*` (reasoning levels) and `/api/score/test`. This covers reading as well as writing: ordinary users can't see them (§14.8), and `/api/score/status` and `/api/commute/status` tell them only whether the features are available.
 
 **`app_settings` keys:** `signup_mode` ('invite' by default | 'open' | 'closed'), `free_searches` (3), `apk_public`, `apk_version`, `server_keys_fingerprint`, `encryption_migration`.
 
@@ -516,7 +529,7 @@ Admin routes never use `current_workspace` and never read sealed DEK columns. Th
   - `POST /api/admin/plaintext-files/delete`†
 - **Audit log:** `GET /api/admin/audit`
 
-The existing LLM and commute-key cards stay on the Settings tab but are shown to admins only.
+The LLM card (provider, model, key, reasoning level per task, connection test) and the commute-key card (TomTom, Transport for NSW) move from the Settings tab into the admin panel's Server section, as "AI provider" and "Commute data" (§14.8). They are global for every user, and ordinary users can't see them; the Settings tab keeps only personal settings.
 
 **Stats queries:**
 ```sql
@@ -621,9 +634,9 @@ The panel also shows the cache hit rate (cached tokens ÷ input tokens). Users a
     ```sql
     SELECT j.* FROM jobs j JOIN search_runs r ON r.id = j.first_run_id
     WHERE j.workspace_id IN (:user_workspaces) AND r.scheduled = 1 AND r.started_at >= :cutoff
-      AND j.duplicate_of IS NULL AND j.excluded_reason IS NULL AND j.hidden = 0 AND j.closed_at IS NULL
+      AND j.duplicate_of IS NULL
     ```
-    `:cutoff = last_sent_at or opted_in_at`.
+    `:cutoff = last_sent_at or opted_in_at`. Excluded, hidden and closed jobs are dropped in Python: `excluded_reason` and `hidden` are `SealedAlways`, and closed is the posting's (§14).
     - Sorted by fit score in Python, grouped by workspace, and capped at 60 per email ("and 23 more in JobHuntPA").
     - `first_run_id` is set in `pipeline.upsert_posting` from a `tasks.current_run_id` context variable.
   - **No new jobs:** nothing is sent; only `last_checked_at` is set.
@@ -721,11 +734,12 @@ Every phase must leave `python3 -m unittest discover -s tests -t .` passing, kee
 | # | Phase | Contents | Depends on | Can run in parallel with | Model and effort | Main tests |
 |---|---|---|---|---|---|---|
 | A | Prepare for multiple users and sealed columns (nothing visible changes) | Ownership-safe `owned()`; `/api/runs/{id}` scoping; `/api/companies` filtered to the workspace; `tasks` first-in-first-out queue per workspace plus `error_code`; context propagation helper; replace SQL on soon-to-be-sealed columns (source, `excluded_reason ""`/LIKE, DISTINCT); `list_jobs` omits rows in SQL; log hygiene (httpx level, access-log query filter, no labels or queries in logs); `Cache-Control: no-store` | — | B | sonnet, medium | Existing suite; runs not visible across workspaces; `list_jobs` output equal before and after; a log capture during a mocked search contains no marker company or URL |
+| A2 | Shared job pool and company-profile cache (§14) | `postings` table and `jobs` as the per-workspace link (same ids); `backend/pool.py` (upsert, link, detail freshness, global closing rule, pool matching, link refresh); private uploads and imports; personal link fields and fit status decided in Python, not SQL; `backend/pool_migration.py` (backup, batches, idempotent, resumable); company profiles: 30-day base, per-section sentiment and news timestamps, narrower refresh on request | A | B | opus, high | Two workspaces share one posting and one detail fetch; pool matching; private full ad not visible to others; per-workspace fit; closing rule; migration with resume; `list_jobs` shape unchanged; profile freshness |
 | B | Crypto core | `backend/crypto.py` (envelopes, sealed types and their comparator guard, scope, blind index, sealed boxes, files, `submit`); `backend/keys.py` (key file, fingerprint, KEK wrap and rotation, pepper, signing, bench-kdf); argon2 profiles; requirements; `.gitignore` | — | A | **opus, high** | Round trips; wrong key gives KeyMismatch; AAD binding; legacy plaintext passthrough; comparator raises; key file 0600 and atomic; rotation re-wraps and survives a crash midway; copied context reaches the thread pool |
-| C | Accounts and sessions | The account tables in §4; first run (token file and environment bootstrap) and workspace claiming (no data encryption yet); login and logout; database sessions with cookie-wrapped DEK; CSRF; rate limiting; `current_user`; ownership check in `current_workspace`; global settings admin-only; `login.html`, `first-run.html`; recovery codes shown at first run; `common.js` 401/402/423 handling and CSRF; account menu; `tests/helpers.py` with every test migrated; `launch.py`; CI login smoke and restart check | A, B | — | **opus, high** | Signup and login; wrong password and lockout; CSRF refusal; Origin check; another user's workspace gives 404; restart keeps the session; first-run token needed; environment bootstrap; global settings refused for non-admins |
-| D | Encrypt user data and migrate | Sealed types on every table in §2.2; `url_index`/`careers_url_index`; sealed uploads; per-user commute cache; process-key http cache; `migrate_encryption.py` (backup, batches, check, VACUUM, report); 423 progress view; `secure_delete`; KeyMismatch becomes 404; tools/demo_data and readme_screenshots; benchmark tool | C | — | **opus, high** | Grep of raw DB, WAL and uploads bytes finds none of the planted markers; migration interrupted midway resumes and finishes; plaintext audit is zero; cross-user isolation; scorer thread pool works under scope; benchmark |
+| C | Accounts and sessions | The account tables in §4; first run (token file and environment bootstrap) and workspace claiming (no data encryption yet); login and logout; database sessions with cookie-wrapped DEK; CSRF; rate limiting; `current_user`; ownership check in `current_workspace`; global settings admin-only for reading and writing (`/api/settings/*`, `/api/llm/*`, `/api/score/test`), `/api/score/status` and `/api/commute/status` trimmed to availability for non-admins, the LLM and commute-key cards hidden from them (§14.8); `login.html`, `first-run.html`; recovery codes shown at first run; `common.js` 401/402/423 handling and CSRF; account menu; `tests/helpers.py` with every test migrated; `launch.py`; CI login smoke and restart check | A, B | — | **opus, high** | Signup and login; wrong password and lockout; CSRF refusal; Origin check; another user's workspace gives 404; restart keeps the session; first-run token needed; environment bootstrap; global settings refused to non-admins for reading and writing; score status shows no model or URL to non-admins |
+| D | Encrypt user data and migrate | Sealed types on every table in §2.2, including `SealedAlways` for the link's `hidden`, `excluded_reason`, verdict, office override and own-content columns; `fit_results.status` sealed; `postings` stays plaintext and `jobs.posting_id` stays plaintext (§14.6); `url_index`/`careers_url_index`; sealed uploads; per-user commute cache; process-key http cache; `migrate_encryption.py` (backup, batches, check, VACUUM, report); 423 progress view; `secure_delete`; KeyMismatch becomes 404; tools/demo_data and readme_screenshots; benchmark tool | C | — | **opus, high** | Grep of raw DB, WAL and uploads bytes finds none of the planted markers; migration interrupted midway resumes and finishes; plaintext audit is zero; no SQL `IS NULL` on `SealedAlways` columns (the comparator refuses it); the raw bytes show no difference between an excluded and a kept job; cross-user isolation; scorer thread pool works under scope; benchmark of `list_jobs` with the Python filter (§14.6) |
 | E | Rest of the auth flows | MFA (pyotp and segno), recovery-code login and keep-data recovery, change password, regenerate recovery codes, sign out everywhere, delete account, theme in `prefs_enc`, Account cards on the Settings tab | D | F, G (G's UI waits for E) | opus for the backend, sonnet for the UI | TOTP replay refused; the recovery code is used up; recovery keeps the data; a locked wipe deletes everything; deletion cleans up files and sessions |
-| F | Admin panel core | `admin.py` and `admin.html`: stats (adding `llm_usage.user_id`), users with their details, sign-up mode and invites plus `signup.html`, promote and demote with APK grants and rotation, re-grant, disable, MFA off, delete, audit log, plaintext-files report, KEK rotation button | D | E, G | sonnet, medium; **opus for the APK grant and rotation code** | The stats SQL; admin responses contain no content fields; promote then demote rotates the APK and the remaining admins can still read details; `new-admin-key` self-heals details at the next login |
+| F | Admin panel core | `admin.py` and `admin.html`: stats (adding `llm_usage.user_id`), users with their details, sign-up mode and invites plus `signup.html`, promote and demote with APK grants and rotation, re-grant, disable, MFA off, delete, audit log, plaintext-files report, KEK rotation button; Server section gains the "AI provider" (LLM provider, model, key, reasoning level per task, connection test) and "Commute data" (TomTom, Transport for NSW keys) cards moved from the Settings tab (§14.8) | D | E, G | sonnet, medium; **opus for the APK grant and rotation code** | The stats SQL; admin responses contain no content fields; promote then demote rotates the APK and the remaining admins can still read details; `new-admin-key` self-heals details at the next login |
 | G | Background access | Turning it on and off, the scheduler using owners' keys (no key or locked means the slot is passed over with a reason), the "keep data" hook for email resets, the Account card and its explanation | D | E, F | opus, medium | A locked user's scheduled slot is passed over; an opted-in user's runs; turning it off stops runs |
 | H | Email | SMTP and public-URL settings, mailer, templates, email verification, forgot password by email (wipe or keep), admin reset button, invite emails, security notices | E, F, G | I | sonnet, medium | `ENV_RULES` validation (injection cases); the reset token is single-use and expires; MFA required during reset; the template's HTML and text parts |
 | I | Memberships and Stripe | `access.py` gate and 402 responses; free searches with refunds; grants and exemption; admin membership UI; `billing.py`; `billing.html`; sync tick; webhook route (off until a secret is set); test mode | F | H | sonnet, medium; opus reviews `access.py` | The gate's truth table; a free search is refunded when a run fails; scheduled searches need membership; `apply_subscription` from a mocked Stripe; a free period for a subscriber sets trial_end |
@@ -786,3 +800,185 @@ New modules: `backend/crypto.py`, `backend/keys.py`, `backend/sessions.py`, `bac
    - the **employment type** (full-time, part-time, contract, casual). Jobs don't record this yet, so it needs a new `jobs.employment_type` column, sealed in Phase D, filled by the adapters (SEEK's work type; ATS fields where they exist). The main job cards show it too, so the digest mirrors the app.
 3. **After the 3 free searches:** jobs already found stay visible. New searches, rescoring, chat and cover letters are blocked until the person becomes a member.
 4. **Release timing:** Phase 1 and the WCAG/mobile pass ship together in one release; no push before then.
+
+## 14. Shared job pool and company-profile cache (2026-10-05)
+
+**What the user asked for:**
+1. Scrape each job listing once, and let every user draw on the stored jobs. Content a user adds by hand (a saved full SEEK ad, a saved search-results or job page) stays private to that user's workspace; scraped content is shared.
+2. Company profiles are shared by all users and cached for a month. Employee sentiment and news/controversies are cached too, but when someone asks to research a company, those two parts are refreshed if they are more than a day old.
+3. Admins set the LLM (provider, model, keys, reasoning levels per task) and the TomTom and Transport for NSW keys for everyone; ordinary users can't see or change them. Design only here; it is built in Phases C and F (14.8).
+4. **The user's decision on encryption:** the operator may see which postings each user has. The link from a workspace to a posting stays plaintext, with no blind index. Everything the user thinks of a posting or did with it is sealed in Phase D, including `hidden` and `excluded_reason`, which the earlier design kept plaintext or filtered in SQL (14.6).
+
+Phase "A2" below builds 1 and 2. It changes nothing the frontend sees: the `/api` job JSON keeps the same ids and fields.
+
+### 14.1 Data model
+
+**`postings` (new, shared, plaintext): one row per canonical posting.**
+- **Identity:** the posting's URL as the adapter produces it, `UNIQUE`. Adapters already canonicalise it: SEEK builds `https://www.seek.com.au/job/{id}` from the id, the generic scraper drops fragments, and ATS feeds give the board's own URL. Today's per-workspace key is the same URL, so existing rows map to postings one to one. `(source, external_id)` is not used as a key: crawled careers pages have no stable id, and one id can come from two boards' feeds.
+- **Scraped, public fields:** `source`, `external_id`, `company`, `title`, `location_text`, `country`, `work_mode`, `employment_type`, `office_days`, `salary_min`, `salary_max`, `salary_text`, `description` (as scraped), `description_hash`, `detail_status` (none | summary | full), `detail_fetched_at`, `posted_at`, `industry`.
+- **Derived once, from the scraped text only:** the country guess, the work mode, office days and the description hash. They don't depend on any user, so they are computed when the posting changes (`pool.derive`), not per workspace.
+- **The office named in the ad,** when that is a property of the public ad: `ad_office_text` (empty when the ad names none) and `ad_office_checked_at` (when an LLM read the public ad for it).
+- **Pool state:** `not_a_job` (the detail page turned out not to be a posting), `listing_key` (the listing that last listed it, see 14.3), `first_seen` (first stored in the pool), `last_listed_at` (last time any listing showed it), `closed_at`, `close_reason` (gone | unlisted | stale), `rev` (bumped whenever its content changes).
+- Coordinates are **not** stored on the posting: an ad open in several places ("Sydney NSW; Canberra ACT") is placed at the place nearest each user's home, so placement is per workspace. The geocode cache is shared, so placing it again costs no request.
+
+**`jobs` becomes the per-workspace link, keeping its table and its ids.**
+- **Plaintext:** `id`, `workspace_id`, `posting_id` (NULL for a private job), `url` (the link key: the posting's URL, or a private job's own), `origin` ('pool' | 'private'; NULL only on rows the migration hasn't reached), `source_id` (which of the workspace's sources found it), `duplicate_of`, `first_seen` (first linked to this workspace), `posting_rev` (the posting `rev` this link was last refreshed against).
+- **Personal (sealed in Phase D):** `status`, `hidden`, `excluded_reason`, `distance_km`, `lat`, `lng`, `location_verdict`, the office override (`office_text`, `office_lat`, `office_lng`, `office_source`, `office_checked_at`) and `last_seen` (when this workspace's own search last listed it).
+- **Own content:** the old content columns (`title` … `description`, `detail_status`, `closed_at`) stay on `jobs`, but they now hold only this workspace's own values. These are overrides of the posting (a privately uploaded full ad, or a detail filled in from a merged duplicate) or, for a private job, all of its content. NULL means "the posting's value".
+- **In the code:** `job.title` and the other content attributes are Python properties: the workspace's own value when there is one, else the posting's. Assigning through a job always writes the workspace's own value; only `backend/pool.py` writes postings. A slip therefore can't leak a user's data into the pool. The properties have no SQL form, so any `db.query(Job.title)` fails loudly instead of reading only the override column.
+
+**Why `jobs` stays and becomes the link:** every id the rest of the system holds is a `jobs.id`. That covers the frontend's job ids (localStorage and URLs such as `job.html?id=`), `fit_results.job_id`, `cover_letters.job_id`, `chat_threads.job_ids_json` and `job_duplicates`. They all stay valid, and nothing is re-keyed. Two workspaces' copies of one ad keep their two ids and now point at one posting. Within one workspace, two rows never shared a URL (`UNIQUE(workspace_id, url)`), so no row is merged away and no public id changes.
+
+**Tables keyed by job id are per workspace by construction,** because a link id belongs to one workspace:
+- `fit_results`: per workspace (it depends on that user's documents and on the description that workspace sees).
+- `cover_letters`, `chat_threads`/`chat_messages`, `job_duplicates`: per workspace, as before.
+- `company_profiles` and `geocode_cache` stay shared; `commute_cache` becomes per user in Phase D (unchanged).
+
+### 14.2 Search flow
+For each source (`pipeline._process_source`):
+1. **List** with `adapter.list_postings()`, through the http cache (TTL as today).
+2. **Upsert into the pool** (`pool.upsert_scraped`): the posting is created if new; listing data updates it without losing better data (a full description is never replaced by a summary); `last_listed_at` and `listing_key` are set; a closed posting reopens. Any content change bumps `rev` and re-derives.
+3. **Link it to the workspace** (`pool.link`): get or create the workspace's `jobs` row by URL. A private job with the same URL (14.4) is attached to the posting; its own values that equal the posting's are dropped, and the rest stay as private overrides.
+4. **Fetch the detail page only when the pool needs it** (`pool.needs_detail`), the workspace's listing-stage filter passes and the per-source budget (60 a run) allows. The freshness rule:
+   - The posting has no full description yet: new to the pool, deferred by an earlier budget, or the fetch failed.
+   - Or its full description is older than 30 days (`DETAIL_REFRESH`) and it is still listed. Ads rarely change, and a monthly re-fetch also confirms the page is still there (rule 1 in 14.3).
+
+   So two workspaces listing the same posting cost one detail fetch, and a posting found by someone else needs no fetch at all. A 404 or 410 closes the posting (14.3), and a page that isn't a posting sets `not_a_job`.
+5. **Refresh the link** (`pool.refresh_link`): place it (per-workspace pins), take the office from the ad when the posting has one and the user hasn't set another, then filter it.
+
+After all sources:
+- **Closing sweep:** `pool.sweep`, see 14.3.
+- **Pool matching** (`pool.match_pool`): open postings already in the pool, found by any user's search, are matched against this workspace's profile with the same filters the app applies today (`filters.exclusion_reason`: titles, include and exclude keywords, dealbreakers, salary floor, work modes, office days, pins), and the matches are linked. A user therefore benefits from postings other users' searches found.
+  - A match must hit one of the workspace's titles (in the posting's title) or an include keyword (in the title or the description), and must pass every filter.
+  - A workspace with neither titles nor include keywords gets no matches. Otherwise it would be shown the whole pool, which would reveal what everyone else searches for. Postings that only match other users' filters stay invisible.
+  - Skipped: closed postings, `not_a_job` ones, those the workspace already links (by posting or by URL), and private content, which never enters the pool.
+  - At most 300 matches per run (`MAX_POOL_MATCHES`), newest-listed first; the rest follow at the next run. The run summary gains `totals.pool_matched`.
+- **Refreshing links to changed postings:** links to postings that other workspaces' runs changed since this workspace last looked (`posting_rev != rev`) are refreshed (`pool.refresh_links`).
+- **Then, as today:** refilter, duplicate scan and scoring.
+
+**Duplicates (copies of one ad on several boards) stay per workspace:**
+- Merging, splitting and "these are different jobs" are the user's decisions.
+- Which copy is listed depends on that user's filters, scores and statuses.
+- A scan covers one workspace's links, so it stays small.
+- A global scan would let one user's wrong merge hide another user's job.
+
+CLAUDE.md's `duplicate_of` rule keeps working unchanged, because `duplicate_of` is on the link. Gap-filling (salary, work mode, … taken from a copy) writes the workspace's own override values, never the posting.
+
+### 14.3 Closing postings
+A posting missing from one user's query results says nothing about whether it closed, because that user's titles or locations differ from the next user's. The rule is global and conservative, and lives on the posting:
+1. **Gone:** its detail page or API answers 404 or 410. The posting is closed with reason `gone`.
+2. **Missing from a complete listing of the same listing.** Complete-listing adapters (ATS feeds, an APSJobs query, a careers page crawled to the end) return every open job of that listing, whoever asks.
+   - A posting whose `listing_key` is that listing and that the listing no longer contains is closed with reason `unlisted`.
+   - The listing key is the adapter's `source` for ATS feeds, Atlassian and APSJobs (whose source already encodes the query). For a crawled careers page it is the source plus the careers URL, so two users crawling different pages of one site can't close each other's postings.
+   - Capped or partial listings already turn `complete_listing` off, so they close nothing.
+3. **Stale:** not seen in any listing for 45 days (`STALE_AFTER`), reason `stale`. This covers SEEK and the other partial listings, which never closed before. SEEK ads run for 30 days unless renewed, and a renewed ad is listed again and reopens.
+
+**Other rules:**
+- A closed posting that appears in a listing again reopens.
+- Private jobs are never closed by these rules, since no listing knows them.
+- Unlinked postings that have been closed for 180 days are deleted from the pool.
+
+**What changes from the old per-source "unlisted" closing:**
+- Before, each workspace closed its own rows: by `source_id` for a company source or by `source` for SEEK, with `url NOT IN (seen)`.
+- Now one complete listing closes the posting for everyone, keyed by the listing and not by the workspace.
+- The run report's "closed" column counts the postings this run closed (rules 1 and 2), plus the stale sweep.
+- `jobs.closed_at` is no longer written for pool links. Reading `job.closed_at` gives the posting's.
+
+### 14.4 Private uploads
+- **"Upload full ad"** (`POST /api/jobs/{id}/import-page`):
+  - The saved page's values go into the link's own columns: the description, `detail_status = "full"`, and any field the page states differently.
+  - The posting is untouched, so other workspaces keep the summary.
+  - That workspace's filters, scorer, chat and cover letters read the full ad; everyone else reads the summary.
+  - Fields derived from the private ad (office days, work mode, description hash) are computed into the workspace's own columns.
+- **"Import a saved page"** (`POST /api/import/page`: a SEEK search-results page, a SEEK job page or any page with JobPosting JSON-LD). For each job on the page:
+  - If the workspace already has it, the page's differing values become own overrides.
+  - Else, if the pool has the URL, a pool link is made and differing values become overrides.
+  - Otherwise a **private job** is created (`origin = 'private'`, `posting_id` NULL), which never enters the pool. If a later search of this workspace lists the same URL, the private job is attached to the new posting, and its own differing values stay private.
+- **Facts an LLM reads from an ad are shared only when it read the public ad:**
+  - The office named in the ad (`ad_office_text`, from scoring or Fill missing info).
+  - The employment type taken from the scorer.
+
+  Read from a private full ad, they stay on the link.
+
+### 14.5 Migration (existing installs)
+`backend/pool_migration.py`, called by `init_db()` at startup. Existing installs have per-workspace copies of the same jobs; the user's two workspaces overlap.
+1. **State:** `app_settings["job_pool_migration"]`. When absent, it is `pending` if `jobs` has rows with `origin IS NULL`, otherwise `done` (a fresh database).
+2. **Backup first:** `data/jobhunt.db.bak-before-job-pool`, made with SQLite's online backup API, once. Like the other `bak-*` files, it holds plaintext; Phase D's leftover-files report lists it.
+3. **Batches** of 200 URLs, one transaction each. For every URL, all its unmigrated rows (any workspace) are classified:
+   - `source = 'import'` (a JSON-LD page the user saved) or no URL: **private**. Origin `private`, everything stays on the row.
+   - SEEK rows with `detail_status = 'full'`: SEEK's job pages are robots-blocked, so only "Upload full ad" or a saved job page produced these. They are **pool links with a private full ad.** The posting takes the public fields (title, company, location, salary, work mode, dates, ids). The description, detail status, fetch time, office days and description hash stay on the link, as does an office read from that ad.
+   - Everything else is scraped: a **pool link**. Its content moves to the posting and the row's content columns are cleared. SEEK summary rows that came from a saved search-results page can't be told apart from scraped ones. They join the pool, which is harmless: they hold the same public summary the scraper would get.
+4. **The posting's content** comes from the best public row (full description first, then the most recently seen).
+   - The posting is closed only if every public row was closed.
+   - Its `first_seen` is the earliest row's and its `last_listed_at` is the latest `last_seen`.
+   - An office read from a public ad (`office_checked_at` with `office_source` 'ad', 'company' or none) becomes the posting's `ad_office_*`.
+5. **Kept on every link:** status, hidden, excluded_reason, coordinates, distance, verdict, office override, `duplicate_of`, `source_id`, `first_seen` and `last_seen`.
+   - Fit results, cover letters, chats and duplicate decisions point at link ids, which don't change. Nothing to re-key, and nothing to do for job ids held in localStorage or in chats.
+   - Fill-gap values copied between duplicates are dropped; the next duplicate scan fills them in again as own values.
+6. **Company profiles** (in `_fix_legacy_data`, idempotent):
+   - `news_researched_at = researched_at` for every researched profile: the single research always covered controversies.
+   - `sentiment_researched_at = researched_at` where `sentiment_json` is set (research version 2 and later).
+7. **`done`.**
+
+**Idempotent and resumable:**
+- A row is migrated exactly when its `origin` is set. Postings are found by URL, and each batch commits on its own.
+- After a crash, `running` resumes at the next start with the rows still unmigrated. The backup is not made again.
+- Running it again on a finished database does nothing.
+
+### 14.6 Encryption (Phase D), as the user decided
+- **Shared postings stay plaintext.** They are public ads.
+- **The link's reference to the posting stays plaintext:** `workspace_id`, `posting_id`, and for pool links the URL, which equals the posting's. The earlier recommendation was a sealed `posting_id` with a blind index, so the operator couldn't tell which postings a user has. The user chose to give that up for simpler queries. §2.5 now says so plainly.
+- **Sealed on the link, under the user's DEK:**
+  - `status`, `hidden`, `excluded_reason`, `distance_km`, `lat`, `lng` and `location_verdict`.
+  - The office override columns and `last_seen`.
+  - Every own-content column, including a privately uploaded full ad.
+  - A private job's `url`, through `url_index` (§2.3).
+- **Sealed in `fit_results`:** score, evidence, status and error.
+- **Null-ness must not leak.** `hidden`, `excluded_reason`, `location_verdict`, the office override and the own-content columns use a new `SealedAlways` type (§2.1). It writes a sealed marker for NULL, so `IS NULL` reveals nothing and is refused like any other comparison. Whether a user uploaded a full ad then shows only as ciphertext length, which §2.5 already lists.
+- **Stays plaintext:**
+  - `first_seen`. Link ids are allocated in order, and run start times are plaintext, so when a link was made is visible either way; sealing it would hide nothing.
+  - `last_seen` is sealed, because it records which later searches still matched the job.
+  - `duplicate_of`. Most merges are automatic, made from public data, and CLAUDE.md's rule filters on it in SQL. It does reveal a user's own merges and splits, which §2.5 lists.
+  - `origin`, `source_id`, `posting_rev` and `job_duplicates.status`.
+- **Code rule from A2 on:** never filter or sort in SQL on `status`, `hidden`, `excluded_reason`, `distance_km`, `location_verdict`, office fields, own-content columns or `fit_results.status`/`score`.
+  - A2's `list_jobs`, scorer selection, research and office selection, `filters.softened_job_ids` and the duplicate ranking load the workspace's link rows and decide in Python.
+  - SQL still filters on `workspace_id`, `posting_id`, `duplicate_of` and `id`, and on posting columns (`postings.closed_at`, …), which are plaintext.
+- **Cost on a Pi 4, replacing the old SQL shortcut (§2.4):**
+  - `list_jobs` first loads `(id, hidden, excluded_reason, duplicate_of)` for every top-level link of the workspace: two small sealed values per link. At roughly 5 µs per value, 5,000 links cost about 50 ms.
+  - It then loads the listed links in full: about 15 sealed values each, mostly NULL markers or short strings, since postings are plaintext. With about 20% listed, 1,000 × 15 × 5 µs is about 75 ms. Hidden and excluded jobs are only decrypted when asked for.
+  - That is well under the old estimate of 0.5–1 s, which decrypted about 25 values per job, and under §2.4's 1.5 s target. Phase D's benchmark tool measures it.
+
+### 14.7 Company profiles
+- **Shared** by all users, as before. `/api/companies` keeps Phase A's scoping: it lists the profiles of companies in the current workspace's jobs, so it doesn't reveal what others researched. Anyone whose jobs include a company gets the shared cached profile with no new research, including companies first seen through pool matches.
+- **Freshness:**
+  - The base profile (business model, ownership, headquarters, headcount, offices, sources) is refreshed after 30 days (`BASE_REFRESH`; it was 90).
+  - Employee sentiment and news/controversies keep their own timestamps.
+  - Bulk "Fill missing info" researches companies whose base is missing, failed, from an older research version or older than 30 days. It does not refresh sentiment or news on their own.
+- **"Research this company"** (`POST /api/companies/research {name}`, from the company dialog and the job page) follows a plan (`research.plan`):
+  - **Full research** (one web-search request, as today) when the base is missing, failed, outdated or older than 30 days. It sets all three timestamps.
+  - Otherwise a **narrower research** when sentiment, news or both are older than one day (`SECTION_REFRESH`). One web-search request asks only for the stale parts: the sentiment with the Glassdoor page, and/or the controversies with the note. Links are verified as in full research. Only those fields and their timestamps change; the base is kept.
+  - Otherwise **nothing:** the cached profile is shown and no LLM call is made.
+  - Every request goes through `llm_providers.web_search`, as today.
+- **What the run reports:** `summary.research` keeps `requested`, `researched`, `errors`, `skipped`, `first_error` and `aborted`, so the frontend's text still works. It adds:
+  - `refreshed: {company name: [parts]}`, where the parts are `"base"`, `"sentiment"` and `"news"` (a full research lists all three).
+  - `up_to_date: [company names]` for those that needed nothing.
+- **Profile JSON (`CompanyProfile.to_dict`, `/api/companies`).** Alongside the existing fields:
+  - `researched_at`: the base profile's date.
+  - `sentiment_researched_at`: the employee-sentiment section's date.
+  - `news_researched_at`: the controversies/news section's date.
+
+  Migrated rows get the section dates from `researched_at`, where that research covered them (14.5 step 6). The frontend shows `researched_at` today; the two section dates are for the company dialog to show next to their sections.
+
+### 14.8 Admin-owned global settings (design only; Phases C and F)
+- **What becomes admin-only:**
+  - The LLM: provider, base URL, model, API key, timeout and concurrency, and the reasoning level per task.
+  - The commute keys: `TOMTOM_API_KEY` and `TFNSW_API_KEY`.
+- **Global, with no per-user override.** They live in `.env`, written only through `app_settings` (Phase C makes those writes admin-only). Every user's scoring, research, chat, cover letters and commute use them.
+- **Ordinary users can't see or change them:**
+  - `/api/settings/*`, `/api/llm/*` and `/api/score/test` require an admin for reading too, not only for writing.
+  - `/api/score/status` returns only `configured`, `capabilities` (for example whether web search is available) and the counts. `base_url`, `model`, `reasoning_effort` and `provider` are left out.
+  - An unconfigured LLM reads "AI features aren't set up yet. Ask your admin."
+  - `/api/commute/status` returns only whether public transport and driving times are available.
+  - The model name recorded on a fit result, cover letter or chat answer stays visible: it describes that output, not the settings.
+- **Where they're set:** the LLM and commute-key cards move from the Settings tab to Admin → Server ("AI provider" and "Commute data"), next to email and billing. The Settings tab keeps only personal settings: workspaces, search profile, sources, schedule, theme and account.
+- **Phase C** gates the endpoints (read and write) and hides the two cards from non-admins. **Phase F** moves the cards into the admin panel.
