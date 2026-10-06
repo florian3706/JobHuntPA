@@ -724,6 +724,7 @@ a.btn { text-decoration: none; display: inline-block; }
 @media (max-width: 480px) { /* two cards a row on phones, so the list isn't endless */
   .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .theme-preview, .theme-split .theme-preview { height: 76px; }
+  .tp-muted { display: none; }
   .theme-card { padding: 6px; }
   .theme-card:has(input:checked) { padding: 4px; }
 }
