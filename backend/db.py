@@ -28,7 +28,7 @@ from sqlalchemy import (
     inspect,
     text,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker, validates
 from sqlalchemy.schema import CreateTable
 
 log = logging.getLogger(__name__)
@@ -97,6 +97,8 @@ class Job(Base):
     lat = Column(Float, nullable=True)
     lng = Column(Float, nullable=True)
     work_mode = Column(String, nullable=True)       # remote | hybrid | onsite | unknown
+    # backend.employment.EMPLOYMENT_TYPES, None = unknown. Never filter or sort on it in SQL (sealed in Phase D).
+    employment_type = Column(String, nullable=True)
     office_days = Column(Integer, nullable=True)    # days/week in the office, when stated
     salary_min = Column(Integer, nullable=True)
     salary_max = Column(Integer, nullable=True)
@@ -132,6 +134,11 @@ class Job(Base):
     office_checked_at = Column(DateTime, nullable=True)  # ad read for an office (found or not)
     # The user's own call on the location: ok (passes the location filter) | too_far
     location_verdict = Column(String, nullable=True)
+
+    @validates("excluded_reason")
+    def _no_empty_reason(self, _key, value):
+        """"Not excluded" is NULL, never "": queries test IS NULL (the column may be sealed, which can't be compared)."""
+        return value or None
 
 
 class JobDuplicate(Base):
@@ -470,6 +477,7 @@ class SearchRun(Base):
     progress_json = Column(Text, nullable=False, default="{}")
     summary_json = Column(Text, nullable=True)
     error = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)  # a short code written without any key, e.g. "interrupted"
     started_at = Column(DateTime, default=utcnow)
     finished_at = Column(DateTime, nullable=True)
 
@@ -644,6 +652,7 @@ def _fix_legacy_data() -> None:
     """One-off data repairs for databases written by the previous code."""
     with engine.begin() as conn:
         conn.execute(text("UPDATE documents SET kind='resume' WHERE kind IS NULL OR kind='cv'"))
+        conn.execute(text("UPDATE jobs SET excluded_reason = NULL WHERE excluded_reason = ''"))
         # Jobs from the old generic scraper were not linked to their source.
         conn.execute(text(
             "UPDATE jobs SET source_id = (SELECT id FROM company_sources cs "

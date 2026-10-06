@@ -26,6 +26,7 @@ class Posting:
     location_text: str = ""
     country: str = ""            # ISO-2 upper case when known
     work_mode: str = "unknown"   # remote | hybrid | onsite | unknown
+    employment_type: Optional[str] = None  # backend.employment.EMPLOYMENT_TYPES; None = unknown
     salary_text: str = ""
     salary_min: Optional[float] = None
     salary_max: Optional[float] = None

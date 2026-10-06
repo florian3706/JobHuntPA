@@ -40,6 +40,44 @@ from backend.workspaces import router as workspaces_router
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
 
+# Log hygiene: URLs and queries can hold search terms, place names and (later) tokens.
+for _name in ("httpx", "httpcore"):  # they log every request URL at INFO
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
+
+class StripQueryString(logging.Filter):
+    """uvicorn's access log without the query string of the request line."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            record.args = (*args[:2], args[2].split("?", 1)[0], *args[3:])
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(StripQueryString())
+
+
+class NoStoreApi:
+    """Adds ``Cache-Control: no-store`` to every ``/api`` response, so nothing of it stays in a browser cache."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/api"):
+            return await self.app(scope, receive, send)
+
+        async def send_no_store(message):
+            if message["type"] == "http.response.start":
+                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"cache-control"]
+                headers.append((b"cache-control", b"no-store"))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_no_store)
+
+
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 STATUSES = ("to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested")
 Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested"]
@@ -57,6 +95,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="JobHuntPA", lifespan=lifespan)
 # The job list is several MB of JSON; compressed it is about a seventh of that (slow links, the Pi).
 app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=5)
+app.add_middleware(NoStoreApi)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)
 app.include_router(profile_router)
@@ -112,6 +151,7 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "lat": job.lat,
         "lng": job.lng,
         "work_mode": job.work_mode or "unknown",
+        "employment_type": job.employment_type,
         "office_days": job.office_days,
         "salary_text": job.salary_text,
         "salary_min": job.salary_min,
@@ -177,23 +217,30 @@ def list_jobs(office_slack: int = OfficeSlack,
     is ticked. ``X-Omitted-Count`` says how many were left out. A job the office-days what-if lets
     through isn't excluded."""
     phash = _profile_hash(db, ws)
-    rows = (db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id)
-            .options(defer(Job.description)).filter(Job.workspace_id == ws).all())
+    softened = softened_job_ids(db, ws, office_slack)
+    leave_out = {"excluded", "hidden"} - set(include.split(","))
+    # Left-out jobs are dropped in SQL, so they are never loaded (and, once sealed, never decrypted).
+    # A job the what-if lets through isn't excluded.
+    top_level = (Job.workspace_id == ws, Job.duplicate_of.is_(None))
+    q = (db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id)
+         .options(defer(Job.description)).filter(*top_level))
+    if "excluded" in leave_out:
+        not_excluded = Job.excluded_reason.is_(None)
+        q = q.filter(not_excluded | Job.id.in_(softened) if softened else not_excluded)
+    if "hidden" in leave_out:
+        q = q.filter(Job.hidden.is_(False))
+    listed = q.order_by(Job.id).all()
+    omitted_count = db.query(Job).filter(*top_level).count() - len(listed)
+    copies: dict[int, list[Job]] = {}  # merged copies of the listed jobs, whatever their own state
+    listed_ids = [job.id for job, _fit in listed]
+    for start in range(0, len(listed_ids), 500):
+        for copy in (db.query(Job).options(defer(Job.description))
+                     .filter(Job.workspace_id == ws, Job.duplicate_of.in_(listed_ids[start:start + 500]))
+                     .order_by(Job.id)):
+            copies.setdefault(copy.duplicate_of, []).append(copy)
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
                .filter(Job.workspace_id == ws)}
-    softened = softened_job_ids(db, ws, office_slack)
     profiles = {p.key: p for p in db.query(CompanyProfile).all()}
-    copies: dict[int, list[Job]] = {}
-    for job, _fit in rows:
-        if job.duplicate_of:
-            copies.setdefault(job.duplicate_of, []).append(job)
-    leave_out = {"excluded", "hidden"} - set(include.split(","))
-
-    def omitted(job: Job) -> bool:
-        return (("excluded" in leave_out and bool(job.excluded_reason) and job.id not in softened)
-                or ("hidden" in leave_out and bool(job.hidden)))
-    everything = [(job, fit) for job, fit in rows if not job.duplicate_of]
-    listed = [(job, fit) for job, fit in everything if not omitted(job)]
     # Plain JSON values already: skip FastAPI's per-field encoder, which took most of the time for
     # thousands of jobs on a Raspberry Pi.
     return JSONResponse([_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
@@ -201,7 +248,7 @@ def list_jobs(office_slack: int = OfficeSlack,
                                               softened),
                                       copies.get(job.id, []))
                          for job, fit in listed],
-                        headers={"X-Omitted-Count": str(len(everything) - len(listed))})
+                        headers={"X-Omitted-Count": str(omitted_count)})
 
 
 @app.get("/api/jobs/{job_id}")
@@ -333,11 +380,8 @@ def latest_run(db: Session = Depends(get_db), ws: int = Depends(current_workspac
 
 
 @app.get("/api/runs/{run_id}")
-def get_run(run_id: int, db: Session = Depends(get_db)):
-    run = db.get(SearchRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return run.to_dict()
+def get_run(run_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    return owned(db, SearchRun, run_id, ws, "Run").to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -394,8 +438,11 @@ def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Dep
 # ---------------------------------------------------------------------------
 
 @app.get("/api/companies")
-def list_companies(db: Session = Depends(get_db)):
-    return {p.key: p.to_dict() for p in db.query(CompanyProfile).all()}
+def list_companies(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    """Profiles of the companies in this workspace's jobs (the profiles are shared, but which companies
+    others researched is not for this workspace to see)."""
+    keys = {company_key(c or "") for (c,) in db.query(Job.company).filter(Job.workspace_id == ws)}
+    return {p.key: p.to_dict() for p in db.query(CompanyProfile).all() if p.key in keys}
 
 
 class ResearchRequest(BaseModel):

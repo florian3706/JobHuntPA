@@ -385,7 +385,7 @@ function companyProfileHtml(p, name) {
       <dt>Controversies</dt><dd>${esc(p.controversy_note || (p.controversies.length ? '' : 'None found.'))}${cons}</dd>
     </dl>
     ${p.sources.length ? `<p class="sources"><span class="muted">Sources:</span> ${linkList(p.sources)}</p>` : ''}
-    <p class="muted">Researched ${esc(fmtDate(p.researched_at))} by ${esc(p.model || 'the LLM')} with web search.
+    <p class="muted">Researched ${esc(fmtDate(p.researched_at))}.
       Only links the search actually returned are shown${p.unverified_dropped ? `; ${p.unverified_dropped} unverifiable link(s) and their claims were removed` : ''}.
       Automated research can be wrong: check the linked articles.</p>
     ${researchBtn}`;

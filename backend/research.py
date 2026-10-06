@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from backend import llm_providers
 from backend.db import CompanyProfile, CompanySource, Job, SessionLocal, company_key
 from backend.scorer import ScorerError, config_problem, get_config
+from backend.threads import submit
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ def _board_labels(db: Session, ws: int) -> set[str]:
     Jobs from those boards whose employer is unknown carry the board's name."""
     out = set()
     for src in db.query(CompanySource).filter(CompanySource.workspace_id == ws):
-        companies = {c for (c,) in db.query(Job.company).filter(Job.source_id == src.id).distinct()}
+        companies = {c for (c,) in db.query(Job.company).filter(Job.source_id == src.id)}  # de-duplicated here: company may be sealed
         if len(companies) >= 3:
             out.add(company_key(src.label or ""))
     return out
@@ -113,7 +114,7 @@ def companies_to_research(db: Session, ws: int, mode: str = "missing",
     if job_ids is not None:
         q = q.filter(Job.id.in_(job_ids))
     else:
-        q = (q.filter((Job.excluded_reason.is_(None)) | (Job.excluded_reason == ""))
+        q = (q.filter(Job.excluded_reason.is_(None))
              .filter(Job.closed_at.is_(None), Job.hidden.is_(False), Job.duplicate_of.is_(None)))
     by_key: dict[str, dict] = {}
     for company, title, location, url in q.all():
@@ -422,7 +423,7 @@ def research_companies(companies: list[dict], progress: Callable[[str, dict], No
                      {"done": counts["done"], "total": len(companies)})
 
     with ThreadPoolExecutor(max_workers=cfg["concurrency"]) as pool:
-        for fut in as_completed([pool.submit(work, c) for c in companies]):
+        for fut in as_completed([submit(pool, work, c) for c in companies]):
             fut.result()
     return {
         "requested": len(companies),

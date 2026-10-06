@@ -277,7 +277,7 @@ def _nominatim(query: str):
             resp.raise_for_status()
             hits = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
-            log.warning("geocode failed for %r: %s", query, exc)
+            log.warning("geocode failed: %s", exc.__class__.__name__)
             return False
     hit = _pick(hits or [])
     if hit is None:

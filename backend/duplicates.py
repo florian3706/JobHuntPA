@@ -271,7 +271,8 @@ class Ranking:
         self.scored = {j for (j,) in db.query(FitResult.job_id).join(Job, Job.id == FitResult.job_id)
                        .filter(Job.workspace_id == ws, FitResult.status == "ok")}
         employers: dict[str, set[str]] = defaultdict(set)
-        for source, company in db.query(Job.source, Job.company).filter(Job.workspace_id == ws).distinct():
+        # De-duplicated here, not with DISTINCT: source and company may be sealed columns.
+        for source, company in db.query(Job.source, Job.company).filter(Job.workspace_id == ws):
             employers[source or ""].add((company or "").lower())
         # A source listing several employers is a job board (SEEK, EdTechJobs...).
         self.boards = {s for s, names in employers.items() if len(names) >= 3} | {"seek"}
@@ -305,6 +306,8 @@ def _fill_gaps(primary: Job, others: Iterable[Job]) -> None:
             primary.salary_text, primary.salary_min, primary.salary_max = o.salary_text, o.salary_min, o.salary_max
         if (primary.work_mode or "unknown") == "unknown" and (o.work_mode or "unknown") != "unknown":
             primary.work_mode = o.work_mode
+        if not primary.employment_type and o.employment_type:
+            primary.employment_type = o.employment_type
         if primary.office_days is None and o.office_days is not None:
             primary.office_days = o.office_days
         if not primary.posted_at and o.posted_at:

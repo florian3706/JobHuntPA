@@ -22,6 +22,7 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 
 from backend.adapters.base import Adapter, Posting, SourceError
+from backend.employment import normalise_employment_type
 from backend.scraping.http import FetchError, PoliteClient
 from backend.scraping.text import clean, html_to_text
 
@@ -104,6 +105,7 @@ def _posting_from_result(job: dict) -> Optional[Posting]:
         location_text=clean(loc.get("label")),
         country=clean(loc.get("countryCode")).upper(),
         work_mode=_work_mode(arrangements),
+        employment_type=normalise_employment_type(job.get("workTypes")),
         salary_text=clean(job.get("salaryLabel")),
         description="\n\n".join(summary_parts),
         detail_status="summary",

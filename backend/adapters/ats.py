@@ -14,6 +14,7 @@ from typing import Optional
 from urllib.parse import quote, urlsplit
 
 from backend.adapters.base import Adapter, Posting, SourceError
+from backend.employment import normalise_employment_type
 from backend.scraping.http import FetchError, PoliteClient
 from backend.scraping.text import clean, html_to_text
 
@@ -64,6 +65,7 @@ class WorkableAdapter(Adapter):
                     location_text="; ".join(t for t in texts if t),
                     country=clean(first.get("countryCode")).upper(),
                     work_mode="remote" if job.get("remote") else _mode(job.get("workplace")),
+                    employment_type=normalise_employment_type(job.get("employment_type")),
                     posted_at=clean(job.get("published")),
                     industry=", ".join(job.get("department") or []),
                     detail_ref=shortcode,
@@ -154,6 +156,7 @@ class LeverAdapter(Adapter):
                 location_text=clean(cats.get("location") or ", ".join(cats.get("allLocations") or [])),
                 country=clean(job.get("country")).upper(),
                 work_mode=_mode(job.get("workplaceType")),
+                employment_type=normalise_employment_type(cats.get("commitment")),
                 salary_text=_lever_salary(job.get("salaryRange")),
                 description=desc,
                 detail_status="full" if desc else "none",
@@ -199,6 +202,7 @@ class AshbyAdapter(Adapter):
                 location_text=clean(job.get("location")),
                 country=_country_code(addr.get("addressCountry")),
                 work_mode="remote" if job.get("isRemote") else _mode(job.get("workplaceType")),
+                employment_type=normalise_employment_type(job.get("employmentType")),
                 salary_text=clean(comp.get("compensationTierSummary") or comp.get("scrapeableCompensationSalarySummary")),
                 description=desc,
                 detail_status="full" if desc else "none",
@@ -247,6 +251,7 @@ class SmartRecruitersAdapter(Adapter):
                     location_text=clean(loc.get("fullLocation") or ", ".join(filter(None, [loc.get("city"), loc.get("region"), loc.get("country")]))),
                     country=clean(loc.get("country")).upper(),
                     work_mode=mode,
+                    employment_type=normalise_employment_type(job.get("typeOfEmployment")),
                     posted_at=clean(job.get("releasedDate")),
                     industry=clean((job.get("function") or {}).get("label")),
                     detail_ref=job.get("id"),
@@ -320,6 +325,7 @@ class WorkdayAdapter(Adapter):
         posting.country = clean(country).upper() or posting.country
         if info.get("remoteType"):
             posting.work_mode = _mode(info["remoteType"])
+        posting.employment_type = normalise_employment_type(info.get("timeType")) or posting.employment_type
         posting.detail_status = "full"
         return posting
 

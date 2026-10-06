@@ -17,3 +17,10 @@ playwright>=1.45,<2
 holidays>=0.105,<1
 # Time-zone data for commute times and scheduled searches (Linux and macOS have it built in; Windows doesn't).
 tzdata>=2024.1; sys_platform == "win32"
+# Encryption at rest (accounts: per-user keys, sealed columns and files, the admin key pair) and password-based key
+# derivation (argon2id). cryptography 49+ and argon2-cffi-bindings 26+ ship no wheels for Intel Macs, where pip would
+# then try to compile them (needs Rust and a C compiler), so Intel Macs stay on the last releases that have wheels.
+cryptography>=46,<52; sys_platform != "darwin" or platform_machine != "x86_64"
+cryptography>=46,<49; sys_platform == "darwin" and platform_machine == "x86_64"
+argon2-cffi>=23.1,<26
+argon2-cffi-bindings>=21.2,<26; sys_platform == "darwin" and platform_machine == "x86_64"

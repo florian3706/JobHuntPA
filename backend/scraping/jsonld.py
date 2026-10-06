@@ -6,6 +6,7 @@ import re
 from typing import Any, Iterable, Optional
 
 from backend.adapters.base import Posting
+from backend.employment import normalise_employment_type
 from backend.scraping.text import clean, html_to_text
 
 _JSONLD_RE = re.compile(
@@ -122,6 +123,7 @@ def posting_from_jsonld(node: dict, page_url: str) -> Optional[Posting]:
         location_text=location,
         country=country,
         work_mode=work_mode,
+        employment_type=normalise_employment_type(node.get("employmentType")),
         salary_text=salary_text,
         salary_min=smin,
         salary_max=smax,
