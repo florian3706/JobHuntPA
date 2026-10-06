@@ -39,13 +39,16 @@ underneath.
 
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
-**Settings**: scheduled searches (by themselves at set times on workdays, skipping public holidays),
-your AI provider, model and key, how long the AI thinks for each task, and the commute keys.
+**Settings**: the theme, scheduled searches (by themselves at set times on workdays, skipping public
+holidays), your AI provider, model and key, how long the AI thinks for each task, and the commute keys.
 
 ![The Settings tab: scheduled searches, the AI provider with its model, key and reasoning levels, and the commute API keys](docs/screenshots/settings.png)
 
-**Themes**: Dark (above), Light, the Catppuccin flavours, a dyslexia-friendly theme and themes for
-colour vision deficiencies.
+**Themes**: Dark (above), Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and Everforest
+families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from live
+previews on the Settings tab.
+
+![The Theme card on the Settings tab: each theme is a card with a live preview of the app in it, grouped by family](docs/screenshots/theme-picker.png)
 
 ![The Jobs tab in six themes: Light, Catppuccin Mocha, Catppuccin Latte, Dyslexia, Deuteranomaly (dark) and Monochromacy](docs/screenshots/themes.png)
 
@@ -207,9 +210,12 @@ can live in their own **workspaces** (switcher at the top right).
   changes, metro, buses and walking at the other end; driving starts at your home pin. See
   [Commute times](#commute-times-optional) for the two free keys this needs.
 - **Map**: two modes. **Jobs** shows the jobs your Jobs tab filters show, with your pins and their
-  radii, and lists the jobs in view under the map (click a dot or **Open ↗** for a job's full
-  page in a new tab); nothing can be changed by accident. **Edit pins** drops a pin where you
-  click (drag to move); *Only list pins in view* shortens the pin list to the area on screen.
+  radii, and lists the jobs in view under the map (click a dot, or **Show** in the list, to see a
+  place's jobs; **Open ↗** for a job's full page in a new tab); nothing can be changed by accident.
+  **Edit pins** drops a pin where you click or tap (drag to move). Without a mouse, move the map
+  (arrow keys) until the cross in its middle is on the place and press **Drop a pin at the cross**;
+  **Move to the cross** in the pin list moves a pin there. *Only list pins in view* shortens the
+  pin list to the area on screen.
 - **Office locations**: most ads only say "Sydney NSW", or an area such as "North West & Hills District"
   (placed at its main centre, here Castle Hill, for the location filter). Instead of trusting that, such jobs show
   **office unknown** until the office is found: the scorer reads it from the full ad, and company
@@ -218,12 +224,18 @@ can live in their own **workspaces** (switcher at the top right).
   (you can pick another on the job page). Recruitment agencies rarely name the client, so their ads are left to you: on the job
   page set the office (address or suburb, or one of the employer's offices), or make the call with
   **Location OK** / **Too far**. The office then drives the location filter and distance.
-- **Themes** (top right, remembered per browser): Dark (the default), Light, or *System* to follow
-  your computer; the four Catppuccin flavours; a **Dyslexia** theme (warm low-glare background,
-  Atkinson Hyperlegible font, wider letter and word spacing) in light and dark; and colour-vision
-  themes (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and
-  dark. They're ported from ProjectTimeline; labels always accompany colours, so nothing relies on
-  colour alone.
+- **Themes** (Settings > Theme, remembered per browser): each theme is a card with a small live
+  preview of the app in it; click or tap one, or move through them with the arrow keys, and it
+  applies at once (open job pages follow). Dark (the default), Light, or *System* to follow your
+  computer; Catppuccin (Latte, Frappé, Macchiato, Mocha); Rosé Pine (Rosé Pine, Moon, Dawn); Nord
+  (dark, and a light variant made from Nord's colours); Kanagawa (Wave, Dragon, Lotus); Everforest
+  (dark and light, medium contrast); a **Dyslexia** theme (warm low-glare background, Atkinson
+  Hyperlegible font, wider letter and word spacing) in light and dark; and colour-vision themes
+  (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and dark. The
+  family themes use their projects' official palettes; where a colour fell short of the WCAG AA
+  contrast minimums it is a little lighter or darker in the same hue (themes.css lists each change).
+  Labels, marks or shapes always accompany colours, so nothing relies on colour alone. See
+  [Accessibility](#accessibility).
 - **Reasoning level** (Settings > LLM): how long the AI thinks, set separately for scoring,
   cover letters, company research and job chat. *Detect supported levels* shows what your model accepts.
 
@@ -340,6 +352,55 @@ unzip the backup into the new app folder.
   component; setup's step 3 installs it. On Linux you can fix a failed browser install with
   `.venv/bin/python -m playwright install --with-deps chromium`.
 
+## Accessibility
+
+JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phone browsers.
+
+- **Keyboard:** everything works without a mouse. *Skip to main content* is the first thing Tab
+  reaches; the tabs move with the arrow keys; dialogs keep focus inside, close with Escape and
+  return focus to the button that opened them; focus is always visible and never hidden under the
+  sticky header. The map has keyboard routes for everything: the list under it (**Show** opens a
+  place's jobs), and in pin mode **Drop a pin at the cross** and **Move to the cross** instead of
+  clicking and dragging. The theme picker is a radio group: arrow keys move through the themes.
+- **Screen readers:** landmarks, one heading outline, labels on every field, and spoken status
+  messages for searches, scoring, saves and errors. Form errors appear under the field they belong
+  to and say how to fix it.
+- **Colour:** every theme meets 4.5:1 for text and 3:1 for field borders, the focus ring and
+  selected states (`tools/theme_contrast.py` checks 71 colour pairs per theme). Nothing is told by
+  colour alone: scores are numbers, statuses and work modes are words, excluded jobs on the map are
+  hollow dashed dots, the pin kinds have solid, dashed and dotted rings, and messages carry a mark.
+- **Phones and zoom:** the app works from 320 px wide, at 200% zoom and with wider text spacing
+  without sideways scrolling; wide tables turn into stacked rows; the header only sticks where
+  there's room; touch screens get 44 px controls and 16 px text in fields (no zooming on iPhone).
+- **Motion:** with *reduce motion* set on the device, spinners, progress bars and map animations
+  stop.
+
+**How it was tested** (October 2026): [axe-core](https://github.com/dequelabs/axe-core) 4.13 with
+the WCAG 2.0, 2.1 and 2.2 A and AA rules plus best practices, in headless Chromium (Playwright),
+on 19 screens and states (every tab, every dialog, the chat, the job page, the map in both modes,
+loading, empty and error states) at 320, 375, 768 and 1280 px wide: no violations. Its colour
+contrast rule ran on 12 of those screens in all 28 themes: no violations. Scripts also pressed Tab
+through every page (a visible focus ring on every stop, none hidden, no traps), drove the dialogs,
+the chat, the tabs, the theme picker and the map by keyboard, measured touch targets (24 px or more,
+or spaced), and checked reflow at 320 px, 200% zoom and WCAG text spacing. `tests/test_accessibility.py`
+keeps the contrast and the pages' basics (language, viewport, skip link, headings, labels) checked
+on every test run.
+
+**Known limitations:**
+- Not yet tried with real screen readers (NVDA, JAWS, VoiceOver, TalkBack) or by disabled users: the
+  checks above are automated, plus a review of the code.
+- The map tiles are OpenStreetMap's own pictures and stay light in every theme; street names on them
+  are outside the app's control. The job dots and pins on the map aren't keyboard stops themselves:
+  the list under the map is the keyboard route. Panning the map takes a drag, the arrow keys, or the
+  zoom buttons and a double-click.
+- Text from elsewhere (job ads, company research, AI answers) is shown as it comes.
+- Messages in the corner disappear after a few seconds; they wait while the pointer or focus is on
+  them, have a Dismiss button, and screen readers announce them.
+- In Chrome on Windows, the arrow keys change a closed drop-down at once, so arrowing through the
+  Workspace menu switches workspace at each step: open it first (Alt+Down).
+- The colour-vision themes' colours were simulated for colour vision deficiencies in ProjectTimeline;
+  the small lightness changes made here for contrast keep their hues but weren't simulated again.
+
 ## For developers
 
 Setup lives in one place, `installer/installer.py` (standard library only), called by `setup.sh`
@@ -358,6 +419,12 @@ Manual run: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
 throwaway database of made-up data with `tools/demo_data.py`, runs the app on it with fake AI
 settings and no scheduler, and saves `docs/screenshots/*.png`. It never touches `data/` or `.env`.
 Re-run it after changing the UI; `--only jobs,map` retakes just those.
+
+**Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme, the colour
+pairs the app uses together and fails on any below WCAG AA (`--all` shows the passing ones too).
+When you style something with a new combination of colour tokens, add it to `PAIRS` there. The
+unit tests run the same check plus a static check of the pages (language, viewport, skip link,
+headings, a name for every control). See [Accessibility](#accessibility) for the browser checks.
 
 **Releasing the Windows programs:** bump `VERSION`, commit, then `git tag v$(cat VERSION) && git
 push --tags`. `.github/workflows/release.yml` builds JobHuntPA-Setup.exe and JobHuntPA.exe on

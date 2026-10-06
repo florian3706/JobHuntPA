@@ -18,6 +18,7 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to main content</a>
   <header class="app-header">
     <div class="header-inner">
       <div class="brand">
@@ -30,40 +31,40 @@
       <div class="header-meta">
         <div class="workspace-bar">
           <label for="ws-select" class="muted">Workspace</label>
-          <select id="ws-select" aria-label="Workspace"></select>
-          <button id="ws-new" class="btn btn-sm" type="button" title="New workspace: a separate search with its own settings, documents, pins and jobs">+ New</button>
-          <button id="ws-rename" class="btn btn-ghost btn-sm" type="button">Rename</button>
-          <button id="ws-delete" class="btn btn-danger btn-sm" type="button">Delete</button>
+          <select id="ws-select"></select>
+          <button id="ws-new" class="btn btn-sm" type="button" title="New workspace: a separate search with its own settings, documents, pins and jobs"><span aria-hidden="true">+ </span>New<span class="visually-hidden"> workspace</span></button>
+          <button id="ws-rename" class="btn btn-ghost btn-sm" type="button">Rename<span class="visually-hidden"> workspace</span></button>
+          <button id="ws-delete" class="btn btn-danger btn-sm" type="button">Delete<span class="visually-hidden"> workspace</span></button>
         </div>
-        <div class="theme-picker">
-          <span id="scorer-status" class="api-status is-unknown">● scorer: checking…</span>
-          <label class="muted" for="theme-select">Theme</label>
-          <select id="theme-select" aria-label="Theme"></select>
+        <div class="header-tools">
+          <span id="scorer-status" class="api-status is-unknown"><span aria-hidden="true">● </span>scorer: checking…</span>
+          <a class="help-link" href="https://github.com/florian3706/JobHuntPA#using-it" target="_blank" rel="noopener">Help<span class="visually-hidden"> (opens in a new tab)</span></a>
         </div>
       </div>
     </div>
-    <nav class="tabs" role="tablist" aria-label="Dashboard sections">
-      <button class="tab active" role="tab" aria-selected="true" data-tab="jobs">Jobs</button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="search">Search setup</button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="docs">Documents</button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="map">Map</button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="settings">Settings</button>
-    </nav>
+    <div class="tabs" role="tablist" aria-label="Dashboard sections">
+      <button id="tab-btn-jobs" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="tab-jobs" data-tab="jobs">Jobs</button>
+      <button id="tab-btn-search" class="tab" type="button" role="tab" aria-selected="false" aria-controls="tab-search" tabindex="-1" data-tab="search">Search setup</button>
+      <button id="tab-btn-docs" class="tab" type="button" role="tab" aria-selected="false" aria-controls="tab-docs" tabindex="-1" data-tab="docs">Documents</button>
+      <button id="tab-btn-map" class="tab" type="button" role="tab" aria-selected="false" aria-controls="tab-map" tabindex="-1" data-tab="map">Map</button>
+      <button id="tab-btn-settings" class="tab" type="button" role="tab" aria-selected="false" aria-controls="tab-settings" tabindex="-1" data-tab="settings">Settings</button>
+    </div>
   </header>
 
-  <main class="main">
+  <main id="main" class="main" tabindex="-1">
     <!-- ============ JOBS ============ -->
-    <section id="tab-jobs" class="tab-panel" role="tabpanel">
+    <section id="tab-jobs" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-jobs" tabindex="0">
+      <h2 class="visually-hidden">Jobs</h2>
       <div class="card run-card">
         <div class="toolbar-row">
           <button id="search-run" class="btn btn-primary" type="button">Run search</button>
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
           <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
           <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
-          <span id="run-status" class="muted" aria-live="polite"></span>
+          <span id="run-status" class="muted" role="status"></span>
         </div>
         <div id="next-scheduled" class="muted" hidden></div>
-        <div id="run-progress" class="progress" hidden><div class="progress-bar"></div></div>
+        <div id="run-progress" class="progress" role="progressbar" aria-label="Progress of the run" aria-valuemin="0" aria-valuemax="100" hidden><div class="progress-bar"></div></div>
         <details id="run-report" class="run-report" hidden>
           <summary>Last run: per-source results</summary>
           <div id="run-report-body"></div>
@@ -74,10 +75,10 @@
         <div class="toolbar-row">
           <label class="field search-field">
             <span class="field-label">Search</span>
-            <input id="filter-search" type="search" placeholder="company, title, location…" autocomplete="off" />
+            <input id="filter-search" type="search" placeholder="company, title, location…" autocomplete="off" enterkeyhint="search" />
           </label>
           <label class="field">
-            <span class="field-label">Min score: <output id="score-output">0</output></span>
+            <span class="field-label">Min score: <output id="score-output" for="filter-min-score">0</output></span>
             <input id="filter-min-score" type="range" min="0" max="100" step="5" value="0" />
           </label>
           <label class="field">
@@ -92,7 +93,7 @@
           </label>
           <label class="field">
             <span class="field-label">Max distance (km)</span>
-            <input id="filter-max-dist" type="number" min="0" step="1" placeholder="Any" />
+            <input id="filter-max-dist" type="number" min="0" step="1" inputmode="numeric" placeholder="Any" autocomplete="off" />
           </label>
           <label class="field">
             <span class="field-label">Sort</span>
@@ -111,17 +112,17 @@
           <label class="field check-field"><input id="filter-show-closed" type="checkbox" /> <span>Show closed</span></label>
           <label class="field check-field"><input id="filter-show-hidden" type="checkbox" /> <span>Show hidden</span></label>
         </div>
-        <div id="soften-note" class="soften-note" hidden aria-live="polite"></div>
-        <div id="dupe-note" class="dupe-note" hidden aria-live="polite"></div>
+        <div id="soften-note" class="soften-note" hidden></div>
+        <div id="dupe-note" class="dupe-note" hidden></div>
         <div class="toolbar-row chips-row">
-          <div id="status-chips" class="chips" aria-label="Filter by status"></div>
+          <div id="status-chips" class="chips" role="group" aria-label="Show jobs with the status"></div>
           <label class="check select-all-shown" title="Select every job the current filters show (for bulk status changes, hiding or Fill missing info)">
             <input id="select-all-shown" type="checkbox" /> <span>Select all shown</span></label>
-          <span id="jobs-count" class="muted"></span>
+          <span id="jobs-count" class="muted" role="status"></span>
         </div>
-        <div id="bulk-bar" class="bulk-bar" hidden>
+        <div id="bulk-bar" class="bulk-bar" role="group" aria-label="Actions for the selected jobs" hidden>
           <label class="bulk-select-all"><input id="bulk-select-all" type="checkbox" /> <span id="bulk-count">0 selected</span></label>
-          <select id="bulk-status" aria-label="Bulk status">
+          <select id="bulk-status" aria-label="New status for the selected jobs">
             <option value="to_review">to review</option>
             <option value="shortlisted">shortlisted</option>
             <option value="applied">applied</option>
@@ -138,37 +139,37 @@
         </div>
       </div>
       <div id="jobs-list" class="jobs-grid"></div>
-      <div id="jobs-empty" class="empty" hidden>No jobs match the current filters.</div>
+      <div id="jobs-empty" class="empty" hidden>No jobs match the current filters. Clear the search, lower the minimum score or pick another status to see more.</div>
       <div id="jobs-error" class="error" hidden></div>
     </section>
 
     <!-- ============ SEARCH SETUP ============ -->
-    <section id="tab-search" class="tab-panel" role="tabpanel" hidden>
+    <section id="tab-search" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-search" tabindex="0" hidden>
       <div class="panel-head">
         <h2>Search setup</h2>
-        <span id="search-save-status" class="muted" aria-live="polite"></span>
+        <span id="search-save-status" class="muted" role="status"></span>
       </div>
-      <form id="search-form" class="card form-card" autocomplete="off">
+      <form id="search-form" class="card form-card" autocomplete="off" novalidate>
         <div class="form-grid">
           <div class="form-group">
-            <label>Target job titles</label>
-            <div class="tag-input" data-field="titles"><div class="tags"></div><input type="text" placeholder="Add title + Enter" /></div>
-            <small class="hint">A job passes if its title contains one of these… (also used as SEEK search terms)</small>
+            <label for="tags-titles">Target job titles</label>
+            <div class="tag-input" data-field="titles"><ul class="tags" aria-label="Target job titles"></ul><input id="tags-titles" type="text" placeholder="Add title + Enter" aria-describedby="tags-titles-hint" enterkeyhint="done" /></div>
+            <small id="tags-titles-hint" class="hint">A job passes if its title contains one of these… (also used as SEEK search terms)</small>
           </div>
           <div class="form-group">
-            <label>Include keywords</label>
-            <div class="tag-input" data-field="keywords_include"><div class="tags"></div><input type="text" placeholder="Add keyword + Enter" /></div>
-            <small class="hint">…or if its title/description mentions one of these.</small>
+            <label for="tags-keywords_include">Include keywords</label>
+            <div class="tag-input" data-field="keywords_include"><ul class="tags" aria-label="Include keywords"></ul><input id="tags-keywords_include" type="text" placeholder="Add keyword + Enter" aria-describedby="tags-keywords_include-hint" enterkeyhint="done" /></div>
+            <small id="tags-keywords_include-hint" class="hint">…or if its title/description mentions one of these.</small>
           </div>
           <div class="form-group">
-            <label>Exclude keywords</label>
-            <div class="tag-input" data-field="keywords_exclude"><div class="tags"></div><input type="text" placeholder="Add keyword + Enter" /></div>
-            <small class="hint">Whole-word match in title or description.</small>
+            <label for="tags-keywords_exclude">Exclude keywords</label>
+            <div class="tag-input" data-field="keywords_exclude"><ul class="tags" aria-label="Exclude keywords"></ul><input id="tags-keywords_exclude" type="text" placeholder="Add keyword + Enter" aria-describedby="tags-keywords_exclude-hint" enterkeyhint="done" /></div>
+            <small id="tags-keywords_exclude-hint" class="hint">Whole-word match in title or description.</small>
           </div>
           <div class="form-group">
             <label for="salary-floor">Salary floor (AUD per year)</label>
-            <input id="salary-floor" type="number" min="0" step="1000" placeholder="e.g. 140000" />
-            <small class="hint">Only applied when a job states its salary. Hourly/daily rates are annualised.</small>
+            <input id="salary-floor" type="number" min="0" step="1000" inputmode="numeric" placeholder="e.g. 140000" autocomplete="off" aria-describedby="salary-floor-hint" />
+            <small id="salary-floor-hint" class="hint">Only applied when a job states its salary. Hourly/daily rates are annualised.</small>
           </div>
           <fieldset class="form-group">
             <legend>Work modes wanted</legend>
@@ -180,23 +181,23 @@
           </fieldset>
           <div class="form-group">
             <label for="max-office-days">Hybrid: max days in the office per week</label>
-            <select id="max-office-days">
+            <select id="max-office-days" aria-describedby="max-office-days-hint">
               <option value="">Any</option>
               <option value="1">1 day</option>
               <option value="2">2 days</option>
               <option value="3">3 days</option>
               <option value="4">4 days</option>
             </select>
-            <small class="hint">Hybrid roles whose ad asks for more office days are excluded. Ads that don't say how many days are kept.</small>
+            <small id="max-office-days-hint" class="hint">Hybrid roles whose ad asks for more office days are excluded. Ads that don't say how many days are kept.</small>
           </div>
           <div class="form-group">
-            <label>Dealbreaker industries</label>
-            <div class="tag-input" data-field="dealbreaker_industries"><div class="tags"></div><input type="text" placeholder="Add industry + Enter" /></div>
-            <small class="hint">Matched against the job's industry, company and title.</small>
+            <label for="tags-dealbreaker_industries">Dealbreaker industries</label>
+            <div class="tag-input" data-field="dealbreaker_industries"><ul class="tags" aria-label="Dealbreaker industries"></ul><input id="tags-dealbreaker_industries" type="text" placeholder="Add industry + Enter" aria-describedby="tags-dealbreaker_industries-hint" enterkeyhint="done" /></div>
+            <small id="tags-dealbreaker_industries-hint" class="hint">Matched against the job's industry, company and title.</small>
           </div>
           <div class="form-group">
-            <label>Dealbreaker keywords</label>
-            <div class="tag-input" data-field="dealbreaker_keywords"><div class="tags"></div><input type="text" placeholder="Add keyword + Enter" /></div>
+            <label for="tags-dealbreaker_keywords">Dealbreaker keywords</label>
+            <div class="tag-input" data-field="dealbreaker_keywords"><ul class="tags" aria-label="Dealbreaker keywords"></ul><input id="tags-dealbreaker_keywords" type="text" placeholder="Add keyword + Enter" enterkeyhint="done" /></div>
           </div>
         </div>
         <div id="search-error" class="error" hidden></div>
@@ -210,19 +211,19 @@
             <label class="check"><input type="checkbox" id="seek-enabled" /> Enabled</label>
           </fieldset>
           <div class="form-group">
-            <label>SEEK locations</label>
-            <div class="tag-input" data-field="seek_locations"><div class="tags"></div><input type="text" placeholder="e.g. All Sydney NSW + Enter" /></div>
-            <small class="hint">Each title is searched in each location. Empty = all of Australia.</small>
+            <label for="tags-seek_locations">SEEK locations</label>
+            <div class="tag-input" data-field="seek_locations"><ul class="tags" aria-label="SEEK locations"></ul><input id="tags-seek_locations" type="text" placeholder="e.g. All Sydney NSW + Enter" aria-describedby="tags-seek_locations-hint" enterkeyhint="done" /></div>
+            <small id="tags-seek_locations-hint" class="hint">Each title is searched in each location. Empty = all of Australia.</small>
           </div>
         </div>
         <p class="hint">SEEK's robots.txt allows the first page of each search but not job pages or further result pages, so SEEK jobs are scored on the listing summary (about 20 newest-relevant results per title and location).
           SEEK may also refuse automated access altogether. Either way you can save SEEK search or job pages from your own browser (Ctrl+S)
           and import them here. A saved job page gives the full description.</p>
-        <form id="import-form" class="toolbar-row">
+        <form id="import-form" class="toolbar-row" novalidate>
           <label class="field"><span class="field-label">Import saved pages (.html)</span>
             <input id="import-input" type="file" accept=".html,.htm,text/html" multiple /></label>
           <button class="btn" type="submit">Import</button>
-          <span id="import-status" class="muted" aria-live="polite"></span>
+          <span id="import-status" class="muted" role="status"></span>
         </form>
       </div>
 
@@ -231,16 +232,16 @@
         <p class="hint">Used on each job's full page (Open ↗): public transport and driving times to the office at peak times, there and back.</p>
         <div class="form-grid">
           <div class="form-group">
-            <label>Public transport from</label>
-            <div class="tag-input" data-field="commute_from"><div class="tags"></div><input type="text" placeholder="e.g. Gosford Station + Enter" /></div>
-            <small class="hint">Stations you'd walk or drive to; each gets its own journey. Empty = from your home pin. Driving always starts at the home pin.</small>
+            <label for="tags-commute_from">Public transport from</label>
+            <div class="tag-input" data-field="commute_from"><ul class="tags" aria-label="Public transport from"></ul><input id="tags-commute_from" type="text" placeholder="e.g. Gosford Station + Enter" aria-describedby="tags-commute_from-hint" enterkeyhint="done" /></div>
+            <small id="tags-commute_from-hint" class="hint">Stations you'd walk or drive to; each gets its own journey. Empty = from your home pin. Driving always starts at the home pin.</small>
           </div>
           <div class="form-group">
             <label for="commute-arrive">Arrive at work by</label>
-            <input id="commute-arrive" type="time" value="09:00" />
+            <input id="commute-arrive" type="time" value="09:00" aria-describedby="commute-times-hint" />
             <label for="commute-leave">Leave work at</label>
-            <input id="commute-leave" type="time" value="17:00" />
-            <small class="hint">Times are for the next Tuesday, a typical office day.</small>
+            <input id="commute-leave" type="time" value="17:00" aria-describedby="commute-times-hint" />
+            <small id="commute-times-hint" class="hint">Times are for the next Tuesday, a typical office day.</small>
           </div>
         </div>
         <p id="commute-keys" class="hint"></p>
@@ -250,25 +251,25 @@
         <h3>Company sources</h3>
         <p class="hint">Careers pages or job boards. The app detects Workable/Greenhouse/Lever/Ashby/SmartRecruiters/Workday boards,
           otherwise it scrapes the page's HTML, respecting robots.txt and crawl delays.</p>
-        <div class="toolbar-row">
+        <form id="source-form" class="toolbar-row" novalidate>
           <label class="field search-field"><span class="field-label">Careers page URL</span>
-            <input id="source-url" type="text" placeholder="https://company.com/careers" autocomplete="off" /></label>
+            <input id="source-url" type="url" inputmode="url" placeholder="https://company.com/careers" autocomplete="off" spellcheck="false" required /></label>
           <label class="field"><span class="field-label">Company name (optional)</span>
             <input id="source-label" type="text" placeholder="Company" autocomplete="off" /></label>
-          <button id="source-add" class="btn btn-primary" type="button">Add</button>
-        </div>
+          <button id="source-add" class="btn btn-primary" type="submit">Add</button>
+        </form>
         <div id="sources-list" class="docs-list"></div>
         <div id="sources-error" class="error" hidden></div>
       </div>
     </section>
 
     <!-- ============ DOCUMENTS ============ -->
-    <section id="tab-docs" class="tab-panel" role="tabpanel" hidden>
+    <section id="tab-docs" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-docs" tabindex="0" hidden>
       <div class="panel-head">
         <h2>Documents</h2>
         <span class="muted">PDF / DOCX / ODT / TXT, or notes you write here</span>
       </div>
-      <form id="upload-form" class="card upload-card">
+      <form id="upload-form" class="card upload-card" novalidate>
         <label class="field"><span class="field-label">Upload</span>
           <input id="upload-input" type="file" accept=".pdf,.odt,.ods,.odp,.docx,.txt,.md" multiple /></label>
         <label class="field"><span class="field-label">Type</span>
@@ -281,7 +282,7 @@
         <button class="btn btn-primary" type="submit">Upload</button>
         <span id="upload-status" class="muted" role="status" aria-live="polite"></span>
       </form>
-      <form id="note-form" class="card form-card note-form" aria-labelledby="note-form-title">
+      <form id="note-form" class="card form-card note-form" aria-labelledby="note-form-title" novalidate>
         <h3 id="note-form-title">Write a note</h3>
         <p class="hint">Plain text the AI reads like an uploaded document: details of a project, results you're proud of,
           or what you want from your next job (choose <strong>Preferences</strong> for that).</p>
@@ -325,7 +326,7 @@
           then add them to this search or start a new search with them.</p>
         <div class="toolbar-row">
           <button id="suggest-titles" class="btn btn-primary" type="button">Suggest job titles</button>
-          <span id="titles-status" class="muted" aria-live="polite"></span>
+          <span id="titles-status" class="muted" role="status"></span>
         </div>
         <div id="titles-list" class="titles-list"></div>
         <div id="titles-actions" class="toolbar-row" hidden>
@@ -342,7 +343,7 @@
     </section>
 
     <!-- ============ MAP ============ -->
-    <section id="tab-map" class="tab-panel" role="tabpanel" hidden>
+    <section id="tab-map" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-map" tabindex="0" hidden>
       <div class="panel-head">
         <h2>Map</h2>
         <div class="seg" role="group" aria-label="Map mode">
@@ -351,20 +352,25 @@
         </div>
       </div>
       <p id="map-hint-jobs" class="hint">The jobs your Jobs tab filters show, with your pins and their radii. Pan and zoom: the jobs in view are
-        listed under the map. Click a dot to see its jobs; <strong>Open ↗</strong> opens a job's full page in a new tab.</p>
-      <p id="map-hint-pins" class="hint" hidden>Click the map to drop a pin, drag a pin to move it. Home pin: hybrid and onsite roles within its radius are OK.
+        listed under the map. Click a dot, or <strong>Show</strong> in the list, to see its jobs; <strong>Open ↗</strong> opens a job's full page in a new tab.
+        With the map focused, the arrow keys pan and + and − zoom.</p>
+      <p id="map-hint-pins" class="hint" hidden>Click or tap the map to drop a pin, or move the map until the cross in its middle is on the place
+        and press <strong>Drop a pin at the cross</strong>. Drag a pin to move it, or use <strong>Move to the cross</strong> in the list of pins.
+        With the map focused, the arrow keys pan and + and − zoom.
+        Home pin: hybrid and onsite roles within its radius are OK.
         Hybrid pins (e.g. stations on your commute): hybrid roles within the radius are OK. Onsite pins: onsite roles within the radius are OK.
         Remote roles don't need a pin.</p>
       <div id="pin-controls" class="map-controls card" hidden>
         <label class="field"><span class="field-label">Pin kind</span>
           <select id="pin-kind"><option value="home">home</option><option value="hybrid">hybrid</option><option value="onsite">onsite</option></select></label>
-        <label class="field"><span class="field-label">Radius: <output id="pin-radius-output">10 km</output></span>
+        <label class="field"><span class="field-label">Radius: <output id="pin-radius-output" for="pin-radius">10 km</output></span>
           <input id="pin-radius" type="range" min="1" max="100" step="1" value="10" /></label>
         <label class="field"><span class="field-label">Label (optional)</span>
-          <input id="pin-label" type="text" placeholder="e.g. Home, Office hub" /></label>
+          <input id="pin-label" type="text" placeholder="e.g. Home, Office hub" autocomplete="off" /></label>
+        <button id="pin-add-centre" class="btn btn-primary" type="button">Drop a pin at the cross</button>
         <label class="check pins-in-view"><input id="pins-in-view" type="checkbox" /> <span>Only list pins in view</span></label>
       </div>
-      <div id="map" class="map"></div>
+      <div id="map" class="map" role="region" aria-label="Map of jobs and pins" aria-describedby="map-hint-jobs"></div>
       <div id="map-legend" class="map-legend muted"></div>
       <div id="map-jobs" class="map-jobs"></div>
       <div id="pins-list" class="pins-list" hidden></div>
@@ -372,16 +378,26 @@
     </section>
 
     <!-- ============ SETTINGS ============ -->
-    <section id="tab-settings" class="tab-panel" role="tabpanel" hidden>
+    <section id="tab-settings" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-settings" tabindex="0" hidden>
       <div class="panel-head">
         <h2>Settings</h2>
         <span class="muted">Each card says whether it applies to this workspace or to all of them</span>
       </div>
 
+      <div id="theme-card" class="card form-card theme-card-section">
+        <div class="card-head">
+          <h3 id="theme-heading">Theme <span class="scope-tag">This browser</span></h3>
+        </div>
+        <p class="hint">Each card shows the app in that theme. Pick one with a click or tap, or with the arrow keys:
+          it applies at once and is remembered in this browser. Every theme meets the WCAG AA contrast minimums, and
+          labels or shapes always go with colours.</p>
+        <div id="theme-picker-slot"></div>
+      </div>
+
       <div id="schedule-card" class="card form-card">
         <div class="card-head">
           <h3>Scheduled searches <span id="sched-scope" class="scope-tag">This workspace</span></h3>
-          <span id="sched-save-status" class="muted" aria-live="polite"></span>
+          <span id="sched-save-status" class="muted" role="status"></span>
         </div>
         <p class="hint">JobHuntPA runs this search by itself at set times while it is running; a search missed because it was closed runs if you start it within the hour.
           Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.</p>
@@ -389,7 +405,7 @@
         <div class="form-grid">
           <div class="form-group">
             <label for="sched-time-input">Run at</label>
-            <div id="sched-times" class="sched-times"></div>
+            <ul id="sched-times" class="sched-times" aria-label="Search times"></ul>
             <div class="sched-add">
               <input id="sched-time-input" type="time" value="09:00" />
               <button id="sched-time-add" class="btn btn-sm" type="button">Add time</button>
@@ -408,30 +424,31 @@
           <fieldset class="form-group">
             <legend>Public holidays</legend>
             <label class="check"><input type="checkbox" id="sched-holidays" /> Skip public holidays</label>
-            <select id="sched-state" aria-label="State or territory"></select>
-            <small class="hint">The state picks the holiday calendar and also the time zone the times above are in.
+            <label for="sched-state" class="field-label">State or territory</label>
+            <select id="sched-state" aria-describedby="sched-state-hint"></select>
+            <small id="sched-state-hint" class="hint">The state picks the holiday calendar and also the time zone the times above are in.
               Substitute days, such as a weekend holiday moved to the Monday, are skipped too.</small>
           </fieldset>
         </div>
-        <div id="sched-status" class="sched-status" aria-live="polite"></div>
+        <div id="sched-status" class="sched-status"></div>
       </div>
 
       <div class="card form-card">
         <h3>LLM (scoring, cover letters, company research and job chat) <span class="scope-tag">All workspaces</span></h3>
         <div id="scorer-info" class="muted"></div>
-        <form id="llm-form" class="llm-form" autocomplete="off">
+        <form id="llm-form" class="llm-form" autocomplete="off" novalidate>
           <h4>Provider, model and API key</h4>
           <div class="form-grid">
             <label class="field"><span class="field-label">Provider</span><select id="llm-provider"></select></label>
             <label class="field"><span class="field-label">Model</span>
-              <input id="llm-model" type="text" list="llm-models" autocomplete="off" spellcheck="false" placeholder="Model name" /></label>
+              <input id="llm-model" type="text" list="llm-models" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Model name" required /></label>
             <label class="field"><span class="field-label">API address</span>
-              <input id="llm-base-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1" /></label>
+              <input id="llm-base-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://api.example.com/v1" required /></label>
             <div class="field">
               <label class="field-label" for="llm-key">API key</label>
               <input id="llm-key" type="password" autocomplete="new-password" spellcheck="false"
                      data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
-              <div id="llm-key-state" class="key-state" aria-live="polite"></div>
+              <div id="llm-key-state" class="key-state"></div>
             </div>
           </div>
           <datalist id="llm-models"></datalist>
@@ -441,7 +458,7 @@
           <div id="llm-error" class="error" role="alert" hidden></div>
           <div class="toolbar-row">
             <button id="llm-save" class="btn btn-primary" type="submit">Save</button>
-            <span id="llm-save-status" class="muted" aria-live="polite"></span>
+            <span id="llm-save-status" class="muted" role="status"></span>
           </div>
         </form>
         <div class="reasoning-settings">
@@ -456,14 +473,14 @@
           </div>
           <div class="toolbar-row">
             <button id="detect-levels" class="btn btn-sm" type="button">Detect supported levels</button>
-            <span id="levels-status" class="muted" aria-live="polite"></span>
+            <span id="levels-status" class="muted" role="status"></span>
           </div>
         </div>
         <div class="toolbar-row llm-actions">
           <button id="score-test" class="btn" type="button">Test connection</button>
           <button id="score-stale" class="btn" type="button" title="Also rescore this workspace's jobs that were scored before your documents changed">Rescore stale</button>
           <button id="score-all" class="btn btn-ghost" type="button" title="Rescore every job in this workspace">Rescore all</button>
-          <span id="score-test-status" class="muted" aria-live="polite"></span>
+          <span id="score-test-status" class="muted" role="status"></span>
         </div>
       </div>
 
@@ -473,9 +490,9 @@
           with no restart. A saved key is never shown again in full, only its last few characters. Where the commute starts and when it
           arrives is set under Search setup &gt; Commute.</p>
         <div class="form-grid">
-          <form class="form-group key-field" data-key="tfnsw" autocomplete="off">
+          <form class="form-group key-field" data-key="tfnsw" autocomplete="off" novalidate>
             <label for="key-tfnsw">Transport for NSW key (public transport times)</label>
-            <div class="key-state" aria-live="polite"></div>
+            <div class="key-state"></div>
             <div class="key-row">
               <input id="key-tfnsw" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
                      data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
@@ -485,9 +502,9 @@
             <small class="hint">Free: sign up at <a href="https://opendata.transport.nsw.gov.au" target="_blank" rel="noopener">opendata.transport.nsw.gov.au</a>,
               create an application, and copy its API key. Without it the job page shows driving only.</small>
           </form>
-          <form class="form-group key-field" data-key="tomtom" autocomplete="off">
+          <form class="form-group key-field" data-key="tomtom" autocomplete="off" novalidate>
             <label for="key-tomtom">TomTom key (driving with peak traffic)</label>
-            <div class="key-state" aria-live="polite"></div>
+            <div class="key-state"></div>
             <div class="key-row">
               <input id="key-tomtom" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
                      data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
@@ -500,47 +517,49 @@
         </div>
         <div class="toolbar-row key-test">
           <button id="keys-test" class="btn btn-sm" type="button" title="Makes one small real request to each service with the saved key">Test saved keys</button>
-          <span id="keys-test-status" class="muted" aria-live="polite"></span>
+          <span id="keys-test-status" class="muted" role="status"></span>
         </div>
       </div>
     </section>
   </main>
 
-  <div id="modal" class="modal" hidden>
+  <dialog id="modal" class="modal" aria-labelledby="modal-title">
     <div class="modal-box">
       <div class="modal-head">
-        <strong id="modal-title"></strong>
-        <button id="modal-close" class="btn btn-ghost btn-sm" type="button">✕ Close</button>
+        <h2 id="modal-title" class="modal-title"></h2>
+        <button id="modal-close" class="btn btn-ghost btn-sm" type="button"><span aria-hidden="true">✕ </span>Close</button>
       </div>
-      <pre id="modal-text" class="preview-text"></pre>
+      <pre id="modal-text" class="preview-text" tabindex="0"></pre>
       <div id="modal-html" class="modal-html" hidden></div>
     </div>
-  </div>
+  </dialog>
 
-  <aside id="chat-panel" class="chat-panel" hidden aria-label="Chat about jobs">
+  <div id="chat-panel" class="chat-panel" role="complementary" aria-labelledby="chat-title" hidden>
     <div class="chat-head">
-      <strong id="chat-title">Ask about this job</strong>
-      <button id="chat-close" class="btn btn-ghost btn-sm" type="button" aria-label="Close chat">✕</button>
+      <h2 id="chat-title" class="chat-title">Ask about this job</h2>
+      <button id="chat-close" class="btn btn-ghost btn-sm chat-close" type="button" aria-label="Close chat"><span aria-hidden="true">✕</span></button>
     </div>
     <div class="chat-bar">
       <select id="chat-threads" aria-label="Earlier chats about these jobs"></select>
       <button id="chat-new" class="btn btn-ghost btn-sm" type="button" title="Start a new conversation about the same jobs">New chat</button>
-      <button id="chat-delete" class="btn btn-ghost btn-sm" type="button" title="Delete this conversation">Delete</button>
+      <button id="chat-delete" class="btn btn-ghost btn-sm" type="button" title="Delete this conversation">Delete<span class="visually-hidden"> this chat</span></button>
     </div>
-    <div id="chat-jobs" class="chat-jobs"></div>
-    <div id="chat-messages" class="chat-messages"></div>
+    <ul id="chat-jobs" class="chat-jobs" aria-label="Jobs in this chat"></ul>
+    <div id="chat-messages" class="chat-messages" role="region" aria-label="Conversation" tabindex="0"></div>
     <form id="chat-form" class="chat-form" autocomplete="off">
-      <textarea id="chat-input" rows="3" placeholder="Ask anything about this job… (Enter to send, Shift+Enter for a new line)"></textarea>
+      <label for="chat-input" class="visually-hidden">Your question</label>
+      <textarea id="chat-input" rows="3" enterkeyhint="send" aria-describedby="chat-input-hint" placeholder="Ask anything about this job…"></textarea>
+      <p id="chat-input-hint" class="hint chat-hint">Enter sends; Shift+Enter starts a new line.</p>
       <div class="chat-form-row">
         <label class="check" title="Let the model search the web for things your saved data doesn't cover: company news, salaries, interview process. Slower; the pages it used are listed under the answer.">
           <input id="chat-web" type="checkbox" /> Search the web</label>
-        <span id="chat-status" class="muted" aria-live="polite"></span>
+        <span id="chat-status" class="muted" role="status"></span>
         <button id="chat-send" class="btn btn-primary btn-sm" type="submit">Send</button>
       </div>
     </form>
-  </aside>
+  </div>
 
-  <div id="toasts" class="toasts" aria-live="assertive"></div>
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="./common.js"></script>

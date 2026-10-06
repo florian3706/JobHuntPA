@@ -39,12 +39,45 @@ const state = {
   docs: { ws: null, list: [], open: new Set(), text: new Map(), drafts: new Map(), status: new Map(), busy: new Set() },
 };
 
+/* ---------- the dialog (#modal, a native <dialog>) ----------
+   showModal() moves focus in, keeps it there (the page behind is inert) and closes on Escape. When it closes,
+   focus goes back to the control that opened it, or to the same control redrawn meanwhile (a job card's
+   buttons are redrawn when its job changes). */
+let modalReturn = null;
+
+function focusFinder(el) {
+  if (!el || el === document.body) return () => null;
+  const act = el.dataset?.act;
+  const jobId = el.closest?.('[data-job-id]')?.dataset.jobId;
+  const id = el.id;
+  return () => {
+    if (el.isConnected && !el.closest('[hidden]')) return el;
+    if (id && document.getElementById(id)) return document.getElementById(id);
+    if (act && jobId) return document.querySelector(`.job-card[data-job-id="${jobId}"] [data-act="${act}"]`);
+    return null;
+  };
+}
+
+function showModal() {
+  const dlg = $('#modal');
+  $('#modal-html').scrollTop = 0;
+  $('#modal-text').scrollTop = 0;
+  if (dlg.open) return;
+  modalReturn = focusFinder(document.activeElement);
+  dlg.showModal();
+}
+
+function closeModal() {
+  if ($('#modal').open) $('#modal').close();
+}
+
 function openModal(title, text) {
   $('#modal-title').textContent = title;
   $('#modal-text').textContent = text;
   $('#modal-text').hidden = false;
   $('#modal-html').hidden = true;
-  $('#modal').hidden = false;
+  $('#modal-html').innerHTML = '';
+  showModal();
 }
 
 function openHtmlModal(title, html) {
@@ -52,23 +85,66 @@ function openHtmlModal(title, html) {
   $('#modal-html').innerHTML = html;
   $('#modal-html').hidden = false;
   $('#modal-text').hidden = true;
-  $('#modal').hidden = false;
+  showModal();
 }
 
-/* ---------- tabs ---------- */
+function initModal() {
+  const dlg = $('#modal');
+  $('#modal-close').addEventListener('click', closeModal);
+  // A click on the backdrop lands on the <dialog> itself (its box fills it otherwise).
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) closeModal(); });
+  dlg.addEventListener('close', () => {
+    $('#modal-html').innerHTML = ''; // nothing of the old content stays reachable
+    const back = modalReturn?.();
+    modalReturn = null;
+    (back || $('#main')).focus();
+  });
+}
+
+/* ---------- tabs (ARIA tabs pattern: arrow keys, Home and End move between them) ---------- */
+const TAB_TITLE = { jobs: 'Jobs', search: 'Search setup', docs: 'Documents', map: 'Map', settings: 'Settings' };
+let currentTab = 'jobs';
+
+function updateTitle() {
+  const ws = state.workspaces.find((w) => w.id === state.ws);
+  document.title = [TAB_TITLE[currentTab], ws?.name, 'JobHuntPA'].filter(Boolean).join(' · ');
+}
+
 function initTabs() {
-  const names = $$('.tab').map((b) => b.dataset.tab);
-  const show = (name) => {
-    $$('.tab').forEach((b) => { const on = b.dataset.tab === name; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+  const tabs = $$('.tab');
+  const names = tabs.map((b) => b.dataset.tab);
+  const show = (name, { focus = null } = {}) => {
+    const leaving = $(`#tab-${currentTab}`);
+    const hadFocus = leaving && leaving !== $(`#tab-${name}`) && leaving.contains(document.activeElement);
+    currentTab = name;
+    tabs.forEach((b) => {
+      const on = b.dataset.tab === name;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
     $$('.tab-panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
     if (name === 'map') requestAnimationFrame(() => { initMap(); state.map?.invalidateSize(); drawJobMarkers(); });
     if ((name === 'settings' || name === 'jobs') && state.schedule) loadSchedule({ controls: false });
     history.replaceState(null, '', `#${name}`);
+    updateTitle();
+    if (focus === 'tab') $(`#tab-btn-${name}`).focus();
+    // A link inside the old panel (e.g. "Settings" under Commute) switched tabs: focus would be lost in a hidden panel.
+    else if (focus === 'panel' || hadFocus) $(`#tab-${name}`).focus();
   };
-  $$('.tab').forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
+  tabs.forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
+  $('.tabs').addEventListener('keydown', (e) => {
+    const i = names.indexOf(currentTab);
+    const next = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: names.length - 1 }[e.key];
+    if (next === undefined) return;
+    e.preventDefault();
+    show(names[(next + names.length) % names.length], { focus: 'tab' });
+  });
   // #tab in the address picks the tab at load; a link to one (<a href="#settings">) or an edited address switches to it.
   const fromHash = () => { const name = location.hash.slice(1); if (names.includes(name)) show(name); };
   window.addEventListener('hashchange', fromHash);
+  // The skip link: to the open tab's panel, without changing the address (that picks the tab).
+  $('.skip-link').addEventListener('click', (e) => { e.preventDefault(); $(`#tab-${currentTab}`).focus(); });
   show(names.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'jobs');
 }
 
@@ -102,8 +178,7 @@ async function loadJobs() {
     if (token !== state.jobsToken || ws !== state.ws) return;
     state.jobsRefreshing = false;
     if (state.jobsStatus === 'loading') state.jobsStatus = 'error';
-    $('#jobs-error').textContent = `Could not load jobs: ${e.message}`;
-    $('#jobs-error').hidden = false;
+    showError($('#jobs-error'), `Could not load jobs: ${e.message}. Reload the page to try again.`);
     renderJobs();
     return;
   }
@@ -149,6 +224,7 @@ function visibleJobs() {
 
 function renderStatusChips() {
   const box = $('#status-chips');
+  const focused = box.contains(document.activeElement) ? document.activeElement : null;
   box.innerHTML = '';
   const base = state.jobs.filter((j) => (state.filter.showExcluded || !j.excluded_reason)
     && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden));
@@ -157,10 +233,14 @@ function renderStatusChips() {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = `chip${state.filter.status === val ? ' active' : ''}`;
+    b.dataset.status = val;
+    b.setAttribute('aria-pressed', String(state.filter.status === val));
     b.innerHTML = state.jobsStatus === 'ready' ? `${esc(label)} <span class="n">${n}</span>` : esc(label); // no "0" while loading
     b.addEventListener('click', () => { state.filter.status = val; renderJobs(); });
     box.appendChild(b);
   });
+  // The chips are redrawn: keep keyboard focus on the same one.
+  if (focused?.dataset.status) box.querySelector(`[data-status="${focused.dataset.status}"]`)?.focus();
 }
 
 function renderSoftenControl() {
@@ -208,7 +288,7 @@ function renderJobs() {
   if (state.jobsStatus !== 'ready') {
     list.innerHTML = state.jobsStatus === 'loading' ? LOADING_JOBS : '';
     $('#jobs-empty').hidden = true;
-    $('#jobs-count').textContent = state.jobsStatus === 'loading' ? 'Loading…' : '';
+    setText($('#jobs-count'), state.jobsStatus === 'loading' ? 'Loading…' : '');
     renderBulkBar();
     drawJobMarkers();
     return;
@@ -217,11 +297,14 @@ function renderJobs() {
   // Bulk actions only ever apply to jobs on screen: drop selections the filters now hide.
   const shown = new Set(jobs.map((j) => j.id));
   state.selected.forEach((id) => { if (!shown.has(id)) state.selected.delete(id); });
+  // Cards are redrawn: keep keyboard focus on the same control of the same card.
+  const focusBack = list.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
   list.innerHTML = '';
   $('#jobs-empty').hidden = jobs.length !== 0;
   const hidden = state.jobs.length - jobs.length + state.omittedCount;
-  $('#jobs-count').textContent = `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`;
+  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
   jobs.forEach((job) => list.appendChild(renderJobCard(job)));
+  if (focusBack) (focusBack() || $('#tab-jobs')).focus({ preventScroll: true });
   renderBulkBar();
   drawJobMarkers();
 }
@@ -230,8 +313,9 @@ function renderJobCard(job) {
   const card = document.createElement('article');
   card.dataset.jobId = job.id;
   card.className = `card job-card${job.excluded_reason ? ' is-excluded' : ''}${state.selected.has(job.id) ? ' is-selected' : ''}`;
+  card.setAttribute('aria-labelledby', `job-${job.id}-title`);
   const mode = modeOf(job);
-  const dist = job.distance_km === null ? '' : `<span>📍 ${job.distance_km} km</span>`;
+  const dist = job.distance_km === null ? '' : `<span><span aria-hidden="true">📍 </span><span class="visually-hidden">Distance: </span>${job.distance_km} km</span>`;
   const flags = [
     job.detail_status === 'summary' ? '<span class="badge flag" title="Only the job board listing summary is available">summary only</span>' : '',
     job.detail_status === 'none' ? '<span class="badge flag" title="Description not fetched yet">no description</span>' : '',
@@ -245,41 +329,43 @@ function renderJobCard(job) {
   ].join('');
   const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
   const also = (job.also_on || []).map((c) => `<span class="also-item"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}</a>${c.closed ? ' <span class="muted">(closed)</span>' : ''}
-    <button class="link split-btn" type="button" data-split="${c.id}" title="Not the same job: show this ad as its own card again">split</button></span>`).join('');
+    <button class="link split-btn" type="button" data-split="${c.id}" title="Not the same job: show this ad as its own card again">split<span class="visually-hidden"> the ${esc(sourceLabel(c.source))} ad from this card</span></button></span>`).join('');
   const fitErr = job.fit && job.fit.error ? `<p class="hint err-text">Scoring failed: ${esc(job.fit.error.slice(0, 240))}</p>` : '';
+  const titleId = `job-${job.id}-title`;
+  const name = `${job.title || 'job'}${job.company ? ` at ${job.company}` : ''}`;
   card.innerHTML = `
     <div class="job-top">
-      <input type="checkbox" aria-label="Select job" ${state.selected.has(job.id) ? 'checked' : ''} />
+      <input type="checkbox" data-act="select" aria-label="Select ${esc(name)}" ${state.selected.has(job.id) ? 'checked' : ''} />
       <div class="job-title-row">
         <div class="job-company">${esc(job.company || '—')} ${companyIcon(job)}</div>
-        <h3 class="job-title"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
+        <h3 class="job-title" id="${titleId}"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
         <div class="job-meta">
           <span>${esc(job.location_text || 'location unknown')}</span>
-          <span class="badge ${mode}">${mode}</span>${dist}${flags}
+          <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${dist}${flags}
         </div>
       </div>
       ${scoreBadge(job)}
     </div>
     <div class="job-sub">
-      ${job.salary_text ? `<span>💰 ${esc(job.salary_text)}</span>` : ''}
+      ${job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : ''}
       <span class="muted">${esc(sourceLabel(job.source))}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>
     </div>
     ${officeHtml(job) ? `<div class="job-office">${officeHtml(job)}</div>` : ''}
     ${also ? `<div class="also-on" title="The same job advertised on other sites, merged into this card"><span class="muted">Also on:</span> ${also}</div>` : ''}
     ${excl}${fitErr}
     <div class="job-actions">
-      <select aria-label="Application status">
+      <select data-act="status" aria-label="Application status of ${esc(name)}">
         ${STATUSES.map((s) => `<option value="${s}" ${job.status === s ? 'selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}
       </select>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="rescore">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="desc">Description</button>
-      ${job.source === 'seek' && job.detail_status === 'summary' ? '<button class="btn btn-sm" type="button" data-act="upload-ad" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>' : ''}
-      <button class="btn btn-ghost btn-sm" type="button" data-act="hide">${job.hidden ? 'Unhide' : 'Hide'}</button>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="letter">${job.has_cover_letter ? 'Cover letter ✓' : 'Draft cover letter'}</button>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="chat" title="Ask questions about this job in a chat on the right">Chat</button>
-      <a class="btn btn-ghost btn-sm" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Full page in a new tab: the whole ad, office map, commute and company details">Open ↗</a>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="rescore" aria-describedby="${titleId}">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="desc" aria-describedby="${titleId}">Description</button>
+      ${job.source === 'seek' && job.detail_status === 'summary' ? `<button class="btn btn-sm" type="button" data-act="upload-ad" aria-describedby="${titleId}" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>` : ''}
+      <button class="btn btn-ghost btn-sm" type="button" data-act="hide" aria-describedby="${titleId}">${job.hidden ? 'Unhide' : 'Hide'}</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="letter" aria-describedby="${titleId}">${job.has_cover_letter ? 'Cover letter<span aria-hidden="true"> ✓</span><span class="visually-hidden"> (drafted)</span>' : 'Draft cover letter'}</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="chat" aria-describedby="${titleId}" title="Ask questions about this job in a chat on the right">Chat</button>
+      <a class="btn btn-ghost btn-sm" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" aria-describedby="${titleId}" title="Full page in a new tab: the whole ad, office map, commute and company details">Open${NEW_TAB}</a>
     </div>
-    <details class="reqs" data-section="fit"><summary>Fit: requirements → evidence</summary><div class="fit-body"></div></details>
+    <details class="reqs" data-section="fit"><summary data-act="fit">Fit: requirements <span aria-hidden="true">→</span><span class="visually-hidden">and</span> evidence</summary><div class="fit-body"></div></details>
     ${gapsSection(job)}`;
 
   card.querySelector('input[type="checkbox"]').addEventListener('change', (e) => {
@@ -289,7 +375,7 @@ function renderJobCard(job) {
   });
   const sel = card.querySelector('select');
   sel.addEventListener('change', () => updateJobStatus(job, sel.value, sel));
-  card.querySelector('[data-act="rescore"]').addEventListener('click', (e) => rescoreJob(job, e.target));
+  card.querySelector('[data-act="rescore"]').addEventListener('click', (e) => rescoreJob(job, e.currentTarget));
   card.querySelector('[data-act="desc"]').addEventListener('click', () => showDescription(job));
   card.querySelector('[data-act="letter"]').addEventListener('click', () => showCoverLetter(job));
   card.querySelector('[data-act="chat"]').addEventListener('click', () => openChat([job.id]));
@@ -352,12 +438,12 @@ function showUploadAd(job) {
     <div class="upload-ad">
       <p>SEEK only lets the app read the short listing summary. To score this job on the full ad:</p>
       <ol>
-        <li><a href="${esc(job.url)}" target="_blank" rel="noopener">Open the ad on SEEK ↗</a> and wait for it to load.</li>
+        <li><a href="${esc(job.url)}" target="_blank" rel="noopener">Open the ad on SEEK${NEW_TAB}</a> and wait for it to load.</li>
         <li>Save the page: press <kbd>${mac ? 'Cmd' : 'Ctrl'}</kbd>+<kbd>S</kbd> (any "Webpage" format works).</li>
-        <li>Choose the saved file here:</li>
+        <li><label for="ad-file">Choose the saved file here:</label></li>
       </ol>
       <input id="ad-file" type="file" accept=".html,.htm,.mhtml,.mht,text/html" />
-      <p id="ad-status" class="muted" aria-live="polite"></p>
+      <p id="ad-status" class="muted" role="status"></p>
     </div>`);
   $('#ad-file').addEventListener('change', async (e) => {
     const file = e.target.files[0];
@@ -385,7 +471,8 @@ function showUploadAd(job) {
       }
       renderJobs();
     } catch (err) {
-      status.innerHTML = `<span class="err-text">${esc(err.message)}</span>`;
+      status.textContent = '';
+      setFieldError(e.target, err.message);
       e.target.value = '';
     }
   });
@@ -416,7 +503,7 @@ async function bulkUpdateStatus() {
 }
 
 async function rescoreJob(job, btn) {
-  btn.disabled = true;
+  setBusy(btn, true);
   btn.textContent = 'Scoring…';
   try {
     const updated = await api(`/api/score/${job.id}${slackQuery()}`, { method: 'POST' });
@@ -485,7 +572,7 @@ function watchRun(id) {
   clearTimeout(state.pollTimer);
   const token = ++state.watchToken;
   state.watching = true;
-  ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = true; });
+  ['#search-run', '#score-pending', '#fill-info'].forEach((s) => setBusy($(s), true));
   $('#run-progress').hidden = false;
   const tick = async () => {
     let run;
@@ -494,9 +581,12 @@ function watchRun(id) {
     state.lastRun = { ws: state.ws, id: run.id };
     const p = run.progress || {};
     const pct = p.total ? Math.round((100 * (p.done || 0)) / p.total) : null;
-    $('#run-progress .progress-bar').style.width = pct === null ? '100%' : `${pct}%`;
-    $('#run-progress').classList.toggle('indeterminate', pct === null);
-    $('#run-status').textContent = `${runLabel(run, 'Working')}: ${run.stage || run.state}…`;
+    const bar = $('#run-progress');
+    bar.querySelector('.progress-bar').style.width = pct === null ? '100%' : `${pct}%`;
+    bar.classList.toggle('indeterminate', pct === null);
+    if (pct === null) { bar.removeAttribute('aria-valuenow'); bar.removeAttribute('aria-valuetext'); }
+    else { bar.setAttribute('aria-valuenow', String(pct)); bar.setAttribute('aria-valuetext', `${p.done || 0} of ${p.total} done`); }
+    setText($('#run-status'), `${runLabel(run, 'Working')}: ${run.stage || run.state}…`); // said only when the stage changes
     if (run.state === 'queued' || run.state === 'running') { state.pollTimer = setTimeout(tick, 1200); return; }
     finishRun(run);
   };
@@ -505,7 +595,7 @@ function watchRun(id) {
 
 function finishRun(run) {
   state.watching = false;
-  ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = false; });
+  ['#search-run', '#score-pending', '#fill-info'].forEach((s) => setBusy($(s), false));
   $('#run-progress').hidden = true;
   if (run.state === 'failed') {
     const what = run.scheduled ? 'Scheduled search' : 'Run';
@@ -555,17 +645,22 @@ function runSummaryBits(run) {
   return bits.join(' · ');
 }
 
+// On narrow screens each source becomes a block of "Listed: 12" lines (.stack-table in styles.css), so the
+// table never needs sideways scrolling; the explicit roles keep it a table for screen readers either way.
+const REPORT_COLS = ['Source', 'Listed', 'New', 'Descriptions fetched', 'Kept', 'Excluded', 'Closed', 'Status'];
 function renderRunReport(run) {
   const per = run.summary?.search?.per_source;
   if (!per) return;
+  const td = (i, html) => `<td role="cell" data-label="${REPORT_COLS[i]}">${html}</td>`;
   const rows = per.map((s) => `
-    <tr>
-      <td><strong>${esc(s.label)}</strong><div class="muted">${esc(s.method || '')}</div></td>
-      <td>${s.listed}</td><td>${s.new}</td><td>${s.details_fetched}${s.details_deferred ? ` (+${s.details_deferred} next run)` : ''}</td>
-      <td>${s.kept}</td><td>${s.excluded}</td><td>${s.closed}</td>
-      <td>${s.error ? `<span class="err-text">${esc(s.error)}</span>` : '✓'}${(s.notes || []).length ? `<div class="muted">${(s.notes || []).map(esc).join('<br>')}</div>` : ''}</td>
+    <tr role="row">
+      <th role="rowheader" scope="row"><strong>${esc(s.label)}</strong><div class="muted">${esc(s.method || '')}</div></th>
+      ${td(1, s.listed)}${td(2, s.new)}${td(3, `${s.details_fetched}${s.details_deferred ? ` (+${s.details_deferred} next run)` : ''}`)}
+      ${td(4, s.kept)}${td(5, s.excluded)}${td(6, s.closed)}
+      ${td(7, `${s.error ? `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(s.error)}</span>` : '<span aria-hidden="true">✓</span><span class="visually-hidden">OK</span>'}${(s.notes || []).length ? `<div class="muted">${(s.notes || []).map(esc).join('<br>')}</div>` : ''}`)}
     </tr>`).join('');
-  $('#run-report-body').innerHTML = `<table class="report"><thead><tr><th>Source</th><th>Listed</th><th>New</th><th>Descriptions fetched</th><th>Kept</th><th>Excluded</th><th>Closed</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $('#run-report-body').innerHTML = `<table class="report stack-table" role="table"><caption class="visually-hidden">Results of the last run per source</caption>
+    <thead role="rowgroup"><tr role="row">${REPORT_COLS.map((c) => `<th role="columnheader" scope="col">${c}</th>`).join('')}</tr></thead><tbody role="rowgroup">${rows}</tbody></table>`;
   $('#run-report').hidden = false;
 }
 
@@ -614,15 +709,17 @@ function companyIcon(job) {
     title = n ? `${n} controversy item(s) found: click for details` : 'Company profile';
   } else if (p?.status === 'error') { cls = 'err'; title = 'Research failed: click for details'; }
   else if (p?.status === 'skipped') { cls = 'none'; title = 'Not a researchable company'; }
-  const count = p?.status === 'done' && p.controversies.length ? `<sup>${p.controversies.length}</sup>` : '';
-  return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}" aria-label="Company info">ⓘ${count}</button>`;
+  const n = p?.status === 'done' ? p.controversies.length : 0;
+  const count = n ? `<sup>${n}</sup>` : '';
+  const label = `Company info: ${job.company}`; // the title says what's known, and is read as the description
+  return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}" aria-label="${esc(label)}"><span aria-hidden="true">ⓘ${count}</span></button>`;
 }
 
 function showCompany(job) {
   const p = state.companies[job.company_key];
   openHtmlModal(p?.official_name || job.company, companyProfileHtml(p, job.company));
   $('#company-research').addEventListener('click', () => {
-    $('#modal').hidden = true;
+    closeModal();
     startRun('/api/companies/research', { name: job.company });
   });
 }
@@ -639,12 +736,13 @@ async function showCoverLetter(job) {
         <textarea id="cl-instructions" rows="2" placeholder="e.g. Mention I can start in two weeks. Keep it under 300 words.">${esc(letter?.instructions || '')}</textarea></label>
       <div class="toolbar-row">
         <button id="cl-draft" class="btn btn-primary btn-sm" type="button">${letter ? 'Redraft' : 'Draft cover letter'}</button>
-        <span id="cl-status" class="muted" aria-live="polite"></span>
+        <span id="cl-status" class="muted" role="status"></span>
       </div>
-      <textarea id="cl-text" rows="16" placeholder="Your draft appears here. You can edit it before saving.">${esc(letter?.text || '')}</textarea>
+      <div class="field"><label class="field-label" for="cl-text">Cover letter</label>
+        <textarea id="cl-text" rows="16" placeholder="Your draft appears here. You can edit it before saving.">${esc(letter?.text || '')}</textarea></div>
       <div class="toolbar-row">
         <button id="cl-save" class="btn btn-sm" type="button">Save edits</button>
-        <button id="cl-copy" class="btn btn-ghost btn-sm" type="button">Copy</button>
+        <button id="cl-copy" class="btn btn-ghost btn-sm" type="button">Copy<span class="visually-hidden"> the letter</span></button>
         <a id="cl-docx" class="btn btn-ghost btn-sm" href="/api/jobs/${job.id}/cover-letter.docx?ws=${state.ws}" ${letter ? '' : 'hidden'}>Download .docx</a>
         <span id="cl-meta" class="muted"></span>
       </div>
@@ -660,7 +758,7 @@ async function showCoverLetter(job) {
   $('#cl-draft').addEventListener('click', async () => {
     const btn = $('#cl-draft');
     if ($('#cl-text').value.trim() && !confirm('Replace the current letter with a new draft?')) return;
-    btn.disabled = true;
+    setBusy(btn, true);
     $('#cl-status').textContent = 'Drafting… this can take a minute.';
     try {
       letter = await api(`/api/jobs/${job.id}/cover-letter`, { method: 'POST', body: JSON.stringify({ instructions: $('#cl-instructions').value }) });
@@ -672,7 +770,7 @@ async function showCoverLetter(job) {
       job.has_cover_letter = true;
       renderJobs();
     } catch (e) { $('#cl-status').textContent = `Failed: ${e.message}`; }
-    btn.disabled = false;
+    setBusy(btn, false);
   });
   $('#cl-save').addEventListener('click', async () => {
     try {
@@ -715,11 +813,11 @@ function dupeSide(j) {
     j.detail_status === 'summary' ? 'listing summary only' : '', j.detail_status === 'none' ? 'no description' : ''].filter(Boolean);
   return `<div class="dupe-side">
     <div class="muted">${esc(sourceLabel(j.source))}${flags.length ? ` · ${esc(flags.join(' · '))}` : ''}</div>
-    <a href="${esc(j.url)}" target="_blank" rel="noopener"><strong>${esc(j.title || '—')}</strong></a>
+    <a href="${esc(j.url)}" target="_blank" rel="noopener"><strong>${esc(j.title || '—')}</strong><span class="visually-hidden"> (${esc(sourceLabel(j.source))}, opens in a new tab)</span></a>
     <div>${esc(j.company || '—')}</div>
     <div class="muted">${esc(j.location_text || 'location not stated')}${j.salary_text ? ` · ${esc(j.salary_text)}` : ''}</div>
     <div class="muted">${esc(STATUS_LABEL[j.status] || j.status)}${j.score !== null && j.score !== undefined ? ` · score ${j.score}` : ''} · first seen ${esc(fmtDate(j.first_seen).split(',')[0])}</div>
-    <details><summary>Ad text</summary><div class="dupe-desc">${esc(j.description || '(no description stored)')}</div></details>
+    <details><summary>Ad text<span class="visually-hidden"> (${esc(sourceLabel(j.source))})</span></summary><div class="dupe-desc" tabindex="0" role="region" aria-label="Ad text, ${esc(sourceLabel(j.source))}">${esc(j.description || '(no description stored)')}</div></details>
   </div>`;
 }
 
@@ -729,7 +827,7 @@ function dupePairHtml(p, kind) {
        <button class="btn btn-sm" type="button" data-d="distinct">Different jobs</button>`
     : `<button class="btn btn-sm" type="button" data-d="confirm">Correct</button>
        <button class="btn btn-sm" type="button" data-d="distinct">Not the same job: split</button>`;
-  return `<div class="dupe-pair" data-a="${p.a.id}" data-b="${p.b.id}">
+  return `<div class="dupe-pair" data-a="${p.a.id}" data-b="${p.b.id}" role="group" aria-label="${esc(p.a.title || 'Job')}: ${esc(sourceLabel(p.a.source))} and ${esc(sourceLabel(p.b.source))}">
     <div class="dupe-why"><span class="badge ${p.score >= 90 ? 'fit-strong' : p.score >= 75 ? 'fit-good' : 'fit-stretch'}">${p.score}% likely</span>
       ${p.reasons.map((r) => `<span class="badge flag">${esc(r)}</span>`).join('')}</div>
     <div class="dupe-sides">${dupeSide(p.a)}${dupeSide(p.b)}</div>
@@ -748,15 +846,18 @@ function renderDupeLists() {
   $('#dupes-confirm-all').hidden = auto.length < 2;
   $$('.dupe-pair [data-d]').forEach((btn) => btn.addEventListener('click', async () => {
     const pair = btn.closest('.dupe-pair');
-    pair.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    pair.querySelectorAll('button').forEach((b) => setBusy(b, true));
+    const section = pair.closest('#dupes-auto') ? '#dupes-auto-heading' : '#dupes-suggested-heading';
     try {
       await decideDuplicate(Number(pair.dataset.a), Number(pair.dataset.b), btn.dataset.d);
       await loadDuplicates();
       renderDupeLists();
+      $(section)?.focus(); // the pair with the button is gone
+      announce({ merge: 'Merged into one card.', distinct: 'Kept as separate jobs.', confirm: 'Marked as correct.' }[btn.dataset.d] || 'Saved.');
       loadJobs();
     } catch (e) {
       toast(`Could not save that: ${e.message}`, 'err');
-      pair.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+      pair.querySelectorAll('button').forEach((b) => setBusy(b, false));
     }
   }));
 }
@@ -773,11 +874,11 @@ function showDuplicates() {
         and asks you about the rest. Your status, cover letter and score carry over to the merged card.</p>
       <div class="toolbar-row">
         <button id="dupes-scan" class="btn btn-sm" type="button">Check for duplicates now</button>
-        <span id="dupes-status" class="muted" aria-live="polite"></span>
+        <span id="dupes-status" class="muted" role="status"></span>
       </div>
-      <h4>Possible duplicates to check (<span id="dupes-n-suggested">0</span>)</h4>
+      <h3 id="dupes-suggested-heading" tabindex="-1">Possible duplicates to check (<span id="dupes-n-suggested">0</span>)</h3>
       <div id="dupes-suggested"></div>
-      <h4>Merged automatically (<span id="dupes-n-auto">0</span>)</h4>
+      <h3 id="dupes-auto-heading" tabindex="-1">Merged automatically (<span id="dupes-n-auto">0</span>)</h3>
       <p class="hint">Only merges of jobs in your list are shown. Split any that aren't the same job.</p>
       <button id="dupes-confirm-all" class="btn btn-ghost btn-sm" type="button" hidden>All of these are correct</button>
       <div id="dupes-auto"></div>
@@ -785,7 +886,7 @@ function showDuplicates() {
   renderDupeLists();
   $('#dupes-scan').addEventListener('click', async () => {
     const btn = $('#dupes-scan');
-    btn.disabled = true;
+    setBusy(btn, true);
     $('#dupes-status').textContent = 'Comparing ads…';
     try {
       const r = await api('/api/duplicates/scan', { method: 'POST' });
@@ -794,7 +895,7 @@ function showDuplicates() {
       renderDupeLists();
       loadJobs();
     } catch (e) { $('#dupes-status').textContent = `Failed: ${e.message}`; }
-    btn.disabled = false;
+    setBusy(btn, false);
   });
   $('#dupes-confirm-all').addEventListener('click', async () => {
     try {
@@ -802,6 +903,8 @@ function showDuplicates() {
     } catch (e) { toast(`Could not save that: ${e.message}`, 'err'); }
     await loadDuplicates();
     renderDupeLists();
+    $('#dupes-auto-heading').focus(); // the button is hidden once nothing is left to confirm
+    announce('Marked the automatic merges as correct.');
   });
 }
 
@@ -833,6 +936,18 @@ const CHAT_STARTERS = {
   many: ['Compare these jobs for me.', 'Which should I apply to first, and why?', 'Which one fits my experience best?'],
 };
 let chatToken = 0; // bumps when the panel switches jobs, so late answers for old jobs are dropped
+let chatReturn = null; // finds the control that opened the chat, for focus when it closes
+
+/* Beside the cards on wide screens the chat is a complementary region; on narrower screens it covers the
+   page, so there it is a modal dialog: the page behind is inert and Escape closes it (WCAG 2.4.3, 2.4.11). */
+const chatCovers = window.matchMedia('(max-width: 1099px)');
+function syncChatMode() {
+  const panel = $('#chat-panel');
+  const modal = !panel.hidden && chatCovers.matches;
+  panel.setAttribute('role', modal ? 'dialog' : 'complementary');
+  if (modal) panel.setAttribute('aria-modal', 'true'); else panel.removeAttribute('aria-modal');
+  ['.skip-link', '.app-header', '#main'].forEach((sel) => { const el = $(sel); if (el) el.inert = modal; });
+}
 
 function jobLabel(j) { return { id: j.id, title: j.title, company: j.company, url: j.url }; }
 
@@ -845,8 +960,10 @@ async function openChat(ids) {
     jobIds, threadId: null, threads: [], messages: [], busy: false,
     jobs: jobIds.map((id) => state.jobs.find((j) => j.id === id)).filter(Boolean).map(jobLabel),
   };
+  if ($('#chat-panel').hidden) chatReturn = focusFinder(document.activeElement);
   $('#chat-panel').hidden = false;
   document.body.classList.add('chat-open');
+  syncChatMode();
   setChatStatus('');
   renderChat();
   $('#chat-input').focus();
@@ -875,11 +992,16 @@ function applyThread(t) {
   c.threads = [summary, ...c.threads.filter((x) => x.id !== t.id)];
 }
 
-function closeChat() {
+function closeChat({ restoreFocus = true } = {}) {
+  const wasOpen = !$('#chat-panel').hidden;
+  const hadFocus = $('#chat-panel').contains(document.activeElement);
   chatToken++;
   state.chat = null;
   $('#chat-panel').hidden = true;
   document.body.classList.remove('chat-open');
+  syncChatMode();
+  if (wasOpen && restoreFocus && hadFocus) (chatReturn?.() || $('#main')).focus();
+  chatReturn = null;
 }
 
 function setChatStatus(text, isError = false) {
@@ -893,19 +1015,24 @@ function renderChat() {
   if (!c) return;
   const n = c.jobIds.length;
   $('#chat-title').textContent = n === 1 ? 'Ask about this job' : `Ask about ${n} jobs`;
-  $('#chat-input').placeholder = `Ask anything about ${n === 1 ? 'this job' : 'these jobs'}… (Enter to send, Shift+Enter for a new line)`;
-  $('#chat-jobs').innerHTML = c.jobs.map((j, i) => `<button class="chat-job" type="button" data-id="${j.id}" title="Show this job's card">
-    ${n > 1 ? `<strong>${i + 1}</strong> ` : ''}${esc(j.title || '—')} · ${esc(j.company || '—')}</button>`).join('');
+  $('#chat-input').placeholder = `Ask anything about ${n === 1 ? 'this job' : 'these jobs'}…`;
+  $('#chat-jobs').innerHTML = c.jobs.map((j, i) => `<li><button class="chat-job" type="button" data-id="${j.id}" title="Show this job's card">
+    ${n > 1 ? `<strong>${i + 1}</strong> ` : ''}${esc(j.title || '—')} · ${esc(j.company || '—')}<span class="visually-hidden">: show its card</span></button></li>`).join('');
   $$('#chat-jobs .chat-job').forEach((b) => b.addEventListener('click', () => showJobCard(Number(b.dataset.id))));
   const sel = $('#chat-threads');
   const opts = c.threads.map((t) => `<option value="${t.id}" ${t.id === c.threadId ? 'selected' : ''}>${esc(t.title || 'Chat')} · ${esc(fmtDate(t.updated_at).split(',')[0])}</option>`);
   if (!c.threadId) opts.unshift('<option value="" selected>New chat</option>');
   sel.innerHTML = opts.join('');
   sel.disabled = c.busy || c.threads.length === 0;
+  // A button that is about to be hidden or disabled hands keyboard focus to the question box.
+  const strand = [$('#chat-delete'), $('#chat-new'), $('#chat-send'), sel].includes(document.activeElement)
+    || $('#chat-messages').contains(document.activeElement);
   $('#chat-delete').hidden = !c.threadId;
   $('#chat-new').disabled = c.busy || !c.threadId;
   $('#chat-send').disabled = c.busy;
   renderChatMessages();
+  if (strand && (!document.activeElement || document.activeElement === document.body || document.activeElement.disabled
+      || document.activeElement.closest('[hidden]'))) $('#chat-input').focus();
 }
 
 function renderChatMessages() {
@@ -913,22 +1040,25 @@ function renderChatMessages() {
   const box = $('#chat-messages');
   if (!c.messages.length && !c.busy) {
     const starters = CHAT_STARTERS[c.jobIds.length === 1 ? 'one' : 'many'];
-    box.innerHTML = `<p class="muted">The model sees ${c.jobIds.length === 1 ? 'the ad' : 'each ad'}, your documents, the fit assessment,
+    box.innerHTML = `<p class="muted" id="chat-starters-intro">The model sees ${c.jobIds.length === 1 ? 'the ad' : 'each ad'}, your documents, the fit assessment,
       the company info and any cover-letter draft. Try:</p>
-      <div class="chat-starters">${starters.map((q) => `<button class="btn btn-ghost btn-sm chat-starter" type="button">${esc(q)}</button>`).join('')}</div>`;
+      <ul class="chat-starters" aria-labelledby="chat-starters-intro">${starters.map((q) => `<li><button class="btn btn-ghost btn-sm chat-starter" type="button">${esc(q)}</button></li>`).join('')}</ul>`;
     box.querySelectorAll('.chat-starter').forEach((b) => b.addEventListener('click', () => sendChat(b.textContent)));
     return;
   }
   box.innerHTML = c.messages.map((m) => {
-    if (m.role === 'user') return `<div class="chat-msg user">${esc(m.content)}${m.web_search ? '<div class="chat-meta">🌐 with web search</div>' : ''}</div>`;
+    if (m.role === 'user') {
+      return `<div class="chat-msg user"><span class="visually-hidden">You asked: </span>${esc(m.content)}${
+        m.web_search ? '<div class="chat-meta"><span aria-hidden="true">🌐 </span>with web search</div>' : ''}</div>`;
+    }
     const links = m.sources || [];
     const sources = links.length
       ? `<div class="chat-sources"><span class="muted">${links.some((x) => x.cited) ? 'Sources:' : 'Pages the web search found:'}</span>
           ${links.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title || x.url)}</a>`).join(' · ')}</div>` : '';
-    return `<div class="chat-msg assistant">${mdToHtml(m.content)}${sources}
+    return `<div class="chat-msg assistant"><span class="visually-hidden">Answer: </span>${mdToHtml(m.content)}${sources}
       <div class="chat-meta">${esc(m.model || '')}${m.created_at ? ` · ${esc(fmtDate(m.created_at))}` : ''}
-        <button class="link chat-copy" type="button" data-id="${m.id}">Copy</button></div></div>`;
-  }).join('') + (c.busy ? '<div class="chat-msg assistant chat-thinking" aria-label="Thinking"><span></span><span></span><span></span></div>' : '');
+        <button class="link chat-copy" type="button" data-id="${m.id}">Copy<span class="visually-hidden"> this answer</span></button></div></div>`;
+  }).join('') + (c.busy ? '<div class="chat-msg assistant chat-thinking" aria-hidden="true"><span></span><span></span><span></span></div>' : '');
   box.querySelectorAll('.chat-copy').forEach((b) => b.addEventListener('click', async () => {
     const msg = c.messages.find((m) => String(m.id) === b.dataset.id);
     try { await navigator.clipboard.writeText(msg.content); toast('Copied', 'ok', 1500); } catch { toast('Could not copy', 'err', 2500); }
@@ -953,10 +1083,11 @@ async function sendChat(text) {
     if (token !== chatToken) return;
     applyThread(t);
     setChatStatus('');
+    announce('Answer received: it is the last message in the conversation.');
   } catch (e) {
     if (token !== chatToken) return;
     c.messages.pop();
-    if (!$('#chat-input').value) $('#chat-input').value = text;
+    if (!$('#chat-input').value) $('#chat-input').value = text; // nothing typed is lost (WCAG 3.3.7)
     setChatStatus(`Failed: ${e.message}`, true);
   }
   c.busy = false;
@@ -965,15 +1096,21 @@ async function sendChat(text) {
 
 function showJobCard(id) {
   const card = document.querySelector(`.job-card[data-job-id="${id}"]`);
-  if (!card) { toast('That job is hidden by the current filters.', '', 2500); return; }
-  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (!card || card.closest('[hidden]')) { toast('That job is hidden by the current filters, or the Jobs tab is closed.', '', 4000); return; }
+  if (chatCovers.matches) closeChat({ restoreFocus: false }); // the chat covers the cards on this screen
+  card.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
+  card.querySelector('.job-title a')?.focus({ preventScroll: true });
   card.classList.remove('flash');
   void card.offsetWidth;
   card.classList.add('flash');
 }
 
 function initChat() {
-  $('#chat-close').addEventListener('click', closeChat);
+  $('#chat-close').addEventListener('click', () => closeChat());
+  $('#chat-panel').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); closeChat(); }
+  });
+  chatCovers.addEventListener('change', syncChatMode);
   $('#chat-form').addEventListener('submit', (e) => { e.preventDefault(); sendChat($('#chat-input').value); });
   $('#chat-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat($('#chat-input').value); }
@@ -1008,14 +1145,14 @@ function initChat() {
 const FIT_LABEL = { strong: 'Strong fit', good: 'Good fit', stretch: 'Stretch' };
 
 function renderTitleSuggestions(titles) {
-  $('#titles-list').innerHTML = titles.map((t, i) => `
-    <label class="title-row">
-      <input type="checkbox" data-i="${i}" ${t.in_search ? 'disabled' : (t.fit !== 'stretch' ? 'checked' : '')} />
-      <span class="title-name">${esc(t.title)}</span>
-      <span class="badge fit-${t.fit}">${FIT_LABEL[t.fit] || t.fit}</span>
-      ${t.in_search ? '<span class="badge flag">already in this search</span>' : ''}
-      <span class="muted title-reason">${esc(t.reason)}</span>
-    </label>`).join('');
+  $('#titles-list').innerHTML = titles.length ? `<ul class="titles-ul" aria-label="Suggested job titles">${titles.map((t, i) => `
+    <li class="title-row">
+      <input type="checkbox" id="title-sugg-${i}" data-i="${i}" aria-describedby="title-sugg-${i}-fit title-sugg-${i}-why" ${t.in_search ? 'disabled' : (t.fit !== 'stretch' ? 'checked' : '')} />
+      <label class="title-name" for="title-sugg-${i}">${esc(t.title)}</label>
+      <span class="title-badges"><span class="badge fit-${t.fit}" id="title-sugg-${i}-fit">${FIT_LABEL[t.fit] || t.fit}</span>
+      ${t.in_search ? '<span class="badge flag">already in this search</span>' : ''}</span>
+      <span class="muted title-reason" id="title-sugg-${i}-why">${esc(t.reason)}</span>
+    </li>`).join('')}</ul>` : '';
   $('#titles-actions').hidden = !titles.length;
 }
 
@@ -1036,7 +1173,7 @@ async function saveTitles(titles, replace) {
 function initTitleSuggestions() {
   $('#suggest-titles').addEventListener('click', async () => {
     const btn = $('#suggest-titles');
-    btn.disabled = true;
+    setBusy(btn, true);
     $('#titles-status').textContent = 'Reading your documents… (about 20 seconds)';
     try {
       const r = await api('/api/documents/suggest-titles', { method: 'POST' });
@@ -1044,7 +1181,7 @@ function initTitleSuggestions() {
       renderTitleSuggestions(r.titles);
       $('#titles-status').textContent = `${r.titles.length} suggestions. Titles are also used as SEEK search terms.`;
     } catch (e) { $('#titles-status').textContent = `Failed: ${e.message}`; }
-    btn.disabled = false;
+    setBusy(btn, false);
   });
   $('#titles-merge').addEventListener('click', async () => {
     const picked = pickedTitles();
@@ -1107,11 +1244,11 @@ async function loadLlmSettings() {
 
 async function detectLevels() {
   const btn = $('#detect-levels');
-  btn.disabled = true;
+  setBusy(btn, true);
   $('#levels-status').textContent = 'Detecting (a few tiny test requests)…';
   try { renderLlmSettings(await api('/api/llm/detect-levels', { method: 'POST' })); }
   catch (e) { $('#levels-status').textContent = `Detection failed: ${e.message}`; }
-  btn.disabled = false;
+  setBusy(btn, false);
   btn.classList.remove('btn-primary');
 }
 
@@ -1149,7 +1286,7 @@ function updateLlmProviderInfo() {
   $('#llm-model').placeholder = preset.models.length ? `e.g. ${preset.models[0]}` : 'Type the model name';
   $('#llm-base-url').placeholder = preset.base_url || 'https://api.example.com/v1';
   const link = preset.key_url
-    ? ` <a href="${esc(preset.key_url)}" target="_blank" rel="noopener">${preset.key_required ? 'Get a key' : 'Get Ollama'} ↗</a>` : '';
+    ? ` <a href="${esc(preset.key_url)}" target="_blank" rel="noopener">${preset.key_required ? 'Get a key' : 'Get Ollama'}${NEW_TAB}</a>` : '';
   $('#llm-note').innerHTML = `${esc(preset.note)}${link}`;
   const web = $('#llm-web-notice');
   web.hidden = preset.web_search;
@@ -1193,14 +1330,18 @@ async function saveLlmProvider(e) {
   const key = $('#llm-key').value.trim(); // pasted keys often carry a space or line break; the server accepts none
   if (key) body.api_key = key;
   err.hidden = true;
-  if (!body.base_url || !body.model) {
-    err.textContent = 'Fill in the API address and the model.';
-    err.hidden = false;
+  setFieldError($('#llm-model'), '');
+  setFieldError($('#llm-base-url'), '');
+  if (!body.model) setFieldError($('#llm-model'), 'Type the model name, for example the first one the list suggests.', { focus: !!body.base_url });
+  if (!body.base_url) setFieldError($('#llm-base-url'), 'Type the API address, starting with https:// (for Ollama, http://localhost:11434/v1).');
+  else if (!originOf(body.base_url)) {
+    setFieldError($('#llm-base-url'), 'That isn\'t a web address. It starts with https:// (or http:// for a server on this computer).');
     return;
   }
+  if (!body.base_url || !body.model) return;
   const before = state.llmCfg;
   const btn = $('#llm-save');
-  btn.disabled = true;
+  setBusy(btn, true);
   $('#llm-save-status').textContent = 'Saving…';
   try {
     const st = await api('/api/settings/llm', { method: 'PUT', body: JSON.stringify(body) });
@@ -1214,10 +1355,9 @@ async function saveLlmProvider(e) {
     toast('LLM settings saved', 'ok', 2500);
   } catch (ex) {
     $('#llm-save-status').textContent = '';
-    err.textContent = ex.message;
-    err.hidden = false;
+    showError(err, `Not saved: ${ex.message}`);
   }
-  btn.disabled = false;
+  setBusy(btn, false);
 }
 
 function initLlmProvider() {
@@ -1241,9 +1381,9 @@ function renderCommuteKeys(st) {
     box.querySelector('.key-clear').disabled = !info.set;
   });
   // The note under Commute in Search setup follows the same state.
-  $('#commute-keys').innerHTML = `Public transport: ${st.tfnsw?.set ? '<span class="ok-text">Transport for NSW ✓</span>'
+  $('#commute-keys').innerHTML = `Public transport: ${st.tfnsw?.set ? '<span class="ok-text">Transport for NSW<span aria-hidden="true"> ✓</span><span class="visually-hidden"> key saved</span></span>'
     : 'needs a free Transport for NSW API key (add it in <a href="#settings">Settings</a>)'}.
-    Driving: ${st.tomtom?.set ? '<span class="ok-text">TomTom, with peak traffic ✓</span>'
+    Driving: ${st.tomtom?.set ? '<span class="ok-text">TomTom, with peak traffic<span aria-hidden="true"> ✓</span></span>'
     : 'without traffic (a free TomTom key, added in <a href="#settings">Settings</a>, adds peak-hour traffic)'}.`;
 }
 
@@ -1257,8 +1397,8 @@ async function putCommuteKey(name, value) {
   const save = box.querySelector('.key-save');
   const clear = box.querySelector('.key-clear');
   const couldClear = !clear.disabled;
-  save.disabled = true;
-  clear.disabled = true;
+  setBusy(save, true);
+  setBusy(clear, true);
   try {
     renderCommuteKeys(await api('/api/settings/keys', { method: 'PUT', body: JSON.stringify({ [name]: value }) })); // also sets Clear
     box.querySelector('.key-input').value = '';
@@ -1266,24 +1406,27 @@ async function putCommuteKey(name, value) {
     toast(value ? `${KEY_LABEL[name]} key saved` : `${KEY_LABEL[name]} key removed`, 'ok', 2500);
   } catch (e) {
     clear.disabled = !couldClear;
+    setBusy(clear, false);
     toast(`Saving the ${KEY_LABEL[name]} key failed: ${e.message}`, 'err', 8000);
   }
-  save.disabled = false;
+  setBusy(save, false);
+  setBusy(clear, false);
+  if (document.activeElement === document.body || document.activeElement?.disabled) box.querySelector('.key-input').focus();
 }
 
 async function testCommuteKeys() {
   const btn = $('#keys-test');
   const out = $('#keys-test-status');
-  btn.disabled = true;
+  setBusy(btn, true);
   out.textContent = 'Testing…';
   try {
     const r = await api('/api/settings/keys/test', { method: 'POST' });
     const lines = Object.keys(KEY_LABEL).map((name) => (r[name]
-      ? (r[name].ok ? `<span class="ok-text">${KEY_LABEL[name]}: works ✓</span>` : `<span class="err-text">${esc(r[name].error || `${KEY_LABEL[name]}: failed`)}</span>`)
+      ? (r[name].ok ? `<span class="ok-text">${KEY_LABEL[name]}: works<span aria-hidden="true"> ✓</span></span>` : `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(r[name].error || `${KEY_LABEL[name]}: failed`)}</span>`)
       : `${KEY_LABEL[name]}: not set`));
     out.innerHTML = lines.join(' · ');
   } catch (e) { out.innerHTML = `<span class="err-text">Test failed: ${esc(e.message)}</span>`; }
-  btn.disabled = false;
+  setBusy(btn, false);
 }
 
 function initCommuteKeys() {
@@ -1293,7 +1436,8 @@ function initCommuteKeys() {
     box.addEventListener('submit', (e) => {
       e.preventDefault();
       const value = input.value.trim(); // pasted keys often carry a space or line break; the server accepts none inside
-      if (!value) { toast(`Paste the ${KEY_LABEL[name]} key first.`, 'err', 3000); input.focus(); return; }
+      if (!value) { setFieldError(input, `Paste the ${KEY_LABEL[name]} key first: copy it from the website named below.`); return; }
+      setFieldError(input, '');
       putCommuteKey(name, value);
     });
     box.querySelector('.key-clear').addEventListener('click', () => {
@@ -1308,16 +1452,27 @@ function tagWrap(field) { return document.querySelector(`.tag-input[data-field="
 function getTags(field) { return Array.from(tagWrap(field).querySelectorAll('.tag')).map((t) => t.dataset.value); }
 function setTags(field, values) { tagWrap(field).innerHTML = ''; (values || []).forEach((v) => addTag(field, v, false)); }
 
+// Tags are list items with a remove button. Adding or removing one is announced, and removing one with its
+// button puts focus back in the field (the button is gone).
 function addTag(field, value, save = true) {
   value = String(value || '').trim();
-  if (!value || getTags(field).some((v) => v.toLowerCase() === value.toLowerCase())) return;
-  const el = document.createElement('span');
+  if (!value) return;
+  if (getTags(field).some((v) => v.toLowerCase() === value.toLowerCase())) {
+    if (save) announce(`${value} is already in the list.`);
+    return;
+  }
+  const el = document.createElement('li');
   el.className = 'tag';
   el.dataset.value = value;
-  el.innerHTML = `<span>${esc(value)}</span><button type="button" aria-label="Remove ${esc(value)}">×</button>`;
-  el.querySelector('button').addEventListener('click', () => { el.remove(); saveSetup(); });
+  el.innerHTML = `<span>${esc(value)}</span><button type="button" aria-label="Remove ${esc(value)}"><span aria-hidden="true">×</span></button>`;
+  el.querySelector('button').addEventListener('click', () => {
+    el.remove();
+    document.querySelector(`.tag-input[data-field="${field}"] input`).focus();
+    announce(`Removed ${value}.`);
+    saveSetup();
+  });
   tagWrap(field).appendChild(el);
-  if (save) saveSetup();
+  if (save) { announce(`Added ${value}.`); saveSetup(); }
 }
 
 async function loadSetup() {
@@ -1339,15 +1494,20 @@ async function loadSetup() {
     $('#seek-enabled').checked = profile.seek_enabled;
     $('#search-error').hidden = true;
   } catch (e) {
-    $('#search-error').textContent = `Could not load search setup: ${e.message}`;
-    $('#search-error').hidden = false;
+    showError($('#search-error'), `Could not load search setup: ${e.message}. Reload the page to try again.`);
   }
 }
 
 const saveSetup = debounce(async () => {
   const status = $('#search-save-status');
+  const floorInput = $('#salary-floor');
+  if (!floorInput.validity.valid) { // e.g. a negative number or letters: say so and don't save it
+    setFieldError(floorInput, 'Enter the salary as a whole number of dollars a year, 0 or more (for example 140000), or leave it empty.', { focus: false });
+    return;
+  }
+  setFieldError(floorInput, '');
   status.textContent = 'Saving…';
-  const floor = $('#salary-floor').value;
+  const floor = floorInput.value;
   const profile = {
     titles: getTags('titles'),
     keywords_include: getTags('keywords_include'),
@@ -1395,7 +1555,10 @@ function initSetup() {
         input.value.split(',').forEach((v) => addTag(field, v));
         input.value = '';
       } else if (e.key === 'Backspace' && !input.value) {
-        wrap.querySelector('.tags .tag:last-child')?.remove();
+        const last = wrap.querySelector('.tags .tag:last-child');
+        if (!last) return;
+        last.remove();
+        announce(`Removed ${last.dataset.value}.`);
         saveSetup();
       }
     });
@@ -1405,12 +1568,13 @@ function initSetup() {
   ['#remote-aus', '#remote-global', '#allow-hybrid', '#allow-onsite', '#seek-enabled', '#max-office-days', '#commute-arrive', '#commute-leave'].forEach((s) => $(s).addEventListener('change', saveSetup));
   $('#search-form').addEventListener('submit', (e) => e.preventDefault());
   $('#import-form').addEventListener('submit', importPages);
+  $('#import-input').addEventListener('change', () => setFieldError($('#import-input'), ''));
 }
 
 async function importPages(e) {
   e.preventDefault();
   const files = Array.from($('#import-input').files);
-  if (!files.length) { toast('Choose saved .html pages first.', 'err'); return; }
+  if (!files.length) { setFieldError($('#import-input'), 'Choose one or more pages you saved from SEEK (.html) first.'); return; }
   const status = $('#import-status');
   let total = { imported: 0, new: 0, kept: 0 };
   for (const f of files) {
@@ -1436,8 +1600,8 @@ function scheduleTimes() { return $$('#sched-times .tag').map((t) => t.dataset.v
 function renderScheduleTimes(times) {
   const sorted = [...new Set(times)].sort(); // "HH:MM" sorts as time
   $('#sched-times').innerHTML = sorted.length
-    ? sorted.map((t) => `<span class="tag" data-value="${esc(t)}"><span>${esc(t)}</span><button type="button" aria-label="Remove ${esc(t)}">×</button></span>`).join('')
-    : '<span class="muted">No times yet</span>';
+    ? sorted.map((t) => `<li class="tag" data-value="${esc(t)}"><span>${esc(t)}</span><button type="button" aria-label="Remove ${esc(t)}"><span aria-hidden="true">×</span></button></li>`).join('')
+    : '<li class="muted">No times yet</li>';
 }
 
 function renderScheduleControls(sch) {
@@ -1518,6 +1682,7 @@ async function loadSchedule({ controls = true } = {}) {
   } catch (e) {
     if (!controls) return; // a failed status refresh keeps the last status
     $('#sched-status').innerHTML = `<p class="err-text">Could not load the schedule: ${esc(e.message)}</p>`;
+    announce(`Could not load the schedule: ${e.message}`, true);
     $('#next-scheduled').hidden = true;
   }
 }
@@ -1557,11 +1722,14 @@ function scheduleChanged() {
 }
 
 function addScheduleTime() {
-  const time = $('#sched-time-input').value;
-  if (!SCHEDULE_TIME_RE.test(time)) { toast('Pick a time to add first.', 'err', 3000); return; }
+  const input = $('#sched-time-input');
+  const time = input.value;
+  if (!SCHEDULE_TIME_RE.test(time)) { setFieldError(input, 'Pick a time first: hours and minutes, for example 09:00.'); return; }
+  setFieldError(input, '');
   const times = scheduleTimes();
-  if (times.includes(time)) return;
+  if (times.includes(time)) { announce(`${time} is already in the list.`); return; }
   renderScheduleTimes([...times, time]);
+  announce(`Added ${time}.`);
   scheduleChanged();
 }
 
@@ -1572,8 +1740,11 @@ function initSchedule() {
   $('#sched-times').addEventListener('click', (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
-    btn.closest('.tag').remove();
+    const tag = btn.closest('.tag');
+    tag.remove();
     renderScheduleTimes(scheduleTimes());
+    $('#sched-time-input').focus(); // the button is gone
+    announce(`Removed ${tag.dataset.value}.`);
     scheduleChanged();
   });
 }
@@ -1585,48 +1756,58 @@ async function loadSources() {
     renderSources(sources);
     $('#sources-error').hidden = true;
   } catch (e) {
-    $('#sources-error').textContent = `Could not load sources: ${e.message}`;
-    $('#sources-error').hidden = false;
+    showError($('#sources-error'), `Could not load sources: ${e.message}`);
   }
 }
 
 function renderSources(sources) {
   const box = $('#sources-list');
-  box.innerHTML = sources.length ? '' : '<div class="empty">No company sources yet.</div>';
+  const focusBack = box.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
+  box.innerHTML = sources.length ? '' : '<div class="empty">No company sources yet. Add a careers page above.</div>';
+  const list = document.createElement('ul');
+  list.className = 'sources-ul';
+  list.setAttribute('aria-label', 'Company sources');
+  if (sources.length) box.appendChild(list);
   sources.forEach((src) => {
-    const row = document.createElement('div');
+    const row = document.createElement('li');
     row.className = 'doc-row source-row';
     const last = src.last_run
-      ? `${src.last_error ? `<span class="err-text">✕ ${esc(src.last_error)}</span>` : `✓ ${src.last_count} listed`} · ${esc(fmtDate(src.last_run))}${src.last_method ? `<br>${esc(src.last_method)}` : ''}`
+      ? `${src.last_error ? `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(src.last_error)}</span>` : `<span aria-hidden="true">✓ </span>${src.last_count} listed`} · ${esc(fmtDate(src.last_run))}${src.last_method ? `<br>${esc(src.last_method)}` : ''}`
       : 'not run yet';
+    const name = esc(src.label || src.url);
     row.innerHTML = `
-      <input type="checkbox" aria-label="Enabled" ${src.enabled ? 'checked' : ''} />
+      <input type="checkbox" id="src-${src.id}-on" data-act="enabled" aria-label="Search ${name}" ${src.enabled ? 'checked' : ''} />
       <div class="source-main">
-        <input class="source-label" type="text" value="${esc(src.label)}" aria-label="Company name" />
+        <input class="source-label" id="src-${src.id}-label" data-act="label" type="text" value="${esc(src.label)}" aria-label="Company name for ${esc(src.url)}" autocomplete="off" />
         <a class="doc-meta" href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.url)}</a>
         <div class="doc-meta">${last}</div>
-        <div class="doc-meta test-result"></div>
+        <div class="doc-meta test-result" role="status"></div>
       </div>
-      <button class="btn btn-ghost btn-sm" data-act="test" type="button">Test</button>
-      <button class="btn btn-danger btn-sm" data-act="delete" type="button">Delete</button>`;
+      <button class="btn btn-ghost btn-sm" id="src-${src.id}-test" data-act="test" type="button">Test<span class="visually-hidden"> ${name}</span></button>
+      <button class="btn btn-danger btn-sm" id="src-${src.id}-delete" data-act="delete" type="button">Delete<span class="visually-hidden"> ${name}</span></button>`;
     row.querySelector('input[type="checkbox"]').addEventListener('change', (e) => patchSource(src.id, { enabled: e.target.checked }));
     row.querySelector('.source-label').addEventListener('change', (e) => patchSource(src.id, { label: e.target.value }));
-    row.querySelector('[data-act="test"]').addEventListener('click', (e) => testSource(src, e.target, row.querySelector('.test-result')));
+    row.querySelector('[data-act="test"]').addEventListener('click', (e) => testSource(src, e.currentTarget, row.querySelector('.test-result')));
     row.querySelector('[data-act="delete"]').addEventListener('click', () => deleteSource(src));
-    box.appendChild(row);
+    list.appendChild(row);
   });
+  if (focusBack) (focusBack() || $('#source-url')).focus();
 }
 
-async function addSource() {
-  const url = $('#source-url').value.trim();
-  if (!url) { toast('Enter a careers page URL first.', 'err'); return; }
+async function addSource(e) {
+  e?.preventDefault();
+  const input = $('#source-url');
+  const url = input.value.trim();
+  if (!url) { setFieldError(input, 'Paste the address of the careers page, for example https://company.com/careers.'); return; }
+  setFieldError(input, '');
   try {
     await api('/api/sources', { method: 'POST', body: JSON.stringify({ url, label: $('#source-label').value.trim() || null }) });
-    $('#source-url').value = '';
+    input.value = '';
     $('#source-label').value = '';
+    announce('Source added: it is at the end of the list below.');
     loadSources();
     loadSchedule({ controls: false });
-  } catch (e) { toast(`Add source failed: ${e.message}`, 'err'); }
+  } catch (err) { setFieldError(input, `Not added: ${err.message}`); }
 }
 
 async function patchSource(id, body) {
@@ -1636,21 +1817,25 @@ async function patchSource(id, body) {
 
 async function deleteSource(src) {
   if (!confirm(`Delete source "${src.label}"? Its jobs stay in the list.`)) return;
-  try { await api(`/api/sources/${src.id}`, { method: 'DELETE' }); loadSources(); loadSchedule({ controls: false }); }
-  catch (e) { toast(`Delete failed: ${e.message}`, 'err'); }
+  try {
+    await api(`/api/sources/${src.id}`, { method: 'DELETE' });
+    announce(`Deleted ${src.label || src.url}.`);
+    await loadSources();
+    loadSchedule({ controls: false });
+  } catch (e) { toast(`Delete failed: ${e.message}`, 'err'); }
 }
 
 async function testSource(src, btn, out) {
-  btn.disabled = true;
+  setBusy(btn, true);
   out.textContent = 'Testing (this can take a minute: crawl delays apply)…';
   try {
     const r = await api(`/api/sources/${src.id}/test`, { method: 'POST' });
     out.innerHTML = r.ok
-      ? `✓ ${r.count} postings via ${esc(r.method)}<br>${r.sample.map((s) => `• ${esc(s.title)}${s.location ? ` (${esc(s.location)})` : ''}`).join('<br>')}`
-      : `<span class="err-text">✕ ${esc(r.error)}</span>`;
+      ? `<span aria-hidden="true">✓ </span>${r.count} postings via ${esc(r.method)}<br>${r.sample.map((s) => `• ${esc(s.title)}${s.location ? ` (${esc(s.location)})` : ''}`).join('<br>')}`
+      : `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(r.error)}</span>`;
     if ((r.notes || []).length) out.innerHTML += `<br><span class="muted">${r.notes.map(esc).join('<br>')}</span>`;
-  } catch (e) { out.innerHTML = `<span class="err-text">✕ ${esc(e.message)}</span>`; }
-  btn.disabled = false;
+  } catch (e) { out.innerHTML = `<span class="err-text"><span aria-hidden="true">✕ </span>Test failed: ${esc(e.message)}</span>`; }
+  setBusy(btn, false);
 }
 
 /* ---------- scorer ---------- */
@@ -1660,9 +1845,9 @@ async function loadScorerStatus() {
     const s = await api('/api/score/status');
     const failing = s.configured && s.scored === 0 && s.errors > 0;
     badge.className = `api-status ${!s.configured || failing ? 'is-fail' : s.scored ? 'is-ok' : 'is-unknown'}`;
-    badge.textContent = !s.configured ? '● LLM not configured'
-      : failing ? '● scorer: failing (Settings → Test connection)'
-        : `● ${s.model}${s.scored ? '' : ' (not verified yet)'}`;
+    badge.innerHTML = `<span aria-hidden="true">● </span>${esc(!s.configured ? 'LLM not configured'
+      : failing ? 'scorer: failing (Settings, Test connection)'
+        : `${s.model}${s.scored ? '' : ' (not verified yet)'}`)}`;
     badge.title = `${s.scored} scored, ${s.errors} failed`;
     $('#scorer-info').innerHTML = `
       ${s.problem ? `<span class="err-text">${esc(s.problem)}</span><br>` : ''}
@@ -1671,7 +1856,7 @@ async function loadScorerStatus() {
       profile ${s.profile_chars.toLocaleString()} characters`;
   } catch (e) {
     badge.className = 'api-status is-fail';
-    badge.textContent = '● backend unreachable';
+    badge.innerHTML = '<span aria-hidden="true">● </span>backend unreachable';
   }
 }
 
@@ -1680,8 +1865,8 @@ async function testScorer() {
   out.textContent = 'Testing…';
   try {
     const r = await api('/api/score/test', { method: 'POST' });
-    out.innerHTML = r.ok ? `✓ ${esc(r.message)}` : `<span class="err-text">✕ ${esc(r.message)}</span>`;
-  } catch (e) { out.innerHTML = `<span class="err-text">✕ ${esc(e.message)}</span>`; }
+    out.innerHTML = r.ok ? `<span aria-hidden="true">✓ </span>${esc(r.message)}` : `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(r.message)}</span>`;
+  } catch (e) { out.innerHTML = `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(e.message)}</span>`; }
 }
 
 /* ================= DOCUMENTS ================= */
@@ -1752,8 +1937,7 @@ async function loadDocs() {
     renderDocs();
     $('#docs-error').hidden = true;
   } catch (e) {
-    $('#docs-error').textContent = `Could not load documents: ${e.message}`;
-    $('#docs-error').hidden = false;
+    showError($('#docs-error'), `Could not load documents: ${e.message}`);
   }
 }
 
@@ -2063,11 +2247,11 @@ async function saveNote(e) {
   const status = $('#note-status');
   const title = $('#note-title').value.trim();
   const text = $('#note-text').value.trim();
-  if (!title || !text) {
-    status.textContent = 'A note needs a title and some text.';
-    (title ? $('#note-text') : $('#note-title')).focus();
-    return;
-  }
+  setFieldError($('#note-title'), '');
+  setFieldError($('#note-text'), '');
+  if (!text) setFieldError($('#note-text'), 'Write the note here: a note needs some text.', { focus: !!title });
+  if (!title) setFieldError($('#note-title'), 'Give the note a title, for example "Project results".');
+  if (!title || !text) { status.textContent = ''; return; }
   const body = { title, text, kind: $('#note-kind').value, use_for_scoring: $('#note-use').checked };
   try {
     const doc = await api('/api/documents/notes', { method: 'POST', body: JSON.stringify(body) });
@@ -2077,7 +2261,7 @@ async function saveNote(e) {
     $('#note-text').value = '';
     status.textContent = `Saved "${doc.filename}": it's first in the list below.`;
     if (doc.use_for_scoring) docsChanged(); else loadScorerStatus();
-  } catch (err) { status.textContent = `Not saved: ${err.message}`; }
+  } catch (err) { status.textContent = `Not saved: ${err.message}`; announce(`Not saved: ${err.message}`, true); }
 }
 
 function initDocs() {
@@ -2087,7 +2271,7 @@ function initDocs() {
   $('#upload-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const files = Array.from($('#upload-input').files);
-    if (!files.length) { toast('Choose a file first.', 'err'); return; }
+    if (!files.length) { setFieldError($('#upload-input'), 'Choose a file first: a PDF, Word (.docx), OpenDocument or text file.'); return; }
     for (const f of files) {
       $('#upload-status').textContent = `Uploading ${f.name}…`;
       const fd = new FormData();
@@ -2101,14 +2285,23 @@ function initDocs() {
     loadDocs();
     loadScorerStatus();
   });
+  $('#upload-input').addEventListener('change', () => setFieldError($('#upload-input'), ''));
 }
 
 /* ================= MAP ================= */
 // Two modes: 'jobs' (read-only: jobs + pins with radii, jobs in view listed below)
-// and 'pins' (click to drop pins, drag to move, pins listed below).
+// and 'pins' (click or tap to drop pins, drag to move, pins listed below).
+// Nothing on the map needs a mouse or a drag (WCAG 2.1.1, 2.5.7): the list under the map has every job in
+// view (Show opens its popup, with focus in it), and in pin mode "Drop a pin at the cross" and "Move to the
+// cross" use the map's centre, which the arrow keys move. Colour is never the only sign (1.4.1): excluded jobs
+// are hollow dashed rings, and the pin kinds have solid, dashed and dotted radius rings. Outlines use --map-ink,
+// one dark ink for every theme, because the OpenStreetMap tiles are light whatever the theme.
 const PIN_HUE = { home: 'special', hybrid: 'info', onsite: 'warn' }; // theme slots
+const PIN_DASH = { home: null, hybrid: '10 7', onsite: '2 7' }; // the radius ring's pattern, as in the legend
+const PIN_KINDS = ['home', 'hybrid', 'onsite'];
 const pinColour = (kind) => themeColor(PIN_HUE[kind] || 'accent');
 const MAP_LIST_MAX = 200;
+const mapAnimate = () => !reducedMotion();
 
 function storedMapMode() {
   try { return localStorage.getItem('jobhunt.mapMode') === 'pins' ? 'pins' : 'jobs'; } catch { return 'jobs'; }
@@ -2116,17 +2309,22 @@ function storedMapMode() {
 
 function initMap() {
   if (state.map) return;
-  if (typeof L === 'undefined') { $('#pins-error').textContent = 'Map library failed to load (offline?).'; $('#pins-error').hidden = false; return; }
-  state.map = L.map('map').setView([-33.87, 151.21], 9);
+  if (typeof L === 'undefined') {
+    showError($('#pins-error'), "The map didn't load (are you offline?). Reload the page to try again.");
+    return;
+  }
+  const animate = mapAnimate();
+  state.map = L.map('map', { zoomAnimation: animate, fadeAnimation: animate, markerZoomAnimation: animate }).setView([-33.87, 151.21], 9);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(state.map);
   state.pinLayer = L.layerGroup().addTo(state.map);
   state.jobLayer = L.layerGroup().addTo(state.map);
-  state.map.on('click', (e) => { if (state.mapMode === 'pins') addPinAt(e); });
+  state.map.on('click', (e) => { if (state.mapMode === 'pins') addPinAt(e.latlng); });
   state.map.on('moveend', () => { if (state.mapMode === 'jobs') renderMapJobs(); else if ($('#pins-in-view').checked) renderPinsList(); });
   $('#pin-radius').addEventListener('input', (e) => { $('#pin-radius-output').textContent = `${e.target.value} km`; });
   $('#pins-in-view').addEventListener('change', renderPinsList);
+  $('#pin-add-centre').addEventListener('click', () => addPinAt(state.map.getCenter()));
   $('#map-mode-jobs').addEventListener('click', () => setMapMode('jobs'));
   $('#map-mode-pins').addEventListener('click', () => setMapMode('pins'));
   setMapMode(storedMapMode(), false);
@@ -2147,6 +2345,8 @@ function setMapMode(mode, redraw = true) {
   $('#pins-list').hidden = !edit;
   $('#map-jobs').hidden = edit;
   $('#map').classList.toggle('editing', edit);
+  $('#map').setAttribute('aria-describedby', edit ? 'map-hint-pins' : 'map-hint-jobs');
+  $('#map').setAttribute('aria-label', edit ? 'Map for placing pins' : 'Map of jobs and pins');
   if (!redraw) return;
   drawPins();
   if (edit) renderPinsList(); else renderMapJobs();
@@ -2157,7 +2357,27 @@ function setMapMode(mode, redraw = true) {
 function mapJobs() { return visibleJobs().filter((j) => j.lat !== null && j.lng !== null); }
 
 function jobLinkHtml(j) {
-  return `<a href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Full page in a new tab">Open ↗</a>`;
+  return `<a href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Full page in a new tab">Open<span class="visually-hidden"> ${esc(j.title)}</span>${NEW_TAB}</a>`;
+}
+
+/* A popup opened from a button outside the map: focus moves into it, Escape closes it, and focus goes back
+   to the button when it closes. */
+function focusPopup(layer, returnTo) {
+  const el = layer.getPopup()?.getElement();
+  if (!el) return;
+  const findReturn = focusFinder(returnTo); // the list under the map may be redrawn while the popup is open
+  const content = el.querySelector('.leaflet-popup-content');
+  content.tabIndex = -1;
+  content.focus({ preventScroll: true });
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); layer.closePopup(); } };
+  el.addEventListener('keydown', onKey);
+  layer.once('popupclose', () => {
+    el.removeEventListener('keydown', onKey);
+    setTimeout(() => {
+      const now = document.activeElement;
+      if (!now || now === document.body || el.contains(now)) findReturn()?.focus({ preventScroll: true });
+    }, 0);
+  });
 }
 
 function drawJobMarkers() {
@@ -2170,18 +2390,21 @@ function drawJobMarkers() {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(j);
   });
-  groups.forEach((jobs, key) => {
+  const ink = themeColor('map-ink');
+  groups.forEach((jobs) => {
     const kept = jobs.some((j) => !j.excluded_reason);
     const n = jobs.length;
-    const marker = L.circleMarker([jobs[0].lat, jobs[0].lng], {
-      radius: Math.min(16, 5 + 2.5 * Math.log2(n)), weight: 1, color: themeColor(kept ? 'ok' : 'quiet'), fillOpacity: 0.75,
-    });
+    const radius = Math.min(16, 6 + 2.5 * Math.log2(n));
+    const marker = L.circleMarker([jobs[0].lat, jobs[0].lng], kept
+      ? { radius, weight: 2, color: ink, fillColor: themeColor('ok'), fillOpacity: 0.9 }
+      : { radius, weight: 2, color: ink, dashArray: '3 3', fillColor: themeColor('quiet'), fillOpacity: 0.3 });
     const rows = jobs.slice(0, 40).map((j) => `<li><b>${esc(j.title)}</b> · ${esc(j.company || '')}
-      ${scoreOf(j) !== null ? ` · ${scoreOf(j)}` : ''}${j.excluded_reason ? ' <i>(excluded)</i>' : ''}<br>${jobLinkHtml(j)}
-      · <a href="${esc(j.url)}" target="_blank" rel="noopener">ad</a></li>`).join('');
-    marker.bindPopup(`<div class="map-popup"><div class="muted">${esc(jobs[0].location_text || '')}${n > 1 ? ` · ${n} jobs` : ''}</div>
-      <ul>${rows}</ul>${n > 40 ? `<div class="muted">…and ${n - 40} more: see the list under the map.</div>` : ''}</div>`, { maxWidth: 320, maxHeight: 300 });
-    if (n > 1) marker.bindTooltip(String(n), { permanent: true, direction: 'center', className: 'map-count' });
+      ${scoreOf(j) !== null ? ` · <span class="visually-hidden">fit score </span>${scoreOf(j)}` : ''}${j.excluded_reason ? ' <i>(excluded)</i>' : ''}<br>${jobLinkHtml(j)}
+      · <a href="${esc(j.url)}" target="_blank" rel="noopener">ad<span class="visually-hidden"> for ${esc(j.title)}</span>${NEW_TAB}</a></li>`).join('');
+    const place = esc(jobs[0].location_text || 'This place');
+    marker.bindPopup(`<div class="map-popup" role="region" aria-label="Jobs at ${place}"><p class="muted map-popup-head">${place}${n > 1 ? ` · ${n} jobs` : ''}</p>
+      <ul>${rows}</ul>${n > 40 ? `<p class="muted">…and ${n - 40} more: see the list under the map.</p>` : ''}</div>`, { maxWidth: 320, maxHeight: 300 });
+    if (n > 1) marker.bindTooltip(String(n), { permanent: true, direction: 'right', offset: [radius - 4, 0], className: 'map-count' });
     marker.addTo(state.jobLayer);
     jobs.forEach((j) => state.jobMarkers.set(j.id, marker));
   });
@@ -2192,9 +2415,10 @@ function drawJobMarkers() {
 function renderMapLegend() {
   const all = visibleJobs().length;
   const onMap = mapJobs().length;
-  $('#map-legend').innerHTML = `<span class="dot" style="--c:var(--ok)"></span> job you'd consider
-    <span class="dot" style="--c:var(--quiet)"></span> excluded
-    ${Object.entries(PIN_HUE).map(([k, hue]) => `<span class="ring" style="--c:var(--${hue})"></span> ${k} pin`).join(' ')}
+  $('#map-legend').innerHTML = `<span class="visually-hidden">Key: </span>
+    <span class="dot" aria-hidden="true"></span> job you'd consider (filled)
+    <span class="dot hollow" aria-hidden="true"></span> excluded (hollow, dashed)
+    ${PIN_KINDS.map((k) => `<span class="ring ring-${k}" style="--c:var(--${PIN_HUE[k]})" aria-hidden="true"></span> ${k} pin (${{ home: 'solid', hybrid: 'dashed', onsite: 'dotted' }[k]} ring)`).join(' ')}
     · ${onMap} of ${all} filtered job${all === 1 ? '' : 's'} on the map${all > onMap ? ` (${all - onMap} remote or without a location)` : ''}`;
 }
 
@@ -2204,42 +2428,48 @@ function renderMapJobs() {
   const bounds = state.map.getBounds();
   if (state.jobsStatus === 'loading') { box.innerHTML = LOADING_JOBS; return; }
   const inView = mapJobs().filter((j) => bounds.contains([j.lat, j.lng]));
+  const focusBack = box.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
   if (!inView.length) {
     box.innerHTML = '<div class="empty">No jobs in this part of the map. Zoom out, or change the Jobs tab filters.</div>';
     return;
   }
   const shown = inView.slice(0, MAP_LIST_MAX);
-  box.innerHTML = `<div class="map-jobs-head"><strong>${inView.length} job${inView.length === 1 ? '' : 's'} in view</strong>
+  box.innerHTML = `<div class="map-jobs-head"><h3 class="map-jobs-title" id="map-jobs-title">${inView.length} job${inView.length === 1 ? '' : 's'} in view</h3>
       <span class="muted">sorted like the Jobs tab${inView.length > MAP_LIST_MAX ? `; first ${MAP_LIST_MAX} shown, zoom in for the rest` : ''}</span></div>
-    ${shown.map((j) => `<div class="map-job-row" data-id="${j.id}">
+    <ul class="map-jobs-ul" aria-labelledby="map-jobs-title">${shown.map((j) => `<li class="map-job-row" data-id="${j.id}">
       ${scoreBadge(j)}
       <div class="map-job-main">
-        <div><a class="map-job-title" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Open the full page in a new tab">${esc(j.title || '—')}</a>
+        <div><a class="map-job-title" id="mapjob-${j.id}-title" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Open the full page in a new tab">${esc(j.title || '—')}<span class="visually-hidden"> (opens in a new tab)</span></a>
           <span class="muted">· ${esc(j.company || '—')}</span></div>
-        <div class="muted">${esc(j.location_text || '')}${j.office_unknown ? ' · office unknown' : ''}${j.distance_km !== null ? ` · 📍 ${j.distance_km} km` : ''}
+        <div class="muted">${esc(j.location_text || '')}${j.office_unknown ? ' · office unknown' : ''}${j.distance_km !== null ? ` · <span aria-hidden="true">📍 </span><span class="visually-hidden">distance </span>${j.distance_km} km` : ''}
           · <span class="badge ${modeOf(j)}">${modeOf(j)}</span> · ${esc(STATUS_LABEL[j.status] || j.status)}${j.excluded_reason ? ` · excluded: ${esc(j.excluded_reason)}` : ''}</div>
       </div>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="show" title="Show it on the map">Show</button>
-      <a class="btn btn-ghost btn-sm" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener">Open ↗</a>
-    </div>`).join('')}`;
+      <button class="btn btn-ghost btn-sm" type="button" id="mapjob-${j.id}-show" data-act="show" title="Show it on the map">Show<span class="visually-hidden"> ${esc(j.title || 'job')} on the map</span></button>
+      <a class="btn btn-ghost btn-sm" id="mapjob-${j.id}-open" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener">Open<span class="visually-hidden"> ${esc(j.title || 'job')}</span>${NEW_TAB}</a>
+    </li>`).join('')}</ul>`;
   box.querySelectorAll('[data-act="show"]').forEach((b) => b.addEventListener('click', () => {
     const marker = state.jobMarkers.get(Number(b.closest('.map-job-row').dataset.id));
     if (!marker) return;
     // The list sits below the map: bring the map back on screen first.
-    $('#map').scrollIntoView({ block: 'center' });
-    state.map.panTo(marker.getLatLng());
+    $('#map').scrollIntoView({ block: 'center', behavior: scrollBehavior() });
+    state.map.panTo(marker.getLatLng(), { animate: mapAnimate() });
     marker.openPopup();
+    focusPopup(marker, b);
   }));
+  if (focusBack) focusBack()?.focus({ preventScroll: true });
 }
 
 /* Pins: draggable markers in edit mode; small dots with their radius otherwise. */
 function drawPin(p) {
   const edit = state.mapMode === 'pins';
   const colour = pinColour(p.kind);
-  const circle = L.circle([p.lat, p.lng], { radius: p.radius_km * 1000, weight: 1, color: colour, fillOpacity: edit ? 0.12 : 0.06, interactive: false });
+  const circle = L.circle([p.lat, p.lng], {
+    radius: p.radius_km * 1000, weight: 2, color: colour, dashArray: PIN_DASH[p.kind], fillOpacity: edit ? 0.12 : 0.06, interactive: false,
+  });
+  const name = `${p.kind} pin: ${p.label}`;
   const marker = edit
-    ? L.marker([p.lat, p.lng], { draggable: true })
-    : L.circleMarker([p.lat, p.lng], { radius: 4, weight: 2, color: colour, fillOpacity: 1 });
+    ? L.marker([p.lat, p.lng], { draggable: true, keyboard: true, alt: name, title: `${name} (drag to move)` })
+    : L.circleMarker([p.lat, p.lng], { radius: 5, weight: 2, color: themeColor('map-ink'), fillColor: colour, fillOpacity: 1 });
   marker.bindPopup(`<b>${esc(p.label)}</b><br>${esc(p.kind)} pin · ${p.radius_km} km`);
   if (edit) {
     marker.on('dragend', async () => {
@@ -2265,21 +2495,25 @@ async function loadPins() {
     state.pins = await api('/api/pins');
     drawPins();
     const sane = state.pins.filter((p) => p.radius_km < 1000);
-    if (sane.length) state.map.fitBounds(L.latLngBounds(sane.map((p) => [p.lat, p.lng])).pad(0.3));
+    if (sane.length) state.map.fitBounds(L.latLngBounds(sane.map((p) => [p.lat, p.lng])).pad(0.3), { animate: false });
     $('#pins-error').hidden = true;
   } catch (e) {
-    $('#pins-error').textContent = `Could not load pins: ${e.message}`;
-    $('#pins-error').hidden = false;
+    showError($('#pins-error'), `Could not load pins: ${e.message}`);
   }
   renderPinsList();
   drawJobMarkers();
 }
 
-async function addPinAt(e) {
+async function addPinAt(latlng) {
   const kind = $('#pin-kind').value;
-  const body = { lat: e.latlng.lat, lng: e.latlng.lng, radius_km: Number($('#pin-radius').value), kind, label: $('#pin-label').value.trim() || kind };
-  try { await api('/api/pins', { method: 'POST', body: JSON.stringify(body) }); await loadPins(); pinsChanged(); }
-  catch (err) { toast(`Pin save failed: ${err.message}`, 'err'); }
+  const label = $('#pin-label').value.trim() || kind;
+  const body = { lat: latlng.lat, lng: latlng.lng, radius_km: Number($('#pin-radius').value), kind, label };
+  try {
+    await api('/api/pins', { method: 'POST', body: JSON.stringify(body) });
+    await loadPins();
+    announce(`Dropped a ${kind} pin, ${label}, with a ${body.radius_km} km radius.`);
+    pinsChanged();
+  } catch (err) { toast(`Pin save failed: ${err.message}`, 'err'); }
 }
 
 async function savePin(p, patch) {
@@ -2290,12 +2524,18 @@ async function savePin(p, patch) {
     drawPin(p);
     renderPinsList();
     pinsChanged();
-  } catch (e) { toast(`Pin update failed: ${e.message}`, 'err'); }
+    return true;
+  } catch (e) { toast(`Pin update failed: ${e.message}`, 'err'); return false; }
 }
 
 async function deletePin(p) {
-  try { await api(`/api/pins/${p.id}`, { method: 'DELETE' }); await loadPins(); pinsChanged(); }
-  catch (e) { toast(`Pin delete failed: ${e.message}`, 'err'); }
+  try {
+    await api(`/api/pins/${p.id}`, { method: 'DELETE' });
+    await loadPins();
+    $('#pin-add-centre').focus(); // the row with the button is gone
+    announce(`Deleted the ${p.kind} pin ${p.label}.`);
+    pinsChanged();
+  } catch (e) { toast(`Pin delete failed: ${e.message}`, 'err'); }
 }
 
 const pinsChanged = debounce(async () => {
@@ -2309,32 +2549,61 @@ function renderPinsList() {
   const inViewOnly = $('#pins-in-view').checked && state.map;
   const bounds = state.map?.getBounds();
   const pins = inViewOnly ? state.pins.filter((p) => bounds.contains([p.lat, p.lng])) : state.pins;
+  const focusBack = box.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
   box.innerHTML = '';
-  if (!state.pins.length) { box.innerHTML = '<div class="empty">No pins yet. Click the map to drop one.</div>'; return; }
+  if (!state.pins.length) {
+    box.innerHTML = '<div class="empty">No pins yet. Click or tap the map to drop one, or use Drop a pin at the cross.</div>';
+    return;
+  }
   if (inViewOnly) {
-    box.insertAdjacentHTML('beforeend', `<div class="muted">${pins.length} of ${state.pins.length} pins in view</div>`);
+    box.insertAdjacentHTML('beforeend', `<p class="muted">${pins.length} of ${state.pins.length} pins in view</p>`);
     if (!pins.length) return;
   }
+  const list = document.createElement('ul');
+  list.className = 'pins-ul';
+  list.setAttribute('aria-label', 'Your pins');
+  box.appendChild(list);
   pins.forEach((p) => {
-    const row = document.createElement('div');
+    const row = document.createElement('li');
     row.className = 'pin-row';
-    const huge = p.radius_km >= 1000 ? '<span class="err-text" title="Ignored by the location filter: a radius this large covers everywhere. Remote roles are handled by the Remote toggles in Search setup.">⚠ ignored by location filter (radius ≥ 1000 km)</span>' : '';
+    const id = `pin-${p.id}`;
+    const name = esc(p.label);
+    const huge = p.radius_km >= 1000 ? '<span class="err-text" title="Ignored by the location filter: a radius this large covers everywhere. Remote roles are handled by the Remote toggles in Search setup."><span aria-hidden="true">⚠ </span>ignored by location filter (radius ≥ 1000 km)</span>' : '';
     row.innerHTML = `
-      <span class="pin-kind" style="border-color:var(--${PIN_HUE[p.kind] || 'border'})">${esc(p.kind)}</span>
-      <strong>${esc(p.label)}</strong>
-      <span class="muted">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>
-      <label>Radius <input type="number" min="0.1" step="0.5" value="${p.radius_km}" style="width:90px" /> km</label>
-      <select aria-label="Pin kind">${['home', 'hybrid', 'onsite'].map((k) => `<option ${p.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select>
+      <span class="pin-kind pin-kind-${esc(p.kind)}" style="--c:var(--${PIN_HUE[p.kind] || 'border'})">${esc(p.kind)}</span>
+      <strong id="${id}-name">${name}</strong>
+      <span class="muted"><span class="visually-hidden">at </span>${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>
+      <span class="pin-radius"><label for="${id}-radius">Radius</label> <input id="${id}-radius" type="number" min="0.1" step="0.5" inputmode="decimal" value="${p.radius_km}" aria-describedby="${id}-name" /> <span aria-hidden="true">km</span><span class="visually-hidden">kilometres</span></span>
+      <select id="${id}-kind" aria-label="Kind of pin ${name}">${PIN_KINDS.map((k) => `<option ${p.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select>
       ${huge}
-      <span style="flex:1"></span>
-      <button class="btn btn-ghost btn-sm" data-act="locate" type="button">Locate</button>
-      <button class="btn btn-danger btn-sm" data-act="del" type="button">Delete</button>`;
-    row.querySelector('input').addEventListener('change', (e) => savePin(p, { radius_km: Number(e.target.value) }));
+      <span class="pin-actions">
+        <button class="btn btn-ghost btn-sm" id="${id}-locate" data-act="locate" type="button">Locate<span class="visually-hidden"> ${name}</span></button>
+        <button class="btn btn-ghost btn-sm" id="${id}-move" data-act="move" type="button" title="Move this pin to the cross in the middle of the map">Move to the cross<span class="visually-hidden">: ${name}</span></button>
+        <button class="btn btn-danger btn-sm" id="${id}-delete" data-act="del" type="button">Delete<span class="visually-hidden"> ${name}</span></button>
+      </span>`;
+    row.querySelector('input').addEventListener('change', (e) => {
+      const km = Number(e.target.value);
+      if (!e.target.validity.valid || !(km > 0)) {
+        setFieldError(e.target, 'Enter the radius in kilometres, more than 0 (for example 10).');
+        return;
+      }
+      setFieldError(e.target, '');
+      savePin(p, { radius_km: km });
+    });
     row.querySelector('select').addEventListener('change', (e) => savePin(p, { kind: e.target.value }));
-    row.querySelector('[data-act="locate"]').addEventListener('click', () => { state.map.setView([p.lat, p.lng], 14); state.pinLayers.get(p.id)?.marker.openPopup(); });
+    row.querySelector('[data-act="locate"]').addEventListener('click', (e) => {
+      state.map.setView([p.lat, p.lng], 14, { animate: mapAnimate() });
+      const marker = state.pinLayers.get(p.id)?.marker;
+      if (marker) { marker.openPopup(); focusPopup(marker, e.currentTarget); }
+    });
+    row.querySelector('[data-act="move"]').addEventListener('click', async () => {
+      const c = state.map.getCenter();
+      if (await savePin(p, { lat: c.lat, lng: c.lng })) announce(`Moved ${p.label} to the middle of the map.`);
+    });
     row.querySelector('[data-act="del"]').addEventListener('click', () => deletePin(p));
-    box.appendChild(row);
+    list.appendChild(row);
   });
+  if (focusBack) focusBack()?.focus({ preventScroll: true });
 }
 
 /* ---------- boot ---------- */
@@ -2351,6 +2620,7 @@ async function loadWorkspaces() {
   $('#ws-delete').disabled = state.workspaces.length <= 1;
   const current = state.workspaces.find((w) => w.id === state.ws);
   $('#sched-scope').textContent = current ? `This workspace: ${current.name}` : 'This workspace';
+  updateTitle();
 }
 
 async function switchWorkspace(id) {
@@ -2375,7 +2645,7 @@ async function switchWorkspace(id) {
   $('#titles-status').textContent = '';
   $('#run-status').textContent = '';
   $('#run-report').hidden = true;
-  ['#search-run', '#score-pending', '#fill-info'].forEach((s) => { $(s).disabled = false; });
+  ['#search-run', '#score-pending', '#fill-info'].forEach((s) => setBusy($(s), false));
   $('#run-progress').hidden = true;
   closeChat();
   state.dupes = { suggested: [], auto_merged: [] };
@@ -2401,9 +2671,9 @@ function loadAll() {
 function workspaceForm(title, { name = '', create = false } = {}) {
   const current = state.workspaces.find((w) => w.id === state.ws);
   openHtmlModal(title, `
-    <form id="ws-form" class="ws-form">
+    <form id="ws-form" class="ws-form" novalidate>
       <label class="field"><span class="field-label">Name</span>
-        <input id="ws-name" type="text" maxlength="80" value="${esc(name)}" required /></label>
+        <input id="ws-name" type="text" maxlength="80" value="${esc(name)}" autocomplete="off" required /></label>
       ${create ? `
       <label class="check"><input id="ws-copy" type="checkbox" /> Copy search settings, company sources and pins from "${esc(current?.name || '')}"</label>
       <label class="check"><input id="ws-copy-docs" type="checkbox" /> Also copy its documents</label>
@@ -2415,8 +2685,9 @@ function workspaceForm(title, { name = '', create = false } = {}) {
     $('#ws-form').addEventListener('submit', (e) => {
       e.preventDefault();
       const out = { name: $('#ws-name').value.trim() };
+      if (!out.name) { setFieldError($('#ws-name'), 'Give the workspace a name, for example "Product roles".'); return; }
       if (create && $('#ws-copy').checked) { out.copy_from = state.ws; out.copy_documents = $('#ws-copy-docs').checked; }
-      $('#modal').hidden = true;
+      closeModal();
       resolve(out);
     });
   });
@@ -2448,6 +2719,7 @@ function initWorkspaces() {
       const next = state.workspaces.find((w) => w.id !== state.ws);
       toast(`Deleted "${current?.name}"`, 'ok');
       await switchWorkspace(next.id);
+      $('#ws-select').focus(); // Delete is disabled when one workspace is left
     } catch (e) { toast(`Delete failed: ${e.message}`, 'err'); }
   });
 }
@@ -2466,17 +2738,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSchedule();
   initDocs();
   initChat();
-  initThemePicker($('#theme-select'));
+  initModal();
+  initTheme();
+  $('#theme-picker-slot').replaceWith(createThemePicker({ legend: 'Theme' }));
   // Map markers are drawn in script, so they take the new theme's colours here.
   document.addEventListener('themechange', () => { if (state.map) { drawPins(); drawJobMarkers(); } });
-  $('#source-add').addEventListener('click', addSource);
-  $('#source-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSource(); } });
+  $('#source-form').addEventListener('submit', addSource);
   $('#score-test').addEventListener('click', testScorer);
   $('#score-stale').addEventListener('click', () => startRun('/api/score/run', { mode: 'stale' }));
   $('#score-all').addEventListener('click', () => { if (confirm('Rescore every job in this workspace? This makes one API call per job.')) startRun('/api/score/run', { mode: 'all' }); });
-  $('#modal-close').addEventListener('click', () => { $('#modal').hidden = true; });
-  $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#modal').hidden = true; });
   loadAll();
   setInterval(pollForScheduledRun, IDLE_POLL_MS);
   document.addEventListener('visibilitychange', pollForScheduledRun);
