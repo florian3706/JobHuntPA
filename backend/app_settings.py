@@ -37,7 +37,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
-from backend import commute, config, llm_providers, scorer
+from backend import commute, config, llm_providers, mailer, scorer
 
 log = logging.getLogger(__name__)
 
@@ -114,6 +114,14 @@ ENV_RULES: dict[str, Callable[[str], bool]] = {
     "LLM_API_KEY": lambda v: KEY_RE.fullmatch(v) is not None,
     "LLM_BASE_URL": _plain_url,
     "LLM_MODEL": lambda v: MODEL_RE.fullmatch(v) is not None,
+    # Email (backend/mailer.py), set by an admin. No value may hold a line break (header injection).
+    "SMTP_HOST": mailer.valid_host,
+    "SMTP_PORT": mailer.valid_port,
+    "SMTP_USER": mailer.valid_user,
+    "SMTP_PASSWORD": mailer.valid_password,
+    "SMTP_FROM": mailer.valid_from,
+    "SMTP_SECURITY": mailer.valid_security,
+    "PUBLIC_BASE_URL": mailer.valid_public_base_url,
 }
 
 _write_lock = threading.Lock()
