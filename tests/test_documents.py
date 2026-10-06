@@ -15,10 +15,9 @@ os.environ.setdefault("JOBHUNT_DB_PATH", os.path.join(_TMP, "test.db"))  # never
 os.environ.setdefault("JOBHUNT_SCHEDULER", "off")
 os.environ.setdefault("JOBHUNT_ENV_PATH", os.path.join(_TMP, "test.env"))
 
-from fastapi.testclient import TestClient  # noqa: E402
+from tests import helpers  # noqa: E402  (signed-in clients; sets the test environment)
 
 import backend.scorer as sc  # noqa: E402
-from backend.app import app  # noqa: E402
 from backend.db import Document, Job, SessionLocal, init_db  # noqa: E402
 
 init_db()
@@ -30,7 +29,7 @@ class DocsTestCase(unittest.TestCase):
     """Each test gets a workspace of its own (deleted afterwards), so documents from other tests don't mix in."""
 
     def setUp(self):
-        self.client = TestClient(app)
+        self.client = helpers.client()
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
         self.ws = self.client.post("/api/workspaces", json={"name": self._testMethodName[:80]}).json()["id"]

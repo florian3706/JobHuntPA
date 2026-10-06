@@ -28,7 +28,7 @@ const state = {
   schedule: null, // this workspace's scheduled-search settings, as the server last returned them
   llmCfg: null, // the LLM provider, address, model and key state (/api/settings/llm), with the provider presets
   companies: {}, // company_key -> profile
-  ws: 1, // current workspace id
+  ws: 0, // current workspace id (0 until known: the server then uses the account's first)
   workspaces: [],
   titleSuggestions: [],
   officeSlack: 0, // temporary extra office days allowed on the Jobs tab (never saved)
@@ -1396,6 +1396,16 @@ async function loadCommuteKeys() {
   catch (e) { $('#keys-test-status').textContent = `Could not load the key settings: ${e.message}`; }
 }
 
+/* Everyone but admins: which commute times the job pages can show (the keys are the admin's). */
+async function loadCommuteAvailability() {
+  let st;
+  try { st = await api('/api/commute/status'); } catch { return; }
+  $('#commute-keys').innerHTML = `Public transport: ${st.transit ? '<span class="ok-text">available<span aria-hidden="true"> ✓</span></span>'
+    : 'not set up (the admin of this JobHuntPA can add a free Transport for NSW key)'}.
+    Driving: ${st.traffic ? '<span class="ok-text">with peak traffic<span aria-hidden="true"> ✓</span></span>'
+    : 'without traffic (the admin can add a free TomTom key for peak-hour traffic)'}.`;
+}
+
 async function putCommuteKey(name, value) {
   const box = keyField(name);
   const save = box.querySelector('.key-save');
@@ -1848,14 +1858,16 @@ async function loadScorerStatus() {
   try {
     const s = await api('/api/score/status');
     const failing = s.configured && s.scored === 0 && s.errors > 0;
+    // Admins see the model and address; everyone else only whether AI works (accounts design §14.8).
+    const admin = isAdmin();
     badge.className = `api-status ${!s.configured || failing ? 'is-fail' : s.scored ? 'is-ok' : 'is-unknown'}`;
-    badge.innerHTML = `<span aria-hidden="true">● </span>${esc(!s.configured ? 'LLM not configured'
-      : failing ? 'scorer: failing (Settings, Test connection)'
-        : `${s.model}${s.scored ? '' : ' (not verified yet)'}`)}`;
+    badge.innerHTML = `<span aria-hidden="true">● </span>${esc(!s.configured ? (admin ? 'LLM not configured' : 'AI not set up')
+      : failing ? (admin ? 'scorer: failing (Settings, Test connection)' : 'AI scoring failing (tell your admin)')
+        : `${admin ? s.model : 'AI ready'}${s.scored ? '' : ' (not verified yet)'}`)}`;
     badge.title = `${s.scored} scored, ${s.errors} failed`;
     $('#scorer-info').innerHTML = `
       ${s.problem ? `<span class="err-text">${esc(s.problem)}</span><br>` : ''}
-      Model <strong>${esc(s.model || '(LLM_MODEL not set)')}</strong> at ${esc(s.base_url || '(LLM_BASE_URL not set)')}${s.reasoning_effort ? ` · reasoning effort ${esc(s.reasoning_effort)}` : ''}<br>
+      ${admin ? `Model <strong>${esc(s.model || '(LLM_MODEL not set)')}</strong> at ${esc(s.base_url || '(LLM_BASE_URL not set)')}${s.reasoning_effort ? ` · reasoning effort ${esc(s.reasoning_effort)}` : ''}<br>` : ''}
       ${s.scored} scored · ${s.pending} waiting to be scored · ${s.stale} stale (documents changed) · ${s.errors} failed ·
       profile ${s.profile_chars.toLocaleString()} characters`;
   } catch (e) {
@@ -2613,12 +2625,12 @@ function renderPinsList() {
 /* ---------- boot ---------- */
 /* ================= WORKSPACES ================= */
 function storedWorkspace() {
-  try { return Number(localStorage.getItem('jobhunt.ws')) || 1; } catch { return 1; }
+  try { return Number(localStorage.getItem('jobhunt.ws')) || 0; } catch { return 0; } // 0: the account's first
 }
 
 async function loadWorkspaces() {
   state.workspaces = await api('/api/workspaces');
-  if (!state.workspaces.some((w) => w.id === state.ws)) state.ws = state.workspaces[0]?.id ?? 1;
+  if (!state.workspaces.some((w) => w.id === state.ws)) state.ws = state.workspaces[0]?.id ?? 0;
   $('#ws-select').innerHTML = state.workspaces
     .map((w) => `<option value="${w.id}" ${w.id === state.ws ? 'selected' : ''}>${esc(w.name)}</option>`).join('');
   $('#ws-delete').disabled = state.workspaces.length <= 1;
@@ -2657,10 +2669,24 @@ async function switchWorkspace(id) {
   loadAll();
 }
 
+/* What this account may see: the LLM and commute-key settings are the admin's, for everyone (accounts design
+   §14.8); everyone else sees whether AI and commute times are available, and their own workspace's actions. */
+function applyAccount(me) {
+  const admin = me.user.role === 'admin';
+  $$('[data-admin-only]').forEach((el) => { el.hidden = !admin; });
+  $$('[data-user-only]').forEach((el) => { el.hidden = admin; });
+  initAccountMenu(me);
+  remindRecoveryCodes(me);
+}
+
 function loadAll() {
-  loadLlmSettings();
-  loadLlmProvider();
-  loadCommuteKeys();
+  if (isAdmin()) {
+    loadLlmSettings();
+    loadLlmProvider();
+    loadCommuteKeys();
+  } else {
+    loadCommuteAvailability();
+  }
   loadCompanies();
   loadJobs();
   loadSetup();
@@ -2729,6 +2755,10 @@ function initWorkspaces() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  let me;
+  try { me = await loadSession(); } // signed out: goes to the sign-in page and never returns
+  catch (e) { toast(e.message, 'err', 15000); return; }
+  applyAccount(me);
   state.ws = storedWorkspace();
   try { await loadWorkspaces(); } catch (e) { toast(`Could not load workspaces: ${e.message}`, 'err'); }
   initWorkspaces();

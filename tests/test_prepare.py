@@ -22,15 +22,14 @@ os.environ["JOBHUNT_DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["JOBHUNT_SCHEDULER"] = "off"
 os.environ["JOBHUNT_ENV_PATH"] = os.path.join(_TMP, "test.env")
 
+from tests import helpers  # noqa: E402  (signed-in clients; sets the test environment)
 import httpx  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.orm import defer  # noqa: E402
 
 from backend import app as app_module  # noqa: E402
 from backend import tasks, threads  # noqa: E402
 from backend.adapters.base import Adapter, Posting  # noqa: E402
-from backend.app import app  # noqa: E402
 from backend.db import CompanyProfile, FitResult, Job, SearchRun, SessionLocal, engine, init_db  # noqa: E402
 
 init_db()
@@ -38,7 +37,7 @@ init_db()
 
 class WorkspaceTestCase(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(app)
+        self.client = helpers.client()
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
         self.ws = self.new_workspace()

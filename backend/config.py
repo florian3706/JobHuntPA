@@ -11,6 +11,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = Path(os.environ.get("JOBHUNT_ENV_PATH") or PROJECT_ROOT / ".env")
 
 
+# The names load_dotenv took from a .env file rather than from the process environment.
+FROM_DOTENV: set[str] = set()
+
+
 def load_dotenv(path: Optional[Path] = None) -> None:
     """Set KEY=VALUE pairs from ``path`` (default ENV_PATH) that are not already in the environment."""
     path = path or ENV_PATH
@@ -24,6 +28,13 @@ def load_dotenv(path: Optional[Path] = None) -> None:
         key, val = key.strip(), val.strip().strip("'\"")
         if key and key not in os.environ:
             os.environ[key] = val
+            FROM_DOTENV.add(key)
+
+
+def process_env(name: str) -> str:
+    """``name`` from the environment the process was started with, never from .env (for settings that must not
+    be stored in a file, such as the first admin's password for CI and headless installs)."""
+    return "" if name in FROM_DOTENV else os.environ.get(name, "")
 
 
 load_dotenv()

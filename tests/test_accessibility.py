@@ -21,7 +21,8 @@ FRONTEND = ROOT / "frontend"
 sys.path.insert(0, str(ROOT / "tools"))
 import theme_contrast  # noqa: E402
 
-PAGES = ("index.html", "job.html")
+PAGES = ("index.html", "job.html", "login.html", "first-run.html")
+AUTH_PAGES = ("login.html", "first-run.html")
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 FOCUSABLE = {"a", "button", "input", "select", "textarea", "summary"}
 
@@ -225,9 +226,84 @@ class GeneratedMarkupTest(unittest.TestCase):
 
     def test_templates_label_their_controls(self):
         problems = []
-        for name in ("app.js", "job.js", "common.js"):
+        for name in ("app.js", "job.js", "common.js", "auth.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
+
+
+class AuthPagesTest(unittest.TestCase):
+    """The sign-in pages (WCAG 2.2 3.3.8 accessible authentication, 3.3.7 redundant entry, 3.2.6 consistent help,
+    1.3.5 input purpose)."""
+
+    def inputs(self, page):
+        return {n["attrs"].get("id"): n["attrs"] for n in page.nodes if n["tag"] == "input"}
+
+    def test_fields_say_what_they_are_for_password_managers(self):
+        expected = {
+            "login.html": {"email": ("email", "username"), "password": ("password", "current-password")},
+            "first-run.html": {"email": ("email", "username"), "password": ("password", "new-password"),
+                               "name": ("text", "name")},
+        }
+        for name, fields in expected.items():
+            inputs = self.inputs(parse(name))
+            for field, (kind, autocomplete) in fields.items():
+                with self.subTest(page=name, field=field):
+                    self.assertEqual(inputs[field].get("type"), kind)
+                    self.assertEqual(inputs[field].get("autocomplete"), autocomplete)
+            passwords = [i for i in inputs.values() if i.get("type") == "password"]
+            self.assertEqual(len(passwords), 1, f"{name}: one password field, no 'confirm password' (3.3.7)")
+
+    def test_paste_and_password_managers_are_never_blocked(self):
+        for name in AUTH_PAGES + ("auth.js", "common.js"):
+            src = (FRONTEND / name).read_text(encoding="utf-8")
+            with self.subTest(file=name):
+                self.assertNotRegex(src, r"on(paste|copy|cut|drop)\s*=", "no handlers that block pasting")
+                self.assertNotRegex(src, r"addEventListener\(\s*['\"](paste|copy|cut|drop)['\"]")
+                self.assertNotIn("captcha", src.lower())
+        for name in AUTH_PAGES:
+            for attrs in self.inputs(parse(name)).values():
+                if attrs.get("type") in ("email", "password"):
+                    self.assertNotEqual(attrs.get("autocomplete"), "off", f"{name}: autocomplete=off on a sign-in field")
+                    self.assertNotIn("data-lpignore", attrs)
+                    self.assertNotIn("data-1p-ignore", attrs)
+
+    def test_show_password_is_a_toggle_button(self):
+        for name in AUTH_PAGES:
+            page = parse(name)
+            toggles = [n for n in page.nodes if n["tag"] == "button" and "pw-toggle" in n["attrs"].get("class", "")]
+            with self.subTest(page=name):
+                self.assertEqual(len(toggles), 1)
+                self.assertEqual(toggles[0]["attrs"].get("aria-pressed"), "false")
+                self.assertEqual(toggles[0]["attrs"].get("aria-controls"), "password")
+                self.assertEqual(toggles[0]["attrs"].get("type"), "button")
+
+    def test_error_summary_and_help_are_in_the_same_place(self):
+        for name in AUTH_PAGES:
+            page = parse(name)
+            with self.subTest(page=name):
+                summary = next(n for n in page.nodes if n["attrs"].get("id") == "error-summary")
+                self.assertEqual(summary["attrs"].get("tabindex"), "-1", "the summary takes focus")
+                sections = [n for n in page.nodes if n["tag"] == "section" and n["parent"] is not None
+                            and page.nodes[n["parent"]]["tag"] == "main"]
+                self.assertEqual(sections[-1]["attrs"].get("aria-labelledby"), "help-title",
+                                 "'Trouble signing in?' is the last part of the page on every sign-in page (3.2.6)")
+                self.assertIn("Trouble signing in?", next(n for n in page.nodes if n["attrs"].get("id") == "help-title")["text"])
+
+    def test_fields_use_16px_text(self):
+        css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        rule = re.search(r"\.auth-field input\[type=\"email\"\][^{]*\{([^}]*)\}", css)
+        self.assertIsNotNone(rule)
+        self.assertIn("font-size: 16px", rule.group(1))
+        self.assertIn("min-height: 44px", rule.group(1))
+
+    def test_the_dashboard_pages_have_the_account_menu(self):
+        for name in ("index.html", "job.html"):
+            page = parse(name)
+            btn = next(n for n in page.nodes if n["attrs"].get("id") == "account-btn")
+            with self.subTest(page=name):
+                self.assertEqual(btn["attrs"].get("aria-expanded"), "false")
+                self.assertEqual(btn["attrs"].get("aria-controls"), "account-panel")
+                self.assertTrue(any(n["attrs"].get("id") == "account-signout" for n in page.nodes))
 
 
 if __name__ == "__main__":

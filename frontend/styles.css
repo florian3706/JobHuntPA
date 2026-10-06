@@ -811,3 +811,76 @@ summary { cursor: pointer; min-height: 24px; }
   .spinner { border-top-color: var(--accent); }
 }
 .section-date { font-size: 12.5px; margin-top: 4px; }
+
+/* Notices at the top of a page (common.js pageNotice): recovery codes not saved yet, a membership needed, data
+   being encrypted. On the --card ground with a warn tint, the pair checked for .notice. */
+.page-notice {
+  margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: 14px;
+  background: color-mix(in srgb, var(--warn) 12%, var(--card)); border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  color: var(--text);
+}
+.page-notice p { margin: 0; }
+.page-notice a { color: var(--accent-text); }
+.page-notice .progress { margin-top: 8px; }
+
+/* The account menu in the header: a disclosure button and its panel. */
+.account-menu { position: relative; }
+.account-panel {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 1100; width: max-content; max-width: min(320px, calc(100vw - 32px));
+  background: var(--panel); color: var(--text); border: 1px solid var(--border-strong); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 10px;
+}
+.account-who { margin: 0; font-size: 13.5px; overflow-wrap: anywhere; }
+.account-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.account-links a { color: var(--accent-text); display: inline-flex; align-items: center; min-height: 24px; }
+@media (max-width: 760px) {
+  .account-panel { position: static; margin-top: 6px; width: auto; }
+}
+
+/* Sign-in pages (login.html, first-run.html): one column from 320 px, 16 px text in every field (so phones don't
+   zoom), at least 44 px tall controls; the error summary takes focus and links to each field. */
+.auth-header .header-inner { justify-content: flex-start; padding-bottom: 14px; }
+.auth-main { max-width: 36rem; display: flex; flex-direction: column; gap: 18px; }
+.auth-card { display: flex; flex-direction: column; gap: 14px; padding: 20px; }
+.auth-card h1 { margin: 0; font-size: 24px; }
+.auth-card h2 { margin: 0; font-size: 18px; }
+.auth-card p { margin: 0; }
+.auth-card #auth-status:empty { display: none; }
+.auth-form { display: flex; flex-direction: column; gap: 18px; }
+.auth-step { display: flex; flex-direction: column; gap: 18px; }
+.auth-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.auth-field > label:not(.check) { font-weight: 600; font-size: 15px; }
+.auth-field .hint { margin: 0; font-size: 13.5px; }
+.auth-field input[type="email"], .auth-field input[type="password"], .auth-field input[type="text"] {
+  width: 100%; font-size: 16px; min-height: 44px;
+}
+.auth-field .check { font-size: 15px; align-items: flex-start; }
+.auth-field .check input { margin-top: 2px; }
+.pw-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
+.pw-row input { flex: 1 1 12rem; }
+.pw-toggle { min-height: 44px; }
+.pw-toggle[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.auth-submit { align-self: flex-start; min-height: 44px; padding: 10px 20px; font-size: 15px; font-weight: 600; }
+.error-summary {
+  border: 2px solid var(--danger); border-radius: 8px; padding: 12px 14px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--card)); color: var(--danger);
+}
+.error-summary h2 { font-size: 16px; color: var(--danger); margin: 0 0 6px; }
+.error-summary ul { margin: 0; padding-left: 20px; }
+.error-summary a { color: var(--danger); font-weight: 600; text-decoration: underline; display: inline-flex; align-items: center; min-height: 28px; }
+.auth-help { padding: 0 4px; font-size: 14px; }
+.auth-help h2 { margin: 0 0 6px; font-size: 16px; }
+.auth-help ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.auth-help a { color: var(--accent-text); }
+.codes-step { display: flex; flex-direction: column; gap: 14px; }
+.codes-list {
+  margin: 0; padding-left: 2.2em; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
+  gap: 6px 24px; font-size: 17px;
+}
+.codes-list code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; letter-spacing: 0.06em; }
+.codes-actions { align-items: center; }
+@media print { /* "Print" on the recovery codes: just the codes and what they are for */
+  .auth-page .skip-link, .auth-page .app-header, .auth-help, .codes-actions, .codes-step .auth-field, #codes-continue,
+  .toasts, #auth-status { display: none !important; }
+  .auth-card { border: none; box-shadow: none; }
+}

@@ -335,6 +335,8 @@ def main() -> None:
     check_app()
 
     say("\nSetup complete.")
+    say("The first time JobHuntPA starts, your browser asks you to create your account. That account is the admin,")
+    say("and the jobs, documents and settings already in JobHuntPA move into it.")
     if IS_WINDOWS:
         say("Start JobHuntPA from the Desktop or Start-menu shortcut.")
     elif platform.system() == "Darwin":

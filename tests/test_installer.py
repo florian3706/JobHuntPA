@@ -1,6 +1,8 @@
 """Tests for the setup helpers (no network, no package installs)."""
 from __future__ import annotations
 
+import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -103,10 +105,15 @@ class EnvFileTest(unittest.TestCase):
 
     def test_non_interactive_takes_the_environment(self):  # the path the CI workflow runs
         env = {"LLM_API_KEY": "test-key", "LLM_BASE_URL": "https://example.invalid/v1", "LLM_MODEL": "test-model"}
-        with mock.patch.object(installer, "ROOT", self.dir), mock.patch.dict("os.environ", env), \
+        admin = {"JOBHUNT_ADMIN_EMAIL": "ci@example.invalid", "JOBHUNT_ADMIN_PASSWORD": "ci-test-password-123"}
+        with mock.patch.object(installer, "ROOT", self.dir), mock.patch.dict("os.environ", {**env, **admin}), \
                 mock.patch.object(installer, "say"), mock.patch("builtins.input", side_effect=AssertionError("no prompts")):
             installer.configure_llm(interactive=False, reconfigure=False)
-        self.assertEqual(installer.read_env(self.env)[1], env)
+            installer.configure_commute(interactive=False, reconfigure=False)
+        values = installer.read_env(self.env)[1]
+        self.assertEqual({k: values[k] for k in env}, env)
+        # The first admin's details are for the process environment only, never written to .env.
+        self.assertNotIn("JOBHUNT_ADMIN", self.env.read_text())
 
     def test_existing_settings_kept(self):
         self.env.write_text("LLM_API_KEY=k\nLLM_BASE_URL=b\nLLM_MODEL=m\n")
@@ -143,6 +150,8 @@ class UninstallerTest(unittest.TestCase):
         (root / "backend").mkdir()
         (root / "data" / "uploads").mkdir(parents=True)
         (root / "data" / "uploads" / "cv.pdf").write_text("cv")
+        (root / "data" / "server-keys.json").write_text("{}")
+        (root / "data" / "first-run.txt").write_text("token\n")
         (root / ".env").write_text("LLM_API_KEY=k\n")
         return root
 
@@ -171,7 +180,11 @@ class UninstallerTest(unittest.TestCase):
         backups = list((home / "Documents").glob("JobHuntPA-backup-*.zip"))
         self.assertEqual(len(backups), 1)
         import zipfile
-        self.assertEqual(sorted(zipfile.ZipFile(backups[0]).namelist()), [".env", "data/uploads/cv.pdf"])
+        # The key file goes with the database; the first-run token is only for the copy that made it.
+        self.assertEqual(sorted(zipfile.ZipFile(backups[0]).namelist()),
+                         [".env", "data/server-keys.json", "data/uploads/cv.pdf"])
+        if os.name == "posix":  # it holds the server keys and the API keys: owner-only (accounts design §15)
+            self.assertEqual(stat.S_IMODE(backups[0].stat().st_mode), 0o600)
 
     def test_refuses_while_running(self):
         app = self._app()
@@ -179,3 +192,39 @@ class UninstallerTest(unittest.TestCase):
                 mock.patch.object(uninstaller, "say"), mock.patch.object(uninstaller, "running_ports", return_value=[8000]):
             self.assertEqual(uninstaller.main(), 1)
         self.assertTrue(app.exists())
+
+
+import launch  # noqa: E402
+
+
+class LaunchTest(unittest.TestCase):
+    """installer/launch.py opens the first-run page while no account exists."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        patch = mock.patch.dict(os.environ, {"JOBHUNT_DB_PATH": str(self.dir / "jobhunt.db")})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_first_run_page_while_the_token_file_exists(self):
+        self.assertEqual(launch.first_run_file(), self.dir / "first-run.txt")
+        self.assertIsNone(launch.first_run_url("http://127.0.0.1:8000"))
+        token = "A" * 20 + "b-_" * 6
+        (self.dir / "first-run.txt").write_text(token + "\n")
+        url = launch.first_run_url("http://127.0.0.1:8000")
+        self.assertEqual(url, f"http://127.0.0.1:8000/first-run.html#token={token}")  # in the fragment: no server log
+        with mock.patch.object(launch.webbrowser, "open") as opened, mock.patch.object(launch, "print") as printed:
+            launch.open_app("http://127.0.0.1:8000", no_browser=False)
+            opened.assert_called_once_with(url)
+            self.assertIn(url, " ".join(str(c.args[0]) for c in printed.call_args_list))
+            opened.reset_mock()
+            launch.open_app("http://127.0.0.1:8000", no_browser=True)
+            opened.assert_not_called()
+        (self.dir / "first-run.txt").write_text("not a token\n")
+        self.assertIsNone(launch.first_run_url("http://127.0.0.1:8000"))
+        with mock.patch.dict(os.environ, {"JOBHUNT_DB_PATH": ""}):
+            self.assertEqual(launch.first_run_file(), launch.ROOT / "data" / "first-run.txt")
+
+    def test_the_server_trusts_proxy_headers_from_this_computer_only(self):
+        source = Path(launch.__file__).read_text(encoding="utf-8")
+        self.assertIn('"--proxy-headers", "--forwarded-allow-ips", "127.0.0.1"', source)

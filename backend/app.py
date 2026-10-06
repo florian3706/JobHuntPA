@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,8 +18,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import schedule, tasks
+from backend import schedule, tasks, users
 from backend.app_settings import router as app_settings_router
+from backend.auth import AuthProblem
+from backend.auth import router as auth_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
@@ -33,6 +35,7 @@ from backend.offices import looks_like_recruiter, office_unknown
 from backend.offices import router as offices_router
 from backend.title_suggestions import router as titles_router
 from backend.profile import router as profile_router
+from backend.sessions import AuthMiddleware, AuthUser, current_user, require_admin
 from backend.sources import router as sources_router
 from backend.workspaces import current_workspace, owned
 from backend.workspaces import router as workspaces_router
@@ -86,6 +89,9 @@ Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejecte
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # The server key file, then the first admin from the environment or the first-run token (backend.users).
+    # A missing or wrong key file stops start-up here, with what to do.
+    users.startup()
     tasks.mark_interrupted()
     schedule.start_scheduler(lambda ws: start_search_run(ws, scheduled=True))
     yield
@@ -95,7 +101,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="JobHuntPA", lifespan=lifespan)
 # The job list is several MB of JSON; compressed it is about a seventh of that (slow links, the Pi).
 app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=5)
+# Sign-in, CSRF, same-site checks and the request's key scope (backend/sessions.py); inside NoStoreApi, so its
+# refusals aren't cached either.
+app.add_middleware(AuthMiddleware)
 app.add_middleware(NoStoreApi)
+app.include_router(auth_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)
 app.include_router(profile_router)
@@ -110,6 +120,11 @@ app.include_router(offices_router)
 app.include_router(commute_router)
 app.include_router(commute_status_router)
 app.include_router(schedule.router)
+
+
+@app.exception_handler(AuthProblem)
+def auth_problem(_request: Request, exc: AuthProblem):
+    return exc.response()
 
 
 @app.get("/api/health")
@@ -389,24 +404,35 @@ def get_run(run_id: int, db: Session = Depends(get_db), ws: int = Depends(curren
 # ---------------------------------------------------------------------------
 
 @app.post("/api/score/test")
-def test_scorer():
+def test_scorer(_admin: AuthUser = Depends(require_admin)):
     from backend.scorer import test_connection
 
     return test_connection()
 
 
+# What /api/score/status tells someone who isn't an admin about the LLM: whether AI features work and what they
+# can do, never the provider, address, model or reasoning level (accounts design §14.8).
+NOT_SET_UP = "AI features aren't set up yet. Ask your admin."
+
+
+def llm_status_for_user(llm: dict) -> dict:
+    return {"configured": llm["configured"], "problem": None if llm["configured"] else NOT_SET_UP,
+            "capabilities": {"web_search": bool(llm["capabilities"].get("web_search"))}}
+
+
 @app.get("/api/score/status")
 def scorer_status(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
-                  ws: int = Depends(current_workspace)):
+                  ws: int = Depends(current_workspace), user: AuthUser = Depends(current_user)):
     from backend.scorer import build_profile, public_config, select_jobs
 
+    llm = public_config() if user.is_admin else llm_status_for_user(public_config())
     text, phash = build_profile(db, ws)
     pending = len(select_jobs(db, "pending", phash, ws))
     softened_pending = len(select_jobs(db, "pending", phash, ws, office_slack)) - pending if office_slack else 0
     # Counted in Python: a fit's status is sealed (accounts design §14.6).
     statuses = [s for (s,) in db.query(FitResult.status).join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws)]
     return {
-        **public_config(),
+        **llm,
         "profile_chars": len(text),
         "pending": pending,
         "softened_pending": softened_pending,

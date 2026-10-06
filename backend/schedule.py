@@ -175,7 +175,8 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
         return None  # due slots wait (up to GRACE) for the worker
     db = SessionLocal()
     try:
-        for (ws,) in db.query(Workspace.id).order_by(Workspace.id).all():
+        # A workspace with no owner (an install from before accounts, until its first admin is created) waits.
+        for (ws,) in db.query(Workspace.id).filter(Workspace.owner_id.isnot(None)).order_by(Workspace.id).all():
             row = db.get(SearchSchedule, ws)
             slot = due_slot(get_schedule(db, ws), now, _utc(row.last_slot) if row else None)
             if slot is None:

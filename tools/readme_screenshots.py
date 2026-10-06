@@ -8,8 +8,10 @@ What it does:
    jobs; nothing from your real data/jobhunt.db).
 2. Starts the app on a free local port against that database, with fake LLM settings, no commute
    API keys, a throwaway .env path (JOBHUNT_ENV_PATH, so the real .env is neither read nor written,
-   even by the Settings tab) and the scheduler off, so nothing can reach an LLM or scrape a site.
-3. Opens it in headless Chromium (Playwright) and saves the screenshots.
+   even by the Settings tab), a throwaway server key file (JOBHUNT_KEY_FILE) and the scheduler off,
+   so nothing can reach an LLM or scrape a site. A demo admin account is created from the environment
+   (JOBHUNT_ADMIN_EMAIL / JOBHUNT_ADMIN_PASSWORD) and claims the demo workspace.
+3. Opens it in headless Chromium (Playwright), signed in as that admin, and saves the screenshots.
 4. Stops the server and deletes the temporary database.
 
 Needs the app's requirements plus Playwright's Chromium (setup installs both) and Pillow
@@ -54,6 +56,8 @@ SIZE_LIMIT = 400_000                      # bytes; bigger PNGs are reduced to a 
 # Kept out of the repo: set JOBHUNT_SCREENSHOT_FORBIDDEN="suburb|street" when you run this.
 FORBIDDEN = os.getenv("JOBHUNT_SCREENSHOT_FORBIDDEN", "").strip()
 ALLOWED_HOSTS = ("unpkg.com", "tile.openstreetmap.org", "fonts.googleapis.com", "fonts.gstatic.com")
+# The demo server's admin, made from the environment at its start (backend/users.py).
+DEMO_EMAIL, DEMO_PASSWORD = "demo@example.invalid", "demo-password-not-real"
 
 # theme id -> shown in themes.png, in this order
 MONTAGE_THEMES = ["light", "catppuccin-mocha", "catppuccin-latte", "dyslexia", "deuteranomaly-dark", "monochromacy"]
@@ -79,7 +83,8 @@ def server_env(db: Path, env_file: Path) -> dict:
     env = dict(os.environ)
     env.update({
         "JOBHUNT_DB_PATH": str(db), "DATABASE_URL": f"sqlite:///{db}", "JOBHUNT_SCHEDULER": "off",
-        "JOBHUNT_ENV_PATH": str(env_file),
+        "JOBHUNT_ENV_PATH": str(env_file), "JOBHUNT_KEY_FILE": str(db.parent / "server-keys.json"),
+        "JOBHUNT_ADMIN_EMAIL": DEMO_EMAIL, "JOBHUNT_ADMIN_PASSWORD": DEMO_PASSWORD, "JOBHUNT_KDF_PROFILE": "low",
         "LLM_API_KEY": "demo-key-not-real-1234", "LLM_BASE_URL": "https://llm.example.com/v1", "LLM_MODEL": "example-model",
         "LLM_REASONING_EFFORT": "", "LLM_TIMEOUT_S": "30", "LLM_CONCURRENCY": "1",
         "TFNSW_API_KEY": "", "TOMTOM_API_KEY": "",
@@ -170,6 +175,10 @@ class Shooter:
             "try { localStorage.setItem('jobhunt.theme', %s); localStorage.setItem('jobhunt.ws', %s);"
             " localStorage.setItem('jobhunt.mapMode', 'jobs'); } catch (e) {}" % (json.dumps(theme), json.dumps(str(self.ws_id))))
         ctx.on("request", lambda r: self.hosts.add(urlsplit(r.url).netloc))
+        # Signed in as the demo admin: the session cookie lands in this browser profile.
+        r = ctx.request.post(f"{self.base}/api/auth/login", data={"email": DEMO_EMAIL, "password": DEMO_PASSWORD})
+        if not r.ok:
+            sys.exit(f"Signing in to the demo server failed: {r.status} {r.text()[:200]}")
         return ctx
 
     def page(self, ctx):
@@ -451,15 +460,22 @@ def main() -> None:
     try:
         print(f"Building the demo database in {work} ...")
         subprocess.run([sys.executable, str(TOOLS / "demo_data.py"), str(db)], check=True, cwd=ROOT)
-        before = counts(db)
         port = free_port()
         proc = start_server(db, env_file, port, work / "server.log")
+        before = counts(db)  # after start-up, which creates the demo admin (app_settings gets its keys)
         base = f"http://127.0.0.1:{port}"
-        workspaces = json.load(urllib.request.urlopen(f"{base}/api/workspaces"))
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())  # keeps the session cookie
+        signed_in = json.load(opener.open(urllib.request.Request(
+            f"{base}/api/auth/login", method="POST", headers={"Content-Type": "application/json"},
+            data=json.dumps({"email": DEMO_EMAIL, "password": DEMO_PASSWORD}).encode())))
+        # The demo admin's recovery codes count as saved, so the pages show no reminder about them.
+        opener.open(urllib.request.Request(f"{base}/api/auth/recovery-codes/ack", method="POST", data=b"{}",
+                                           headers={"Content-Type": "application/json", "X-CSRF-Token": signed_in["csrf"]}))
+        workspaces = json.load(opener.open(f"{base}/api/workspaces"))
         ws = next((w for w in workspaces if w["name"] == "Dummy workspace"), None)
         if ws is None or len(workspaces) != 1:
             sys.exit(f"Expected only a 'Dummy workspace', got {[w['name'] for w in workspaces]}")
-        keys = json.load(urllib.request.urlopen(f"{base}/api/settings/keys"))
+        keys = json.load(opener.open(f"{base}/api/settings/keys"))
         if any(k["set"] for k in keys.values()):
             sys.exit("The demo server has commute API keys set: something from the real environment got in.")
         print(f"Server on {base}, workspace {ws['id']} ({ws['jobs']} jobs, no commute keys). Taking screenshots ...")

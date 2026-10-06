@@ -39,6 +39,16 @@
         <div class="header-tools">
           <span id="scorer-status" class="api-status is-unknown"><span aria-hidden="true">● </span>scorer: checking…</span>
           <a class="help-link" href="https://github.com/florian3706/JobHuntPA#using-it" target="_blank" rel="noopener">Help<span class="visually-hidden"> (opens in a new tab)</span></a>
+          <div id="account-menu" class="account-menu">
+            <button id="account-btn" class="btn btn-ghost btn-sm" type="button" aria-expanded="false" aria-controls="account-panel">Account<span aria-hidden="true"> ▾</span></button>
+            <div id="account-panel" class="account-panel" hidden>
+              <p class="account-who">Signed in as <strong id="account-email"></strong> <span id="account-role" class="scope-tag" hidden></span></p>
+              <ul class="account-links">
+                <li id="account-admin" hidden><a href="admin.html">Admin</a></li>
+                <li><button id="account-signout" class="btn btn-sm" type="button">Sign out</button></li>
+              </ul>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -434,9 +444,11 @@
       </div>
 
       <div class="card form-card">
-        <h3>LLM (scoring, cover letters, company research and job chat) <span class="scope-tag">All workspaces</span></h3>
+        <h3>LLM (scoring, cover letters, company research and job chat) <span class="scope-tag" data-admin-only hidden>All workspaces</span></h3>
         <div id="scorer-info" class="muted"></div>
-        <form id="llm-form" class="llm-form" autocomplete="off" novalidate>
+        <p class="hint" data-user-only hidden>The AI provider and model are chosen by the admin of this JobHuntPA, for everyone who uses it.
+          The buttons below rescore this workspace's jobs.</p>
+        <form id="llm-form" class="llm-form" autocomplete="off" novalidate data-admin-only hidden>
           <h4>Provider, model and API key</h4>
           <div class="form-grid">
             <label class="field"><span class="field-label">Provider</span><select id="llm-provider"></select></label>
@@ -461,7 +473,7 @@
             <span id="llm-save-status" class="muted" role="status"></span>
           </div>
         </form>
-        <div class="reasoning-settings">
+        <div class="reasoning-settings" data-admin-only hidden>
           <h4>Reasoning level</h4>
           <p class="hint">Higher levels think longer: usually better results, but slower and more expensive.
             The choices are the levels your model accepts; use <strong>Detect</strong> after changing model.</p>
@@ -477,14 +489,14 @@
           </div>
         </div>
         <div class="toolbar-row llm-actions">
-          <button id="score-test" class="btn" type="button">Test connection</button>
+          <button id="score-test" class="btn" type="button" data-admin-only hidden>Test connection</button>
           <button id="score-stale" class="btn" type="button" title="Also rescore this workspace's jobs that were scored before your documents changed">Rescore stale</button>
           <button id="score-all" class="btn btn-ghost" type="button" title="Rescore every job in this workspace">Rescore all</button>
           <span id="score-test-status" class="muted" role="status"></span>
         </div>
       </div>
 
-      <div id="commute-keys-card" class="card form-card">
+      <div id="commute-keys-card" class="card form-card" data-admin-only hidden>
         <h3>API keys for commute times <span class="scope-tag">All workspaces</span></h3>
         <p class="hint">Both keys are optional and free. They are saved in the <code>.env</code> file on this computer and work straight away,
           with no restart. A saved key is never shown again in full, only its last few characters. Where the commute starts and when it

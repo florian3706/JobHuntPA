@@ -17,10 +17,12 @@ from sqlalchemy import (
     JSON,
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -43,6 +45,9 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False, "timeout": 30},
+    # A failed statement's error message never carries its bound values: they can be personal data, and those
+    # messages end up in logs (accounts design §15). Never set echo=True for the same reason.
+    hide_parameters=True,
 )
 
 
@@ -68,13 +73,18 @@ def utcnow() -> datetime:
 # ---------------------------------------------------------------------------
 
 class Workspace(Base):
-    """A separate job search: its own settings, sources, documents, pins and jobs."""
+    """A separate job search: its own settings, sources, documents, pins and jobs. Each belongs to one account
+    (``owner_id``); a workspace from before accounts has none until the first admin claims it (backend.users)."""
 
     __tablename__ = "workspaces"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     created_at = Column(DateTime, default=utcnow)
+    # Who it belongs to: backend.workspaces.current_workspace answers 404 for anyone else's. Deleting an account
+    # deletes its workspaces. (Databases from before accounts get this column without the foreign key, which
+    # SQLite can't add later: delete an account's workspaces explicitly, don't rely on the cascade.)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
 
 
 def _workspace_fk():
@@ -675,6 +685,175 @@ class GeocodeCache(Base):
 
 
 # ---------------------------------------------------------------------------
+# Accounts (docs/design/accounts.md, section 4). backend/users.py creates them, backend/sessions.py signs in.
+# Every *_enc / *_admin / *_self / wrapped column holds a blob made by backend/crypto.py; what opens it is noted
+# beside it. Nothing here is a sealed column type: these are opened explicitly, with labels that name the row.
+# ---------------------------------------------------------------------------
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    # HMAC-SHA256(pepper, normalised email) (backend.keys): finds the account without decrypting anything.
+    email_hash = Column(LargeBinary, nullable=False, unique=True)
+    role = Column(String, nullable=False, default="user", server_default="user")          # user | admin
+    status = Column(String, nullable=False, default="active", server_default="active")    # active | disabled
+    created_at = Column(DateTime, default=utcnow)
+    created_via = Column(String, nullable=False)    # first_run | bootstrap | invite | open
+    last_active_on = Column(Date, nullable=True)    # by day only, on purpose (design 2.5)
+    email_verified = Column(Boolean, nullable=False, default=False, server_default="0")
+    onboarding_step = Column(Integer, nullable=True)  # NULL: done (the sign-up wizard, Phase K)
+    # Password: argon2id(salt, params) -> verifier (and the KEK that wraps the DEK, never stored).
+    kdf_salt = Column(LargeBinary, nullable=False)
+    kdf_params = Column(Text, nullable=False)       # crypto.KdfParams.to_json()
+    pw_verifier = Column(LargeBinary, nullable=False)
+    # Two-step sign-in (Phase E). Secrets under the server KEK, so a reset by email can still ask for a code.
+    mfa_enabled = Column(Boolean, nullable=False, default=False, server_default="0")
+    totp_secret_enc = Column(LargeBinary, nullable=True)
+    totp_pending_enc = Column(LargeBinary, nullable=True)
+    totp_last_step = Column(Integer, nullable=True)
+    # Lockout: after 5 failures in a row, wait 30 s, doubling up to 15 minutes (backend.ratelimit).
+    failed_logins = Column(Integer, nullable=False, default=0, server_default="0")
+    locked_until = Column(DateTime, nullable=True)
+    # {email, name}: sealed to the admin details key (pii_admin), and under the user's own DEK (pii_self).
+    pii_admin = Column(LargeBinary, nullable=True)
+    pii_admin_version = Column(Integer, nullable=True)
+    pii_self = Column(LargeBinary, nullable=True)
+    prefs_enc = Column(LargeBinary, nullable=True)  # DEK: {theme} (Phase E)
+
+
+class UserKeys(Base):
+    """One row per user: the data key (DEK) under each thing that can open it, and the user's X25519 key pair."""
+
+    __tablename__ = "user_keys"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    dek_kid = Column(LargeBinary, nullable=False)          # crypto.key_id(DEK)
+    pw_wrapped_dek = Column(LargeBinary, nullable=False)   # wrap(KEK_pw, DEK, "pw|{uid}")
+    # Background access (Phase G): the DEK under the server KEK, "srv|{uid}|{kek_id}".
+    server_wrapped_dek = Column(LargeBinary, nullable=True)
+    server_kek_id = Column(String, nullable=True)
+    background_since = Column(DateTime, nullable=True)
+    x25519_pub = Column(LargeBinary, nullable=False)
+    x25519_priv_enc = Column(LargeBinary, nullable=False)  # seal(DEK, "user_keys.x25519_priv|{uid}")
+    recovery_salt = Column(LargeBinary, nullable=False)
+    pending_codes_enc = Column(LargeBinary, nullable=True)  # DEK: recovery codes not yet confirmed as saved
+
+
+class RecoveryCode(Base):
+    __tablename__ = "recovery_codes"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    wrapped_dek = Column(LargeBinary, nullable=True)       # wrap(HKDF(code, recovery_salt), DEK, "rc|{uid}|{id}")
+    created_at = Column(DateTime, default=utcnow)
+    used_at = Column(DateTime, nullable=True)
+
+
+class AuthSession(Base):
+    """A signed-in browser. The cookie holds a random secret; ``id`` is its SHA-256 and ``wrapped_dek`` the DEK
+    under a key derived from it, so the database alone can't unwrap anything (backend.sessions)."""
+
+    __tablename__ = "sessions"
+
+    id = Column(String, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    state = Column(String, nullable=False, default="active", server_default="active")  # pending_mfa | active
+    wrapped_dek = Column(LargeBinary, nullable=False)
+    persistent = Column(Boolean, nullable=False, default=False, server_default="0")  # "Keep me signed in"
+    created_at = Column(DateTime, default=utcnow)
+    last_seen_at = Column(DateTime, default=utcnow)
+    idle_expires_at = Column(DateTime, nullable=False)
+    absolute_expires_at = Column(DateTime, nullable=False)
+    reauth_at = Column(DateTime, nullable=True)     # the password was last entered (sensitive actions need 15 min)
+
+
+class AuthToken(Base):
+    """Single-use links: password reset, invite, email verification and change (Phases F and H)."""
+
+    __tablename__ = "auth_tokens"
+
+    id = Column(Integer, primary_key=True)
+    kind = Column(String, nullable=False)           # reset | invite | verify_email | email_change
+    token_hash = Column(LargeBinary, nullable=False, unique=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    payload_enc = Column(LargeBinary, nullable=True)  # sealed with a key derived from the token itself
+
+
+class AdminKeyGrant(Base):
+    """The admin details key's private half, sealed to one admin's X25519 public key (design 1.4)."""
+
+    __tablename__ = "admin_key_grants"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    apk_version = Column(Integer, nullable=False)
+    sealed_priv = Column(LargeBinary, nullable=False)  # seal_to(admin's x25519_pub, APK private, "grant|{uid}|{ver}")
+    granted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    granted_at = Column(DateTime, default=utcnow)
+
+
+class AdminAudit(Base):
+    __tablename__ = "admin_audit"
+
+    id = Column(Integer, primary_key=True)
+    at = Column(DateTime, default=utcnow, index=True)
+    admin_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    action = Column(String, nullable=False)
+    target_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    detail_admin = Column(LargeBinary, nullable=True)  # sealed to the admin details key
+
+
+class Membership(Base):
+    """Paid access (Phase I, backend.access and backend.billing). Gating fields are plaintext on purpose."""
+
+    __tablename__ = "memberships"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    exempt = Column(Boolean, nullable=False, default=False, server_default="0")
+    free_searches_used = Column(Integer, nullable=False, default=0, server_default="0")
+    stripe_ref = Column(String, nullable=False, unique=True)  # random, opaque: client_reference_id, metadata.jh_ref
+    stripe_status = Column(String, nullable=True)
+    plan = Column(String, nullable=True)
+    current_period_end = Column(DateTime, nullable=True)
+    cancel_at_period_end = Column(Boolean, nullable=False, default=False, server_default="0")
+    stripe_synced_at = Column(DateTime, nullable=True)
+    billing_admin = Column(LargeBinary, nullable=True)  # admin details key
+    billing_self = Column(LargeBinary, nullable=True)   # the user's DEK
+
+
+class MembershipGrant(Base):
+    __tablename__ = "membership_grants"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String, nullable=False)           # free_period | manual
+    starts_at = Column(DateTime, nullable=False)
+    ends_at = Column(DateTime, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    revoked_at = Column(DateTime, nullable=True)
+    note_admin = Column(LargeBinary, nullable=True)  # admin details key
+
+
+class EmailPrefs(Base):
+    """Job digest settings (Phase J). Plaintext: the unsubscribe link must work without anyone's key."""
+
+    __tablename__ = "email_prefs"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    digest_enabled = Column(Boolean, nullable=False, default=False, server_default="0")
+    digest_every_days = Column(Integer, nullable=False, default=1, server_default="1")
+    opted_in_at = Column(DateTime, nullable=True)
+    last_sent_at = Column(DateTime, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    unsubscribe_id = Column(String, nullable=False, unique=True)
+
+
+# ---------------------------------------------------------------------------
 # Session + schema management
 # ---------------------------------------------------------------------------
 
@@ -798,6 +977,7 @@ def _ensure_indexes() -> None:
     """Indexes on columns added to existing tables (create_all only indexes new tables)."""
     with engine.begin() as conn:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_posting_id ON jobs (posting_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_workspaces_owner_id ON workspaces (owner_id)"))
 
 
 def init_db() -> None:
@@ -806,10 +986,17 @@ def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     _rebuild_legacy_fit_results()
+    Base.metadata.tables["users"].create(bind=engine, checkfirst=True)
     Base.metadata.tables["workspaces"].create(bind=engine, checkfirst=True)
+    if "owner_id" not in {c["name"] for c in inspect(engine).get_columns("workspaces")}:
+        with engine.begin() as conn:  # a database from before accounts (only this column: see _rebuild_for_workspaces)
+            conn.execute(text("ALTER TABLE workspaces ADD COLUMN owner_id INTEGER"))
+        log.info("migrated: added workspaces.owner_id")
     with engine.begin() as conn:
+        # The first workspace, only on a fresh database: the first admin claims it (backend.users). Once there
+        # are accounts, every workspace is made by and for one of them.
         conn.execute(text("INSERT OR IGNORE INTO workspaces (id, name, created_at) "
-                          "VALUES (1, 'My job search', CURRENT_TIMESTAMP)"))
+                          "SELECT 1, 'My job search', CURRENT_TIMESTAMP WHERE NOT EXISTS (SELECT 1 FROM users)"))
     _rebuild_for_workspaces("company_sources")
     _rebuild_for_workspaces("jobs")
     Base.metadata.create_all(bind=engine)

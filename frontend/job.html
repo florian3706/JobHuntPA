@@ -31,6 +31,16 @@
       </a>
       <div class="header-tools">
         <a class="help-link" href="https://github.com/florian3706/JobHuntPA#using-it" target="_blank" rel="noopener">Help<span class="visually-hidden"> (opens in a new tab)</span></a>
+        <div id="account-menu" class="account-menu">
+          <button id="account-btn" class="btn btn-ghost btn-sm" type="button" aria-expanded="false" aria-controls="account-panel">Account<span aria-hidden="true"> ▾</span></button>
+          <div id="account-panel" class="account-panel" hidden>
+            <p class="account-who">Signed in as <strong id="account-email"></strong> <span id="account-role" class="scope-tag" hidden></span></p>
+            <ul class="account-links">
+              <li id="account-admin" hidden><a href="admin.html">Admin</a></li>
+              <li><button id="account-signout" class="btn btn-sm" type="button">Sign out</button></li>
+            </ul>
+          </div>
+        </div>
       </div>
     </div>
   </header>

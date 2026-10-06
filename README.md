@@ -91,6 +91,8 @@ app makes to your chosen AI provider.
 4. When it finishes, start JobHuntPA from the **JobHuntPA** shortcut on your Desktop or in the Start
    menu. A window opens with the app's messages and your browser opens the dashboard. Keep that
    window open while you use JobHuntPA; close it to stop the app.
+5. The first time, the browser asks you to [create your account](#your-account). It is the admin
+   account, and anything already in JobHuntPA moves into it.
 
 ## Install on macOS
 
@@ -102,6 +104,7 @@ app makes to your chosen AI provider.
    with Homebrew or opens the python.org download page; install it and run `Setup.command` again.
 4. Start JobHuntPA by double-clicking **`Start JobHuntPA.command`**. Keep the Terminal window
    open while you use it; close it to stop the app.
+5. The first time, the browser asks you to [create your account](#your-account).
 
 If double-clicking doesn't work: open Terminal, type `cd ` (with a space), drag the folder into
 the window, press Enter, then run `./setup.sh` once and `./start.sh` to start.
@@ -113,10 +116,40 @@ the window, press Enter, then run `./setup.sh` once and `./start.sh` to start.
 2. Open a terminal in the folder and run `./setup.sh`. If Python 3.10+ or its `venv` module is
    missing, setup shows the command to install it and offers to run it.
 3. Start JobHuntPA from your applications menu (setup adds it) or with `./start.sh`.
+4. The first time, the browser asks you to [create your account](#your-account).
+
+## Your account
+
+JobHuntPA has accounts, so one copy can serve several people, each with their own workspaces.
+
+- **The first start** opens a page that creates the first account: your email address, an optional
+  name and a password of at least 10 characters (a few random words work well; your password manager
+  can fill it in). That account is the **admin**. Everything already in JobHuntPA (workspaces, jobs,
+  documents, searches and settings) moves into it. The page's address carries a one-time setup
+  code; if the browser didn't open, the address is printed in the JobHuntPA window, and the code is
+  in `data/first-run.txt`. Once the account exists the code stops working and the file is deleted.
+- **Recovery codes:** the first-run page then shows 8 recovery codes. Copy, download or print them
+  and keep them somewhere safe: if you forget your password, they are how you get back in and keep
+  your data. A reminder stays at the top of the dashboard until you confirm you've saved them.
+- **Signing in:** after that, JobHuntPA opens the sign-in page whenever you aren't signed in. Tick
+  *Keep me signed in* on your own device to stay signed in for up to 30 days of not using it
+  (otherwise 24 hours). **Account > Sign out** at the top right signs this browser out. After 5
+  wrong passwords in a row, the next try has to wait 30 seconds, then longer each time, up to 15 minutes.
+- **What only the admin sees:** the AI provider, model, API key and reasoning levels, and the
+  commute API keys, are set by the admin for everyone (Settings tab). Other accounts see whether AI
+  scoring and commute times are available, and everything of their own: workspaces, search setup,
+  documents, schedule and theme. Each workspace belongs to one account; nobody else can open it.
+- **Headless servers and CI:** instead of the first-run page, start JobHuntPA with
+  `JOBHUNT_ADMIN_EMAIL` and `JOBHUNT_ADMIN_PASSWORD` in its environment (exported, or in the
+  service definition; never in `.env`, which is ignored for these two) and that admin is created
+  at start-up. Its recovery codes are shown after its first sign-in.
+
+Your data isn't encrypted yet in this version; a coming version encrypts it with a key only your
+password or a recovery code can open, which is why the codes matter.
 
 ## Using it
 
-The dashboard opens at http://127.0.0.1:8000. Start in **Search setup** (job titles, keywords,
+The dashboard opens at http://127.0.0.1:8000 (sign in first). Start in **Search setup** (job titles, keywords,
 salary, work modes and [company careers pages](#adding-company-careers-pages)), upload your CV under **Documents**, drop pins for
 where you can commute on the **Map**, then click **Run search** on the Jobs tab. Separate searches
 can live in their own **workspaces** (switcher at the top right).
@@ -295,6 +328,12 @@ Each source brings in at most 60 new full ads per search; the rest follow on the
 
 Your settings, documents, jobs and API key are kept.
 
+The first start after updating to the version with accounts opens the page that creates your
+account (see [Your account](#your-account)): it becomes the admin, and all your existing
+workspaces, jobs, documents and settings move into it. Until then JobHuntPA shows nothing else and
+scheduled searches wait. It also creates `data/server-keys.json`, the server's key file: it belongs
+with your database, so back them up together.
+
 The first start after updating to the version with the shared job pool moves your jobs into it.
 This happens once and takes a few seconds; a backup is saved first as
 `data/jobhunt.db.bak-before-job-pool`. Copies of the same ad in different workspaces become one
@@ -304,7 +343,7 @@ show as closed.
 
 ## Changing your AI provider or key
 
-Open **Settings > LLM**: pick the provider (it fills in the API address and suggests models),
+Only the admin account can see or change these; they apply to everyone. Open **Settings > LLM**: pick the provider (it fills in the API address and suggests models),
 choose the model, paste your key and click **Save**. It takes effect straight away; click
 **Detect supported levels** afterwards, as each model offers different reasoning levels, and
 **Test connection** to check the key. The key is saved in the `.env` file in the app folder and
@@ -316,8 +355,8 @@ edit `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` in `.env` and restart the app
 
 ## Commute times (optional)
 
-The commute on each job's page uses two free services. Add their keys under **Settings > API keys
-for commute times** (they work straight away; **Test saved keys** checks them), or when setup
+The commute on each job's page uses two free services. The admin adds their keys under **Settings > API keys
+for commute times** (they work straight away for everyone; **Test saved keys** checks them), or when setup
 asks, or in `.env` followed by a restart:
 
 - `TFNSW_API_KEY`: public transport in NSW. Sign up at https://opendata.transport.nsw.gov.au,
@@ -336,18 +375,28 @@ Close JobHuntPA first, then:
   the first time).
 - **Linux:** run `./uninstall.sh` in the app folder.
 
-The uninstaller first offers to save a **backup** (your jobs, documents, workspaces, settings and
-API key) as `JobHuntPA-backup-<date>.zip` in your Documents folder. It then removes the shortcuts
-and the app folder. It asks before removing the shared browser component, and leaves Python
-installed because other programs may use it. To restore a backup, install JobHuntPA again and
-unzip the backup into the new app folder.
+The uninstaller first offers to save a **backup** (your jobs, documents, workspaces, accounts,
+settings, API keys and the server's key file `data/server-keys.json`) as
+`JobHuntPA-backup-<date>.zip` in your Documents folder, readable only by you. Keep it private. It
+then removes the shortcuts and the app folder. It asks before removing the shared browser
+component, and leaves Python installed because other programs may use it. To restore a backup,
+install JobHuntPA again and unzip the backup into the new app folder: the database and
+`data/server-keys.json` must stay together, and you still sign in with your password.
 
 ## Troubleshooting
 
 - **The browser shows nothing:** check the JobHuntPA window for error messages. If it says
   another copy is running, use that one, or restart your computer.
 - **"LLM not configured" in the app:** your API settings are missing; see *Changing your AI
-  provider or key*.
+  provider or key*. Accounts other than the admin see "AI not set up": the admin sets it.
+- **The first-run page says the setup code isn't right:** close JobHuntPA and start it again; it
+  prints a fresh link, and the code is in `data/first-run.txt`. The code only works until the first
+  account exists; after that, sign in instead.
+- **Forgotten password:** ask the admin. Keep your recovery codes: a coming version uses them to set
+  a new password and keep your data.
+- **JobHuntPA stops at start-up with "Restore data/server-keys.json from your backup":** the key file
+  is missing or isn't the one that belongs to this database. Put back the `data/server-keys.json`
+  from the same backup as the database. A new key file is never made while accounts exist.
 - **Some company sites return no jobs:** they may block automated access or need the browser
   component; setup's step 3 installs it. On Linux you can fix a failed browser install with
   `.venv/bin/python -m playwright install --with-deps chromium`.
@@ -414,6 +463,17 @@ Windows on every push to catch breakage.
 Manual run: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, copy
 `.env.example` to `.env`, then `.venv/bin/python installer/launch.py`. Tests:
 `python3 -m unittest discover -s tests -t .`
+
+**Accounts in development and CI:** `JOBHUNT_ADMIN_EMAIL` and `JOBHUNT_ADMIN_PASSWORD` in the process
+environment (not `.env`) create the first admin at start-up, which is how CI signs in
+(`/api/auth/login`, then the session cookie). Every `/api` route needs a session except
+`/api/health` and the sign-in endpoints; POST, PUT, PATCH and DELETE also need the page's
+`X-CSRF-Token` (from `/api/auth/me`) and must not come from another site. The tests run on a throwaway
+database, `.env` and key file, with `JOBHUNT_TESTING=1` and the fast `JOBHUNT_KDF_PROFILE=test`
+(tests/__init__.py); `tests/helpers.py` gives signed-in clients (`with helpers.client() as c:`),
+other accounts (`helpers.make_user()`) and the admin's key scope (`helpers.as_admin()`). Code and the
+design notes: `backend/users.py` (accounts, first run), `backend/sessions.py` (sessions, CSRF, the
+checks on every request), `backend/auth.py` (the endpoints), `docs/design/accounts.md`.
 
 **README screenshots:** `python3 tools/readme_screenshots.py` (needs `pip install pillow`) builds a
 throwaway database of made-up data with `tools/demo_data.py`, runs the app on it with fake AI

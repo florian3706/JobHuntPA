@@ -15,14 +15,13 @@ os.environ.setdefault("JOBHUNT_DB_PATH", os.path.join(_TMP, "test.db"))  # never
 os.environ.setdefault("JOBHUNT_SCHEDULER", "off")
 os.environ.setdefault("JOBHUNT_ENV_PATH", os.path.join(_TMP, "test.env"))
 
-from fastapi.testclient import TestClient  # noqa: E402
+from tests import helpers  # noqa: E402  (signed-in clients; sets the test environment)
 
 import backend.scorer as sc  # noqa: E402
 from backend.adapters.ats import AshbyAdapter, LeverAdapter, SmartRecruitersAdapter, WorkableAdapter, WorkdayAdapter  # noqa: E402
 from backend.adapters.base import Posting  # noqa: E402
 from backend.adapters.generic import parse_detail  # noqa: E402
 from backend.adapters.seek import parse_search_page  # noqa: E402
-from backend.app import app  # noqa: E402
 from backend.db import Job, SessionLocal, init_db  # noqa: E402
 from backend.employment import EMPLOYMENT_TYPES, normalise_employment_type as norm  # noqa: E402
 from backend.pool import merge_posting  # noqa: E402
@@ -209,7 +208,7 @@ class ApiTest(unittest.TestCase):
                     Job(workspace_id=1, url="https://emp.example/api/2", title="Without type", status="to_review",
                         detail_status="full")])
         db.commit(); db.close()
-        with TestClient(app) as c:
+        with helpers.client() as c:
             jobs = {j["title"]: j for j in c.get("/api/jobs").json()}
             self.assertEqual(jobs["With type"]["employment_type"], "casual")
             self.assertIn("employment_type", jobs["Without type"])

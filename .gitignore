@@ -13,3 +13,5 @@ data/jobhunt.db.bak*
 data/running.json
 data/server-keys.json
 data/.server-keys.json-*.tmp
+data/first-run.txt
+data/.first-run.txt-*.tmp

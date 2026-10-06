@@ -24,11 +24,10 @@ os.environ["JOBHUNT_DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["JOBHUNT_SCHEDULER"] = "off"
 os.environ["JOBHUNT_ENV_PATH"] = os.path.join(_TMP, "test.env")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from tests import helpers  # noqa: E402  (signed-in clients; sets the test environment)
 from sqlalchemy import text  # noqa: E402
 
 from backend.adapters.base import Adapter, Posting as Scraped  # noqa: E402
-from backend.app import app  # noqa: E402
 from backend.db import (AppSetting, ChatThread, CompanyProfile, CoverLetter, Document, FitResult, Job, Posting,  # noqa: E402
                         SessionLocal, company_key, engine, init_db)
 from backend.scraping.http import FetchError  # noqa: E402
@@ -91,7 +90,7 @@ def search(ws: int, *adapters: Adapter) -> dict:
 
 class PoolTestCase(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(app)
+        self.client = helpers.client()
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
         # A job title of this test's own: pool matching links every open posting that matches a workspace's
@@ -440,9 +439,11 @@ class MigrationTest(unittest.TestCase):
         return conn.execute(text("SELECT last_insert_rowid()")).scalar()
 
     def setUp(self):
+        owner = helpers.admin_id()
         with engine.begin() as conn:
             for name in ("Legacy A", "Legacy B"):
-                conn.execute(text("INSERT INTO workspaces (name, created_at) VALUES (:n, CURRENT_TIMESTAMP)"), {"n": name})
+                conn.execute(text("INSERT INTO workspaces (name, owner_id, created_at) VALUES (:n, :o, CURRENT_TIMESTAMP)"),
+                             {"n": name, "o": owner})
             self.a, self.b = [i for (i,) in conn.execute(text("SELECT id FROM workspaces ORDER BY id DESC LIMIT 2"))][::-1]
             a, b = self.a, self.b
             conn.execute(text("INSERT INTO company_sources (workspace_id, careers_url, label, enabled) "
@@ -539,7 +540,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(db.query(CoverLetter).filter(CoverLetter.job_id == ua.id).one().text, "Dear Hiring Manager")
         thread = db.query(ChatThread).filter(ChatThread.workspace_id == a).one()
         db.close()
-        with TestClient(app) as c:
+        with helpers.client() as c:
             chat = c.get(f"/api/chats/{thread.id}", headers={"X-Workspace": str(a)}).json()
             self.assertEqual([j["title"] for j in chat["jobs"]], ["Program Manager", "Delivery Lead"])
             listed = {j["id"]: j for j in c.get("/api/jobs?include=excluded,hidden", headers={"X-Workspace": str(b)}).json()}

@@ -104,15 +104,23 @@ def backup(folder: Path) -> Path | None:
     if not dest_dir.is_dir():
         dest_dir = Path.home()
     dest = dest_dir / f"{APP_NAME}-backup-{datetime.now():%Y%m%d-%H%M%S}.zip"
-    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+    # Owner-only from the start (0600): it holds the server key file and the API keys. (On Windows the file
+    # gets the folder's permissions, which are the user's own in Documents.)
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "wb") as raw, zipfile.ZipFile(raw, "w", zipfile.ZIP_DEFLATED) as zf:
         for item in items:
             paths = [item] if item.is_file() else [p for p in item.rglob("*") if p.is_file()]
             for p in paths:
                 if p.name.endswith(("-wal", "-shm")) and p.stat().st_size == 0:
                     continue
+                if p.name in ("first-run.txt", "running.json"):  # only meaningful while this copy runs
+                    continue
                 zf.write(p, p.relative_to(folder))
+    if not IS_WINDOWS:
+        os.chmod(dest, 0o600)
     say(f"  Backup saved: {dest}")
-    say("  (It contains your API key in .env; keep it private. To restore, unzip it into a fresh install.)")
+    say("  It contains your encryption key file and API keys; keep it private. Restore by unzipping into a fresh")
+    say("  install: the database and data/server-keys.json must stay together, and you still need your password.")
     return dest
 
 

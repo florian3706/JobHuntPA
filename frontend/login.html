@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in · JobHuntPA</title>
+  <script>
+    // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
+    (function () {
+      var t = "dark";
+      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <link rel="stylesheet" href="./themes.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="auth-page" data-page="login">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="app-header auth-header">
+    <div class="header-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span class="brand-text"><span class="brand-name">JobHuntPA</span><span class="subtitle">Personal job-hunt dashboard</span></span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="main auth-main" tabindex="-1">
+    <section class="card auth-card" aria-labelledby="page-title">
+      <h1 id="page-title">Sign in</h1>
+      <p id="auth-status" class="muted" role="status"></p>
+      <div id="error-summary" class="error-summary" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
+        <h2 id="error-summary-title">There is a problem</h2>
+        <ul id="error-summary-list"></ul>
+      </div>
+      <form id="login-form" class="auth-form" novalidate>
+        <div class="auth-field">
+          <label for="email">Email address</label>
+          <input id="email" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="none"
+                 spellcheck="false" required />
+        </div>
+        <div class="auth-field">
+          <label for="password">Password</label>
+          <div class="pw-row">
+            <input id="password" name="password" type="password" autocomplete="current-password" spellcheck="false" required />
+            <button class="btn pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show password</button>
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="check"><input id="remember" name="remember" type="checkbox" aria-describedby="remember-hint" /> Keep me signed in</label>
+          <p id="remember-hint" class="hint">On this device, until you sign out or haven't used JobHuntPA for 30 days. Don't tick it on a shared computer.</p>
+        </div>
+        <button id="login-submit" class="btn btn-primary auth-submit" type="submit">Sign in</button>
+      </form>
+    </section>
+
+    <section class="auth-help" aria-labelledby="help-title">
+      <h2 id="help-title">Trouble signing in?</h2>
+      <ul>
+        <li>Use the email address your account was made with. Capitals and spaces around it don't matter; in the password they do.</li>
+        <li>Your password manager can fill in both fields, and pasting works too.</li>
+        <li>After 5 wrong passwords in a row, JobHuntPA asks you to wait a little before the next try.</li>
+        <li>Forgotten your password? Ask the person who runs this JobHuntPA. Keep your recovery codes: they are what lets you set a new password and keep your data.</li>
+      </ul>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
+
+  <script src="./common.js"></script>
+  <script src="./auth.js"></script>
+</body>
+</html>

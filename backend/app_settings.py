@@ -9,6 +9,9 @@ key) and the API keys for commute times.
     PUT  /api/settings/llm         {"base_url"?, "model"?, "api_key"?}: same omitted / "" semantics; see put_llm for the
                                    rule that moving to another server needs the key typed again
 
+Admins only, for reading as well as writing (accounts design §14.8): these settings serve every account, and the
+keys cost the operator money. Everyone else is refused with 403.
+
 A saved value takes effect at once (os.environ is updated; backend.commute.keys() and backend.scorer.get_config()
 read it on every call) and is written to .env (backend.config.ENV_PATH) so it survives a restart. That file holds the
 LLM key, which costs the owner money, and the app can be reachable by other devices, so writing it is locked down:
@@ -34,14 +37,15 @@ from pathlib import Path
 from typing import Callable, Optional, Union
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from backend import commute, config, llm_providers, mailer, scorer
+from backend.sessions import require_admin
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin)])
 
 KEY_VARS = {"tfnsw": "TFNSW_API_KEY", "tomtom": "TOMTOM_API_KEY"}
 LABELS = {"tfnsw": "Transport for NSW", "tomtom": "TomTom"}

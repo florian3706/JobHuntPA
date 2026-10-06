@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Create your account · JobHuntPA</title>
+  <script>
+    // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
+    (function () {
+      var t = "dark";
+      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <link rel="stylesheet" href="./themes.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="auth-page" data-page="first-run">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="app-header auth-header">
+    <div class="header-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span class="brand-text"><span class="brand-name">JobHuntPA</span><span class="subtitle">Personal job-hunt dashboard</span></span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="main auth-main" tabindex="-1">
+    <section class="card auth-card" aria-labelledby="page-title">
+      <h1 id="page-title" tabindex="-1">Create your account</h1>
+      <p id="auth-status" class="muted" role="status">Checking whether JobHuntPA is set up…</p>
+      <div id="error-summary" class="error-summary" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
+        <h2 id="error-summary-title">There is a problem</h2>
+        <ul id="error-summary-list"></ul>
+      </div>
+
+      <div id="setup-step" class="auth-step" hidden>
+        <p>You're the first person to use this JobHuntPA, so this account will be its <strong>admin</strong>.
+          The jobs, documents, searches and settings already in JobHuntPA move into your account.</p>
+        <form id="setup-form" class="auth-form" novalidate>
+          <div id="token-field" class="auth-field" hidden>
+            <label for="token">Setup code</label>
+            <p id="token-hint" class="hint">JobHuntPA printed a setup link when it started. Open that link, or copy the
+              code from the file <code>first-run.txt</code> in JobHuntPA's <code>data</code> folder and paste it here.</p>
+            <input id="token" name="token" type="text" autocomplete="off" autocapitalize="none" spellcheck="false"
+                   aria-describedby="token-hint" />
+          </div>
+          <div class="auth-field">
+            <label for="email">Email address</label>
+            <p id="email-hint" class="hint">You sign in with it. It stays on this server.</p>
+            <input id="email" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="none"
+                   spellcheck="false" aria-describedby="email-hint" required />
+          </div>
+          <div class="auth-field">
+            <label for="name">Your name <span class="muted">(optional)</span></label>
+            <input id="name" name="name" type="text" autocomplete="name" />
+          </div>
+          <div class="auth-field">
+            <label for="password">Password</label>
+            <p id="password-hint" class="hint">At least 10 characters. A few random words work well; a password manager
+              can make and remember one for you.</p>
+            <div class="pw-row">
+              <input id="password" name="password" type="password" autocomplete="new-password" spellcheck="false"
+                     aria-describedby="password-hint" required />
+              <button class="btn pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show password</button>
+            </div>
+          </div>
+          <div class="auth-field">
+            <label class="check"><input id="background" name="background" type="checkbox" checked aria-describedby="background-hint" /> Keep scheduled searches running while I'm signed out</label>
+            <p id="background-hint" class="hint">Recommended, because you run this server. JobHuntPA then keeps a key on
+              this server so it can work with your data while you're away; whoever runs the server could technically
+              read it, and that's you.</p>
+          </div>
+          <div class="auth-field">
+            <label class="check"><input id="remember" name="remember" type="checkbox" aria-describedby="remember-hint" /> Keep me signed in</label>
+            <p id="remember-hint" class="hint">On this device, until you sign out or haven't used JobHuntPA for 30 days.</p>
+          </div>
+          <button id="setup-submit" class="btn btn-primary auth-submit" type="submit">Create account</button>
+        </form>
+      </div>
+
+      <div id="codes-step" class="codes-step" hidden>
+        <h2 id="codes-title" tabindex="-1">Save your recovery codes</h2>
+        <p>If you ever forget your password, a recovery code is how you get back in and keep your data. Each code
+          works once. Keep them somewhere safe, such as your password manager or a printed copy: JobHuntPA shows them
+          only until you confirm you've saved them.</p>
+        <ol id="codes-list" class="codes-list" aria-label="Your recovery codes"></ol>
+        <div class="toolbar-row codes-actions">
+          <button id="codes-copy" class="btn" type="button">Copy all</button>
+          <button id="codes-download" class="btn" type="button">Download .txt</button>
+          <button id="codes-print" class="btn" type="button">Print</button>
+          <span id="codes-status" class="muted" role="status"></span>
+        </div>
+        <div class="auth-field">
+          <label class="check"><input id="codes-saved" type="checkbox" /> I've saved my recovery codes</label>
+        </div>
+        <button id="codes-continue" class="btn btn-primary auth-submit" type="button">Continue to JobHuntPA</button>
+      </div>
+    </section>
+
+    <section class="auth-help" aria-labelledby="help-title">
+      <h2 id="help-title">Trouble signing in?</h2>
+      <ul>
+        <li>The setup link works only until the first account is made, and only on this server. If it doesn't work,
+          restart JobHuntPA: it shows the link again, and the code is in <code>data/first-run.txt</code>.</li>
+        <li>Your password manager can fill in and save both fields, and pasting works too.</li>
+        <li>Already set up? <a href="login.html">Sign in</a> instead.</li>
+      </ul>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
+
+  <script src="./common.js"></script>
+  <script src="./auth.js"></script>
+</body>
+</html>

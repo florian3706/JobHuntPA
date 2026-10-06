@@ -4,8 +4,10 @@ Each workspace has its own search settings, dealbreakers, SEEK settings,
 company sources, documents, map pins, jobs (with their scores) and runs.
 Company profiles, the geocode cache and the HTTP cache are shared.
 
-The frontend sends the current workspace in the ``X-Workspace`` header
-(or ``?ws=`` for plain links); requests without either use workspace 1.
+Each workspace belongs to one account (``owner_id``). The frontend sends the
+current workspace in the ``X-Workspace`` header (or ``?ws=`` for plain links);
+requests without either use the account's first workspace. Anyone else's
+workspace answers 404, the same as one that doesn't exist.
 
     GET    /api/workspaces
     POST   /api/workspaces          {name, copy_from?, copy_documents?}
@@ -34,6 +36,7 @@ from backend.db import (
     Workspace,
     get_db,
 )
+from backend.sessions import AuthUser, current_user
 
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 
@@ -41,12 +44,26 @@ router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 def current_workspace(
     x_workspace: Optional[int] = Header(default=None),
     ws_param: Optional[int] = Query(default=None, alias="ws"),  # for plain links (downloads)
+    user: AuthUser = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> int:
-    ws = x_workspace or ws_param or 1
-    if db.get(Workspace, ws) is None:
-        raise HTTPException(status_code=404, detail=f"Workspace {ws} not found")
-    return ws
+    """The workspace a request works on: the one asked for if the signed-in user owns it (404 otherwise, so another
+    account's workspace can't even be shown to exist), else the user's first one."""
+    ws = x_workspace or ws_param
+    if ws is None:
+        first = db.query(Workspace.id).filter(Workspace.owner_id == user.id).order_by(Workspace.id).first()
+        if first is None:
+            raise HTTPException(status_code=404, detail="You have no workspace yet. Create one first.")
+        return first[0]
+    return owned_workspace(db, ws, user).id
+
+
+def owned_workspace(db: Session, ws_id: int, user: AuthUser) -> Workspace:
+    """The workspace ``ws_id`` if ``user`` owns it, else 404. The owner is read before the row is loaded."""
+    owner = db.query(Workspace.owner_id).filter(Workspace.id == ws_id).scalar()
+    if owner is None or owner != user.id:
+        raise HTTPException(status_code=404, detail=f"Workspace {ws_id} not found")
+    return db.get(Workspace, ws_id)
 
 
 def owned(db: Session, model, obj_id: int, ws: int, what: str):
@@ -79,19 +96,19 @@ def _to_dict(ws: Workspace, db: Session) -> dict:
 
 
 @router.get("")
-def list_workspaces(db: Session = Depends(get_db)):
-    return [_to_dict(w, db) for w in db.query(Workspace).order_by(Workspace.id).all()]
+def list_workspaces(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
+    return [_to_dict(w, db) for w in db.query(Workspace).filter(Workspace.owner_id == user.id).order_by(Workspace.id)]
 
 
 @router.post("", status_code=201)
-def create_workspace(payload: WorkspaceCreate, db: Session = Depends(get_db)):
-    ws = Workspace(name=payload.name.strip())
-    db.add(ws)
-    db.flush()
+def create_workspace(payload: WorkspaceCreate, user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
     src_id = payload.copy_from
     if src_id is not None:
-        if db.get(Workspace, src_id) is None:
-            raise HTTPException(status_code=404, detail=f"Workspace {src_id} not found")
+        owned_workspace(db, src_id, user)  # copy only from one of your own
+    ws = Workspace(name=payload.name.strip(), owner_id=user.id)
+    db.add(ws)
+    db.flush()
+    if src_id is not None:
         _copy_settings(db, src_id, ws.id, payload.copy_documents)
     db.commit()
     return _to_dict(ws, db)
@@ -134,21 +151,18 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
 
 
 @router.patch("/{ws_id}")
-def rename_workspace(ws_id: int, payload: WorkspaceUpdate, db: Session = Depends(get_db)):
-    ws = db.get(Workspace, ws_id)
-    if ws is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+def rename_workspace(ws_id: int, payload: WorkspaceUpdate, user: AuthUser = Depends(current_user),
+                     db: Session = Depends(get_db)):
+    ws = owned_workspace(db, ws_id, user)
     ws.name = payload.name.strip()
     db.commit()
     return _to_dict(ws, db)
 
 
 @router.delete("/{ws_id}")
-def delete_workspace(ws_id: int, db: Session = Depends(get_db)):
-    ws = db.get(Workspace, ws_id)
-    if ws is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    if db.query(Workspace).count() <= 1:
+def delete_workspace(ws_id: int, user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
+    ws = owned_workspace(db, ws_id, user)
+    if db.query(Workspace).filter(Workspace.owner_id == user.id).count() <= 1:
         raise HTTPException(status_code=409, detail="You can't delete the only workspace")
     for d in db.query(Document).filter(Document.workspace_id == ws_id):
         if d.stored_name:

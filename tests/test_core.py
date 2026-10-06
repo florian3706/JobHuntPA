@@ -16,6 +16,7 @@ os.environ["JOBHUNT_DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ["JOBHUNT_SCHEDULER"] = "off"  # tests drive backend.schedule.tick() themselves
 os.environ["JOBHUNT_ENV_PATH"] = os.path.join(_TMP, "test.env")  # never read or write the real .env
 
+from tests import helpers  # noqa: E402  (signed-in clients; sets the test environment)
 from backend.adapters.ats import detect_ats  # noqa: E402
 from backend.adapters.base import Posting  # noqa: E402
 from backend.adapters.generic import is_job_link, parse_detail, parse_listing  # noqa: E402
@@ -480,11 +481,9 @@ class OfficeDaysTest(unittest.TestCase):
 
 class WorkspaceApiTest(unittest.TestCase):
     def test_isolation_and_copy(self):
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Job, SessionLocal
 
-        with TestClient(app) as c:
+        with helpers.client() as c:
             ws2 = c.post("/api/workspaces", json={"name": "Contract roles"}).json()["id"]
             h1, h2 = {"X-Workspace": "1"}, {"X-Workspace": str(ws2)}
             db = SessionLocal()
@@ -555,8 +554,6 @@ class ReasoningLevelsTest(unittest.TestCase):
 class CoverLetterTest(unittest.TestCase):
     def test_draft_save_download(self):
         from unittest import mock
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Document, FitResult, Job, SessionLocal
         import backend.scorer as sc
 
@@ -584,7 +581,7 @@ class CoverLetterTest(unittest.TestCase):
         def fake_call(messages, cfg, json_mode=True):
             sent.update(json_mode=json_mode, cfg=cfg)
             return "```\nDear Hiring Manager,\n\nI led steering groups.\n\nJane Doe\n```"
-        with TestClient(app) as c, mock.patch.object(sc, "call_model", side_effect=fake_call), \
+        with helpers.client() as c, mock.patch.object(sc, "call_model", side_effect=fake_call), \
                 mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://x/v1", "LLM_MODEL": "m"}):
             r = c.post(f"/api/jobs/{job_id}/cover-letter", json={"instructions": "short"})
             self.assertEqual(r.status_code, 200, r.text)
@@ -604,8 +601,6 @@ class CoverLetterTest(unittest.TestCase):
 class TitleSuggestionTest(unittest.TestCase):
     def test_parse_and_flag_existing(self):
         from unittest import mock
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Document, SessionLocal
         import backend.scorer as sc
 
@@ -616,7 +611,7 @@ class TitleSuggestionTest(unittest.TestCase):
             {"title": "Program  Manager", "fit": "strong", "reason": "8 years running programs"},
             {"title": "program manager", "fit": "good", "reason": "duplicate"},
             {"title": "Head of Delivery", "fit": "weird", "reason": "next step"}, "junk"]})
-        with TestClient(app) as c, mock.patch.object(sc, "call_model", return_value=raw), \
+        with helpers.client() as c, mock.patch.object(sc, "call_model", return_value=raw), \
                 mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://x/v1", "LLM_MODEL": "m"}):
             c.put("/api/profile", json={"titles": ["Program Manager"]})
             r = c.post("/api/documents/suggest-titles").json()
@@ -631,8 +626,6 @@ class TitleSuggestionTest(unittest.TestCase):
 
 class StatusAndHideTest(unittest.TestCase):
     def test_new_statuses_and_bulk_hide(self):
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Job, SessionLocal
         from backend.research import companies_to_research
         from backend.scorer import select_jobs
@@ -643,7 +636,7 @@ class StatusAndHideTest(unittest.TestCase):
         db.add_all(jobs); db.commit()
         ids = [j.id for j in jobs]
         db.close()
-        with TestClient(app) as c:
+        with helpers.client() as c:
             self.assertEqual(c.patch(f"/api/jobs/{ids[0]}/status", json={"status": "interviewing"}).status_code, 200)
             self.assertEqual(c.patch("/api/jobs/status", json={"ids": ids[1:], "status": "rejected"}).json()["updated"], 2)
             self.assertEqual(c.patch(f"/api/jobs/{ids[0]}/status", json={"status": "ghosted"}).status_code, 422)
@@ -690,8 +683,6 @@ class SeekJobUploadTest(unittest.TestCase):
         self.assertEqual(parse_job_page(decode_saved_page(self._mhtml(html))).external_id, "77777777")
 
     def test_upload_updates_the_right_job_only(self):
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Job, SessionLocal
 
         db = SessionLocal()
@@ -706,7 +697,7 @@ class SeekJobUploadTest(unittest.TestCase):
         page = _seek_html(self.PAGE).encode()
         from unittest import mock
         import backend.pipeline as pipeline
-        with TestClient(app) as c, mock.patch.object(pipeline, "geocode", return_value=None):  # no network in tests
+        with helpers.client() as c, mock.patch.object(pipeline, "geocode", return_value=None):  # no network in tests
             wrong = c.post(f"/api/jobs/{other_id}/import-page", files={"file": ("ad.html", page, "text/html")})
             self.assertEqual(wrong.status_code, 422)
             self.assertIn("different SEEK job", wrong.json()["detail"])
@@ -731,12 +722,10 @@ class SeekJobUploadTest(unittest.TestCase):
 
 class OfficeDaySofteningTest(unittest.TestCase):
     def test_temporary_softening_is_a_what_if(self):
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Job, SessionLocal
         from backend.scorer import select_jobs
 
-        with TestClient(app) as c:
+        with helpers.client() as c:
             ws = c.post("/api/workspaces", json={"name": "Soften"}).json()["id"]
             h = {"X-Workspace": str(ws)}
             c.put("/api/profile", headers=h, json={"max_office_days": 2})
@@ -940,13 +929,11 @@ class DuplicateCompareTest(unittest.TestCase):
 class DuplicateMergeTest(unittest.TestCase):
     def test_scan_merge_decide_split(self):
         from datetime import datetime
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import CoverLetter, FitResult, Job, SessionLocal
         from backend.duplicates import scan
         from backend.scorer import select_jobs
 
-        with TestClient(app) as c:
+        with helpers.client() as c:
             ws = c.post("/api/workspaces", json={"name": "Dupes"}).json()["id"]
             h = {"X-Workspace": str(ws)}
             db = SessionLocal()
@@ -1014,14 +1001,12 @@ class DuplicateMergeTest(unittest.TestCase):
 class JobChatTest(unittest.TestCase):
     def test_chat_context_links_history_and_web_search(self):
         from unittest import mock
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import CompanyProfile, CoverLetter, Document, FitResult, Job, SessionLocal
         import backend.research as rs
         import backend.scorer as sc
 
         env = {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://llm.example/v1", "LLM_MODEL": "m"}
-        with TestClient(app) as c, mock.patch.dict(os.environ, env):
+        with helpers.client() as c, mock.patch.dict(os.environ, env):
             ws = c.post("/api/workspaces", json={"name": "Chat"}).json()["id"]
             h = {"X-Workspace": str(ws)}
             db = SessionLocal()
@@ -1247,13 +1232,11 @@ class OfficeTest(unittest.TestCase):
         self.assertEqual(office_in_ad("Parramatta", "Join us in Sydney."), "")  # not in the ad: invented
 
     def test_sources_api_and_flags(self):
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Job, SessionLocal
         from backend.offices import set_office
 
         a, b = self.patched()
-        with a, b, TestClient(app) as c:
+        with a, b, helpers.client() as c:
             ws = c.post("/api/workspaces", json={"name": "Offices"}).json()["id"]
             h = {"X-Workspace": str(ws)}
             c.post("/api/pins", headers=h, json={"label": "Home", "kind": "home", "lat": -33.84, "lng": 151.21, "radius_km": 5})
@@ -1363,8 +1346,6 @@ class CommuteTest(unittest.TestCase):
 
     def test_commute_endpoint(self):
         from unittest import mock
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Job, SessionLocal
         import backend.commute as cm
 
@@ -1377,7 +1358,7 @@ class CommuteTest(unittest.TestCase):
                 return TFNSW_TRIP
             return {"routes": [{"duration": 3960, "distance": 73200,
                                 "geometry": {"coordinates": [[151.34, -33.42], [151.21, -33.87]]}}]}
-        with TestClient(app) as c, mock.patch.object(cm, "_get", side_effect=fake_get), \
+        with helpers.client() as c, mock.patch.object(cm, "_get", side_effect=fake_get), \
                 mock.patch.dict(os.environ, {"TFNSW_API_KEY": "t-key", "TOMTOM_API_KEY": ""}):
             ws = c.post("/api/workspaces", json={"name": "Commute"}).json()["id"]
             h = {"X-Workspace": str(ws)}
@@ -1492,15 +1473,13 @@ class SettingsKeysTest(unittest.TestCase):
 
     def test_keys_endpoints(self):
         from unittest import mock
-        from fastapi.testclient import TestClient
         from backend import commute, config
-        from backend.app import app
 
         env = Path(tempfile.mkdtemp()) / ".env"
         env.write_text("# keys\nLLM_API_KEY=secret-llm\nLLM_BASE_URL=https://llm.example/v1\nTFNSW_API_KEY=\nTOMTOM_API_KEY=\n")
         before = env.read_text()
         try:
-            with TestClient(app) as c, mock.patch.object(config, "ENV_PATH", env), \
+            with helpers.client() as c, mock.patch.object(config, "ENV_PATH", env), \
                     mock.patch.dict(os.environ, {"TFNSW_API_KEY": "", "TOMTOM_API_KEY": ""}):
                 none = {"set": False, "hint": None}
                 self.assertEqual(c.get("/api/settings/keys").json(), {"tfnsw": none, "tomtom": none})
@@ -1555,9 +1534,7 @@ class SettingsKeysTest(unittest.TestCase):
 
     def test_keys_test_endpoint(self):
         from unittest import mock
-        from fastapi.testclient import TestClient
         from backend import commute, config
-        from backend.app import app
 
         calls = []
 
@@ -1569,7 +1546,7 @@ class SettingsKeysTest(unittest.TestCase):
             raise commute.CommuteError(f"TomTom: the API key was rejected (HTTP 403, key {params['key']})")
         env = Path(tempfile.mkdtemp()) / ".env"
         try:
-            with TestClient(app) as c, mock.patch.object(config, "ENV_PATH", env), mock.patch.object(commute, "_get", side_effect=fake_get), \
+            with helpers.client() as c, mock.patch.object(config, "ENV_PATH", env), mock.patch.object(commute, "_get", side_effect=fake_get), \
                     mock.patch.dict(os.environ, {"TFNSW_API_KEY": "", "TOMTOM_API_KEY": ""}):
                 self.assertEqual(c.post("/api/settings/keys/test").json(), {})  # nothing saved: nothing is requested
                 self.assertEqual(calls, [])
@@ -1594,16 +1571,14 @@ class SettingsLlmTest(unittest.TestCase):
 
     def test_llm_endpoints(self):
         from unittest import mock
-        from fastapi.testclient import TestClient
         from backend import config, llm_providers, scorer
-        from backend.app import app
 
         env = Path(tempfile.mkdtemp()) / ".env"
         env.write_text(self.START)
         start_env = {"LLM_API_KEY": self.OLD_KEY, "LLM_BASE_URL": "https://api.openai.com/v1", "LLM_MODEL": "gpt-6-luna"}
         secrets = (self.OLD_KEY, self.OPENAI_KEY, self.CLAUDE_KEY)
         try:
-            with TestClient(app) as c, mock.patch.object(config, "ENV_PATH", env), mock.patch.dict(os.environ, start_env):
+            with helpers.client() as c, mock.patch.object(config, "ENV_PATH", env), mock.patch.dict(os.environ, start_env):
                 def put(body):
                     r = c.put("/api/settings/llm", json=body)
                     for secret in secrets:
@@ -1733,7 +1708,7 @@ class ResearchOfficesTest(unittest.TestCase):
                   "Parramatta": (-33.815, 151.003)}
         fake = _fake_geocode(places)
         db = SessionLocal()
-        ws = Workspace(name="Closest")
+        ws = Workspace(name="Closest", owner_id=helpers.admin_id())
         db.add(ws); db.commit()
         # Commute pins: home and a station near North Sydney.
         db.add_all([Pin(workspace_id=ws.id, label="Home", kind="onsite", lat=-33.42, lng=151.34, radius_km=10),
@@ -1790,7 +1765,7 @@ class ScheduleTest(unittest.TestCase):
         from backend.db import CompanySource, SearchRun, SearchSchedule, SessionLocal, UserProfile, Workspace
 
         db = SessionLocal()
-        ws = Workspace(name="Scheduled")
+        ws = Workspace(name="Scheduled", owner_id=helpers.admin_id())
         db.add(ws); db.commit()
         db.add(UserProfile(id=ws.id, titles=["Product Manager"], seek_enabled=True)); db.commit()
         ws_id = ws.id
@@ -1833,7 +1808,7 @@ class ScheduleTest(unittest.TestCase):
 
         # Nothing to search: SEEK without titles and no company sources.
         db = SessionLocal()
-        ws = Workspace(name="Empty"); db.add(ws); db.commit()
+        ws = Workspace(name="Empty", owner_id=helpers.admin_id()); db.add(ws); db.commit()
         self.assertTrue(schedule.nothing_to_search(db, ws.id))
         db.add(CompanySource(workspace_id=ws.id, label="Acme", careers_url="https://acme.example/careers", enabled=True))
         db.commit()
@@ -1843,12 +1818,10 @@ class ScheduleTest(unittest.TestCase):
     def test_api(self):
         from datetime import datetime, timezone
         from unittest import mock
-        from fastapi.testclient import TestClient
         from backend import schedule
-        from backend.app import app
         from backend.db import SearchSchedule, SessionLocal
 
-        with TestClient(app) as c:
+        with helpers.client() as c:
             ws = c.post("/api/workspaces", json={"name": "Schedule API"}).json()["id"]
             h = {"X-Workspace": str(ws)}
             out = c.get("/api/schedule", headers=h).json()
@@ -1886,11 +1859,9 @@ class ScheduleTest(unittest.TestCase):
 
 class JobListExcludedTest(unittest.TestCase):
     def test_sent_on_demand(self):
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Job, SessionLocal
 
-        with TestClient(app) as c:
+        with helpers.client() as c:
             ws = c.post("/api/workspaces", json={"name": "Excluded list"}).json()["id"]
             h = {"X-Workspace": str(ws)}
             c.put("/api/profile", headers=h, json={"max_office_days": 2})

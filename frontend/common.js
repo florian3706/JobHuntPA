@@ -181,23 +181,150 @@ document.addEventListener('DOMContentLoaded', () => {
   initFocusTips();
 });
 
+/* ---------- the signed-in account (accounts design, sections 3 and 6) ----------
+   The session cookie is HttpOnly, so scripts never see it. /api/auth/me says who is signed in and gives the
+   page's CSRF token, which every POST, PUT, PATCH and DELETE sends back as X-CSRF-Token. A 401 sends the
+   browser to the sign-in page (or to the first-run page before the first account exists), and back here after. */
+const SESSION = { me: null, loading: null };
+const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+let leavingPage = false;
+
+/* Goes to the sign-in page. The promise never settles: the page is going away, so callers stop quietly instead
+   of showing "signed out" errors on their way out. */
+function signedOut(code) {
+  if (!leavingPage) {
+    leavingPage = true;
+    const here = `${location.pathname}${location.search}${location.hash}`;
+    location.replace(code === 'setup_required' ? 'first-run.html' : `login.html?next=${encodeURIComponent(here)}`);
+  }
+  return new Promise(() => {});
+}
+
+/* Who is signed in: { user: {id, email, name, role}, csrf, recovery_codes_pending, workspaces, features }. */
+function loadSession(force = false) {
+  if (!SESSION.loading || force) {
+    SESSION.loading = (async () => {
+      const res = await fetch('/api/auth/me', { headers: { Accept: 'application/json' } });
+      let data = null;
+      try { data = await res.json(); } catch { /* not JSON */ }
+      if (res.status === 401) return signedOut(data?.code);
+      if (!res.ok) throw new Error(data?.detail || `Could not check who is signed in (error ${res.status})`);
+      SESSION.me = data;
+      return data;
+    })();
+  }
+  return SESSION.loading;
+}
+
+const isAdmin = () => SESSION.me?.user?.role === 'admin';
+
 async function api(url, opts = {}) {
   return (await apiResponse(url, opts)).data;
 }
 
 // Like api(), plus the response headers ({ data, headers }).
-async function apiResponse(url, opts = {}) {
+async function apiResponse(url, opts = {}, retried = false) {
   const isForm = opts.body instanceof FormData;
-  const headers = { 'X-Workspace': String(currentWorkspace()), ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...(opts.headers || {}) };
+  const method = (opts.method || 'GET').toUpperCase();
+  const ws = currentWorkspace(); // 0 before the page knows one: the server then uses the account's first
+  const headers = { ...(ws ? { 'X-Workspace': String(ws) } : {}), ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...(opts.headers || {}) };
+  if (UNSAFE_METHODS.has(method)) headers['X-CSRF-Token'] = (SESSION.me || await loadSession())?.csrf || '';
   const res = await fetch(url, { ...opts, headers });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
+    const code = data && typeof data === 'object' ? data.code : null;
+    if (res.status === 401) return signedOut(code);
+    // The token is from an older session (signed in again in another tab): fetch the new one and try once more.
+    if (res.status === 403 && code === 'csrf' && !retried) {
+      await loadSession(true);
+      return apiResponse(url, opts, true);
+    }
+    if (res.status === 402) showAccessNotice('membership', data);
+    if (res.status === 423) showAccessNotice('encrypting', data);
     const detail = data && typeof data === 'object' && data.detail ? data.detail : text;
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
   }
   return { data, headers: res.headers };
+}
+
+/* A notice at the top of the page that stays until the situation changes. One per kind; showing it again
+   replaces its text. role="status" says it once without taking focus. */
+function pageNotice(kind, html) {
+  const main = document.getElementById('main');
+  if (!main) return null;
+  let el = document.getElementById(`notice-${kind}`);
+  if (!el) {
+    el = document.createElement('div');
+    el.id = `notice-${kind}`;
+    el.className = 'page-notice';
+    el.setAttribute('role', 'status');
+    main.prepend(el);
+  }
+  el.innerHTML = html;
+  return el;
+}
+
+/* 402: a membership is needed for this (Phase I); 423: the data is being encrypted (Phase D). */
+function showAccessNotice(kind, data) {
+  if (kind === 'membership') {
+    pageNotice('membership', `<p>${esc(data?.detail || 'This needs a membership.')} <a href="billing.html">See membership options</a></p>`);
+  } else if (kind === 'encrypting') {
+    const done = Number(data?.done) || 0;
+    const total = Number(data?.total) || 0;
+    const pct = total ? Math.floor((100 * done) / total) : 0;
+    pageNotice('encrypting', `<p>JobHuntPA is encrypting your data${total ? `: ${done.toLocaleString()} of ${total.toLocaleString()} done` : ''}.
+        This page reloads by itself when it has finished.</p>
+      ${total ? `<div class="progress" role="progressbar" aria-label="Encrypting your data" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div class="progress-bar" style="width:${pct}%"></div></div>` : ''}`);
+    clearTimeout(showAccessNotice.reload);
+    showAccessNotice.reload = setTimeout(() => location.reload(), 10000);
+  }
+}
+
+/* ---------- the account menu in the header ----------
+   A disclosure button: it opens a small panel with who is signed in, "Admin" for admins once the admin panel
+   exists (accounts design, Phase F), and Sign out. Escape or a click elsewhere closes it. */
+function initAccountMenu(me) {
+  const btn = document.getElementById('account-btn');
+  const panel = document.getElementById('account-panel');
+  if (!btn || !panel) return;
+  const user = me.user || {};
+  setText(document.getElementById('account-email'), user.email || '');
+  const role = document.getElementById('account-role');
+  if (role) { setText(role, 'Admin'); role.hidden = user.role !== 'admin'; }
+  const admin = document.getElementById('account-admin');
+  if (admin) admin.hidden = !(user.role === 'admin' && me.features?.admin_panel);
+  const open = (yes) => {
+    btn.setAttribute('aria-expanded', String(yes));
+    panel.hidden = !yes;
+  };
+  btn.addEventListener('click', () => open(panel.hidden));
+  panel.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); open(false); btn.focus(); } });
+  btn.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) { e.preventDefault(); open(false); } });
+  document.addEventListener('click', (e) => { if (!panel.hidden && !e.target.closest('#account-menu')) open(false); });
+  document.getElementById('account-menu').addEventListener('focusout', (e) => {
+    if (!panel.hidden && e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) open(false);
+  });
+  document.getElementById('account-signout')?.addEventListener('click', signOut);
+}
+
+async function signOut() {
+  const btn = document.getElementById('account-signout');
+  setBusy(btn, true);
+  try {
+    await fetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': SESSION.me?.csrf || '' } });
+  } catch { /* signed out on this page either way */ }
+  try { localStorage.removeItem('jobhunt.ws'); } catch { /* private mode */ }
+  leavingPage = true;
+  location.replace('login.html');
+}
+
+/* Recovery codes not yet confirmed as saved: a reminder on every page until they are. */
+function remindRecoveryCodes(me) {
+  if (!me.recovery_codes_pending) return;
+  pageNotice('codes', `<p><strong>Save your recovery codes.</strong> If you forget your password, they are how you get back
+    in and keep your data. <a href="first-run.html">Show my recovery codes</a></p>`);
 }
 
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };

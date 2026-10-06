@@ -27,6 +27,7 @@ import httpx2  # noqa: E402  (the SDK's HTTP library: only used here to build SD
 from anthropic.types import Message  # noqa: E402
 from anthropic.types.beta import BetaMessage  # noqa: E402
 
+from tests import helpers  # noqa: E402  (signed-in clients; sets the test environment)
 from backend import llm_anthropic, llm_providers as lp  # noqa: E402
 from backend import llm_settings as ls  # noqa: E402
 from backend import offices as of  # noqa: E402
@@ -822,7 +823,7 @@ class NoWebSearchTest(ProviderTestCase):
     def test_finding_offices_still_reads_ads_but_skips_the_web_lookups(self):
         from backend.db import Job, SessionLocal, Workspace
         db = SessionLocal()
-        ws = Workspace(name="No search offices")
+        ws = Workspace(name="No search offices", owner_id=helpers.admin_id())
         db.add(ws)
         db.commit()
         db.add(Job(workspace_id=ws.id, url="https://nosearch.example/1", title="PM", company="Lookup Co", status="to_review",
@@ -841,11 +842,9 @@ class NoWebSearchTest(ProviderTestCase):
         db.close()
 
     def test_the_chat_refuses_web_search_but_plain_chat_works_on_every_preset(self):
-        from fastapi.testclient import TestClient
-        from backend.app import app
         from backend.db import Job, SessionLocal
 
-        with TestClient(app) as c:
+        with helpers.client() as c:
             ws = c.post("/api/workspaces", json={"name": "Chat no search"}).json()["id"]
             h = {"X-Workspace": str(ws)}
             db = SessionLocal()

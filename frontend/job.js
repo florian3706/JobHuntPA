@@ -3,8 +3,9 @@
 
 const params = new URLSearchParams(location.search);
 const JOB_ID = Number(params.get('id'));
-const WS = Number(params.get('ws')) || (() => { try { return Number(localStorage.getItem('jobhunt.ws')) || 1; } catch { return 1; } })();
-function currentWorkspace() { return WS; }
+const WS = Number(params.get('ws')) || (() => { try { return Number(localStorage.getItem('jobhunt.ws')) || 0; } catch { return 0; } })();
+// Without one in the link or this browser: the account's first workspace.
+function currentWorkspace() { return WS || SESSION.me?.workspaces?.[0] || 0; }
 
 let job = null;
 const view = { map: null, layer: null };
@@ -253,8 +254,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('themechange', () => { if (view.map) drawMap(...(lastCommute || [null])); });
   if (!JOB_ID) { showPageError('No job given. Open a job from the dashboard (Open ↗ on a job card).'); return; }
   try {
+    initAccountMenu(await loadSession()); // signed out: goes to the sign-in page, then back here
     const workspaces = await api('/api/workspaces');
-    const ws = workspaces.find((w) => w.id === WS);
+    const ws = workspaces.find((w) => w.id === currentWorkspace());
     if (ws) $('#ws-name').textContent = ws.name;
     job = await api(`/api/jobs/${JOB_ID}`);
   } catch (e) { showPageError(`Could not load this job: ${e.message}`); return; }

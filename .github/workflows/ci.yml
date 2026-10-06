@@ -22,7 +22,13 @@ jobs:
       fail-fast: false
       matrix: { os: [ubuntu-latest, macos-latest] }
     runs-on: ${{ matrix.os }}
-    env: { LLM_API_KEY: test-key, LLM_BASE_URL: "https://example.invalid/v1", LLM_MODEL: test-model }
+    # The first admin comes from the process environment (CI and headless servers); setup never writes it to .env.
+    env:
+      LLM_API_KEY: test-key
+      LLM_BASE_URL: "https://example.invalid/v1"
+      LLM_MODEL: test-model
+      JOBHUNT_ADMIN_EMAIL: ci@example.invalid
+      JOBHUNT_ADMIN_PASSWORD: ci-test-password-123
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,14 +36,33 @@ jobs:
       - name: One-time setup
         run: ./setup.sh --non-interactive --skip-browser
       - name: Setup is repeatable
-        run: ./setup.sh --non-interactive --skip-browser
-      - name: Start and check it responds
+        run: |
+          ./setup.sh --non-interactive --skip-browser
+          if grep -q JOBHUNT_ADMIN .env; then echo "setup wrote the admin variables to .env"; exit 1; fi
+      - name: Start, check it responds and that the API needs signing in
         run: |
           ./start.sh --no-browser --port 8123 > launch.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8123/api/health && break; sleep 1; done
           curl -sf http://127.0.0.1:8123/api/health
-          curl -sf http://127.0.0.1:8123/api/workspaces
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8123/api/workspaces)" = 401
+          curl -sf -c jar -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$JOBHUNT_ADMIN_EMAIL\",\"password\":\"$JOBHUNT_ADMIN_PASSWORD\",\"remember\":true}" \
+            http://127.0.0.1:8123/api/auth/login
+          curl -sf -b jar http://127.0.0.1:8123/api/workspaces | grep -q '"My job search"'
           curl -sf http://127.0.0.1:8123/ | grep -q JobHuntPA
+          curl -sf http://127.0.0.1:8123/login.html | grep -q 'autocomplete="current-password"'
+          test -f data/server-keys.json && test ! -f data/first-run.txt
+      - name: Restart (key file, its fingerprint and database sessions)
+        run: |
+          pkill -f "uvicorn backend.app:app" || true
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8123/api/health || break; sleep 1; done
+          ./start.sh --no-browser --port 8123 > launch2.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8123/api/health && break; sleep 1; done
+          curl -sf -b jar http://127.0.0.1:8123/api/auth/me | grep -q '"role":"admin"'
+          curl -sf -c jar2 -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$JOBHUNT_ADMIN_EMAIL\",\"password\":\"$JOBHUNT_ADMIN_PASSWORD\"}" \
+            http://127.0.0.1:8123/api/auth/login
+          curl -sf -b jar2 http://127.0.0.1:8123/api/workspaces
       - name: Uninstall (backs up data, removes the folder)
         run: |
           pkill -f "uvicorn backend.app:app" || true
@@ -46,13 +71,21 @@ jobs:
           cp -R "$GITHUB_WORKSPACE" "$RUNNER_TEMP/JobHuntPA-app"
           "$RUNNER_TEMP/JobHuntPA-app/uninstall.sh" --yes
           test ! -d "$RUNNER_TEMP/JobHuntPA-app"
-          ls ~/Documents/JobHuntPA-backup-*.zip ~/JobHuntPA-backup-*.zip 2>/dev/null | grep -q backup
+          backup="$(ls ~/Documents/JobHuntPA-backup-*.zip ~/JobHuntPA-backup-*.zip 2>/dev/null | head -1)"
+          test -n "$backup"
+          python3 -m zipfile -l "$backup" | grep -q data/server-keys.json
+          test "$(python3 -c 'import os, stat, sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$backup")" = 0o600
       - if: failure()
-        run: cat launch.log || true
+        run: cat launch.log launch2.log || true
 
   windows:
     runs-on: windows-latest
-    env: { LLM_API_KEY: test-key, LLM_BASE_URL: "https://example.invalid/v1", LLM_MODEL: test-model }
+    env:
+      LLM_API_KEY: test-key
+      LLM_BASE_URL: "https://example.invalid/v1"
+      LLM_MODEL: test-model
+      JOBHUNT_ADMIN_EMAIL: ci@example.invalid
+      JOBHUNT_ADMIN_PASSWORD: ci-test-password-123
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -66,14 +99,22 @@ jobs:
           pyinstaller --onefile --console --name JobHuntPA installer/windows_launch.py
           pyinstaller --onefile --console --name JobHuntPA-Uninstall installer/uninstaller.py
           pyinstaller --onefile --console --name JobHuntPA-Setup --add-data "dist/JobHuntPA.exe;." --add-data "dist/JobHuntPA-Uninstall.exe;." --add-data "VERSION;." installer/windows_setup.py
-      - name: JobHuntPA.exe starts the app
+      - name: JobHuntPA.exe starts the app, and signing in works
         shell: pwsh
         run: |
           Start-Process -FilePath dist\JobHuntPA.exe -ArgumentList "--no-browser","--port","8123"
+          $up = $false
           for ($i = 0; $i -lt 60; $i++) {
-            try { Invoke-RestMethod http://127.0.0.1:8123/api/health; exit 0 } catch { Start-Sleep 1 }
+            try { Invoke-RestMethod http://127.0.0.1:8123/api/health | Out-Null; $up = $true; break } catch { Start-Sleep 1 }
           }
-          exit 1
+          if (-not $up) { Write-Error "the app did not start"; exit 1 }
+          $r = Invoke-WebRequest http://127.0.0.1:8123/api/workspaces -SkipHttpErrorCheck
+          if ($r.StatusCode -ne 401) { Write-Error "expected 401 before signing in, got $($r.StatusCode)"; exit 1 }
+          $body = @{ email = $env:JOBHUNT_ADMIN_EMAIL; password = $env:JOBHUNT_ADMIN_PASSWORD } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8123/api/auth/login -ContentType 'application/json' -Body $body -SessionVariable s | Out-Null
+          $ws = Invoke-RestMethod -Uri http://127.0.0.1:8123/api/workspaces -WebSession $s
+          if (@($ws).Count -lt 1) { Write-Error "no workspace after signing in"; exit 1 }
+          exit 0
       - name: JobHuntPA-Uninstall.exe removes the app
         shell: pwsh
         run: |

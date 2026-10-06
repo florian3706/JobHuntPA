@@ -13,6 +13,8 @@ are stored per base URL + model. The candidates depend on the provider
     GET  /api/llm                 config, detected levels, level per task
     POST /api/llm/detect-levels   probe the configured model
     PUT  /api/llm/reasoning       {scoring?, research?, cover_letter?, chat?}
+
+Admins only, for reading too (accounts design §14.8): the levels apply to every account.
 """
 from __future__ import annotations
 
@@ -22,15 +24,16 @@ import os
 from typing import Any, Optional
 
 import httpx  # noqa: F401  (tests patch llm_settings.httpx; the probes are sent by backend/llm_providers.py)
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend import llm_providers
 from backend.db import AppSetting, SessionLocal
+from backend.sessions import require_admin
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/llm", tags=["llm"])
+router = APIRouter(prefix="/api/llm", tags=["llm"], dependencies=[Depends(require_admin)])
 
 TASKS = ("scoring", "research", "cover_letter", "chat")
 CANDIDATE_LEVELS = llm_providers.LEVELS_OPENAI
