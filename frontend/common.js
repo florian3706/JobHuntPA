@@ -291,7 +291,7 @@ function glassdoorLink(p, name) {
 function sectionDateNote(iso) { return iso ? `<div class="muted section-date">Researched ${esc(fmtDate(iso))}</div>` : ''; }
 
 /* Plain-language result of a research run, from its summary.research ({refreshed, up_to_date}). */
-const RESEARCH_PART_LABEL = { base: 'company profile', sentiment: 'employee sentiment', news: 'news and controversies' };
+const RESEARCH_PART_LABEL = { base: 'company profile', sentiment: 'employee sentiment', news: 'news' };
 function researchRefreshText(rs) {
   const joinAnd = (a) => (a.length > 1 ? `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}` : a[0] || '');
   const parts = Object.entries(rs?.refreshed || {}).map(([name, kinds]) => `${name}: ${joinAnd((kinds || []).map((k) => RESEARCH_PART_LABEL[k] || k))} updated`);
