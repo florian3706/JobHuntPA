@@ -96,8 +96,8 @@ def build_prompt(db: Session, job: Job, instructions: str = "") -> str:
     job_lines += ["", job.description or "(no description)"]
     parts.append("=== JOB AD ===\n" + "\n".join(job_lines))
 
-    fit = db.query(FitResult).filter(FitResult.job_id == job.id, FitResult.status == "ok").first()
-    if fit:
+    fit = db.query(FitResult).filter(FitResult.job_id == job.id).first()
+    if fit and fit.status == "ok":  # checked here: the status is sealed (accounts design §14.6)
         data = json.loads(fit.evidence_json or "{}")
         matched = [f"- {r['point']}: " + "; ".join(e["bullet"] for e in r.get("evidence", []))
                    for r in data.get("requirements", []) if r.get("matched")]

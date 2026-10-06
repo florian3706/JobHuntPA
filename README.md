@@ -137,8 +137,27 @@ can live in their own **workspaces** (switcher at the top right).
   `https://www.apsjobs.gov.au/s/job-search?department=Services%20Australia` (the agency name as
   APSJobs lists it) or `...?searchString=product%20manager` for a search across all agencies.
   Careers pages that publish an RSS feed (e.g. SBS) can be added by the feed's URL.
+- **Shared job pool**: every job any search finds is stored once and shared by all workspaces, so
+  an ad's full page is fetched only once. Each search also brings in jobs that other searches
+  already found, if they match your own job titles or include keywords and pass your filters
+  (dealbreakers, salary, work mode, pins). A workspace with no titles or keywords gets none.
+  Everything you do with a job stays with your workspace: status, hidden, why it's excluded, score,
+  office, location call, cover letter and chats.
+- **Closed jobs**: a job counts as closed when its page is gone, when its employer's complete job
+  list no longer has it, or when no search has listed it for 45 days (how SEEK jobs close, since
+  SEEK results are only the first page). A closed job that is listed again reopens. Jobs missing
+  from one search's results aren't closed: another search may still list them.
 - **Full SEEK ads**: SEEK jobs marked *summary only* have an **Upload full ad** button. Save the
-  ad's page from SEEK in your browser and upload it to score the job on the whole ad.
+  ad's page from SEEK in your browser and upload it to score the job on the whole ad. The full ad
+  you upload stays private to your workspace: other workspaces with the same job keep seeing SEEK's
+  summary. Jobs from pages you import (*Search setup → Import saved pages*) are private too,
+  unless a search has already found them.
+- **Company info** (ⓘ next to the employer, and the job page): what company research found
+  (business, ownership, offices, employee reviews and news) is shared by all workspaces, so a
+  company is researched once. **Fill missing info** researches companies with no profile yet, or one
+  older than 30 days. **Research again** in a company's profile refreshes the employee reviews and
+  the news when they're more than a day old and keeps the rest; if everything is recent, it shows
+  the saved profile without asking the AI again. A profile older than 30 days is researched in full.
 - **Suggested job titles** (Documents tab): the AI reads your documents and suggests titles to
   search for; add them to the current search or start a new workspace with them.
 - **Notes** (Documents tab): under *Write a note*, give a note a title, type its text, pick a
@@ -264,6 +283,13 @@ Each source brings in at most 60 new full ads per search; the rest follow on the
 
 Your settings, documents, jobs and API key are kept.
 
+The first start after updating to the version with the shared job pool moves your jobs into it.
+This happens once and takes a few seconds; a backup is saved first as
+`data/jobhunt.db.bak-before-job-pool`. Copies of the same ad in different workspaces become one
+shared job, and each workspace keeps its own status, scores, cover letters and chats. Full SEEK ads
+you uploaded stay private to their workspace. SEEK jobs that no search has listed for 45 days now
+show as closed.
+
 ## Changing your AI provider or key
 
 Open **Settings > LLM**: pick the provider (it fills in the API address and suggests models),
@@ -351,10 +377,16 @@ busy one.
    page; an RSS/Atom job feed; schema.org `JobPosting` data; HTML job links with pagination;
    headless-browser rendering for JavaScript-only pages. Sites that answer with a bot check
    (Cloudflare, AWS WAF) are reported as errors, never bypassed.
-2. **Caching** (`backend/pipeline.py`): jobs are upserted by URL. A job stored with a full
-   description is never fetched again. Listing pages are cached 30-60 minutes in `http_cache`.
-   Detail pages are fetched only for new jobs that pass the cheap filters, at most 60 per source
-   per run (the rest follow on the next run).
+2. **The shared pool** (`backend/pipeline.py`, `backend/pool.py`): each listed ad is upserted by
+   URL into `postings`, shared by every workspace, and linked to the workspace through its `jobs`
+   row, which holds everything personal plus any content of its own (an uploaded full ad). Listing
+   pages are cached 30-60 minutes in `http_cache`. A detail page is fetched only when the pool has
+   no full description of the ad, or one older than 30 days, and the ad passes the cheap filters:
+   at most 60 per source per run (the rest follow on the next run). An ad another search fetched
+   costs nothing. Closing is global: a 404/410 detail page, a complete listing (ATS feed, APSJobs,
+   a careers page crawled to the end) that no longer shows the ad, or no listing showing it for 45
+   days. After the sources, open pool ads that match the workspace's titles or include keywords
+   and pass its filters are linked too (`match_pool`, at most 300 a run).
 3. **Filtering** (`backend/filters.py`): dealbreakers, titles/keywords, salary floor, work mode,
    location pins. Excluded jobs stay in the DB with a reason ("Show excluded"). The office-days
    limit can be softened temporarily (`softened_job_ids`, `?office_slack=N` on the jobs and
@@ -378,6 +410,7 @@ busy one.
 - SEEK's robots.txt allows search result pages but not job pages, so SEEK jobs carry the listing
   summary only. For a job you care about, click **Upload full ad** on its card: open the ad on
   SEEK, save the page (Ctrl+S / Cmd+S) and upload the file; the job is updated with the full ad,
-  re-filtered and rescored. SEEK may also refuse automated access outright (HTTP 403); then save
+  re-filtered and rescored. The uploaded ad is kept on your workspace's job only, never in the
+  shared pool. SEEK may also refuse automated access outright (HTTP 403); then save
   SEEK search pages yourself and use *Search setup → Import saved pages*.
 - Geocoding uses OpenStreetMap Nominatim under its usage policy (≤1 request/s, cached forever).

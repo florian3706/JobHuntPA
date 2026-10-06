@@ -133,8 +133,8 @@ def job_block(db: Session, n: int, job: Job, ad_limit: int) -> str:
         lines.append("Note: only the job board's short listing summary is stored, not the full ad.")
     lines += ["", "Ad:", _clip(job.description or "(no description stored)", ad_limit)]
 
-    fit = db.query(FitResult).filter(FitResult.job_id == job.id, FitResult.status == "ok").first()
-    if fit:
+    fit = db.query(FitResult).filter(FitResult.job_id == job.id).first()
+    if fit and fit.status == "ok":  # checked here: the status is sealed (accounts design §14.6)
         data = json.loads(fit.evidence_json or "{}")
         matched = [r["point"] for r in data.get("requirements", []) if r.get("matched")]
         missing = [r["point"] for r in data.get("requirements", []) if not r.get("matched")]

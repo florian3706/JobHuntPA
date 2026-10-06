@@ -15,7 +15,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env first)
 from backend import schedule, tasks
@@ -216,27 +216,27 @@ def list_jobs(office_slack: int = OfficeSlack,
     ``include=hidden`` or both, which the Jobs tab asks for while "Show excluded" / "Show hidden"
     is ticked. ``X-Omitted-Count`` says how many were left out. A job the office-days what-if lets
     through isn't excluded."""
+    from backend.pool import jobs_query
+
     phash = _profile_hash(db, ws)
     softened = softened_job_ids(db, ws, office_slack)
     leave_out = {"excluded", "hidden"} - set(include.split(","))
-    # Left-out jobs are dropped in SQL, so they are never loaded (and, once sealed, never decrypted).
-    # A job the what-if lets through isn't excluded.
-    top_level = (Job.workspace_id == ws, Job.duplicate_of.is_(None))
-    q = (db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id)
-         .options(defer(Job.description)).filter(*top_level))
-    if "excluded" in leave_out:
-        not_excluded = Job.excluded_reason.is_(None)
-        q = q.filter(not_excluded | Job.id.in_(softened) if softened else not_excluded)
-    if "hidden" in leave_out:
-        q = q.filter(Job.hidden.is_(False))
-    listed = q.order_by(Job.id).all()
-    omitted_count = db.query(Job).filter(*top_level).count() - len(listed)
+    # Which jobs are left out is decided in Python from two small columns: hidden and excluded_reason are
+    # sealed so that not even whether they're set shows (accounts design §14.6). Only the listed jobs are then
+    # loaded in full. A job the what-if lets through isn't excluded.
+    states = (db.query(Job.id, Job.hidden, Job.excluded_reason)
+              .filter(Job.workspace_id == ws, Job.duplicate_of.is_(None)).all())
+    listed_ids = sorted(i for i, hidden, reason in states
+                        if not ("excluded" in leave_out and reason and i not in softened)
+                        and not ("hidden" in leave_out and hidden))
+    omitted_count = len(states) - len(listed_ids)
+    listed: list[tuple[Job, Optional[FitResult]]] = []
     copies: dict[int, list[Job]] = {}  # merged copies of the listed jobs, whatever their own state
-    listed_ids = [job.id for job, _fit in listed]
     for start in range(0, len(listed_ids), 500):
-        for copy in (db.query(Job).options(defer(Job.description))
-                     .filter(Job.workspace_id == ws, Job.duplicate_of.in_(listed_ids[start:start + 500]))
-                     .order_by(Job.id)):
+        chunk = listed_ids[start:start + 500]
+        fits = {f.job_id: f for f in db.query(FitResult).filter(FitResult.job_id.in_(chunk))}
+        listed += [(job, fits.get(job.id)) for job in jobs_query(db).filter(Job.id.in_(chunk)).order_by(Job.id)]
+        for copy in jobs_query(db).filter(Job.workspace_id == ws, Job.duplicate_of.in_(chunk)).order_by(Job.id):
             copies.setdefault(copy.duplicate_of, []).append(copy)
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
                .filter(Job.workspace_id == ws)}
@@ -403,15 +403,16 @@ def scorer_status(office_slack: int = OfficeSlack, db: Session = Depends(get_db)
     text, phash = build_profile(db, ws)
     pending = len(select_jobs(db, "pending", phash, ws))
     softened_pending = len(select_jobs(db, "pending", phash, ws, office_slack)) - pending if office_slack else 0
-    fits = db.query(FitResult.status).join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws)
+    # Counted in Python: a fit's status is sealed (accounts design §14.6).
+    statuses = [s for (s,) in db.query(FitResult.status).join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws)]
     return {
         **public_config(),
         "profile_chars": len(text),
         "pending": pending,
         "softened_pending": softened_pending,
         "stale": len(select_jobs(db, "stale", phash, ws)) - pending,
-        "scored": fits.filter(FitResult.status == "ok").count(),
-        "errors": fits.filter(FitResult.status == "error").count(),
+        "scored": statuses.count("ok"),
+        "errors": statuses.count("error"),
     }
 
 
@@ -440,8 +441,13 @@ def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Dep
 @app.get("/api/companies")
 def list_companies(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """Profiles of the companies in this workspace's jobs (the profiles are shared, but which companies
-    others researched is not for this workspace to see)."""
-    keys = {company_key(c or "") for (c,) in db.query(Job.company).filter(Job.workspace_id == ws)}
+    others researched is not for this workspace to see). Any workspace with a company's job gets its cached
+    profile, whoever researched it."""
+    from backend.db import Posting
+
+    names = (db.query(Job._company, Posting.company).outerjoin(Posting, Posting.id == Job.posting_id)
+             .filter(Job.workspace_id == ws))
+    keys = {company_key(own or shared or "") for own, shared in names}  # a job's own name, else the posting's
     return {p.key: p.to_dict() for p in db.query(CompanyProfile).all() if p.key in keys}
 
 
@@ -462,7 +468,7 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
     def job(progress):
         db = SessionLocal()
         try:
-            if payload.name:
+            if payload.name:  # "research this company": only the parts that are due (research.plan)
                 companies = [job_context(db, ws, payload.name)]
             else:
                 companies = companies_to_research(db, ws, payload.mode, payload.job_ids)
@@ -497,6 +503,8 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
 
 @app.post("/api/import/page")
 async def import_page(file: UploadFile = File(...), ws: int = Depends(current_workspace)):
+    """Jobs from a saved SEEK search or job page, or any page with JobPosting data. They're the user's own:
+    jobs the shared pool doesn't have stay private to this workspace (backend.pool.import_private)."""
     from backend.adapters.seek import parse_seek_page
     from backend.pipeline import import_postings
     from backend.scraping.jsonld import find_job_postings, posting_from_jsonld
@@ -521,7 +529,8 @@ async def import_page(file: UploadFile = File(...), ws: int = Depends(current_wo
 @app.post("/api/jobs/{job_id}/import-page")
 async def import_job_page(job_id: int, file: UploadFile = File(...), office_slack: int = OfficeSlack,
                           db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
-    """Update one SEEK job with the full ad from its page, saved in the user's browser."""
+    """Update one SEEK job with the full ad from its page, saved in the user's browser. The full ad is this
+    workspace's own: other workspaces with the same posting keep reading the shared summary."""
     from backend.adapters.seek import parse_job_page, parse_search_page
     from backend.pipeline import update_job_from_posting
     from backend.scraping.saved_pages import decode_saved_page

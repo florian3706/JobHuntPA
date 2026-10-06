@@ -1,19 +1,23 @@
 """Search pipeline: list every source, fetch only what is new, filter, store.
 
-Per source:
+Ads live once in the shared pool (``backend.pool``, accounts design §14); a workspace links to them. Per source:
 
 1. ``list_postings()`` - one pass over the listing (cached 30-60 min in
    ``http_cache``, so repeated runs are free).
-2. Each posting is upserted by URL. A job already stored with a full
-   description is never fetched again; the ``jobs`` table is the cache.
+2. Each posting is upserted into the pool by URL and linked to the workspace.
 3. Cheap listing-stage filters run first (dealbreakers, title, salary,
-   location). Only survivors that still lack a description get their
-   detail page fetched, capped per run (the rest follow next run).
-4. Work mode / geocode / distance enrichment, then the full filter.
-5. For sources that list all their jobs, previously seen jobs missing
-   from the listing are marked closed.
+   location). Only survivors whose posting the pool has no fresh full
+   description for get their detail page fetched (``pool.needs_detail``),
+   capped per run (the rest follow next run). A posting another search
+   already fetched costs nothing.
+4. Placement / distance for this workspace, then the full filter.
+5. Closing is global (``backend.pool``): a detail page that's gone, a
+   complete listing that no longer shows the ad, or no listing showing it
+   for weeks. One user's results lacking an ad never close it.
 
-Scoring is a separate step (``backend.scorer.score_pending``).
+Then open pool postings other searches found are matched against this
+workspace's profile (``pool.match_pool``). Scoring is a separate step
+(``backend.scorer.score_jobs``).
 """
 from __future__ import annotations
 
@@ -26,15 +30,16 @@ from typing import Callable, Optional
 
 from sqlalchemy.orm import Session
 
+from backend import pool
 from backend.adapters.base import Adapter, Posting, SourceError
 from backend.adapters.generic import source_adapter
 from backend.adapters.seek import SeekAdapter
 from backend.db import CompanySource, Job, SessionLocal
 from backend.filters import Criteria, commute_pins, exclusion_reason, load_criteria
-from backend.geo import HOME_COUNTRY, classify_work_mode, geocode, guess_country, home_distance, parse_office_days
+from backend.geo import HOME_COUNTRY, geocode, home_distance
+from backend.pool import derive
 from backend.profile import get_profile
 from backend.scraping.http import FetchError, PoliteClient, purge_cache
-from backend.scraping.text import description_hash
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +66,19 @@ class SourceReport:
     notes: list[str] = field(default_factory=list)
 
 
+def _labels(src: Optional[CompanySource]) -> tuple[str, Optional[str]]:
+    """(the company name a source's jobs fall back to, the user's own label if they typed one). The fallback is
+    derived from the URL and may go into the shared pool; a label the user typed is theirs, so it's only ever
+    this workspace's own value."""
+    from backend.sources import default_label
+
+    if src is None:
+        return "", None
+    fallback = default_label(src.careers_url or "")
+    label = (src.label or "").strip()
+    return fallback, (label if label and label != fallback else None)
+
+
 def build_adapters(db: Session, ws: int, client: PoliteClient) -> list[tuple[Optional[CompanySource], Adapter]]:
     prof = get_profile(db, ws)
     adapters: list[tuple[Optional[CompanySource], Adapter]] = []
@@ -70,37 +88,8 @@ def build_adapters(db: Session, ws: int, client: PoliteClient) -> list[tuple[Opt
                .filter(CompanySource.workspace_id == ws, CompanySource.enabled.is_(True))
                .order_by(CompanySource.id))
     for src in sources:
-        adapters.append((src, source_adapter(client, src.careers_url, company=src.label or "")))
+        adapters.append((src, source_adapter(client, src.careers_url, company=_labels(src)[0])))
     return adapters
-
-
-def _apply_posting(job: Job, p: Posting) -> None:
-    """Copy listing/detail data onto the row without losing better data."""
-    job.title = p.title or job.title
-    job.company = p.company or job.company
-    job.external_id = p.external_id or job.external_id
-    if p.location_text and p.location_text != job.location_text:
-        job.location_text = p.location_text
-        job.lat = job.lng = None  # re-geocode
-    job.country = p.country or job.country or guess_country(job.location_text or "")
-    if p.work_mode and p.work_mode != "unknown":
-        job.work_mode = p.work_mode
-    elif p.detail_status == "full" and job.detail_status != "full":
-        job.work_mode = "unknown"  # re-classify from the new description
-    job.employment_type = p.employment_type or job.employment_type
-    job.salary_text = p.salary_text or job.salary_text
-    if p.salary_min:
-        job.salary_min = int(p.salary_min)
-    if p.salary_max:
-        job.salary_max = int(p.salary_max)
-    job.posted_at = p.posted_at or job.posted_at
-    job.industry = p.industry or job.industry
-    rank = {"none": 0, "summary": 1, "full": 2}
-    if p.description and rank.get(p.detail_status, 0) >= rank.get(job.detail_status or "none", 0):
-        job.description = p.description
-        job.detail_status = p.detail_status
-        if p.detail_status == "full":
-            job.detail_fetched_at = datetime.utcnow()
 
 
 MAX_PLACES = 10
@@ -121,68 +110,73 @@ def locate(location_text: str, pins: list[dict]) -> Optional[dict]:
 
 
 def enrich(job: Job, crit: Criteria) -> None:
-    job.country = job.country or guess_country(job.location_text or "")
+    """The workspace's view of a job: where it is (an office beats the ad's city; an ad open in several places
+    goes to the one nearest home) and how far. What follows from the ad's text alone is the posting's
+    (``pool.derive``), except for a job that reads its own ad (a private upload, or a private job)."""
+    if job.has_own_ad:
+        derive(job)
     # A known office (backend.offices) beats the ad's location, which is often just a city.
     if job.office_lat is not None:
         job.lat, job.lng = job.office_lat, job.office_lng
     # Only places in the home country need coordinates (pins, distance).
-    elif job.location_text and job.lat is None and job.country in ("", HOME_COUNTRY):
+    elif job.location_text and job.lat is None and (job.country or "") in ("", HOME_COUNTRY):
         hit = locate(job.location_text, commute_pins(crit.pins))
         if hit:
             job.lat, job.lng = hit["lat"], hit["lng"]
-            job.country = job.country or hit["country"]
-    job.office_days = parse_office_days(job.title or "", job.location_text or "", job.description or "")
-    if (job.work_mode or "unknown") == "unknown":
-        job.work_mode = classify_work_mode(job.title or "", job.location_text or "", job.description or "")
-    if job.work_mode == "unknown" and job.office_days:
-        job.work_mode = "hybrid" if job.office_days < 5 else "onsite"
+            if not job.country:
+                job.country = hit["country"]
     job.distance_km = home_distance(job.lat, job.lng, commute_pins(crit.pins))
-    job.description_hash = description_hash(job.description or "")
 
-
-# Phase D seals jobs.url and jobs.source, which SQL can no longer compare. These two helpers are the only
-# places that do; Phase D swaps their bodies for the url_index blind index (and source_id plus a Python check).
 
 def job_by_url(db: Session, ws: int, url: Optional[str]) -> Optional[Job]:
-    """The workspace's job with this URL, if any."""
-    return db.query(Job).filter(Job.workspace_id == ws, Job.url == url).first()
+    """The workspace's job with this URL, if any (``pool.job_by_url``)."""
+    return pool.job_by_url(db, ws, url)
 
 
-def unlisted_open_jobs(db: Session, ws: int, src: Optional[CompanySource], source: str, seen: set[str]):
-    """Query: the source's open jobs whose URL the latest complete listing did not contain."""
-    q = db.query(Job).filter(Job.workspace_id == ws, Job.closed_at.is_(None), Job.url.notin_(seen))
-    return q.filter(Job.source_id == src.id) if src is not None else q.filter(Job.source == source)
+def listing_key(adapter: Adapter) -> str:
+    """Which listing an ad came from, for the closing rule (``pool.close_unlisted``): the adapter's source for
+    job-board feeds and APSJobs (whose source holds the query); a crawled careers page also by its URL, so two
+    users crawling different pages of one site can't close each other's ads."""
+    from backend.adapters.generic import GenericAdapter
+
+    if isinstance(adapter, GenericAdapter) and adapter.delegate is None:
+        return f"{adapter.source}|{adapter.careers_url}"
+    return adapter.source
 
 
 def upsert_posting(db: Session, ws: int, p: Posting, source: str, source_id: Optional[int],
-                   crit: Criteria, now: datetime) -> tuple[Job, bool]:
-    job = job_by_url(db, ws, p.url)
-    is_new = job is None
-    if is_new:
-        job = Job(workspace_id=ws, url=p.url, status="to_review", first_seen=now, detail_status="none")
-        db.add(job)
-    job.source = source
-    if source_id is not None or is_new:
-        job.source_id = source_id
-    _apply_posting(job, p)
-    job.last_seen, job.closed_at = now, None
-    enrich(job, crit)
+                   crit: Criteria, now: datetime, key: Optional[str] = None) -> tuple[Job, bool]:
+    """A listed ad: stored in the shared pool, linked to the workspace and brought up to date there.
+    Returns (the workspace's job, new to the workspace)."""
+    posting, _ = pool.upsert_scraped(db, p, source, key, now)
+    job, is_new = pool.link(db, ws, posting, now, source_id)
+    job.last_seen = now
+    if job.posting_rev != posting.rev:
+        pool.refresh_link(job, crit)
+    else:
+        enrich(job, crit)  # the pins may have moved
     return job, is_new
 
 
+def stage_of(job: Job) -> str:
+    """The filter stage a job's description allows: "full" once there is a description (full or summary)."""
+    return "full" if job.detail_status in ("full", "summary") else "listing"
+
+
 def import_postings(postings: list[Posting], source: str, ws: int) -> dict:
-    """Store postings parsed from a page the user saved in their browser."""
+    """Store postings parsed from a page the user saved in their browser. They're the user's own: a job the pool
+    doesn't have stays private to this workspace (``pool.import_private``)."""
     db = SessionLocal()
     try:
         crit = load_criteria(db, ws)
         now = datetime.utcnow()
         new = kept = 0
         for p in postings:
-            job, is_new = upsert_posting(db, ws, p, source, None, crit, now)
+            job, is_new = pool.import_private(db, ws, p, source, now)
             if job.excluded_reason == NOT_A_JOB:
                 job.excluded_reason = None
-            stage = "full" if job.detail_status in ("full", "summary") else "listing"
-            job.excluded_reason = exclusion_reason(job, crit, stage=stage)
+            enrich(job, crit)
+            job.excluded_reason = exclusion_reason(job, crit, stage=stage_of(job))
             new += is_new
             kept += job.excluded_reason is None
             db.commit()
@@ -192,10 +186,11 @@ def import_postings(postings: list[Posting], source: str, ws: int) -> dict:
 
 
 def update_job_from_posting(db: Session, job: Job, p: Posting) -> None:
-    """Replace a stored job's data with a fuller posting (e.g. a saved SEEK job
-    page for a listing we only had a summary of), then re-filter it."""
+    """Replace a stored job's data with a fuller posting (e.g. a saved SEEK job page for a listing we only had a
+    summary of), then re-filter it. The page is the user's own: it's kept on this workspace's job, and the shared
+    posting (what everyone else reads) keeps the summary."""
     crit = load_criteria(db, job.workspace_id)
-    _apply_posting(job, p)
+    pool.apply_own(job, p, datetime.utcnow())
     enrich(job, crit)
     job.excluded_reason = exclusion_reason(job, crit, stage="full")
     db.commit()
@@ -207,7 +202,9 @@ def replace_jobs(db: Session, ws: int, crit: Criteria, queries: set[str]) -> int
     from backend.geo import _geocode_query
 
     moved = 0
-    for job in db.query(Job).filter(Job.workspace_id == ws, Job.location_text.isnot(None), Job.office_lat.is_(None)):
+    for job in db.query(Job).filter(Job.workspace_id == ws):
+        if not job.location_text or job.office_lat is not None:  # in Python: office fields are sealed
+            continue
         places = re.split(r"\s*;\s*", job.location_text)
         if any(_geocode_query(place).lower() in queries for place in places):
             job.lat = job.lng = None
@@ -248,15 +245,24 @@ def refilter(db: Session, crit: Criteria, ws: int, jobs: Optional[list[Job]] = N
     """Re-apply filters to stored jobs (no network). Returns #changed."""
     changed = 0
     for job in jobs if jobs is not None else db.query(Job).filter(Job.workspace_id == ws).all():
-        if job.excluded_reason == NOT_A_JOB:
+        if job.posting is not None and job.posting.not_a_job and not job.has_own_ad:
+            reason = NOT_A_JOB
+        elif job.excluded_reason == NOT_A_JOB:
             continue
-        stage = "full" if job.detail_status in ("full", "summary") else "listing"
-        reason = exclusion_reason(job, crit, stage=stage)
+        else:
+            reason = exclusion_reason(job, crit, stage=stage_of(job))
         if reason != job.excluded_reason:
             job.excluded_reason = reason
             changed += 1
     db.commit()
     return changed
+
+
+def _linked(db: Session, ws: int, posting_ids: list[int]) -> int:
+    """How many of these postings the workspace has: the counts a run reports never include other users' jobs."""
+    if not posting_ids:
+        return 0
+    return db.query(Job.id).filter(Job.workspace_id == ws, Job.posting_id.in_(posting_ids)).count()
 
 
 def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter: Adapter,
@@ -266,7 +272,10 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
     rep.listed = len(postings)
     rep.notes.extend(getattr(adapter, "notes", []))
     now = datetime.utcnow()
+    key = listing_key(adapter)
+    fallback, own_label = _labels(src)
     seen: set[str] = set()
+    closed: list[int] = []
     detail_budget = MAX_DETAILS_PER_SOURCE
 
     for i, p in enumerate(postings, 1):
@@ -274,16 +283,20 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
             continue
         seen.add(p.url)
         progress(f"{rep.label}: {i}/{len(postings)}", {"source": rep.label, "done": i, "total": len(postings)})
-        if src is not None and src.label:
-            p.company = p.company or src.label
-        job, is_new = upsert_posting(db, ws, p, adapter.source, src.id if src is not None else None, crit, now)
+        named_by_label = (p.company or "") in ("", fallback)
+        p.company = p.company or fallback
+        job, is_new = upsert_posting(db, ws, p, adapter.source, src.id if src is not None else None, crit, now, key)
+        if own_label and named_by_label:
+            job.company = own_label  # the name the user gave the source: this workspace's own
         rep.new += is_new
+        posting = job.posting
 
-        if job.excluded_reason == NOT_A_JOB:
+        if posting.not_a_job:
+            job.excluded_reason = NOT_A_JOB
             db.commit()
             continue
         listing_reason = exclusion_reason(job, crit, stage="listing")
-        if listing_reason is None and job.detail_status != "full" and adapter.has_details:
+        if listing_reason is None and adapter.has_details and pool.needs_detail(posting, now):
             if detail_budget <= 0:
                 rep.details_deferred += 1
             else:
@@ -294,20 +307,20 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
                     rep.detail_errors += 1
                     if len(rep.notes) < 5:
                         rep.notes.append(f"detail {p.url}: {exc}")
-                    detailed = p
+                    if isinstance(exc, FetchError) and exc.status in (404, 410) and pool.close(posting, "gone", now):
+                        closed.append(posting.id)  # the ad's page is gone: closed for everyone
                 else:
                     rep.details_fetched += 1
                     if detailed is None:
+                        pool.mark_not_a_job(posting, now)
                         job.excluded_reason = NOT_A_JOB
-                        job.detail_status = "full"
                         db.commit()
                         rep.excluded += 1
                         continue
-                _apply_posting(job, detailed)
-                enrich(job, crit)
+                    pool.apply_detail(posting, detailed, now)
+                    pool.refresh_link(job, crit)
 
-        stage = "full" if job.detail_status in ("full", "summary") else "listing"
-        job.excluded_reason = exclusion_reason(job, crit, stage=stage)
+        job.excluded_reason = exclusion_reason(job, crit, stage=stage_of(job))
         if job.excluded_reason:
             rep.excluded += 1
         else:
@@ -315,9 +328,9 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
         db.commit()
 
     if adapter.complete_listing and postings:
-        q = unlisted_open_jobs(db, ws, src, adapter.source, seen)
-        rep.closed = q.update({Job.closed_at: now}, synchronize_session=False)
+        closed += pool.close_unlisted(db, key, seen, now)
         db.commit()
+    rep.closed = _linked(db, ws, closed)
 
 
 def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
@@ -348,11 +361,19 @@ def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
                 src.last_error = rep.error
                 src.last_method = rep.method or None
                 db.commit()
+        progress("checking jobs other searches found", {})
+        now = datetime.utcnow()
+        stale = pool.sweep(db, now)
+        matched = pool.match_pool(db, ws, crit, now)
+        pool.refresh_links(db, ws, crit)
+        db.commit()
         progress("re-applying filters to stored jobs", {})
         refilter(db, crit, ws)
         purge_cache()
         totals = {k: sum(getattr(r, k) for r in reports)
                   for k in ("listed", "new", "details_fetched", "details_deferred", "excluded", "kept", "closed")}
+        totals["closed"] += _linked(db, ws, stale)
+        totals["pool_matched"] = matched
         return {"per_source": [r.__dict__ for r in reports], "totals": totals}
     finally:
         client.close()

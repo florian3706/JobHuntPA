@@ -130,6 +130,14 @@ def _refresh(db: Session, job: Job) -> None:
         job.excluded_reason = exclusion_reason(job, crit, stage=stage)
 
 
+def apply_office(job: Job, text: str, source: str) -> bool:
+    """Record an office on the job (no re-filtering: the caller's). Returns whether it could be placed."""
+    point = place_office(text, job)
+    job.office_text, job.office_source = " ".join(text.split())[:200], source
+    job.office_lat, job.office_lng = (point["lat"], point["lng"]) if point else (None, None)
+    return point is not None
+
+
 def set_office(db: Session, job: Job, text: Optional[str], source: str) -> bool:
     """Record an office for a job (or clear it with text=None). A source
     never overwrites a better one (user > ad > company). Returns whether the
@@ -141,11 +149,9 @@ def set_office(db: Session, job: Job, text: Optional[str], source: str) -> bool:
         job.office_text = job.office_lat = job.office_lng = job.office_source = None
         _refresh(db, job)
         return False
-    point = place_office(text, job)
-    job.office_text, job.office_source = " ".join(text.split())[:200], source
-    job.office_lat, job.office_lng = (point["lat"], point["lng"]) if point else (None, None)
+    placed = apply_office(job, text, source)
     _refresh(db, job)
-    return point is not None
+    return placed
 
 
 # --------------------------------------------------------------------------
@@ -180,9 +186,13 @@ def office_in_ad(office: str, ad: str) -> str:
 
 
 def from_ad(db: Session, job: Job, office: str) -> None:
-    """Apply the office the scorer (or the ad reader) found in a job's ad."""
-    job.office_checked_at = datetime.utcnow()
+    """Apply the office the scorer (or the ad reader) found in a job's ad. Read from the public ad, it's kept on
+    the posting for every workspace (backend.pool.take_ad_office); from a privately uploaded ad, only here."""
+    now = datetime.utcnow()
+    job.office_checked_at = now
     office = office_in_ad(office, job.description or "")
+    if not job.has_own_ad:
+        job.posting.ad_office_text, job.posting.ad_office_checked_at = office, now
     if office and job.office_source != "user":
         set_office(db, job, office, "ad")
 
@@ -293,9 +303,10 @@ def jobs_needing_office(db: Session, ws: int, job_ids: Optional[list[int]] = Non
     q = db.query(Job).filter(Job.workspace_id == ws, Job.duplicate_of.is_(None))
     if job_ids is not None:
         q = q.filter(Job.id.in_(job_ids))
-    else:
-        q = q.filter(Job.excluded_reason.is_(None), Job.closed_at.is_(None), Job.hidden.is_(False))
-    return [j for j in q.all() if office_unknown(j)]
+        return [j for j in q.all() if office_unknown(j)]
+    # Excluded, closed and hidden are decided here, not in SQL (sealed fields, accounts design §14.6).
+    return [j for j in q.all()
+            if not j.excluded_reason and j.closed_at is None and not j.hidden and office_unknown(j)]
 
 
 def find_offices(ws: int, job_ids: Optional[list[int]] = None,
@@ -310,7 +321,15 @@ def find_offices(ws: int, job_ids: Optional[list[int]] = None,
     db = SessionLocal()
     out = {"from_ads": 0, "from_companies": 0, "unknown": 0, "recruiters": 0, "errors": 0}
     try:
+        from backend.pool import take_ad_office
+
         unread = [j for j in jobs_needing_office(db, ws, job_ids) if j.detail_status == "full" and not j.office_checked_at]
+        shared = [j for j in unread if take_ad_office(j)]  # another workspace already had the public ad read
+        for job in shared:
+            _refresh(db, job)
+            out["from_ads"] += job.office_source == "ad" and job.office_lat is not None
+        db.commit()
+        unread = [j for j in unread if j not in shared]
         for i, job in enumerate(unread, 1):
             progress(f"reading ads for an office {i}/{len(unread)}", {"done": i, "total": len(unread)})
             try:

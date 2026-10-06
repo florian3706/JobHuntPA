@@ -302,7 +302,9 @@ def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> d
         ad_employment = result.pop("employment_type", None)
         _store(db, job_id, result=result, profile_hash=profile_hash, model=cfg["model"])
         if ad_employment and not job.employment_type:  # adapter data wins
-            job.employment_type = ad_employment
+            from backend.pool import share_ad_fact
+
+            share_ad_fact(job, "employment_type", ad_employment)  # read from the public ad: for everyone
             db.commit()
         if job.detail_status == "full":
             from backend.offices import from_ad
@@ -319,22 +321,19 @@ def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack
     against older documents) | all (every eligible job). ``office_slack`` also
     counts jobs a temporarily softened office-days limit lets through."""
     from backend.filters import softened_job_ids
+    from backend.pool import job_states
 
-    eligible = Job.excluded_reason.is_(None)
     softened = softened_job_ids(db, ws, office_slack)
-    if softened:
-        eligible = eligible | Job.id.in_(softened)
-    rows = (
-        db.query(Job.id, FitResult.status, FitResult.profile_hash, FitResult.score)
-        .outerjoin(FitResult, FitResult.job_id == Job.id)
-        .filter(eligible)
-        .filter(Job.closed_at.is_(None), Job.hidden.is_(False), Job.duplicate_of.is_(None))
-        .filter(Job.workspace_id == ws)
-        .filter(Job.detail_status.in_(["full", "summary"]))
-        .all()
-    )
+    # Decided in Python: exclusion, hidden and the fit's status are sealed (accounts design §14.6), and closed /
+    # the description's status are the posting's (or this workspace's own).
+    fits = {job_id: (status, phash, score) for job_id, status, phash, score in
+            db.query(FitResult.job_id, FitResult.status, FitResult.profile_hash, FitResult.score)
+            .join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws)}
     out = []
-    for job_id, status, phash, score in rows:
+    for job_id, hidden, reason, closed, detail in job_states(db, ws):
+        if (reason and job_id not in softened) or hidden or closed or detail not in ("full", "summary"):
+            continue
+        status, phash, score = fits.get(job_id, (None, None, None))
         unscored = status is None or score is None
         if mode == "all" or unscored or (mode == "stale" and phash != profile_hash):
             out.append(job_id)
@@ -344,9 +343,13 @@ def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack
 def _duplicate_groups(job_ids: list[int]) -> dict[int, list[int]]:
     """{representative id: [duplicate ids]} for postings with the same company,
     title and description (e.g. one role advertised in several cities)."""
+    from backend.pool import jobs_query
+
     db = SessionLocal()
     try:
-        rows = db.query(Job.id, Job.company, Job.title, Job.description_hash).filter(Job.id.in_(job_ids)).all()
+        rows = [(j.id, j.company, j.title, j.description_hash)
+                for start in range(0, len(job_ids), 500)
+                for j in jobs_query(db).filter(Job.id.in_(job_ids[start:start + 500])).order_by(Job.id)]
     finally:
         db.close()
     groups: dict[int, list[int]] = {}

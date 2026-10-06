@@ -773,8 +773,8 @@ def build(db_path: Path) -> None:
     isolate(db_path)
 
     from backend.db import (AppSetting, ChatMessage, ChatThread, CompanyProfile, CompanySource, CoverLetter,
-                            DealbreakerSet, Document, FitResult, GeocodeCache, Job, JobDuplicate, Pin, SearchRun,
-                            SessionLocal, UserProfile, Workspace, company_key, init_db)
+                            DealbreakerSet, Document, FitResult, GeocodeCache, Job, JobDuplicate, Pin, Posting,
+                            SearchRun, SessionLocal, UserProfile, Workspace, company_key, init_db)
     from backend.duplicates import scan
     from backend.filters import commute_pins, exclusion_reason, load_criteria, parse_salary
     from backend.geo import _geocode_query, classify_work_mode, home_distance, parse_office_days
@@ -862,15 +862,22 @@ def build(db_path: Path) -> None:
             salary_min = salary_max = None
             if spec["source"] != "seek" and spec.get("salary"):
                 salary_min, salary_max = (int(v) for v in parse_salary(spec["salary"]))
-            job = Job(
-                workspace_id=ws_id, source=spec["source"], source_id=source_rows[spec["src"]].id if spec.get("src") else None,
-                external_id=spec["url"].rsplit("/", 1)[-1], company=spec["company"], title=spec["title"],
-                location_text=spec["location"], country="AU", lat=lat, lng=lng, work_mode=mode, employment_type=spec.get("employment", "full_time"), office_days=days_in_office,
-                salary_min=salary_min, salary_max=salary_max, salary_text=spec.get("salary"), url=spec["url"],
+            # The ad itself goes into the shared pool; the workspace's job links to it (accounts design §14).
+            posting = Posting(
+                url=spec["url"], source=spec["source"], external_id=spec["url"].rsplit("/", 1)[-1],
+                company=spec["company"], title=spec["title"], location_text=spec["location"], country="AU",
+                work_mode=mode, employment_type=spec.get("employment", "full_time"), office_days=days_in_office,
+                salary_min=salary_min, salary_max=salary_max, salary_text=spec.get("salary"),
                 description=desc, description_hash=description_hash(desc), detail_status=spec["detail"],
                 detail_fetched_at=first_seen + timedelta(minutes=2) if spec["detail"] == "full" else None,
                 posted_at=(first_seen - timedelta(hours=20)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                industry=spec.get("industry"), distance_km=home_distance(lat, lng, pins), status=spec["status"],
+                industry=spec.get("industry"), first_seen=first_seen, last_listed_at=run_start + timedelta(seconds=30),
+                rev=1,
+            )
+            job = Job(
+                workspace_id=ws_id, url=spec["url"], origin="pool", posting=posting, posting_rev=1,
+                source_id=source_rows[spec["src"]].id if spec.get("src") else None,
+                lat=lat, lng=lng, distance_km=home_distance(lat, lng, pins), status=spec["status"],
                 first_seen=first_seen, last_seen=run_start + timedelta(seconds=30),
             )
             if office:
@@ -923,7 +930,8 @@ def build(db_path: Path) -> None:
                 sentiment_json=json.dumps(c["sentiment"]), research_version=3,
                 offices_json=json.dumps([{"name": n, "address": a, "url": u} for n, a, u, _xy in c["offices"]]),
                 offices_checked_at=ago(days=20 + i), offices_cities=json.dumps(["sydney"]),
-                model="example-model", researched_at=ago(days=20 + i)))
+                model="example-model", researched_at=ago(days=20 + i),
+                sentiment_researched_at=ago(days=3 + i), news_researched_at=ago(days=3 + i)))
         db.add(CompanyProfile(
             key=company_key("Redgum Talent Partners"), name="Redgum Talent Partners", status="done",
             official_name="Redgum Talent Partners Pty Ltd", is_recruiter=True,
@@ -933,7 +941,8 @@ def build(db_path: Path) -> None:
             sources_json=json.dumps([_src("Redgum Talent Partners: about", "https://redgum-talent.example/about")]),
             sentiment_json=json.dumps(dict(summary="Few reviews.", rating="", positives=[], negatives=[], sources=[])),
             research_version=3, offices_json="[]", offices_checked_at=ago(days=20), offices_cities=json.dumps(["sydney"]),
-            model="example-model", researched_at=ago(days=20)))
+            model="example-model", researched_at=ago(days=20), sentiment_researched_at=ago(days=20),
+            news_researched_at=ago(days=20)))
 
         # --- cover letter + chat (for the top job) -------------------------------------
         top = jobs["wattle"]

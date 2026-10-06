@@ -117,7 +117,7 @@ def _reference_list_jobs(db, ws, office_slack, include):
 
     phash = _profile_hash(db, ws)
     rows = (db.query(Job, FitResult).outerjoin(FitResult, FitResult.job_id == Job.id)
-            .options(defer(Job.description)).filter(Job.workspace_id == ws).all())
+            .options(defer(Job._description)).filter(Job.workspace_id == ws).all())
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id).filter(Job.workspace_id == ws)}
     softened = softened_job_ids(db, ws, office_slack)
     profiles = {p.key: p for p in db.query(CompanyProfile).all()}

@@ -25,7 +25,7 @@ from backend.adapters.seek import parse_search_page  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import Job, SessionLocal, init_db  # noqa: E402
 from backend.employment import EMPLOYMENT_TYPES, normalise_employment_type as norm  # noqa: E402
-from backend.pipeline import _apply_posting  # noqa: E402
+from backend.pool import merge_posting  # noqa: E402
 
 init_db()
 
@@ -149,12 +149,14 @@ class AdapterFieldTest(unittest.TestCase):
 
 class PipelineTest(unittest.TestCase):
     def test_apply_posting_stores_and_keeps(self):
+        from datetime import datetime
+
         job = Job()
-        _apply_posting(job, Posting(url="u", title="PM", employment_type="contract"))
+        merge_posting(job, Posting(url="u", title="PM", employment_type="contract"), datetime.utcnow())
         self.assertEqual(job.employment_type, "contract")
-        _apply_posting(job, Posting(url="u", title="PM"))  # a later pass without the field keeps it
+        merge_posting(job, Posting(url="u", title="PM"), datetime.utcnow())  # a later pass without the field keeps it
         self.assertEqual(job.employment_type, "contract")
-        _apply_posting(job, Posting(url="u", title="PM", employment_type="full_time"))
+        merge_posting(job, Posting(url="u", title="PM", employment_type="full_time"), datetime.utcnow())
         self.assertEqual(job.employment_type, "full_time")
 
 

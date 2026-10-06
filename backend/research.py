@@ -36,7 +36,13 @@ from backend.threads import submit
 
 log = logging.getLogger(__name__)
 
-REFRESH_AFTER = timedelta(days=90)
+# Profiles are shared by every user (accounts design §14.7). The base profile (business, ownership, offices...)
+# is researched again after BASE_REFRESH; employee sentiment and news/controversies have their own dates, and
+# "research this company" refreshes just those parts once they're older than SECTION_REFRESH.
+BASE_REFRESH = timedelta(days=30)
+SECTION_REFRESH = timedelta(days=1)
+REFRESH_AFTER = BASE_REFRESH
+PARTS = ("base", "sentiment", "news")
 POLL_INTERVAL_S = 3
 MAX_WAIT_S = 600
 NOT_COMPANIES = {"private advertiser", "confidential", "confidential company", "undisclosed", ""}
@@ -92,56 +98,83 @@ Rules:
 def _board_labels(db: Session, ws: int) -> set[str]:
     """Labels of sources that are job boards (their jobs name many employers).
     Jobs from those boards whose employer is unknown carry the board's name."""
+    from backend.pool import jobs_query
+
     out = set()
     for src in db.query(CompanySource).filter(CompanySource.workspace_id == ws):
-        companies = {c for (c,) in db.query(Job.company).filter(Job.source_id == src.id)}  # de-duplicated here: company may be sealed
+        companies = {j.company for j in jobs_query(db).filter(Job.source_id == src.id)}  # de-duplicated here: company may be sealed
         if len(companies) >= 3:
             out.add(company_key(src.label or ""))
     return out
 
 
+def plan(profile: Optional[CompanyProfile], *, on_request: bool = False,
+         now: Optional[datetime] = None) -> list[str]:
+    """Which parts of a company's shared profile to research (PARTS order); [] = the cached profile is fine.
+
+    All three (one full research) when there's no profile, it failed, it's from an older RESEARCH_VERSION, or
+    the base is older than BASE_REFRESH. Otherwise, only when someone asks to research the company
+    (``on_request``): employee sentiment and/or news, if older than SECTION_REFRESH."""
+    now = now or datetime.utcnow()
+    if profile is None or profile.status not in ("done", "skipped"):
+        return list(PARTS)
+    if profile.status == "skipped":  # not a company (e.g. "Private Advertiser")
+        return []
+    if (not profile.researched_at or profile.researched_at < now - BASE_REFRESH
+            or (profile.research_version or 1) < RESEARCH_VERSION):
+        return list(PARTS)
+    if not on_request:
+        return []
+    fresh_after = now - SECTION_REFRESH
+    return [part for part, at in (("sentiment", profile.sentiment_researched_at), ("news", profile.news_researched_at))
+            if not at or at < fresh_after]
+
+
 def companies_to_research(db: Session, ws: int, mode: str = "missing",
                           job_ids: Optional[list[int]] = None) -> list[dict]:
-    """[{name, key, jobs}] for the companies of a workspace's jobs.
+    """[{name, key, jobs, parts}] for the companies of a workspace's jobs.
 
     job_ids: only these jobs' companies (e.g. the jobs ticked in the UI);
     otherwise every job that passes the filters and isn't closed.
-    mode: missing (no profile, failed, older than 90 days, or made before the
-    current RESEARCH_VERSION) | all
+    mode: missing (no profile, failed, base older than 30 days, or made before
+    the current RESEARCH_VERSION: ``plan``) | all
     """
+    from backend.pool import jobs_query
+
     skip = NOT_COMPANIES | _board_labels(db, ws)
-    q = db.query(Job.company, Job.title, Job.location_text, Job.url).filter(Job.workspace_id == ws)
+    q = jobs_query(db).filter(Job.workspace_id == ws)
     if job_ids is not None:
-        q = q.filter(Job.id.in_(job_ids))
-    else:
-        q = (q.filter(Job.excluded_reason.is_(None))
-             .filter(Job.closed_at.is_(None), Job.hidden.is_(False), Job.duplicate_of.is_(None)))
+        jobs = q.filter(Job.id.in_(job_ids)).all()
+    else:  # decided in Python: exclusion and hidden are sealed (accounts design §14.6)
+        jobs = [j for j in q.filter(Job.duplicate_of.is_(None)).order_by(Job.id)
+                if not j.excluded_reason and j.closed_at is None and not j.hidden]
     by_key: dict[str, dict] = {}
-    for company, title, location, url in q.all():
-        key = company_key(company or "")
+    for job in jobs:
+        key = company_key(job.company or "")
         if key in skip:
             continue
-        entry = by_key.setdefault(key, {"name": company.strip(), "key": key, "jobs": []})
+        entry = by_key.setdefault(key, {"name": job.company.strip(), "key": key, "jobs": []})
         if len(entry["jobs"]) < 3:
-            entry["jobs"].append({"title": title, "location": location, "url": url})
+            entry["jobs"].append({"title": job.title, "location": job.location_text, "url": job.url})
     profiles = {p.key: p for p in db.query(CompanyProfile).all()}
-    stale_before = datetime.utcnow() - REFRESH_AFTER
     out = []
     for key, entry in by_key.items():
-        p = profiles.get(key)
-        if mode == "all" or p is None or p.status not in ("done", "skipped") or (
-                p.status == "done" and ((p.researched_at and p.researched_at < stale_before)
-                                        or (p.research_version or 1) < RESEARCH_VERSION)):
-            out.append(entry)
+        parts = list(PARTS) if mode == "all" else plan(profiles.get(key))
+        if parts:
+            out.append({**entry, "parts": parts})
     return sorted(out, key=lambda e: e["name"].lower())
 
 
 def job_context(db: Session, ws: int, name: str) -> dict:
-    """{name, key, jobs} for researching one company on demand."""
+    """{name, key, jobs, parts} for researching one company on demand: only what ``plan`` says is due."""
+    from backend.pool import jobs_query
+
     key = company_key(name)
-    rows = db.query(Job.title, Job.location_text, Job.url, Job.company).filter(Job.workspace_id == ws).all()
-    jobs = [{"title": t, "location": l, "url": u} for (t, l, u, c) in rows if company_key(c or "") == key][:3]
-    return {"name": name.strip(), "key": key, "jobs": jobs}
+    jobs = [{"title": j.title, "location": j.location_text, "url": j.url}
+            for j in jobs_query(db).filter(Job.workspace_id == ws).order_by(Job.id)
+            if company_key(j.company or "") == key][:3]
+    return {"name": name.strip(), "key": key, "jobs": jobs,
+            "parts": plan(db.get(CompanyProfile, key), on_request=True)}
 
 
 # --------------------------------------------------------------------------
@@ -176,15 +209,51 @@ def _get(url: str, cfg: dict) -> dict:
     return resp.json()
 
 
+SECTION_SCHEMA = {
+    "sentiment": ('  "glassdoor_url": "URL of the company\'s Glassdoor overview or reviews page, if your search returned one, else empty",\n'
+                  '  "employee_sentiment": {\n'
+                  '    "summary": "2-4 sentences: what current and former employees say overall, and how consistent that is",\n'
+                  '    "rating": "e.g. \'3.9/5 on Glassdoor (1,200 reviews)\'; empty if not found",\n'
+                  '    "positives": ["short recurring theme"],\n'
+                  '    "negatives": ["short recurring theme"],\n'
+                  '    "sources": [{"title": "page title", "url": "https://..."}]\n'
+                  '  }'),
+    "news": ('  "controversies": [\n'
+             '    {"title": "short headline", "year": "YYYY", "summary": "1-2 neutral sentences; say \'alleged\' where nothing was proven",\n'
+             '     "sources": [{"title": "article title", "url": "https://..."}]}\n'
+             '  ],\n'
+             '  "controversy_note": "one sentence summarising the controversy picture, e.g. \'No significant controversies found in news coverage.\'"'),
+}
+SECTION_RULES = {
+    "sentiment": "- Employee sentiment: base it on review sites and forums you actually found (Glassdoor, Indeed company reviews, Seek company reviews, Reddit, Blind; up to 4 themes each way), note if reviews are few or dated, and cite the pages. If you find nothing, say so in summary and leave the lists empty.",
+    "news": "- Controversies: lawsuits, regulatory fines or investigations, data breaches, workplace/labour or discrimination issues, mass layoffs handled badly, ethics, environmental or safety scandals, fraud, including recent news. Maximum 5, most significant first. Only include items reported by news outlets you found in your search, and cite those articles' URLs. If you find none, return \"controversies\": [] and say so in controversy_note.",
+}
+
+
+def section_instructions(parts: list[str]) -> str:
+    """A narrower research request: only the profile's sentiment and/or news sections (``plan``)."""
+    what = " and ".join({"sentiment": "what employees say about working there",
+                         "news": "news coverage and controversies"}[p] for p in parts)
+    return ("You are a company research agent. Using web search, find the current state of " + what
+            + " for ONE organisation. Search the web before answering; use the job context given to identify the "
+            "right organisation when the name is ambiguous.\n\nReturn ONLY a JSON object, no markdown:\n{\n"
+            + ",\n".join(SECTION_SCHEMA[p] for p in parts) + "\n}\n\nRules:\n"
+            + "\n".join(SECTION_RULES[p] for p in parts)
+            + "\n- Never invent a URL: every URL must be a page your search returned.")
+
+
 def run_agent(company: dict, cfg: dict) -> dict:
-    """One research agent: web-search grounded response for one company."""
+    """One research agent: web-search grounded response for one company (the whole profile, or only the
+    sections in ``company["parts"]`` when the base profile is still fresh)."""
+    parts = company.get("parts") or list(PARTS)
     context = "\n".join(
         f"- {j['title']} ({j.get('location') or 'location n/a'}) {j.get('url') or ''}" for j in company["jobs"]
     )
+    full = "base" in parts
     return llm_providers.web_search(
-        cfg, instructions=INSTRUCTIONS,
+        cfg, instructions=INSTRUCTIONS if full else section_instructions(parts),
         input=f"Organisation: {company['name']}\nJob ads we have from it (for disambiguation):\n{context or '- none'}",
-        context_size="medium", what="research agent", feature="Company research")
+        context_size="medium" if full else "low", what="research agent", feature="Company research")
 
 
 def run_response(payload: dict, cfg: dict, what: str = "web search") -> dict:
@@ -345,7 +414,19 @@ def _save(company: dict, *, profile: Optional[dict] = None, dropped: int = 0,
             row = CompanyProfile(key=company["key"], name=company["name"])
             db.add(row)
         row.name = company["name"]
-        if profile is not None:
+        parts = company.get("parts") or list(PARTS)
+        now = datetime.utcnow()
+        if profile is not None and "base" not in parts:  # a narrower refresh: just these sections
+            if "sentiment" in parts:
+                row.glassdoor_url = profile["glassdoor_url"] or row.glassdoor_url
+                row.sentiment_json = json.dumps(profile["sentiment"])
+                row.sentiment_researched_at = now
+            if "news" in parts:
+                row.controversies_json = json.dumps(profile["controversies"])
+                row.controversy_note = profile["controversy_note"]
+                row.news_researched_at = now
+            row.error = None
+        elif profile is not None:
             row.status = "done" if profile["is_company"] else "skipped"
             row.official_name = profile["official_name"]
             row.is_recruiter = profile["is_recruiter"]
@@ -365,7 +446,8 @@ def _save(company: dict, *, profile: Optional[dict] = None, dropped: int = 0,
             row.offices_checked_at = datetime.utcnow()
             row.research_version = RESEARCH_VERSION
             row.unverified_dropped = dropped
-            row.error, row.model, row.researched_at = None, model, datetime.utcnow()
+            row.error, row.model = None, model
+            row.researched_at = row.sentiment_researched_at = row.news_researched_at = now
         else:
             if row.status != "done":
                 row.status = "error"
@@ -387,19 +469,29 @@ def research_one(company: dict, cfg: dict) -> dict:
 
 
 def research_companies(companies: list[dict], progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
-    """Run one research agent per company, a few in parallel."""
+    """Run one research agent per company, a few in parallel: the parts each company's ``parts`` lists (all of
+    them when it has none). A company whose ``parts`` is empty has an up-to-date profile and costs nothing.
+
+    ``researched`` counts the profiles that are up to date afterwards (researched now or already fresh);
+    ``refreshed`` says which parts were researched for whom ({name: ["base", "sentiment", "news"]}), and
+    ``up_to_date`` lists those that needed nothing."""
     cfg = get_config("research")
     if config_problem(cfg):
         raise ScorerError(config_problem(cfg), auth=True)
+    current = [c["name"] for c in companies if "parts" in c and not c["parts"]]
+    companies = [c for c in companies if "parts" not in c or c["parts"]]
+    requested = len(companies) + len(current)
     if not companies:
-        return {"requested": 0, "researched": 0, "errors": 0, "aborted": None}
+        return {"requested": requested, "researched": len(current), "errors": 0, "aborted": None,
+                "refreshed": {}, "up_to_date": current}
     no_search = llm_providers.web_search_problem(cfg, "Company research")
     if no_search:  # fail fast: no request could work, and the companies aren't marked as failed
-        return {"requested": len(companies), "researched": 0, "errors": 0, "skipped": len(companies),
-                "first_error": no_search, "aborted": None}
+        return {"requested": requested, "researched": len(current), "errors": 0, "skipped": len(companies),
+                "first_error": no_search, "aborted": None, "refreshed": {}, "up_to_date": current}
     stop = threading.Event()
     lock = threading.Lock()
     counts = {"researched": 0, "errors": 0, "done": 0}
+    refreshed: dict[str, list[str]] = {}
     first_error: list[str] = []
     aborted: list[str] = []
 
@@ -419,6 +511,8 @@ def research_companies(companies: list[dict], progress: Callable[[str, dict], No
         with lock:
             counts["done"] += 1
             counts["researched" if ok else "errors"] += 1
+            if ok:
+                refreshed[company["name"]] = list(company.get("parts") or PARTS)
             progress(f"researching companies {counts['done']}/{len(companies)} (last: {company['name']})",
                      {"done": counts["done"], "total": len(companies)})
 
@@ -426,10 +520,12 @@ def research_companies(companies: list[dict], progress: Callable[[str, dict], No
         for fut in as_completed([submit(pool, work, c) for c in companies]):
             fut.result()
     return {
-        "requested": len(companies),
-        "researched": counts["researched"],
+        "requested": requested,
+        "researched": counts["researched"] + len(current),
         "errors": counts["errors"],
         "skipped": len(companies) - counts["done"],
         "first_error": first_error[0] if first_error else None,
         "aborted": aborted[0] if aborted else None,
+        "refreshed": refreshed,
+        "up_to_date": current,
     }

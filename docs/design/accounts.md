@@ -894,6 +894,7 @@ A posting missing from one user's query results says nothing about whether it cl
   - If the workspace already has it, the page's differing values become own overrides.
   - Else, if the pool has the URL, a pool link is made and differing values become overrides.
   - Otherwise a **private job** is created (`origin = 'private'`, `posting_id` NULL), which never enters the pool. If a later search of this workspace lists the same URL, the private job is attached to the new posting, and its own differing values stay private.
+- **A source label the user typed is theirs.** Adapters fall back to a company name derived from the source's URL (`sources.default_label`), and that name goes into the posting. When the user gave the source a different label, it becomes the link's own company for the jobs that named no employer, as the old pipeline showed it.
 - **Facts an LLM reads from an ad are shared only when it read the public ad:**
   - The office named in the ad (`ad_office_text`, from scoring or Fill missing info).
   - The employment type taken from the scorer.
@@ -914,7 +915,8 @@ A posting missing from one user's query results says nothing about whether it cl
    - An office read from a public ad (`office_checked_at` with `office_source` 'ad', 'company' or none) becomes the posting's `ad_office_*`.
 5. **Kept on every link:** status, hidden, excluded_reason, coordinates, distance, verdict, office override, `duplicate_of`, `source_id`, `first_seen` and `last_seen`.
    - Fit results, cover letters, chats and duplicate decisions point at link ids, which don't change. Nothing to re-key, and nothing to do for job ids held in localStorage or in chats.
-   - Fill-gap values copied between duplicates are dropped; the next duplicate scan fills them in again as own values.
+   - Values an old duplicate merge copied onto a row (salary, work mode, …) can't be told apart from scraped ones. They came from another public ad of the same job, so they move to the posting with the rest.
+   - A company name that is the label the user typed for the source (the old pipeline used the label when an ad named no employer) stays the link's own value. The posting gets the name derived from the source's URL, as new searches do (14.4).
 6. **Company profiles** (in `_fix_legacy_data`, idempotent):
    - `news_researched_at = researched_at` for every researched profile: the single research always covered controversies.
    - `sentiment_researched_at = researched_at` where `sentiment_json` is set (research version 2 and later).
@@ -934,7 +936,7 @@ A posting missing from one user's query results says nothing about whether it cl
   - Every own-content column, including a privately uploaded full ad.
   - A private job's `url`, through `url_index` (§2.3).
 - **Sealed in `fit_results`:** score, evidence, status and error.
-- **Null-ness must not leak.** `hidden`, `excluded_reason`, `location_verdict`, the office override and the own-content columns use a new `SealedAlways` type (§2.1). It writes a sealed marker for NULL, so `IS NULL` reveals nothing and is refused like any other comparison. Whether a user uploaded a full ad then shows only as ciphertext length, which §2.5 already lists.
+- **Null-ness must not leak.** `hidden`, `excluded_reason`, `location_verdict`, the office override and the own-content columns use a new `SealedAlways` type (§2.1). Phase D also drops the `server_default`s that `jobs.hidden` and `jobs.detail_status` still carry (§15). It writes a sealed marker for NULL, so `IS NULL` reveals nothing and is refused like any other comparison. Whether a user uploaded a full ad then shows only as ciphertext length, which §2.5 already lists.
 - **Stays plaintext:**
   - `first_seen`. Link ids are allocated in order, and run start times are plaintext, so when a link was made is visible either way; sealing it would hide nothing.
   - `last_seen` is sealed, because it records which later searches still matched the job.
@@ -959,7 +961,7 @@ A posting missing from one user's query results says nothing about whether it cl
   - Otherwise a **narrower research** when sentiment, news or both are older than one day (`SECTION_REFRESH`). One web-search request asks only for the stale parts: the sentiment with the Glassdoor page, and/or the controversies with the note. Links are verified as in full research. Only those fields and their timestamps change; the base is kept.
   - Otherwise **nothing:** the cached profile is shown and no LLM call is made.
   - Every request goes through `llm_providers.web_search`, as today.
-- **What the run reports:** `summary.research` keeps `requested`, `researched`, `errors`, `skipped`, `first_error` and `aborted`, so the frontend's text still works. It adds:
+- **What the run reports:** `summary.research` keeps `requested`, `researched`, `errors`, `skipped`, `first_error` and `aborted`, so the frontend's text still works. `researched` counts the profiles that are up to date afterwards, whether researched now or already fresh, so "Research again" on a recent profile reads "researched 1/1" and not "0/1". It adds:
   - `refreshed: {company name: [parts]}`, where the parts are `"base"`, `"sentiment"` and `"news"` (a full research lists all three).
   - `up_to_date: [company names]` for those that needed nothing.
 - **Profile JSON (`CompanyProfile.to_dict`, `/api/companies`).** Alongside the existing fields:

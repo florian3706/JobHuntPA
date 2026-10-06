@@ -84,6 +84,9 @@ def _first_match(text: str, phrases: list[str]) -> Optional[str]:
     return None
 
 
+first_match = _first_match  # the first of these phrases in the text (word boundaries, any case), or None
+
+
 def _get(job: Any, name: str, default: Any = None) -> Any:
     return job.get(name, default) if isinstance(job, dict) else getattr(job, name, default)
 
@@ -179,9 +182,9 @@ def softened_job_ids(db: Session, ws: int, extra_days: int) -> set[int]:
     if extra_days <= 0 or crit.max_office_days is None:
         return set()
     soft = replace(crit, max_office_days=crit.max_office_days + extra_days)
-    # The prefix is checked here, not with LIKE: the reason may be a sealed column.
-    ids = [i for i, reason in db.query(Job.id, Job.excluded_reason)
-           .filter(Job.workspace_id == ws, Job.excluded_reason.isnot(None)) if reason.startswith(OFFICE_DAYS_REASON)]
+    # Decided here, not in SQL: the reason is sealed, and so is whether there is one (accounts design §14.6).
+    ids = [i for i, reason in db.query(Job.id, Job.excluded_reason).filter(Job.workspace_id == ws)
+           if reason and reason.startswith(OFFICE_DAYS_REASON)]
     jobs = db.query(Job).filter(Job.id.in_(ids)) if ids else []
     return {j.id for j in jobs
             if exclusion_reason(j, soft, stage="full" if j.detail_status in ("full", "summary") else "listing") is None}

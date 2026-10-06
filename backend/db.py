@@ -11,6 +11,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from sqlalchemy import (
     JSON,
@@ -28,7 +29,7 @@ from sqlalchemy import (
     inspect,
     text,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker, validates
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker, validates
 from sqlalchemy.schema import CreateTable
 
 log = logging.getLogger(__name__)
@@ -81,45 +82,107 @@ def _workspace_fk():
                   default=1, server_default="1", index=True)
 
 
+DETAIL_RANK = {"none": 0, "summary": 1, "full": 2}
+
+
+class Posting(Base):
+    """One job ad in the shared pool (docs/design/accounts.md §14): what its source publishes, scraped once and
+    used by every workspace. Never holds anything a user added or decided: those live on the workspace's ``Job``
+    (the link). Written only by ``backend.pool``."""
+
+    __tablename__ = "postings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    url = Column(String, nullable=False, unique=True)   # identity: the URL as the adapter produces it
+    source = Column(String, nullable=True)              # "seek", "workable:compass-education", "site:acme.com" ...
+    external_id = Column(String, nullable=True)
+    company = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    location_text = Column(String, nullable=True)
+    country = Column(String, nullable=True)             # ISO-2 when known ("AU")
+    work_mode = Column(String, nullable=True)           # remote | hybrid | onsite | unknown
+    employment_type = Column(String, nullable=True)     # backend.employment.EMPLOYMENT_TYPES, None = unknown
+    office_days = Column(Integer, nullable=True)        # days/week in the office, when the ad says
+    salary_min = Column(Integer, nullable=True)
+    salary_max = Column(Integer, nullable=True)
+    salary_text = Column(String, nullable=True)
+    description = Column(Text, nullable=True)           # as scraped
+    description_hash = Column(String, nullable=True, index=True)
+    # none: listing data only; summary: listing teaser only (e.g. SEEK); full: detail page / API detail fetched.
+    detail_status = Column(String, nullable=False, default="none", server_default="none")
+    detail_fetched_at = Column(DateTime, nullable=True)
+    posted_at = Column(String, nullable=True)
+    industry = Column(String, nullable=True)
+    not_a_job = Column(Boolean, nullable=False, default=False, server_default="0")  # its page wasn't a job ad
+    # The office the public ad names (read by an LLM from this description): "" = it names none.
+    ad_office_text = Column(String, nullable=True)
+    ad_office_checked_at = Column(DateTime, nullable=True)
+    listing_key = Column(String, nullable=True)         # the listing that last listed it (backend.pool closing rule)
+    first_seen = Column(DateTime, default=utcnow)       # first stored in the pool
+    last_listed_at = Column(DateTime, default=utcnow, index=True)  # last time any listing showed it
+    closed_at = Column(DateTime, nullable=True, index=True)
+    close_reason = Column(String, nullable=True)        # gone | unlisted | stale
+    rev = Column(Integer, nullable=False, default=1, server_default="1")  # bumped when the content changes
+
+
+# A job's content: the posting's for a pool link (with this workspace's own value, when it has one, on top), or
+# all on the job for a private job. ``Job.<name>`` reads the effective value; assigning writes the workspace's own.
+JOB_CONTENT = ("source", "external_id", "company", "title", "location_text", "country", "work_mode", "employment_type",
+               "office_days", "salary_min", "salary_max", "salary_text", "description", "description_hash",
+               "detail_status", "detail_fetched_at", "posted_at", "industry")
+
+
+def _content(name: str) -> property:
+    own = "_" + name
+    inherit = "none" if name == "detail_status" else None  # the own value that means "the posting's"
+
+    def get(self):
+        value = getattr(self, own)
+        if value is not None and value != inherit:
+            return value
+        posting = self.posting
+        return getattr(posting, name) if posting is not None else inherit
+
+    def set(self, value):
+        posting = self.posting
+        if posting is not None and value == getattr(posting, name):
+            value = inherit  # the same as the shared ad: no override
+        setattr(self, own, inherit if value is None else value)
+
+    return property(get, set, doc=f"Effective {name}: this workspace's own value, else the posting's.")
+
+
 class Job(Base):
+    """A job in a workspace: the link from the workspace to a shared ``Posting`` plus everything personal about
+    it (status, hidden, exclusion, placement, office, verdict, and own content such as a privately uploaded full
+    ad). A private job (``posting_id`` NULL: imported from a saved page) keeps all its content here.
+
+    The content attributes (``title``, ``description``, ... see JOB_CONTENT) are Python properties without an SQL
+    form: filter on them in Python. Their own values are the ``_title``... columns (named ``title``... in the
+    table, where they were before the pool), NULL meaning "the posting's".
+    """
+
     __tablename__ = "jobs"
     __table_args__ = (UniqueConstraint("workspace_id", "url", name="uq_jobs_workspace_url"),)
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = _workspace_fk()
-    source = Column(String, nullable=True)          # "seek", "workable:compass-education", ...
+    url = Column(String, nullable=True)             # the link key: the posting's URL, or a private job's own
+    posting_id = Column(Integer, ForeignKey("postings.id", ondelete="SET NULL"), nullable=True, index=True)
+    posting = relationship(Posting, lazy="joined")
+    origin = Column(String, nullable=True)          # pool | private; NULL: not migrated yet (backend.pool_migration)
+    posting_rev = Column(Integer, nullable=True)    # the posting's rev this link was last refreshed against
     source_id = Column(Integer, ForeignKey("company_sources.id", ondelete="SET NULL"), nullable=True)
-    external_id = Column(String, nullable=True)
-    company = Column(String, nullable=True)
-    title = Column(String, nullable=True)
-    location_text = Column(String, nullable=True)
-    country = Column(String, nullable=True)         # ISO-2 when known ("AU")
-    lat = Column(Float, nullable=True)
+    lat = Column(Float, nullable=True)              # placed for this workspace (nearest place to its home)
     lng = Column(Float, nullable=True)
-    work_mode = Column(String, nullable=True)       # remote | hybrid | onsite | unknown
-    # backend.employment.EMPLOYMENT_TYPES, None = unknown. Never filter or sort on it in SQL (sealed in Phase D).
-    employment_type = Column(String, nullable=True)
-    office_days = Column(Integer, nullable=True)    # days/week in the office, when stated
-    salary_min = Column(Integer, nullable=True)
-    salary_max = Column(Integer, nullable=True)
-    salary_text = Column(String, nullable=True)
-    url = Column(String, nullable=True)
-    description = Column(Text, nullable=True)
-    description_hash = Column(String, nullable=True, index=True)
-    # none: listing data only; summary: listing teaser only (e.g. SEEK);
-    # full: detail page / API detail fetched. Full jobs are never re-fetched.
-    detail_status = Column(String, nullable=False, default="none", server_default="none")
-    detail_fetched_at = Column(DateTime, nullable=True)
-    posted_at = Column(String, nullable=True)
-    industry = Column(String, nullable=True)
     distance_km = Column(Float, nullable=True)
     # to_review | shortlisted | applied | interviewing | rejected | not_interested
     status = Column(String, default="to_review", nullable=False)
+    # Never filter on these two in SQL: Phase D seals them so that even whether they're set doesn't show.
     excluded_reason = Column(Text, nullable=True)
-    first_seen = Column(DateTime, default=utcnow)
-    last_seen = Column(DateTime, default=utcnow)
-    closed_at = Column(DateTime, nullable=True)     # no longer listed by its source
     hidden = Column(Boolean, nullable=False, default=False, server_default="0")  # hidden by the user
+    first_seen = Column(DateTime, default=utcnow)   # first linked to this workspace
+    last_seen = Column(DateTime, default=utcnow)    # last listed by this workspace's own search
     # Set on a copy of an ad that is merged into another job (backend.duplicates):
     # the copy keeps its row so later searches recognise its URL, but only the
     # job it points to is listed, scored and researched.
@@ -135,10 +198,65 @@ class Job(Base):
     # The user's own call on the location: ok (passes the location filter) | too_far
     location_verdict = Column(String, nullable=True)
 
+    # Own content (see JOB_CONTENT): overrides of the posting, or a private job's content.
+    _source = Column("source", String, nullable=True)
+    _external_id = Column("external_id", String, nullable=True)
+    _company = Column("company", String, nullable=True)
+    _title = Column("title", String, nullable=True)
+    _location_text = Column("location_text", String, nullable=True)
+    _country = Column("country", String, nullable=True)
+    _work_mode = Column("work_mode", String, nullable=True)
+    _employment_type = Column("employment_type", String, nullable=True)
+    _office_days = Column("office_days", Integer, nullable=True)
+    _salary_min = Column("salary_min", Integer, nullable=True)
+    _salary_max = Column("salary_max", Integer, nullable=True)
+    _salary_text = Column("salary_text", String, nullable=True)
+    _description = Column("description", Text, nullable=True)
+    _description_hash = Column("description_hash", String, nullable=True, index=True)
+    _detail_status = Column("detail_status", String, nullable=False, default="none", server_default="none")
+    _detail_fetched_at = Column("detail_fetched_at", DateTime, nullable=True)
+    _posted_at = Column("posted_at", String, nullable=True)
+    _industry = Column("industry", String, nullable=True)
+    _closed_at = Column("closed_at", DateTime, nullable=True)  # a private job's; a pool link's is the posting's
+
+    source = _content("source")
+    external_id = _content("external_id")
+    company = _content("company")
+    title = _content("title")
+    location_text = _content("location_text")
+    country = _content("country")
+    work_mode = _content("work_mode")
+    employment_type = _content("employment_type")
+    office_days = _content("office_days")
+    salary_min = _content("salary_min")
+    salary_max = _content("salary_max")
+    salary_text = _content("salary_text")
+    description = _content("description")
+    description_hash = _content("description_hash")
+    detail_status = _content("detail_status")
+    detail_fetched_at = _content("detail_fetched_at")
+    posted_at = _content("posted_at")
+    industry = _content("industry")
+
+    @property
+    def closed_at(self):
+        """When the ad closed: the posting's (backend.pool closing rule), or a private job's own."""
+        return self.posting.closed_at if self.posting is not None else self._closed_at
+
+    @closed_at.setter
+    def closed_at(self, value):
+        self._closed_at = value
+
+    @property
+    def has_own_ad(self) -> bool:
+        """This workspace reads its own description (a privately uploaded full ad, or a private job)."""
+        return self.posting is None or self._description is not None
+
     @validates("excluded_reason")
     def _no_empty_reason(self, _key, value):
-        """"Not excluded" is NULL, never "": queries test IS NULL (the column may be sealed, which can't be compared)."""
+        """"Not excluded" is NULL, never ""."""
         return value or None
+
 
 
 class JobDuplicate(Base):
@@ -337,12 +455,16 @@ class CompanyProfile(Base):
     business_model = Column(Text, nullable=True)
     ownership = Column(Text, nullable=True)
     headquarters = Column(String, nullable=True)
+    # News/controversies section (refreshed on its own: backend.research.plan)
     controversies_json = Column(Text, nullable=False, default="[]")
     controversy_note = Column(Text, nullable=True)
+    news_researched_at = Column(DateTime, nullable=True)
     sources_json = Column(Text, nullable=False, default="[]")
     employee_count = Column(String, nullable=True)
+    # Employee-sentiment section (refreshed on its own)
     glassdoor_url = Column(String, nullable=True)      # verified company page, if found
     sentiment_json = Column(Text, nullable=True)       # employee sentiment summary + sources
+    sentiment_researched_at = Column(DateTime, nullable=True)
     research_version = Column(Integer, nullable=False, default=1, server_default="1")
     # [{name, address, city}] offices found by web search (backend.offices)
     offices_json = Column(Text, nullable=True)
@@ -351,9 +473,12 @@ class CompanyProfile(Base):
     unverified_dropped = Column(Integer, nullable=False, default=0, server_default="0")
     error = Column(Text, nullable=True)
     model = Column(String, nullable=True)
-    researched_at = Column(DateTime, nullable=True)
+    researched_at = Column(DateTime, nullable=True)   # the base profile (business, ownership, offices, ...)
 
     def to_dict(self) -> dict:
+        def iso(value: Optional[datetime]) -> Optional[str]:
+            return value.isoformat() if value else None
+
         return {
             "key": self.key,
             "name": self.name,
@@ -374,7 +499,9 @@ class CompanyProfile(Base):
             "unverified_dropped": self.unverified_dropped or 0,
             "error": self.error,
             "model": self.model,
-            "researched_at": self.researched_at.isoformat() if self.researched_at else None,
+            "researched_at": iso(self.researched_at),
+            "sentiment_researched_at": iso(self.sentiment_researched_at),
+            "news_researched_at": iso(self.news_researched_at),
         }
 
 
@@ -659,9 +786,23 @@ def _fix_legacy_data() -> None:
             "WHERE 'generic:' || cs.label = jobs.source) "
             "WHERE source_id IS NULL AND source LIKE 'generic:%'"
         ))
+        # One research used to cover the whole profile: its sections date from it (accounts design §14.7).
+        conn.execute(text("UPDATE company_profiles SET news_researched_at = researched_at "
+                          "WHERE news_researched_at IS NULL AND status = 'done' AND researched_at IS NOT NULL"))
+        conn.execute(text("UPDATE company_profiles SET sentiment_researched_at = researched_at "
+                          "WHERE sentiment_researched_at IS NULL AND status = 'done' AND researched_at IS NOT NULL "
+                          "AND sentiment_json IS NOT NULL"))
+
+
+def _ensure_indexes() -> None:
+    """Indexes on columns added to existing tables (create_all only indexes new tables)."""
+    with engine.begin() as conn:
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_posting_id ON jobs (posting_id)"))
 
 
 def init_db() -> None:
+    from backend import pool_migration
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     _rebuild_legacy_fit_results()
@@ -673,4 +814,6 @@ def init_db() -> None:
     _rebuild_for_workspaces("jobs")
     Base.metadata.create_all(bind=engine)
     _add_missing_columns()
+    _ensure_indexes()
     _fix_legacy_data()
+    pool_migration.migrate()  # per-workspace job copies -> the shared posting pool (once; resumable)

@@ -18,6 +18,11 @@ merged. The listed job is the copy with the best data (full ad first);
 the user's status, cover letter and fit score move to it, and details
 only a copy has (salary, location, work mode) fill its gaps.
 
+Duplicates are a workspace's own business (accounts design §14.2): merging,
+splitting and "different jobs" are the user's calls, so they live on the
+workspace's jobs (``duplicate_of``) and decisions, and filled-in details are
+the workspace's own values, never the shared postings'.
+
 Decisions live in ``job_duplicates``: merged pairs (auto or user) and
 distinct pairs (the user said they are different jobs: never suggested
 again).
@@ -268,12 +273,15 @@ class Ranking:
     open, has a fit score, was seen first."""
 
     def __init__(self, db: Session, ws: int):
-        self.scored = {j for (j,) in db.query(FitResult.job_id).join(Job, Job.id == FitResult.job_id)
-                       .filter(Job.workspace_id == ws, FitResult.status == "ok")}
+        from backend.pool import jobs_query
+
+        # Decided in Python: a fit's status is sealed (accounts design §14.6).
+        self.scored = {j for j, status in db.query(FitResult.job_id, FitResult.status)
+                       .join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws) if status == "ok"}
         employers: dict[str, set[str]] = defaultdict(set)
-        # De-duplicated here, not with DISTINCT: source and company may be sealed columns.
-        for source, company in db.query(Job.source, Job.company).filter(Job.workspace_id == ws):
-            employers[source or ""].add((company or "").lower())
+        # De-duplicated here, not with DISTINCT: a job's source and company may be its own (sealed) values.
+        for job in jobs_query(db).filter(Job.workspace_id == ws):
+            employers[job.source or ""].add((job.company or "").lower())
         # A source listing several employers is a job board (SEEK, EdTechJobs...).
         self.boards = {s for s, names in employers.items() if len(names) >= 3} | {"seek"}
 
@@ -300,7 +308,8 @@ def root_of(db: Session, job: Job) -> Job:
 
 
 def _fill_gaps(primary: Job, others: Iterable[Job]) -> None:
-    """Details only a copy has: salary, coordinates, work mode, posting date."""
+    """Details only a copy has: salary, coordinates, work mode, posting date. Written as the workspace's own
+    values (``Job``'s content properties), so a merge never changes the shared posting."""
     for o in others:
         if not primary.salary_text and o.salary_text:
             primary.salary_text, primary.salary_min, primary.salary_max = o.salary_text, o.salary_min, o.salary_max
@@ -354,8 +363,8 @@ def merge(db: Session, roots: list[Job], crit=None, ranking: Optional[Ranking] =
             max(letters, key=lambda r: (r.job_id in root_ids, r.updated_at or datetime.min)).job_id = primary.id
     fit = db.query(FitResult).filter(FitResult.job_id == primary.id).first()
     if fit is None or fit.status != "ok":
-        fits = db.query(FitResult).filter(FitResult.job_id.in_(ids), FitResult.status == "ok",
-                                          FitResult.job_id != primary.id).all()
+        fits = [f for f in db.query(FitResult).filter(FitResult.job_id.in_(ids), FitResult.job_id != primary.id)
+                if f.status == "ok"]  # checked here: the status is sealed
         if fits:
             if fit is not None:
                 db.delete(fit)
@@ -547,7 +556,8 @@ def scan_workspace(ws: int) -> dict:
 # --------------------------------------------------------------------------
 
 def _job_summary(db: Session, job: Job) -> dict:
-    fit = db.query(FitResult).filter(FitResult.job_id == job.id, FitResult.status == "ok").first()
+    fit = db.query(FitResult).filter(FitResult.job_id == job.id).first()
+    fit = fit if fit is not None and fit.status == "ok" else None  # checked here: the status is sealed
     return {
         "id": job.id, "title": job.title, "company": job.company, "location_text": job.location_text,
         "source": job.source, "url": job.url, "salary_text": job.salary_text, "posted_at": job.posted_at,
