@@ -984,3 +984,33 @@ A posting missing from one user's query results says nothing about whether it cl
   - The model name recorded on a fit result, cover letter or chat answer stays visible: it describes that output, not the settings.
 - **Where they're set:** the LLM and commute-key cards move from the Settings tab to Admin → Server ("AI provider" and "Commute data"), next to email and billing. The Settings tab keeps only personal settings: workspaces, search profile, sources, schedule, theme and account.
 - **Phase C** gates the endpoints (read and write) and hides the two cards from non-admins. **Phase F** moves the cards into the admin panel.
+
+## 15. Notes from the Phase B review (these bind Phases C and D)
+- **The comparator guard has blind spots.** It doesn't see a bare `order_by(col)`, `group_by(col)`, `select().distinct()` or `func.*(col)`. Phase D adds a test that greps for these on sealed columns, or adds a statement hook that refuses them.
+- **Legacy plaintext is a downgrade path.**
+  - Someone with write access could swap a ciphertext for plaintext, and it would be accepted.
+  - Once migration state is `done`, turn on a strict mode that refuses plaintext in sealed columns.
+  - Don't put `server_default` on sealed columns.
+- **Errors must not leak data.**
+  - Use `create_engine(..., hide_parameters=True)` and never `echo`, so a `StatementError` can't put plaintext bind values in logs.
+  - Re-saving a legacy row through the ORM with an unchanged value issues no UPDATE, so the migration writes with Core `update()`.
+- **The uninstaller's backup zip** will hold the key file (KEK and pepper) as well as `.env`, so Phase C writes it as 0600. On Windows the key file relies on the folder's ACLs, because `chmod` does nothing there.
+- **Choices fixed in Phase B:**
+  - Passwords are NFKC-normalised before argon2.
+  - KEK wrap labels always end in `|{kek_id}`, e.g. `totp|{uid}|{kek_id}`.
+  - Each use has its own AAD prefix (`jh-wrap|`, `jh-file|`, `jh-value|`, `jh-box|`), and columns use `jh/<table>.<column>`.
+  - The 5-byte envelope header is part of the AAD.
+- **Dependencies.** `requirements.txt` pins older `cryptography` and `argon2-cffi-bindings` on Intel Macs through environment markers, because the newest versions have no x86_64 wheels there. Keep those markers when you bump versions.
+
+## 16. Notes from the email-core review (they bind Phases H and J)
+- **Link targets differ from §9.** The email templates link to `reset-password.html?token=`, `accept-invite.html?token=`, `verify-email.html?token=` and `/unsubscribe?token=`, where §9 had `/api/email/unsubscribe?t=`.
+  - Build the pages and routes with these names.
+  - A GET on `/unsubscribe` shows a confirmation page and changes nothing.
+  - A POST unsubscribes. This is the RFC 8058 one-click path, and it needs no session.
+- **The SMTP password allows printable ASCII only,** with no whitespace or quotes, because `config.load_dotenv` strips quotes. Gmail shows its app passwords with spaces. The admin form must strip those spaces, or the password must move to a base64 `SMTP_PASSWORD_B64` as §9 intended. Decide this in Phase H.
+- **Sending is synchronous.** Callers send from a single-thread executor (§9).
+- **What the digest needs from its caller:**
+  - `unsubscribe_id`, made of `[A-Za-z0-9_-]`
+  - `every_days`
+  - card dicts with `fit_summary` taken from `evidence_json.summary` and the gap count counted the way the frontend counts gaps
+  - `email_templates.digest_card()` is public so the wiring can reuse it
