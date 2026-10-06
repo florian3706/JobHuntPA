@@ -674,9 +674,59 @@ a.btn { text-decoration: none; display: inline-block; }
 .map-popup p { margin: 0; }
 .leaflet-popup-content:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
 
-/* Theme picker */
-.theme-picker { display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
-.theme-picker select { max-width: min(220px, 100%); font-size: 13px; padding: 5px 8px; }
+/* Header tools: the AI status and Help */
+.header-tools { display: flex; gap: 6px 12px; align-items: center; flex-wrap: wrap; min-width: 0; }
+
+/* Theme picker (Settings > Theme, common.js createThemePicker). Each card is a <label> around a native radio;
+   its preview carries data-theme, so it is drawn in that theme whatever theme the page is in. */
+.theme-picker, .theme-family { border: none; margin: 0; padding: 0; min-width: 0; }
+.theme-picker { display: flex; flex-direction: column; gap: 18px; }
+.theme-family-name { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 0; margin-bottom: 8px; }
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr)); gap: 12px; }
+.theme-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 8px; cursor: pointer;
+  background: var(--card); color: var(--text); border: 1px solid var(--border-strong); border-radius: 10px;
+}
+.theme-card:hover { border-color: var(--accent); }
+/* Chosen: a filled radio, a 3px border and "Selected", not colour alone. */
+.theme-card:has(input:checked) { border: 3px solid var(--accent); padding: 6px; }
+.theme-card:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
+.theme-card input[type="radio"] { width: 18px; height: 18px; margin: 0; flex: none; grid-row: span 2; }
+.theme-card-text { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; align-items: center; }
+.theme-name { font-weight: 700; font-size: 13.5px; overflow-wrap: anywhere; }
+.theme-mode { grid-column: 2; font-size: 12.5px; color: var(--muted); }
+.theme-chosen { grid-column: 2; font-size: 12.5px; font-weight: 700; color: var(--text); display: none; }
+.theme-card:has(input:checked) .theme-chosen { display: block; }
+.theme-split { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+
+.theme-preview {
+  display: flex; flex-direction: column; height: 92px; overflow: hidden; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  font-family: var(--font-ui); letter-spacing: var(--tracking); word-spacing: var(--word-spacing); line-height: 1.25;
+}
+.tp-bar { display: flex; gap: 4px; align-items: center; padding: 4px 6px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.tp-tab { width: 26px; height: 8px; border-radius: 999px; background: var(--accent); }
+.tp-tab.tp-off { width: 20px; background: var(--border-strong); }
+.tp-page { flex: 1; padding: 6px; min-height: 0; }
+.tp-card {
+  display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; height: 100%; overflow: hidden;
+  background: var(--card); border: 1px solid var(--border); border-radius: 5px;
+}
+.tp-title { font-size: 10.5px; font-weight: 700; white-space: nowrap; overflow: hidden; }
+.tp-muted { font-size: 9.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.tp-row { display: flex; gap: 4px; align-items: center; margin-top: auto; }
+.tp-badge { font-size: 9px; padding: 0 5px; border-radius: 999px; color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 15%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 55%, transparent); }
+.tp-score { font-size: 9.5px; font-weight: 700; padding: 0 4px; border-radius: 4px; color: var(--ok); background: var(--field); border: 1px solid var(--border); }
+.tp-btn { margin-left: auto; font-size: 9px; padding: 1px 6px; border-radius: 4px; background: var(--accent); color: var(--on-accent); }
+.theme-split .theme-preview { height: 92px; }
+@media (pointer: coarse) { .theme-card input[type="radio"] { width: 24px; height: 24px; } }
+@media (max-width: 480px) { /* two cards a row on phones, so the list isn't endless */
+  .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .theme-preview, .theme-split .theme-preview { height: 76px; }
+  .theme-card { padding: 6px; }
+  .theme-card:has(input:checked) { padding: 4px; }
+}
 
 /* Settings tab */
 .scope-tag {

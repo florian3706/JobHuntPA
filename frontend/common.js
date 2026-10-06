@@ -406,30 +406,43 @@ function officeHtml(job) {
 // A per-browser display preference, as in ProjectTimeline. The stored value may
 // be "system", which follows the OS between Light and Dark. themes.css has one
 // block per theme; each page's <head> script applies the theme before first
-// paint, and this keeps it in step afterwards (and across open tabs).
+// paint, and initTheme() keeps it in step afterwards (and across open tabs).
+// The Settings tab chooses it with createThemePicker(), which the sign-up wizard
+// (docs/design/accounts.md, Phase K) reuses as its first step.
 const DYSLEXIA_FONT = 'Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400';
 const THEMES = [
-  { id: 'system', label: 'System (Light or Dark)', group: 'JobHuntPA' },
-  { id: 'dark', label: 'Dark', group: 'JobHuntPA' },
-  { id: 'light', label: 'Light', group: 'JobHuntPA' },
-  { id: 'catppuccin-latte', label: 'Catppuccin Latte', group: 'Catppuccin' },
-  { id: 'catppuccin-frappe', label: 'Catppuccin Frappé', group: 'Catppuccin' },
-  { id: 'catppuccin-macchiato', label: 'Catppuccin Macchiato', group: 'Catppuccin' },
-  { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', group: 'Catppuccin' },
-  { id: 'dyslexia', label: 'Dyslexia', group: 'Reading', font: DYSLEXIA_FONT },
-  { id: 'dyslexia-dark', label: 'Dyslexia (dark)', group: 'Reading', font: DYSLEXIA_FONT },
-  { id: 'protanomaly', label: 'Protanomaly (red-weak)', group: 'Colour vision' },
-  { id: 'protanomaly-dark', label: 'Protanomaly (dark)', group: 'Colour vision' },
-  { id: 'deuteranomaly', label: 'Deuteranomaly (green-weak)', group: 'Colour vision' },
-  { id: 'deuteranomaly-dark', label: 'Deuteranomaly (dark)', group: 'Colour vision' },
-  { id: 'tritanomaly', label: 'Tritanomaly (blue-weak)', group: 'Colour vision' },
-  { id: 'tritanomaly-dark', label: 'Tritanomaly (dark)', group: 'Colour vision' },
-  { id: 'dichromacy', label: 'Dichromacy (any)', group: 'Colour vision' },
-  { id: 'dichromacy-dark', label: 'Dichromacy (dark)', group: 'Colour vision' },
-  { id: 'monochromacy', label: 'Monochromacy (greys)', group: 'Colour vision' },
-  { id: 'monochromacy-dark', label: 'Monochromacy (dark)', group: 'Colour vision' },
+  { id: 'system', label: 'System', family: 'JobHuntPA', mode: 'auto', note: 'follows this device' },
+  { id: 'dark', label: 'Dark', family: 'JobHuntPA', mode: 'dark' },
+  { id: 'light', label: 'Light', family: 'JobHuntPA', mode: 'light' },
+  { id: 'catppuccin-latte', label: 'Catppuccin Latte', family: 'Catppuccin', mode: 'light' },
+  { id: 'catppuccin-frappe', label: 'Catppuccin Frappé', family: 'Catppuccin', mode: 'dark' },
+  { id: 'catppuccin-macchiato', label: 'Catppuccin Macchiato', family: 'Catppuccin', mode: 'dark' },
+  { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', family: 'Catppuccin', mode: 'dark' },
+  { id: 'rose-pine', label: 'Rosé Pine', family: 'Rosé Pine', mode: 'dark' },
+  { id: 'rose-pine-moon', label: 'Rosé Pine Moon', family: 'Rosé Pine', mode: 'dark' },
+  { id: 'rose-pine-dawn', label: 'Rosé Pine Dawn', family: 'Rosé Pine', mode: 'light' },
+  { id: 'nord', label: 'Nord', family: 'Nord', mode: 'dark' },
+  { id: 'nord-light', label: 'Nord Light', family: 'Nord', mode: 'light' },
+  { id: 'kanagawa-wave', label: 'Kanagawa Wave', family: 'Kanagawa', mode: 'dark' },
+  { id: 'kanagawa-dragon', label: 'Kanagawa Dragon', family: 'Kanagawa', mode: 'dark' },
+  { id: 'kanagawa-lotus', label: 'Kanagawa Lotus', family: 'Kanagawa', mode: 'light' },
+  { id: 'everforest-dark', label: 'Everforest Dark', family: 'Everforest', mode: 'dark' },
+  { id: 'everforest-light', label: 'Everforest Light', family: 'Everforest', mode: 'light' },
+  { id: 'dyslexia', label: 'Dyslexia', family: 'Built for reading', mode: 'light', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing' },
+  { id: 'dyslexia-dark', label: 'Dyslexia (dark)', family: 'Built for reading', mode: 'dark', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing' },
+  { id: 'protanomaly', label: 'Protanomaly', family: 'Built for colour vision', mode: 'light', note: 'red-weak' },
+  { id: 'protanomaly-dark', label: 'Protanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'red-weak' },
+  { id: 'deuteranomaly', label: 'Deuteranomaly', family: 'Built for colour vision', mode: 'light', note: 'green-weak' },
+  { id: 'deuteranomaly-dark', label: 'Deuteranomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'green-weak' },
+  { id: 'tritanomaly', label: 'Tritanomaly', family: 'Built for colour vision', mode: 'light', note: 'blue-weak' },
+  { id: 'tritanomaly-dark', label: 'Tritanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'blue-weak' },
+  { id: 'dichromacy', label: 'Dichromacy', family: 'Built for colour vision', mode: 'light', note: 'any kind' },
+  { id: 'dichromacy-dark', label: 'Dichromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'any kind' },
+  { id: 'monochromacy', label: 'Monochromacy', family: 'Built for colour vision', mode: 'light', note: 'greys only' },
+  { id: 'monochromacy-dark', label: 'Monochromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'greys only' },
 ];
 const THEME_KEY = 'jobhunt.theme';
+const MODE_LABEL = { light: 'Light', dark: 'Dark', auto: 'Light or dark' };
 
 function storedTheme() {
   try {
@@ -459,7 +472,13 @@ function applyTheme(pref = storedTheme()) {
     }
     link.href = `https://fonts.googleapis.com/css2?family=${font}&display=swap`;
   }
-  document.dispatchEvent(new CustomEvent('themechange', { detail: id }));
+  document.dispatchEvent(new CustomEvent('themechange', { detail: { id, pref } }));
+}
+
+/* Saves a theme for this browser and applies it. */
+function setTheme(pref) {
+  try { localStorage.setItem(THEME_KEY, pref); } catch { /* still applies to this page */ }
+  applyTheme(pref);
 }
 
 /* A theme colour for things drawn in script (map markers and routes). */
@@ -467,21 +486,75 @@ function themeColor(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim() || '#888888';
 }
 
-function initThemePicker(select) {
-  const groups = [...new Set(THEMES.map((t) => t.group))];
-  select.innerHTML = groups.map((g) => `<optgroup label="${esc(g)}">${THEMES.filter((t) => t.group === g)
-    .map((t) => `<option value="${t.id}">${esc(t.label)}</option>`).join('')}</optgroup>`).join('');
-  select.value = storedTheme();
-  select.addEventListener('change', () => {
-    try { localStorage.setItem(THEME_KEY, select.value); } catch { /* still applies to this page */ }
-    applyTheme(select.value);
-  });
-  // Changed in another tab (dashboard or a job page): follow it.
-  window.addEventListener('storage', (e) => {
-    if (e.key === THEME_KEY) { select.value = storedTheme(); applyTheme(); }
-  });
+/* Applies the stored theme now, then follows it: a change in another tab (the dashboard or a job page),
+   and the device's light/dark switch while the theme is System. Every page calls this once. */
+function initTheme() {
+  window.addEventListener('storage', (e) => { if (e.key === THEME_KEY) applyTheme(); });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (storedTheme() === 'system') applyTheme();
   });
   applyTheme();
+}
+
+/* A theme's miniature: a header bar with a selected tab, and a job card with a title, a line of muted
+   text, a work-mode badge, a score and a primary button, all drawn in that theme's own tokens because
+   the preview carries data-theme (themes.css scopes every theme to the attribute). Decorative. */
+function themePreviewHtml(id) {
+  return `<span class="theme-preview" data-theme="${esc(id)}" aria-hidden="true">
+      <span class="tp-bar"><span class="tp-tab"></span><span class="tp-tab tp-off"></span></span>
+      <span class="tp-page"><span class="tp-card">
+        <span class="tp-title">Product Manager</span>
+        <span class="tp-muted">Sydney · hybrid</span>
+        <span class="tp-row"><span class="tp-badge">remote</span><span class="tp-score">82</span><span class="tp-btn">Apply</span></span>
+      </span></span>
+    </span>`;
+}
+
+/* The theme picker: one radio group (native radios, so the arrow keys move between themes and Tab enters
+   at the chosen one), in a fieldset per family. Each option is a card with a live preview, the name and
+   whether it is light or dark; the chosen card shows a filled radio, a thicker border and "Selected", so
+   the choice never rests on colour. Choosing applies the theme at once, saves it for this browser and
+   announces it. Returns the element; options:
+     legend    the group's name (visually hidden; the card it sits in has its own heading)
+     name      the radios' name, unique on the page (default "theme")
+     onChange  called with the theme id after it is applied and saved (the sign-up wizard saves it to the account) */
+function createThemePicker({ legend = 'Theme', name = 'theme', onChange = null } = {}) {
+  const root = document.createElement('fieldset');
+  root.className = 'theme-picker';
+  const families = [...new Set(THEMES.map((t) => t.family))];
+  const card = (t) => {
+    const id = `${name}-opt-${t.id}`;
+    const preview = t.id === 'system'
+      ? `<span class="theme-split">${themePreviewHtml('light')}${themePreviewHtml('dark')}</span>`
+      : themePreviewHtml(t.id);
+    return `<label class="theme-card" for="${id}">
+        ${preview}
+        <span class="theme-card-text">
+          <input type="radio" name="${esc(name)}" id="${id}" value="${esc(t.id)}" />
+          <span class="theme-name">${esc(t.label)}</span>
+          <span class="theme-mode">${MODE_LABEL[t.mode]}${t.note ? `, ${esc(t.note)}` : ''}</span>
+          <span class="theme-chosen" aria-hidden="true">✓ Selected</span>
+        </span>
+      </label>`;
+  };
+  root.innerHTML = `<legend class="visually-hidden">${esc(legend)}</legend>
+    ${families.map((f) => `<fieldset class="theme-family">
+        <legend class="theme-family-name">${esc(f)}</legend>
+        <div class="theme-grid">${THEMES.filter((t) => t.family === f).map(card).join('')}</div>
+      </fieldset>`).join('')}`;
+  const sync = () => {
+    const current = storedTheme();
+    root.querySelectorAll('input[type="radio"]').forEach((r) => { r.checked = r.value === current; });
+  };
+  root.addEventListener('change', (e) => {
+    const radio = e.target.closest('input[type="radio"]');
+    if (!radio) return;
+    setTheme(radio.value);
+    const t = THEMES.find((x) => x.id === radio.value);
+    announce(`Theme: ${t.label}${t.id === 'system' ? `, now ${resolveTheme('system') === 'dark' ? 'Dark' : 'Light'}` : ''}.`);
+    onChange?.(radio.value);
+  });
+  document.addEventListener('themechange', sync); // chosen in another tab
+  sync();
+  return root;
 }

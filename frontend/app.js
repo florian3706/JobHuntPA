@@ -2739,7 +2739,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   initDocs();
   initChat();
   initModal();
-  initThemePicker($('#theme-select'));
+  initTheme();
+  $('#theme-picker-slot').replaceWith(createThemePicker({ legend: 'Theme' }));
   // Map markers are drawn in script, so they take the new theme's colours here.
   document.addEventListener('themechange', () => { if (state.map) { drawPins(); drawJobMarkers(); } });
   $('#source-form').addEventListener('submit', addSource);

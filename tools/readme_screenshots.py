@@ -19,7 +19,8 @@ fetches Leaflet (unpkg.com), map tiles (openstreetmap.org) and, for the Dyslexia
 
 Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide):
     jobs, run-report, job-page, map (light theme), search-setup, company-sources, settings, search-schedule
-    (the Scheduled searches card, on the Settings tab), themes, chat, cover-letter
+    (the Scheduled searches card, on the Settings tab), theme-picker (the first rows of the Theme card on the
+    Settings tab), themes, chat, cover-letter
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ ALLOWED_HOSTS = ("unpkg.com", "tile.openstreetmap.org", "fonts.googleapis.com", 
 # theme id -> shown in themes.png, in this order
 MONTAGE_THEMES = ["light", "catppuccin-mocha", "catppuccin-latte", "dyslexia", "deuteranomaly-dark", "monochromacy"]
 ALL_SHOTS = ["jobs", "run-report", "job-page", "map", "search-setup", "company-sources", "settings", "search-schedule",
-             "themes", "chat", "cover-letter"]
+             "theme-picker", "themes", "chat", "cover-letter"]
 
 
 # --------------------------------------------------------------------------
@@ -317,8 +318,9 @@ def shot_search(s: Shooter) -> None:
 
 
 def shot_settings(s: Shooter) -> None:
-    """The Settings tab (Scheduled searches, LLM provider/model/key and reasoning levels, commute API keys), and the
-    Scheduled searches card alone. The demo LLM is a fake key at llm.example.com, shown as Custom; nothing calls it."""
+    """The Settings tab below the Theme card (Scheduled searches, LLM provider/model/key and reasoning levels, commute
+    API keys), the Scheduled searches card alone, and the top of the Theme card (its first three families of themes).
+    The demo LLM is a fake key at llm.example.com, shown as Custom; nothing calls it."""
     ctx = s.context()
     page = s.page(ctx)
     page.goto(f"{s.base}/#settings")
@@ -329,11 +331,14 @@ def shot_settings(s: Shooter) -> None:
     page.wait_for_function("[...document.querySelectorAll('.key-state')].every(e => e.textContent.trim())")
     page.wait_for_function("document.querySelector('#llm-provider').options.length > 1 && document.querySelector('#llm-model').value")
     s.settle(page)
-    top = s.rect(page, "#tab-settings .panel-head")
+    top = s.rect(page, "#schedule-card")
     last = s.rect(page, "#commute-keys-card")
     s.save("settings", s.grab(page, (CONTENT_X, int(top["y"]) - 10, CONTENT_W, int(last["y"] + last["h"] - top["y"]) + 24)))
     card = s.rect(page, "#schedule-card")
     s.save("search-schedule", s.grab(page, (CONTENT_X, int(card["y"]) - 10, CONTENT_W, int(card["h"]) + 20)))
+    theme = s.rect(page, "#theme-card")
+    third = s.rect(page, "#theme-card .theme-family:nth-of-type(3)")
+    s.save("theme-picker", s.grab(page, (CONTENT_X, int(theme["y"]) - 10, CONTENT_W, int(third["y"] + third["h"] - theme["y"]) + 26)))
     ctx.close()
 
 
@@ -412,7 +417,7 @@ def shot_themes(s: Shooter) -> None:
 
 SHOTS = {"jobs": shot_jobs, "run-report": shot_run_report, "job-page": shot_job_page, "map": shot_map, "search": shot_search,
          "settings": shot_settings, "chat": shot_chat, "cover-letter": shot_cover_letter, "themes": shot_themes}
-GROUP = {"search-setup": "search", "company-sources": "search", "search-schedule": "settings"}
+GROUP = {"search-setup": "search", "company-sources": "search", "search-schedule": "settings", "theme-picker": "settings"}
 
 
 def main() -> None:

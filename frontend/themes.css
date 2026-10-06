@@ -1,22 +1,31 @@
 /* JobHuntPA themes: every theme fills the same slots and changes nothing else.
 
-   Dark is the app's own look. The rest are ported from ProjectTimeline:
-   Light, Catppuccin's four flavours, and themes built for a way of seeing or
-   reading (Dyslexia, Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy,
-   Monochromacy), each in light and dark. Their palettes were simulated there;
-   here some values are a little lighter or darker (same hue) so that every
-   pair the app uses meets WCAG 2.2 AA: 4.5:1 for text, 3:1 for field borders
-   (--border-strong), the focus ring (--focus) and selected fills (--accent).
-   tools/theme_contrast.py lists the pairs and tests/test_accessibility.py
-   fails if one drops below AA, so run it after changing a colour.
+   Dark is the app's own look. Light, Catppuccin's four flavours and the themes
+   built for a way of seeing or reading (Dyslexia, Protanomaly, Deuteranomaly,
+   Tritanomaly, Dichromacy, Monochromacy, each in light and dark) are ported
+   from ProjectTimeline, where the colour-vision palettes were simulated.
+   Rosé Pine (three variants), Nord (dark, plus a light one made from Nord's
+   colours), Kanagawa (Wave, Dragon, Lotus) and Everforest (dark and light,
+   medium contrast) use each project's official palette.
+
+   Every theme meets WCAG 2.2 AA for the pairs the app uses: 4.5:1 for text,
+   3:1 for field borders (--border-strong), the focus ring (--focus) and
+   selected fills (--accent). Where a palette fell short, the value is a little
+   lighter or darker in the same hue, and the theme's comment lists what changed
+   and the original. tools/theme_contrast.py lists the pairs and
+   tests/test_accessibility.py fails if one drops below AA, so run it after
+   changing a colour.
+
    ProjectTimeline's semantic slots map to these: success -> --ok,
    warning -> --warn, danger -> --danger, the "decision" hue -> --info,
    "milestone" -> --special, "info" -> --quiet. Hue never carries meaning alone:
    badges and dots always have a label or a shape too, which the colour-vision
    themes rely on.
 
-   The theme is chosen per browser (Theme menu, top right) and applied before
-   first paint by a small script in each page's <head>; see common.js. */
+   The selectors are attributes, not :root, so any element carrying data-theme
+   paints its subtree in that theme: the theme picker's previews rely on it.
+   The theme is chosen per browser (Settings > Theme) and applied before first
+   paint by a small script in each page's <head>; see common.js. */
 
 :root, [data-theme="dark"] {
   /* Grounds: the page, chrome laid on it, cards, and wells sunk into those */
@@ -29,7 +38,8 @@
   /* Ink */
   --text: #e8edf3;
   --muted: #9aa6b8;
-  /* The one chrome colour: primary action, active tab, links; --focus is the keyboard focus ring */
+  /* The one chrome colour: primary action, active tab, links; --focus is the keyboard focus ring.
+     For AA, --accent is #2776d0 (was #4f9cf9, under white text 2.8:1); the focus ring keeps #4f9cf9. */
   --accent: #2776d0;
   --accent-text: #6aacfa;
   --accent-soft: rgba(79, 156, 249, 0.15);
@@ -54,7 +64,18 @@
   color-scheme: dark;
 }
 
-/* On paper: ProjectTimeline's own light palette. */
+/* Type for every theme, so a preview of a plain theme inside a page in a Dyslexia theme isn't
+   drawn in the dyslexia type. The Dyslexia themes set their own below. */
+[data-theme] {
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --leading: normal;
+  --tracking: normal;
+  --word-spacing: normal;
+}
+
+/* On paper: ProjectTimeline's own light palette.
+   Adjusted for AA (before in brackets): border-strong #888e98 (#c6cdd8), muted #5b6573 (#5d6775), ok #05764b (#0a8f5c), warn #9f5504 (#e07a00),
+   danger #c4023a (#e11d48), info #05718c (#0891b2). */
 [data-theme="light"] {
   --bg: #f4f6f9;
   --panel: #ffffff;
@@ -79,7 +100,10 @@
   color-scheme: light;
 }
 
-/* Catppuccin Latte: the flavour's own greys, mauve accent. */
+/* Catppuccin Latte: the flavour's own greys, mauve accent.
+   Adjusted for AA (before in brackets): border-strong #818492 (#acb0be), muted #595c71 (#6c6f85), accent-text #7c26e0 (#8839ef),
+   ok #1c6d02 (#40a02b), warn #a63d00 (#fe640b), danger #b6002e (#d20f39), info #056979 (#209fb5),
+   special #cc5aaf (#ea76cb), quiet #818495 (#8c8fa1). */
 [data-theme="catppuccin-latte"] {
   --bg: #e6e9ef;
   --panel: #eff1f5;
@@ -104,7 +128,9 @@
   color-scheme: light;
 }
 
-/* Catppuccin Frappé: the softest of the dark flavours. */
+/* Catppuccin Frappé: the softest of the dark flavours.
+   Adjusted for AA (before in brackets): border-strong #787e97 (#626880), muted #afb7d8 (#a5adce), accent-text #d3a7f0 (#ca9ee6),
+   warn #f2a178 (#ef9f76), danger #fa9394 (#e78284). */
 [data-theme="catppuccin-frappe"] {
   --bg: #292c3c;
   --panel: #303446;
@@ -129,7 +155,8 @@
   color-scheme: dark;
 }
 
-/* Catppuccin Macchiato: mid contrast. */
+/* Catppuccin Macchiato: mid contrast.
+   Adjusted for AA (before in brackets): border-strong #6c7189 (#5b6078). */
 [data-theme="catppuccin-macchiato"] {
   --bg: #1e2030;
   --panel: #24273a;
@@ -154,7 +181,8 @@
   color-scheme: dark;
 }
 
-/* Catppuccin Mocha: the deepest ground. */
+/* Catppuccin Mocha: the deepest ground.
+   Adjusted for AA (before in brackets): border-strong #676a7f (#585b70). */
 [data-theme="catppuccin-mocha"] {
   --bg: #181825;
   --panel: #1e1e2e;
@@ -179,7 +207,292 @@
   color-scheme: dark;
 }
 
-/* Warm low-glare paper, Atkinson Hyperlegible, wider letter and word spacing, taller lines. */
+/* Rosé Pine (rosepinetheme.com), its three official variants. Grounds: base for the page and wells,
+   surface for chrome and cards, overlay for dividers. Iris is the accent in the dark variants and pine
+   in Dawn. Rosé Pine has no green, so ok (success) is foam. */
+/* Rosé Pine. Adjusted for AA (official in brackets): muted #a19dbc (subtle #908caa),
+   info #5ea0bc (pine #31748f). */
+[data-theme="rose-pine"] {
+  --bg: #191724;
+  --panel: #1f1d2e;
+  --card: #1f1d2e;
+  --field: #191724;
+  --border: #26233a;
+  --border-strong: #6e6a86;
+  --text: #e0def4;
+  --muted: #a19dbc;
+  --accent: #c4a7e7;
+  --accent-text: #c4a7e7;
+  --accent-soft: #c4a7e726;
+  --on-accent: #191724;
+  --focus: #c4a7e7;
+  --ok: #9ccfd8;
+  --warn: #f6c177;
+  --danger: #eb6f92;
+  --info: #5ea0bc;
+  --special: #ebbcba;
+  --quiet: #6e6a86;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Rosé Pine Moon. Adjusted for AA (official in brackets): field borders #75708d (muted #6e6a86),
+   muted #ada9c8 (subtle #908caa), danger #f6789b (love #eb6f92), info #5fafd1 (pine #3e8fb0),
+   quiet #6f6b87 (muted #6e6a86). */
+[data-theme="rose-pine-moon"] {
+  --bg: #232136;
+  --panel: #2a273f;
+  --card: #2a273f;
+  --field: #232136;
+  --border: #393552;
+  --border-strong: #75708d;
+  --text: #e0def4;
+  --muted: #ada9c8;
+  --accent: #c4a7e7;
+  --accent-text: #c4a7e7;
+  --accent-soft: #c4a7e726;
+  --on-accent: #232136;
+  --focus: #c4a7e7;
+  --ok: #9ccfd8;
+  --warn: #f6c177;
+  --danger: #f6789b;
+  --info: #5fafd1;
+  --special: #ea9a97;
+  --quiet: #6f6b87;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Rosé Pine Dawn (light). Adjusted for AA (official in brackets): field borders and quiet #8f8a9c
+   (muted #9893a5), muted #64607d (subtle #797593), ok #2e6d78 (foam #56949f), warn #8f5a05 (gold #ea9d34),
+   danger #9a4b63 (love #b4637a), info #735d8a (iris #907aa9), special #c97572 (rose #d7827e). */
+[data-theme="rose-pine-dawn"] {
+  --bg: #faf4ed;
+  --panel: #fffaf3;
+  --card: #fffaf3;
+  --field: #f2e9e1;
+  --border: #dfdad9;
+  --border-strong: #8f8a9c;
+  --text: #575279;
+  --muted: #64607d;
+  --accent: #286983;
+  --accent-text: #286983;
+  --accent-soft: #28698326;
+  --on-accent: #fffaf3;
+  --focus: #286983;
+  --ok: #2e6d78;
+  --warn: #8f5a05;
+  --danger: #9a4b63;
+  --info: #735d8a;
+  --special: #c97572;
+  --quiet: #8f8a9c;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
+/* Nord (nordtheme.com): Polar Night grounds, Snow Storm ink, Frost for the accent, Aurora for the data hues
+   (nord13 for warnings and nord14 for success, as Nord's own guide assigns them). */
+/* Nord. Adjusted for AA (official in brackets): field borders #838ea4 (nord3 #4c566a),
+   accent-text #9ad3e3 (nord8 #88c0d0), ok #bad6a3 (nord14 #a3be8c), danger #ffb0b4 (nord11 #bf616a),
+   info #adcff0 (nord9 #81a1c1), quiet #737e93 (nord3). Nord's Aurora is too dark for text on Polar Night,
+   so these are the same hues, lighter. */
+[data-theme="nord"] {
+  --bg: #2e3440;
+  --panel: #3b4252;
+  --card: #3b4252;
+  --field: #2e3440;
+  --border: #434c5e;
+  --border-strong: #838ea4;
+  --text: #eceff4;
+  --muted: #d8dee9;
+  --accent: #88c0d0;
+  --accent-text: #9ad3e3;
+  --accent-soft: #88c0d026;
+  --on-accent: #2e3440;
+  --focus: #88c0d0;
+  --ok: #bad6a3;
+  --warn: #ebcb8b;
+  --danger: #ffb0b4;
+  --info: #adcff0;
+  --special: #b48ead;
+  --quiet: #737e93;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Nord light: not an official Nord theme, but built only from Nord's colours: Snow Storm grounds,
+   Polar Night ink, Frost (nord10) for the accent, Aurora for the data hues. */
+/* Nord light. Adjusted for AA (Nord colour in brackets): accent #4b6d97, accent-text #3e6089 and
+   focus #5b7ea9 (nord10 #5e81ac), ok #4d6537 (nord14 #a3be8c), warn #8f4c37 (nord12 #d08770),
+   danger #993f4a (nord11 #bf616a), info #44627f (nord9 #81a1c1), special #9e7998 (nord15 #b48ead).
+   Aurora is pastel, so on Snow Storm it has to be darkened a long way: the same hues, much deeper. */
+[data-theme="nord-light"] {
+  --bg: #e5e9f0;
+  --panel: #eceff4;
+  --card: #eceff4;
+  --field: #d8dee9;
+  --border: #d8dee9;
+  --border-strong: #4c566a;
+  --text: #2e3440;
+  --muted: #4c566a;
+  --accent: #4b6d97;
+  --accent-text: #3e6089;
+  --accent-soft: #5e81ac26;
+  --on-accent: #eceff4;
+  --focus: #5b7ea9;
+  --ok: #4d6537;
+  --warn: #8f4c37;
+  --danger: #993f4a;
+  --info: #44627f;
+  --special: #9e7998;
+  --quiet: #4c566a;
+  --shadow: 0 6px 18px -6px rgba(46, 52, 64, 0.2);
+  color-scheme: light;
+}
+
+/* Kanagawa (github.com/rebelot/kanagawa.nvim): Wave and Dragon (dark), Lotus (light), with the colour
+   names of its palette. */
+/* Kanagawa Wave. Adjusted for AA (official in brackets): field borders #72738d (sumiInk6 #54546d),
+   accent-text #8aa9e5 (crystalBlue #7e9cd8), danger #ff7878 (peachRed #ff5d62). */
+[data-theme="kanagawa-wave"] {
+  --bg: #1f1f28;
+  --panel: #2a2a37;
+  --card: #2a2a37;
+  --field: #181820;
+  --border: #363646;
+  --border-strong: #72738d;
+  --text: #dcd7ba;
+  --muted: #9cabca;
+  --accent: #7e9cd8;
+  --accent-text: #8aa9e5;
+  --accent-soft: #7e9cd826;
+  --on-accent: #1f1f28;
+  --focus: #7e9cd8;
+  --ok: #98bb6c;
+  --warn: #ff9e3b;
+  --danger: #ff7878;
+  --info: #7fb4ca;
+  --special: #957fb8;
+  --quiet: #727169;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Kanagawa Dragon. Adjusted for AA (official in brackets): field borders #75716d (dragonBlack6 #625e5a),
+   muted #a8a59d (dragonGray2 #9e9b93), accent-text #90a9b5 (dragonBlue2 #8ba4b0), ok #8bad8b
+   (dragonGreen #87a987), danger #db8982 (dragonRed #c4746e), info #98a3b9 (dragonTeal #949fb5). */
+[data-theme="kanagawa-dragon"] {
+  --bg: #181616;
+  --panel: #282727;
+  --card: #282727;
+  --field: #12120f;
+  --border: #393836;
+  --border-strong: #75716d;
+  --text: #c5c9c5;
+  --muted: #a8a59d;
+  --accent: #8ba4b0;
+  --accent-text: #90a9b5;
+  --accent-soft: #8ba4b026;
+  --on-accent: #181616;
+  --focus: #8ba4b0;
+  --ok: #8bad8b;
+  --warn: #c4b28a;
+  --danger: #db8982;
+  --info: #98a3b9;
+  --special: #a292a3;
+  --quiet: #737c73;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Kanagawa Lotus (light). Adjusted for AA (official in brackets): text #525262 (lotusInk1 #545464),
+   muted #5f5c4f (lotusGray2 #716e61), accent-text #405c8d (lotusBlue4 #4d699b), ok #4b6329 (lotusGreen
+   #6f894e), warn #8e4a01 (lotusOrange #cc6d00), danger #a31836 (lotusRed #c84053), info #236378 (lotusTeal1
+   #4e8ca2), quiet #7d7c73 (lotusGray3 #8a8980). */
+[data-theme="kanagawa-lotus"] {
+  --bg: #e5ddb0;
+  --panel: #f2ecbc;
+  --card: #f2ecbc;
+  --field: #e7dba0;
+  --border: #d5cea3;
+  --border-strong: #716e61;
+  --text: #525262;
+  --muted: #5f5c4f;
+  --accent: #4d699b;
+  --accent-text: #405c8d;
+  --accent-soft: #4d699b26;
+  --on-accent: #f2ecbc;
+  --focus: #4d699b;
+  --ok: #4b6329;
+  --warn: #8e4a01;
+  --danger: #a31836;
+  --info: #236378;
+  --special: #b35b79;
+  --quiet: #7d7c73;
+  --shadow: 0 6px 18px -6px rgba(84, 84, 100, 0.2);
+  color-scheme: light;
+}
+
+/* Everforest (github.com/sainnhe/everforest), medium contrast, dark and light. Green is both the accent
+   and success, as in Everforest itself. */
+/* Everforest dark, medium. Adjusted for AA (official in brackets): muted #bbc7be (grey2 #9da9a0),
+   accent-text #b3cd8c and ok #b5ce8d (green #a7c080), warn #debf82 (yellow #dbbc7f), danger #fea5a5
+   (red #e67e80), info #92cfc7 (blue #7fbbb3). */
+[data-theme="everforest-dark"] {
+  --bg: #2d353b;
+  --panel: #343f44;
+  --card: #343f44;
+  --field: #232a2e;
+  --border: #475258;
+  --border-strong: #859289;
+  --text: #d3c6aa;
+  --muted: #bbc7be;
+  --accent: #a7c080;
+  --accent-text: #b3cd8c;
+  --accent-soft: #a7c08026;
+  --on-accent: #2d353b;
+  --focus: #a7c080;
+  --ok: #b5ce8d;
+  --warn: #debf82;
+  --danger: #fea5a5;
+  --info: #92cfc7;
+  --special: #d699b6;
+  --quiet: #7a8478;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+/* Everforest light, medium. Its accents are bright on a pale ground, so most needed darkening for AA
+   (official in brackets): text #515f67 (fg #5c6a72), field borders #7e8d7d and muted #586657 (grey2 #829181),
+   accent #697706, accent-text #5c6903, focus #778802 and ok #5b6901 (green #8da101), warn #835c05 (yellow
+   #dfa000), danger #bd0e20 (red #f85552), info #036995 (blue #3a94c5), special #d35eaf (purple #df69ba),
+   quiet #838c7d (grey0 #a6b0a0). */
+[data-theme="everforest-light"] {
+  --bg: #f4f0d9;
+  --panel: #fdf6e3;
+  --card: #fdf6e3;
+  --field: #efebd4;
+  --border: #e0dcc7;
+  --border-strong: #7e8d7d;
+  --text: #515f67;
+  --muted: #586657;
+  --accent: #697706;
+  --accent-text: #5c6903;
+  --accent-soft: #8da10126;
+  --on-accent: #fdf6e3;
+  --focus: #778802;
+  --ok: #5b6901;
+  --warn: #835c05;
+  --danger: #bd0e20;
+  --info: #036995;
+  --special: #d35eaf;
+  --quiet: #838c7d;
+  --shadow: 0 6px 18px -6px rgba(92, 106, 114, 0.2);
+  color-scheme: light;
+}
+
+/* Warm low-glare paper, Atkinson Hyperlegible, wider letter and word spacing, taller lines.
+   Adjusted for AA (before in brackets): border-strong #928571 (#bcae99), ok #037148 (#0b7a4f), warn #975301 (#a85d00), info #0a6d84 (#0e6f86). */
 [data-theme="dyslexia"] {
   --bg: #f3ebdd;
   --panel: #fdf8f0;
@@ -208,7 +521,8 @@
   color-scheme: light;
 }
 
-/* The same reading settings on a warm dark ground. */
+/* The same reading settings on a warm dark ground.
+   Adjusted for AA (before in brackets): border-strong #73685c (#564c41). */
 [data-theme="dyslexia-dark"] {
   --bg: #1a1714;
   --panel: #221e1a;
@@ -237,7 +551,9 @@
   color-scheme: dark;
 }
 
-/* Red-weak: blue and gold, stepped by lightness. */
+/* Red-weak: blue and gold, stepped by lightness.
+   Adjusted for AA (before in brackets): border-strong #888e98 (#c6cdd8), ok and info #2260d5 (#2664da), warn #836405 (#ab8300),
+   quiet #8d8d8d (#949494). */
 [data-theme="protanomaly"] {
   --bg: #f4f6f9;
   --panel: #ffffff;
@@ -262,7 +578,8 @@
   color-scheme: light;
 }
 
-/* Red-weak, on a deep ground. */
+/* Red-weak, on a deep ground.
+   Adjusted for AA (before in brackets): border-strong #566271 (#35404e), ok and info #5584ff (#4d7af4), warn #998a2a (#817200). */
 [data-theme="protanomaly-dark"] {
   --bg: #090c10;
   --panel: #0d1117;
@@ -287,7 +604,9 @@
   color-scheme: dark;
 }
 
-/* Green-weak: blue and gold, stepped by lightness. */
+/* Green-weak: blue and gold, stepped by lightness.
+   Adjusted for AA (before in brackets): border-strong #888e98 (#c6cdd8), ok and info #2260d5 (#2664da), warn #836405 (#ab8300),
+   quiet #8d8d8d (#949494). */
 [data-theme="deuteranomaly"] {
   --bg: #f4f6f9;
   --panel: #ffffff;
@@ -312,7 +631,8 @@
   color-scheme: light;
 }
 
-/* Green-weak, on a deep ground. */
+/* Green-weak, on a deep ground.
+   Adjusted for AA (before in brackets): border-strong #566271 (#35404e), ok and info #5584ff (#4d7af4), warn #998a2a (#817200). */
 [data-theme="deuteranomaly-dark"] {
   --bg: #090c10;
   --panel: #0d1117;
@@ -337,7 +657,9 @@
   color-scheme: dark;
 }
 
-/* Blue-weak: warm against teal, stepped by lightness. */
+/* Blue-weak: warm against teal, stepped by lightness.
+   Adjusted for AA (before in brackets): border-strong #898e93 (#c7ccd1), ok and info #027473 (#007f7e), warn #c22b1f (#f65e4d),
+   quiet #8d8d8d (#949494). */
 [data-theme="tritanomaly"] {
   --bg: #f5f6f7;
   --panel: #ffffff;
@@ -362,7 +684,8 @@
   color-scheme: light;
 }
 
-/* Blue-weak, on a deep ground. */
+/* Blue-weak, on a deep ground.
+   Adjusted for AA (before in brackets): border-strong #576368 (#354045). */
 [data-theme="tritanomaly-dark"] {
   --bg: #090d0e;
   --panel: #0d1113;
@@ -387,7 +710,9 @@
   color-scheme: dark;
 }
 
-/* Holds up under protanopia, deuteranopia and tritanopia. */
+/* Holds up under protanopia, deuteranopia and tritanopia.
+   Adjusted for AA (before in brackets): border-strong #888e98 (#c6cdd8), ok and info #2260d5 (#2664da), warn #836405 (#ab8300),
+   quiet #8d8d8d (#949494). */
 [data-theme="dichromacy"] {
   --bg: #f4f6f9;
   --panel: #ffffff;
@@ -412,7 +737,8 @@
   color-scheme: light;
 }
 
-/* Holds up under protanopia, deuteranopia and tritanopia., on a deep ground. */
+/* Holds up under protanopia, deuteranopia and tritanopia., on a deep ground.
+   Adjusted for AA (before in brackets): border-strong #566271 (#35404e), ok and info #5584ff (#4d7af4), warn #998a2a (#817200). */
 [data-theme="dichromacy-dark"] {
   --bg: #090c10;
   --panel: #0d1117;
@@ -437,7 +763,8 @@
   color-scheme: dark;
 }
 
-/* No hue at all: one ladder of greys; labels and icons carry the meaning. */
+/* No hue at all: one ladder of greys; labels and icons carry the meaning.
+   Adjusted for AA (before in brackets): border-strong #8a8a8a (#bcbcbc), ok #676767 (#7f7f7f), quiet #8a8a8a (#949494). */
 [data-theme="monochromacy"] {
   --bg: #f2f2f2;
   --panel: #ffffff;
@@ -462,7 +789,8 @@
   color-scheme: light;
 }
 
-/* No hue at all, on a deep ground. */
+/* No hue at all, on a deep ground.
+   Adjusted for AA (before in brackets): border-strong #606060 (#3a3a3a). */
 [data-theme="monochromacy-dark"] {
   --bg: #0a0a0a;
   --panel: #0d0d0d;

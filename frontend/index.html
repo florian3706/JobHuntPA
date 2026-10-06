@@ -36,10 +36,8 @@
           <button id="ws-rename" class="btn btn-ghost btn-sm" type="button">Rename<span class="visually-hidden"> workspace</span></button>
           <button id="ws-delete" class="btn btn-danger btn-sm" type="button">Delete<span class="visually-hidden"> workspace</span></button>
         </div>
-        <div class="theme-picker">
+        <div class="header-tools">
           <span id="scorer-status" class="api-status is-unknown"><span aria-hidden="true">● </span>scorer: checking…</span>
-          <label class="muted" for="theme-select">Theme</label>
-          <select id="theme-select"></select>
           <a class="help-link" href="https://github.com/florian3706/JobHuntPA#using-it" target="_blank" rel="noopener">Help<span class="visually-hidden"> (opens in a new tab)</span></a>
         </div>
       </div>
@@ -384,6 +382,16 @@
       <div class="panel-head">
         <h2>Settings</h2>
         <span class="muted">Each card says whether it applies to this workspace or to all of them</span>
+      </div>
+
+      <div id="theme-card" class="card form-card theme-card-section">
+        <div class="card-head">
+          <h3 id="theme-heading">Theme <span class="scope-tag">This browser</span></h3>
+        </div>
+        <p class="hint">Each card shows the app in that theme. Pick one with a click or tap, or with the arrow keys:
+          it applies at once and is remembered in this browser. Every theme meets the WCAG AA contrast minimums, and
+          labels or shapes always go with colours.</p>
+        <div id="theme-picker-slot"></div>
       </div>
 
       <div id="schedule-card" class="card form-card">

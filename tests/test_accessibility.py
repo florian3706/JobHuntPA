@@ -38,7 +38,9 @@ class ThemeContrastTest(unittest.TestCase):
         self.assertIn("dark", themes)
         for theme in offered:
             if theme != "system":
-                self.assertIn(theme, themes, f"the Theme menu offers {theme}, but themes.css has no block for it")
+                self.assertIn(theme, themes, f"the theme picker offers {theme}, but themes.css has no block for it")
+        for theme in themes:
+            self.assertIn(theme, offered, f"themes.css defines {theme}, but THEMES in common.js doesn't offer it")
         slots = set(themes["dark"])
         css = (FRONTEND / "themes.css").read_text(encoding="utf-8")
         for theme in themes:

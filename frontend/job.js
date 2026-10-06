@@ -248,7 +248,7 @@ async function researchCompany() {
 
 /* ---------- boot ---------- */
 document.addEventListener('DOMContentLoaded', async () => {
-  initThemePicker($('#theme-select'));
+  initTheme();
   document.addEventListener('themechange', () => { if (view.map) drawMap(...(lastCommute || [null])); });
   if (!JOB_ID) { showPageError('No job given. Open a job from the dashboard (Open ↗ on a job card).'); return; }
   try {
