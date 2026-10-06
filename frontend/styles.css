@@ -810,3 +810,4 @@ summary { cursor: pointer; min-height: 24px; }
   }
   .spinner { border-top-color: var(--accent); }
 }
+.section-date { font-size: 12.5px; margin-top: 4px; }

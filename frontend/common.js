@@ -208,6 +208,12 @@ function fmtDate(iso) {
 }
 
 function scoreOf(job) { return job.fit && job.fit.status === 'ok' ? job.fit.score : null; }
+const EMPLOYMENT_LABEL = { full_time: 'Full-time', part_time: 'Part-time', contract: 'Contract', casual: 'Casual', temporary: 'Temporary', internship: 'Internship' };
+/* Employment type badge for job facts; nothing when unknown. */
+function employmentBadge(job) {
+  const label = EMPLOYMENT_LABEL[job.employment_type];
+  return label ? `<span class="badge soft"><span class="visually-hidden">Employment type: </span>${label}</span>` : '';
+}
 function modeOf(job) { return ['remote', 'hybrid', 'onsite'].includes(job.work_mode) ? job.work_mode : 'unknown'; }
 
 // The number is the score; its colour only repeats it. Screen readers get "Fit score 82 of 100".
@@ -281,6 +287,19 @@ function glassdoorLink(p, name) {
   return `<a class="glassdoor" href="https://www.glassdoor.com.au/Search/results.htm?keyword=${q}" target="_blank" rel="noopener noreferrer">Search Glassdoor${NEW_TAB}</a>`;
 }
 
+/* "Researched <date>" note inside a profile section (read in context by screen readers). */
+function sectionDateNote(iso) { return iso ? `<div class="muted section-date">Researched ${esc(fmtDate(iso))}</div>` : ''; }
+
+/* Plain-language result of a research run, from its summary.research ({refreshed, up_to_date}). */
+const RESEARCH_PART_LABEL = { base: 'company profile', sentiment: 'employee sentiment', news: 'news and controversies' };
+function researchRefreshText(rs) {
+  const joinAnd = (a) => (a.length > 1 ? `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}` : a[0] || '');
+  const parts = Object.entries(rs?.refreshed || {}).map(([name, kinds]) => `${name}: ${joinAnd((kinds || []).map((k) => RESEARCH_PART_LABEL[k] || k))} updated`);
+  if (parts.length) return parts.join('; ');
+  const n = Array.isArray(rs?.up_to_date) ? rs.up_to_date.length : Number(rs?.up_to_date) || 0;
+  return n ? 'Everything was already up to date' : '';
+}
+
 function sentimentHtml(p) {
   const s = p.sentiment;
   if (!s) return '<span class="muted">Not researched yet: click Research again (or Fill missing info) to add it.</span>';
@@ -290,7 +309,8 @@ function sentimentHtml(p) {
     ${s.rating ? `<div><strong>${esc(s.rating)}</strong></div>` : ''}
     <div>${esc(s.summary || 'No employee reviews found.')}</div>
     ${list(s.positives, 'pos', '+', 'Positives')}${list(s.negatives, 'neg', '−', 'Negatives')}
-    ${s.sources.length ? `<div class="sources">${linkList(s.sources)}</div>` : ''}`;
+    ${s.sources.length ? `<div class="sources">${linkList(s.sources)}</div>` : ''}
+    ${sectionDateNote(p.sentiment_researched_at)}`;
 }
 
 /* ================= SOURCES ================= */
@@ -382,7 +402,7 @@ function companyProfileHtml(p, name) {
       <dt>Employees</dt><dd>${esc(p.employee_count || (p.research_version >= 2 ? 'Unknown' : 'Not researched yet'))}</dd>
       ${offices}
       <dt>Employee sentiment</dt><dd>${sentimentHtml(p)}</dd>
-      <dt>Controversies</dt><dd>${esc(p.controversy_note || (p.controversies.length ? '' : 'None found.'))}${cons}</dd>
+      <dt>Controversies</dt><dd>${esc(p.controversy_note || (p.controversies.length ? '' : 'None found.'))}${cons}${sectionDateNote(p.news_researched_at)}</dd>
     </dl>
     ${p.sources.length ? `<p class="sources"><span class="muted">Sources:</span> ${linkList(p.sources)}</p>` : ''}
     <p class="muted">Researched ${esc(fmtDate(p.researched_at))}.

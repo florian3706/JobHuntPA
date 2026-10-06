@@ -33,6 +33,7 @@ function renderHead() {
   const facts = [
     `<span>${esc(job.location_text || 'location unknown')}</span>`,
     `<span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>`,
+    employmentBadge(job),
     job.office_days ? `<span class="badge flag">${job.office_days} day${job.office_days > 1 ? 's' : ''} in office</span>` : '',
     job.distance_km !== null ? `<span><span aria-hidden="true">📍 </span>${job.distance_km} km<span class="muted"> straight line to your nearest pin</span></span>` : '',
     job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : '',
@@ -238,7 +239,7 @@ async function researchCompany() {
       await new Promise((r) => setTimeout(r, 2000));
       run = await api(`/api/runs/${run.id}`);
     }
-    status.textContent = run.state === 'failed' ? `Research failed: ${run.error}` : 'Research done: the profile above is updated.';
+    status.textContent = run.state === 'failed' ? `Research failed: ${run.error}` : `Research done: the profile above is updated.${researchRefreshText(run.summary?.research) ? ` ${researchRefreshText(run.summary.research)}.` : ''}`;
     await loadCompany();
     if (hadFocus) $('#company-title').focus(); // the button was redrawn with the profile
     return;

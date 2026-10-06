@@ -341,7 +341,7 @@ function renderJobCard(job) {
         <h3 class="job-title" id="${titleId}"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
         <div class="job-meta">
           <span>${esc(job.location_text || 'location unknown')}</span>
-          <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${dist}${flags}
+          <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${employmentBadge(job)}${dist}${flags}
         </div>
       </div>
       ${scoreBadge(job)}
@@ -635,7 +635,11 @@ function runSummaryBits(run) {
   const rs = run.summary?.research;
   if (rs) {
     if (rs.aborted) bits.push('research stopped (see error)');
-    else bits.push(`researched ${rs.researched}/${rs.requested} companies${rs.errors ? `, ${rs.errors} failed` : ''}`);
+    else {
+      bits.push(`researched ${rs.researched}/${rs.requested} companies${rs.errors ? `, ${rs.errors} failed` : ''}`);
+      const what = researchRefreshText(rs);
+      if (what) bits.push(what);
+    }
   }
   const of = run.summary?.offices;
   if (of && !of.aborted) {
