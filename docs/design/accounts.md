@@ -803,3 +803,16 @@ New modules: `backend/crypto.py`, `backend/keys.py`, `backend/sessions.py`, `bac
   - Each use has its own AAD prefix (`jh-wrap|`, `jh-file|`, `jh-value|`, `jh-box|`), and columns use `jh/<table>.<column>`.
   - The 5-byte envelope header is part of the AAD.
 - **Dependencies.** `requirements.txt` pins older `cryptography` and `argon2-cffi-bindings` on Intel Macs through environment markers, because the newest versions have no x86_64 wheels there. Keep those markers when you bump versions.
+
+## 16. Notes from the email-core review (they bind Phases H and J)
+- **Link targets differ from §9.** The email templates link to `reset-password.html?token=`, `accept-invite.html?token=`, `verify-email.html?token=` and `/unsubscribe?token=`, where §9 had `/api/email/unsubscribe?t=`.
+  - Build the pages and routes with these names.
+  - A GET on `/unsubscribe` shows a confirmation page and changes nothing.
+  - A POST unsubscribes. This is the RFC 8058 one-click path, and it needs no session.
+- **The SMTP password allows printable ASCII only,** with no whitespace or quotes, because `config.load_dotenv` strips quotes. Gmail shows its app passwords with spaces. The admin form must strip those spaces, or the password must move to a base64 `SMTP_PASSWORD_B64` as §9 intended. Decide this in Phase H.
+- **Sending is synchronous.** Callers send from a single-thread executor (§9).
+- **What the digest needs from its caller:**
+  - `unsubscribe_id`, made of `[A-Za-z0-9_-]`
+  - `every_days`
+  - card dicts with `fit_summary` taken from `evidence_json.summary` and the gap count counted the way the frontend counts gaps
+  - `email_templates.digest_card()` is public so the wiring can reuse it
