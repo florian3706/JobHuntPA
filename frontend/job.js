@@ -19,21 +19,23 @@ function minutes(n) {
   return n >= 60 ? `${Math.floor(n / 60)} h ${n % 60} min` : `${n} min`;
 }
 
-function showError(msg) {
-  $('#job-error').textContent = msg;
-  $('#job-error').hidden = false;
+function showPageError(msg) {
+  $('#job-head').innerHTML = '<h1 id="job-title" class="job-page-title">Job not available</h1><p><a href="./#jobs">Back to the dashboard</a></p>';
+  $('#job-cols').hidden = true;
+  document.title = 'Job not available · JobHuntPA';
+  showError($('#job-error'), msg);
 }
 
 /* ---------- header ---------- */
 function renderHead() {
   const mode = modeOf(job);
-  const also = (job.also_on || []).map((c) => `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}</a>`).join(' · ');
+  const also = (job.also_on || []).map((c) => `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}${NEW_TAB}</a>`).join(' · ');
   const facts = [
     `<span>${esc(job.location_text || 'location unknown')}</span>`,
-    `<span class="badge ${mode}">${mode}</span>`,
+    `<span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>`,
     job.office_days ? `<span class="badge flag">${job.office_days} day${job.office_days > 1 ? 's' : ''} in office</span>` : '',
-    job.distance_km !== null ? `<span title="Straight-line distance to your nearest home pin (or nearest pin)">📍 ${job.distance_km} km</span>` : '',
-    job.salary_text ? `<span>💰 ${esc(job.salary_text)}</span>` : '',
+    job.distance_km !== null ? `<span><span aria-hidden="true">📍 </span>${job.distance_km} km<span class="muted"> straight line to your nearest pin</span></span>` : '',
+    job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : '',
     job.posted_at ? `<span class="muted">posted ${esc(fmtDate(job.posted_at).split(',')[0])}</span>` : '',
     job.closed ? '<span class="badge flag">closed</span>' : '',
     job.recruiter ? '<span class="badge flag">recruitment agency</span>' : '',
@@ -42,7 +44,7 @@ function renderHead() {
     <div class="job-top">
       <div class="job-title-row">
         <div class="job-company">${esc(job.company || '—')}</div>
-        <h2 class="job-page-title"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')} ↗</a></h2>
+        <h1 id="job-title" class="job-page-title"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}<span class="visually-hidden">: the ad on ${esc(sourceLabel(job.source))}</span>${NEW_TAB}</a></h1>
         <div class="job-meta">${facts}</div>
         <div class="job-sub"><span class="muted">${esc(sourceLabel(job.source))}${also ? ` · also on ${also}` : ''}</span></div>
         ${job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : ''}
@@ -53,14 +55,14 @@ function renderHead() {
       <select id="job-status" aria-label="Application status">
         ${STATUSES.map((s) => `<option value="${s}" ${job.status === s ? 'selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}
       </select>
-      <a class="btn btn-ghost btn-sm" href="./#jobs">Dashboard</a>
+      <a class="btn btn-ghost btn-sm" href="./#jobs">Back to the dashboard</a>
     </div>`;
   document.title = `${job.title} · ${job.company} · JobHuntPA`;
   $('#job-status').addEventListener('change', async (e) => {
     try {
       await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) });
       job.status = e.target.value;
-      toast('Status saved', 'ok', 1500);
+      toast(`Status saved: ${STATUS_LABEL[job.status]}`, 'ok', 2500);
     } catch (err) { toast(`Status update failed: ${err.message}`, 'err'); e.target.value = job.status; }
   });
 }
@@ -86,23 +88,23 @@ function renderOffice() {
       ${job.recruiter ? "It's a recruiter's ad, so the client's office usually isn't named: set it if you know it, or make the call yourself." : 'Set it if you know it (Fill missing info on the dashboard looks it up), or make the call yourself.'}
       Until then the commute is to the city centre.</p>`;
   } else status = `<p class="muted">Office: ${esc(job.location_text || 'not stated')} (from the ad's location).</p>`;
-  const cands = (job.office_candidates || []).map((o, i) => `<button class="btn btn-sm" type="button" data-cand="${i}" title="${esc(o.address)}">${esc(o.name || o.address)}</button>`).join('');
+  const cands = (job.office_candidates || []).map((o, i) => `<li><button class="btn btn-sm" type="button" data-cand="${i}" title="${esc(o.address)}" aria-describedby="office-cands-intro">${esc(o.name || o.address)}${o.name ? `<span class="visually-hidden">, ${esc(o.address)}</span>` : ''}</button></li>`).join('');
   $('#job-office').innerHTML = `
     ${status}
     ${job.office_source === 'company' && (job.office_candidates || []).length > 1
     ? `<p class="muted">The employer has ${job.office_candidates.length} offices here; this is the closest to your commute. Pick another if you know which one it is.</p>` : ''}
-    ${cands ? `<div class="office-cands"><span class="muted">The employer's offices in this city (closest to your commute first):</span> ${cands}</div>` : ''}
+    ${cands ? `<div class="office-cands"><span class="muted" id="office-cands-intro">The employer's offices in this city (closest to your commute first):</span> <ul class="office-cands-ul">${cands}</ul></div>` : ''}
     <form id="office-form" class="toolbar-row office-form">
       <label class="field search-field"><span class="field-label">Office address or suburb</span>
-        <input id="office-input" type="text" placeholder="e.g. 1 Denison St, North Sydney" value="${esc(job.office_source === 'user' ? job.office_text || '' : '')}" /></label>
+        <input id="office-input" type="text" autocomplete="off" placeholder="e.g. 1 Denison St, North Sydney" value="${esc(job.office_source === 'user' ? job.office_text || '' : '')}" /></label>
       <button class="btn btn-primary btn-sm" type="submit">Set office</button>
       ${job.office_text ? '<button id="office-clear" class="btn btn-ghost btn-sm" type="button">Clear office</button>' : ''}
     </form>
-    <div class="toolbar-row verdict-row">
-      <span class="muted">Your call on the location:</span>
-      <button class="btn btn-sm ${job.location_verdict === 'ok' ? 'btn-primary' : ''}" type="button" data-verdict="ok" title="Keep this job whatever the location filter says">Location OK</button>
-      <button class="btn btn-sm ${job.location_verdict === 'too_far' ? 'btn-primary' : ''}" type="button" data-verdict="too_far" title="Exclude this job: the office is too far">Too far</button>
-      ${job.location_verdict ? '<button class="btn btn-ghost btn-sm" type="button" data-verdict="" title="Let the location filter decide again">Undo</button>' : ''}
+    <div class="toolbar-row verdict-row" role="group" aria-labelledby="verdict-label">
+      <span class="muted" id="verdict-label">Your call on the location:</span>
+      <button class="btn btn-sm ${job.location_verdict === 'ok' ? 'btn-primary' : ''}" type="button" data-verdict="ok" aria-pressed="${job.location_verdict === 'ok'}" title="Keep this job whatever the location filter says">${job.location_verdict === 'ok' ? '<span aria-hidden="true">✓ </span>' : ''}Location OK</button>
+      <button class="btn btn-sm ${job.location_verdict === 'too_far' ? 'btn-primary' : ''}" type="button" data-verdict="too_far" aria-pressed="${job.location_verdict === 'too_far'}" title="Exclude this job: the office is too far">${job.location_verdict === 'too_far' ? '<span aria-hidden="true">✓ </span>' : ''}Too far</button>
+      ${job.location_verdict ? '<button class="btn btn-ghost btn-sm" type="button" data-verdict="" title="Let the location filter decide again">Undo<span class="visually-hidden"> your call on the location</span></button>' : ''}
     </div>`;
   $('#office-form').addEventListener('submit', (e) => { e.preventDefault(); saveOffice({ office: $('#office-input').value.trim() || null }); });
   $('#office-clear')?.addEventListener('click', () => saveOffice({ office: null }));
@@ -111,10 +113,15 @@ function renderOffice() {
 }
 
 async function saveOffice(body) {
+  // The office section is redrawn: keep keyboard focus on the same control.
+  const active = document.activeElement;
+  const back = active?.dataset?.verdict !== undefined ? `[data-verdict="${active.dataset.verdict}"]`
+    : active?.id ? `#${active.id}` : active?.closest?.('#office-form') ? '#office-input' : null;
   try {
     job = await api(`/api/jobs/${job.id}/office`, { method: 'PUT', body: JSON.stringify(body) });
     renderHead();
     renderOffice();
+    if (back) ($(back) || $('#office-input')).focus();
     toast(job.excluded_reason ? `Saved. The job is now excluded: ${job.excluded_reason}` : 'Saved', job.excluded_reason ? '' : 'ok', 4000);
     loadCommute();
   } catch (e) { toast(e.message, 'err', 8000); }
@@ -123,34 +130,35 @@ async function saveOffice(body) {
 /* ---------- commute ---------- */
 function journeyHtml(j, label) {
   if (!j) return `<div class="trip"><strong>${label}</strong> <span class="muted">no journey found</span></div>`;
+  const to = '<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>';
   const legs = j.legs.map((l) => `<li><span class="leg-mode" style="--c:var(--${modeHue(l.mode)})">${esc(l.mode)}${l.line ? ` ${esc(l.line)}` : ''}</span>
-    ${esc(l.depart)} ${esc(l.from)} → ${esc(l.arrive)} ${esc(l.to)} <span class="muted">(${minutes(l.minutes)}${l.towards && l.mode !== 'Walk' ? `, towards ${esc(l.towards)}` : ''})</span></li>`).join('');
-  return `<details class="trip"><summary><strong>${label}</strong> ${esc(j.depart)} → ${esc(j.arrive)} · <strong>${minutes(j.minutes)}</strong>
-      · ${esc(j.summary)}${j.changes ? ` · ${j.changes} change${j.changes > 1 ? 's' : ''}` : ''}</summary><ol class="legs">${legs}</ol></details>`;
+    ${esc(l.depart)} ${esc(l.from)}${to}${esc(l.arrive)} ${esc(l.to)} <span class="muted">(${minutes(l.minutes)}${l.towards && l.mode !== 'Walk' ? `, towards ${esc(l.towards)}` : ''})</span></li>`).join('');
+  return `<details class="trip"><summary><strong>${label}</strong> ${esc(j.depart)}${to}${esc(j.arrive)} · <strong>${minutes(j.minutes)}</strong>
+      · ${esc(j.summary)}${j.changes ? ` · ${j.changes} change${j.changes > 1 ? 's' : ''}` : ''}</summary><ol class="legs" aria-label="Steps">${legs}</ol></details>`;
 }
 
 function carHtml(c, label) {
   if (!c) return '';
-  const when = c.depart && c.arrive ? `${esc(c.depart)} → ${esc(c.arrive)} · ` : '';
+  const when = c.depart && c.arrive ? `${esc(c.depart)}<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>${esc(c.arrive)} · ` : '';
   const traffic = c.traffic ? (c.traffic_minutes ? ` (incl. ${minutes(c.traffic_minutes)} of traffic)` : ' (with traffic)') : ' <span class="muted">(no traffic)</span>';
   return `<div class="trip"><strong>${label}</strong> ${when}<strong>${minutes(c.minutes)}</strong>${traffic} · ${c.km} km</div>`;
 }
 
 // A commute note may point to the dashboard's Settings tab (API keys): make that a link.
-const noteHtml = (n) => esc(n).replace('the Settings tab', '<a href="./#settings" target="_blank" rel="noopener">the Settings tab</a>');
+const noteHtml = (n) => esc(n).replace('the Settings tab', `<a href="./#settings" target="_blank" rel="noopener">the Settings tab${NEW_TAB}</a>`);
 
 async function loadCommute() {
   const box = $('#job-commute');
   box.innerHTML = '<p class="muted">Working out the commute…</p>';
   let c;
   try { c = await api(`/api/jobs/${job.id}/commute`); } catch (e) {
-    box.innerHTML = `<p class="err-text">${esc(e.message)}</p>`;
+    box.innerHTML = `<p class="err-text"><span aria-hidden="true">⚠ </span>Couldn't work out the commute: ${esc(e.message)}</p>`;
     drawMap(null);
     return;
   }
   const best = c.transit.filter((t) => t.there).sort((a, b) => a.there.minutes - b.there.minutes)[0];
   const transit = c.transit.map((t) => `
-    <div class="commute-from"><h4>Public transport from ${esc(t.from)}${t === best && c.transit.length > 1 ? ' <span class="badge fit-strong">quickest</span>' : ''}</h4>
+    <div class="commute-from"><h3>Public transport from ${esc(t.from)}${t === best && c.transit.length > 1 ? ' <span class="badge fit-strong">quickest</span>' : ''}</h3>
       ${t.error ? `<p class="err-text">${esc(t.error)}</p>` : journeyHtml(t.there, `There (arrive by ${esc(c.arrive_by)}):`) + journeyHtml(t.back, `Back (leave ${esc(c.leave_at)}):`)}</div>`).join('');
   const car = c.car.error ? `<p class="err-text">${esc(c.car.error)}</p>`
     : carHtml(c.car.there, `There (arrive by ${esc(c.arrive_by)}):`) + carHtml(c.car.back, `Back (leave ${esc(c.leave_at)}):`);
@@ -160,9 +168,9 @@ async function loadCommute() {
         : c.stations.length ? '' : 'Public transport starts at your home pin; set stations under Search setup > Commute.'}</p>
     ${c.notes.map((n) => `<p class="notice">${noteHtml(n)}</p>`).join('')}
     ${transit}
-    <div class="commute-from"><h4>By car from ${esc(c.home.name)}</h4>${car}</div>
-    <p class="commute-links"><a href="${esc(c.links.transit)}" target="_blank" rel="noopener">Public transport in Google Maps ↗</a> ·
-      <a href="${esc(c.links.car)}" target="_blank" rel="noopener">Driving in Google Maps ↗</a></p>`;
+    <div class="commute-from"><h3>By car from ${esc(c.home.name)}</h3>${car}</div>
+    <p class="commute-links"><a href="${esc(c.links.transit)}" target="_blank" rel="noopener">Public transport in Google Maps${NEW_TAB}</a> ·
+      <a href="${esc(c.links.car)}" target="_blank" rel="noopener">Driving in Google Maps${NEW_TAB}</a></p>`;
   lastCommute = [c, best];
   drawMap(c, best);
 }
@@ -170,7 +178,8 @@ async function loadCommute() {
 function drawMap(c, best) {
   if (typeof L === 'undefined') return;
   if (!view.map) {
-    view.map = L.map('commute-map', { scrollWheelZoom: false });
+    const animate = !reducedMotion();
+    view.map = L.map('commute-map', { scrollWheelZoom: false, zoomAnimation: animate, fadeAnimation: animate, markerZoomAnimation: animate });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(view.map);
@@ -181,7 +190,7 @@ function drawMap(c, best) {
   const office = c ? c.office : (job.lat !== null ? { lat: job.lat, lng: job.lng, name: job.location_text, precise: false } : null);
   if (!office) { view.map.setView([-33.87, 151.21], 9); return; }
   if (office.precise) {
-    L.marker([office.lat, office.lng]).addTo(view.layer).bindPopup(`<b>Office</b><br>${esc(office.name)}`);
+    L.marker([office.lat, office.lng], { alt: `Office: ${office.name}`, title: `Office: ${office.name}` }).addTo(view.layer).bindPopup(`<b>Office</b><br>${esc(office.name)}`);
   } else {
     L.circle([office.lat, office.lng], { radius: 4000, color: themeColor('warn'), weight: 1, fillOpacity: 0.12 })
       .addTo(view.layer).bindPopup(`<b>Office somewhere in ${esc(office.name)}</b><br>The ad names only the city.`);
@@ -205,7 +214,7 @@ function drawMap(c, best) {
       points.push(...c.car.there.coords);
     }
   }
-  view.map.fitBounds(L.latLngBounds(points).pad(0.08));
+  view.map.fitBounds(L.latLngBounds(points).pad(0.08), { animate: false });
   setTimeout(() => view.map.invalidateSize(), 50);
 }
 
@@ -222,13 +231,17 @@ async function researchCompany() {
   const status = $('#company-status');
   try {
     let run = await api('/api/companies/research', { method: 'POST', body: JSON.stringify({ name: job.company }) });
-    $('#company-research').disabled = true;
+    const hadFocus = document.activeElement === $('#company-research');
+    setBusy($('#company-research'), true);
     while (run.state === 'queued' || run.state === 'running') {
       status.textContent = `Researching… ${run.stage || ''}`;
       await new Promise((r) => setTimeout(r, 2000));
       run = await api(`/api/runs/${run.id}`);
     }
-    status.textContent = run.state === 'failed' ? `Research failed: ${run.error}` : '';
+    status.textContent = run.state === 'failed' ? `Research failed: ${run.error}` : 'Research done: the profile above is updated.';
+    await loadCompany();
+    if (hadFocus) $('#company-title').focus(); // the button was redrawn with the profile
+    return;
   } catch (e) { status.textContent = `Research failed: ${e.message}`; }
   loadCompany();
 }
@@ -237,13 +250,13 @@ async function researchCompany() {
 document.addEventListener('DOMContentLoaded', async () => {
   initThemePicker($('#theme-select'));
   document.addEventListener('themechange', () => { if (view.map) drawMap(...(lastCommute || [null])); });
-  if (!JOB_ID) { showError('No job given. Open a job from the dashboard (Open ↗ on a job card).'); return; }
+  if (!JOB_ID) { showPageError('No job given. Open a job from the dashboard (Open ↗ on a job card).'); return; }
   try {
     const workspaces = await api('/api/workspaces');
     const ws = workspaces.find((w) => w.id === WS);
     if (ws) $('#ws-name').textContent = ws.name;
     job = await api(`/api/jobs/${JOB_ID}`);
-  } catch (e) { showError(`Could not load this job: ${e.message}`); $('#job-head').hidden = true; return; }
+  } catch (e) { showPageError(`Could not load this job: ${e.message}`); return; }
   renderHead();
   renderOffice();
   renderFit();

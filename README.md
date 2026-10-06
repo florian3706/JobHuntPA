@@ -188,9 +188,12 @@ can live in their own **workspaces** (switcher at the top right).
   changes, metro, buses and walking at the other end; driving starts at your home pin. See
   [Commute times](#commute-times-optional) for the two free keys this needs.
 - **Map**: two modes. **Jobs** shows the jobs your Jobs tab filters show, with your pins and their
-  radii, and lists the jobs in view under the map (click a dot or **Open ↗** for a job's full
-  page in a new tab); nothing can be changed by accident. **Edit pins** drops a pin where you
-  click (drag to move); *Only list pins in view* shortens the pin list to the area on screen.
+  radii, and lists the jobs in view under the map (click a dot, or **Show** in the list, to see a
+  place's jobs; **Open ↗** for a job's full page in a new tab); nothing can be changed by accident.
+  **Edit pins** drops a pin where you click or tap (drag to move). Without a mouse, move the map
+  (arrow keys) until the cross in its middle is on the place and press **Drop a pin at the cross**;
+  **Move to the cross** in the pin list moves a pin there. *Only list pins in view* shortens the
+  pin list to the area on screen.
 - **Office locations**: most ads only say "Sydney NSW", or an area such as "North West & Hills District"
   (placed at its main centre, here Castle Hill, for the location filter). Instead of trusting that, such jobs show
   **office unknown** until the office is found: the scorer reads it from the full ad, and company
@@ -203,8 +206,9 @@ can live in their own **workspaces** (switcher at the top right).
   your computer; the four Catppuccin flavours; a **Dyslexia** theme (warm low-glare background,
   Atkinson Hyperlegible font, wider letter and word spacing) in light and dark; and colour-vision
   themes (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and
-  dark. They're ported from ProjectTimeline; labels always accompany colours, so nothing relies on
-  colour alone.
+  dark. They're ported from ProjectTimeline, with some colours made a little darker or lighter so
+  every theme meets the WCAG AA contrast minimums; labels, marks or shapes always accompany
+  colours, so nothing relies on colour alone. See [Accessibility](#accessibility).
 - **Reasoning level** (Settings > LLM): how long the AI thinks, set separately for scoring,
   cover letters, company research and job chat. *Detect supported levels* shows what your model accepts.
 
@@ -332,6 +336,12 @@ Manual run: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
 throwaway database of made-up data with `tools/demo_data.py`, runs the app on it with fake AI
 settings and no scheduler, and saves `docs/screenshots/*.png`. It never touches `data/` or `.env`.
 Re-run it after changing the UI; `--only jobs,map` retakes just those.
+
+**Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme, the colour
+pairs the app uses together and fails on any below WCAG AA (`--all` shows the passing ones too).
+When you style something with a new combination of colour tokens, add it to `PAIRS` there. The
+unit tests run the same check plus a static check of the pages (language, viewport, skip link,
+headings, a name for every control). See [Accessibility](#accessibility) for the browser checks.
 
 **Releasing the Windows programs:** bump `VERSION`, commit, then `git tag v$(cat VERSION) && git
 push --tags`. `.github/workflows/release.yml` builds JobHuntPA-Setup.exe and JobHuntPA.exe on
