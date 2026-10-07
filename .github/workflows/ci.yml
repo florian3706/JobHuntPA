@@ -49,6 +49,7 @@ jobs:
             -d "{\"email\":\"$JOBHUNT_ADMIN_EMAIL\",\"password\":\"$JOBHUNT_ADMIN_PASSWORD\",\"remember\":true}" \
             http://127.0.0.1:8123/api/auth/login
           curl -sf -b jar http://127.0.0.1:8123/api/workspaces | grep -q '"My job search"'
+          curl -sf -b jar http://127.0.0.1:8123/api/encryption/status | grep -q '"state":"done"'
           curl -sf http://127.0.0.1:8123/ | grep -q JobHuntPA
           curl -sf http://127.0.0.1:8123/login.html | grep -q 'autocomplete="current-password"'
           test -f data/server-keys.json && test ! -f data/first-run.txt
