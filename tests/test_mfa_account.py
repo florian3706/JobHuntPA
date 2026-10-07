@@ -4,6 +4,8 @@ the clock for authenticator codes under the test's control (``backend.totp.now``
 """
 from __future__ import annotations
 
+import json
+import os
 import time
 import unittest
 from datetime import timedelta
@@ -14,11 +16,14 @@ from tests import helpers  # noqa: E402  (sets the test environment first)
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import event, text  # noqa: E402
 
-from backend import crypto, docs, ratelimit, sessions, totp, users  # noqa: E402
+from backend import admin_key, crypto, docs, migrate_encryption, ratelimit, sessions, totp, users  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import (  # noqa: E402
     UPLOAD_DIR,
+    AdminAudit,
+    AdminKeyGrant,
     AuthSession,
+    AuthToken,
     ChatMessage,
     ChatThread,
     CommuteCache,
@@ -31,6 +36,7 @@ from backend.db import (  # noqa: E402
     Job,
     JobDuplicate,
     LlmUsage,
+    MembershipGrant,
     Pin,
     Posting,
     SearchRun,
@@ -919,7 +925,7 @@ class DeleteAccountTest(AccountTestCase):
                         CompanySource(workspace_id=ws, label=f"{tag} co", careers_url=f"https://{tag}.example/c/{ws}"),
                         SearchRun(workspace_id=ws, kind="search", state="done", progress_json="{}"),
                         SearchSchedule(id=ws), UserProfile(id=ws, titles=[f"{tag} title"]), DealbreakerSet(id=ws),
-                        LlmUsage(workspace_id=ws, purpose="chat"),
+                        LlmUsage(workspace_id=ws, user_id=account.id, purpose="chat"),
                     ])
                     stored = docs.save_upload(f"{tag} resume bytes {ws}".encode())
                     files.append(stored)
@@ -930,6 +936,15 @@ class DeleteAccountTest(AccountTestCase):
                     db.flush()
                     db.add(ChatMessage(thread_id=thread.id, role="user", content=f"{tag} question"))
                 db.add(CommuteCache(key=f"{tag}-{account.id}", owner_id=account.id, result_json="{}"))
+                now = utcnow()
+                db.add_all([  # (the account is also the other end of these, so they are only emptied, not removed)
+                    AuthToken(kind="reset", token_hash=os.urandom(32), user_id=account.id, expires_at=now + timedelta(days=1)),
+                    AuthToken(kind="invite", token_hash=os.urandom(32), created_by=account.id,
+                              expires_at=now + timedelta(days=1)),
+                    MembershipGrant(user_id=account.id, kind="manual", starts_at=now, ends_at=now + timedelta(days=3),
+                                    created_by=account.id),
+                    AdminAudit(admin_id=account.id, action=f"{tag}_by"), AdminAudit(target_user_id=account.id, action=f"{tag}_on"),
+                ])
                 db.commit()
                 ids = [account.workspace_id, second.id]
         finally:
@@ -945,7 +960,13 @@ class DeleteAccountTest(AccountTestCase):
             for table in ACCOUNT_TABLES:
                 column = "owner_id" if table == "commute_cache" else "user_id"
                 out[table] = conn.execute(text(f"SELECT COUNT(*) FROM {table} WHERE {column} = :u"), {"u": user_id}).scalar()
-            out["users"] = conn.execute(text("SELECT COUNT(*) FROM users WHERE id = :u"), {"u": user_id}).scalar()
+            for name, where in (("usage_of_user", "SELECT COUNT(*) FROM llm_usage WHERE user_id = :u"),
+                                ("audit_entries_naming_user", "SELECT COUNT(*) FROM admin_audit WHERE admin_id = :u "
+                                                              "OR target_user_id = :u"),
+                                ("tokens_made_by_user", "SELECT COUNT(*) FROM auth_tokens WHERE created_by = :u"),
+                                ("grants_made_by_user", "SELECT COUNT(*) FROM admin_key_grants WHERE granted_by = :u"),
+                                ("users", "SELECT COUNT(*) FROM users WHERE id = :u")):
+                out[name] = conn.execute(text(where), {"u": user_id}).scalar()
         return out
 
     def test_it_removes_every_row_and_file_and_leaves_other_people_alone(self):
@@ -959,7 +980,7 @@ class DeleteAccountTest(AccountTestCase):
         c, carols = self.signed_in(bob), self.signed_in(carol)
         before_bob, before_carol = self.counts(mine["ws"], bob.id), self.counts(theirs["ws"], carol.id)
         self.assertEqual(before_bob["jobs"], 4)
-        empty = {"sessions", "auth_tokens", "admin_key_grants", "membership_grants"}  # (not made for an ordinary user)
+        empty = {"admin_key_grants", "grants_made_by_user"}  # (only admins have these)
         self.assertTrue(all(v >= 1 for k, v in before_bob.items() if k not in empty), before_bob)
         self.assertTrue(all((UPLOAD_DIR / f).is_file() for f in mine["files"] + theirs["files"]))
         r = c.post("/api/account/delete", json={"password": PASSWORD})
@@ -1032,33 +1053,153 @@ class DeleteAccountTest(AccountTestCase):
         db.close()
         self.assertEqual(c.post("/api/account/delete", json={"password": PASSWORD}).status_code, 200)
 
-    def test_an_admin_cannot_delete_their_own_account(self):
+    def test_the_last_admin_cannot_delete_their_own_account(self):
         admin = self.signed_in(helpers.Account(helpers.admin_id(), helpers.ADMIN_EMAIL, helpers.ADMIN_PASSWORD, 0))
         r = admin.post("/api/account/delete", json={"password": helpers.ADMIN_PASSWORD})
         self.assertEqual((r.status_code, r.json()["code"]), (409, "admin_cannot_delete"))
         # The only admin has nobody to ask, so they are told what to do instead.
         self.assertIn("only admin", r.json()["detail"])
-        self.assertNotIn("Ask another admin", r.json()["detail"])
         self.assertEqual(admin.post("/api/account/delete", json={"password": "wrong"}).status_code, 409)  # no oracle
         self.assertEqual(admin.get("/api/auth/me").status_code, 200)
-        # A second admin is held to the same rule (until the admin panel can change the admin details key), and so is
-        # the helper the admin panel will use. With two admins, each is told to ask the other.
-        other = helpers.make_user(password=PASSWORD, role="admin")
-        c = self.signed_in(other)
-        r = c.post("/api/account/delete", json={"password": PASSWORD})
-        self.assertEqual(r.json()["code"], "admin_cannot_delete")
-        self.assertIn("Ask another admin", r.json()["detail"])
-        self.assertIn("Ask another admin", admin.post("/api/account/delete", json={"password": PASSWORD}).json()["detail"])
         db = SessionLocal()
         try:
             with self.assertRaises(users.AccountProtected):
-                users.delete_account(db, other.id)
-            self.assertIsNotNone(db.get(User, other.id))
-            db.get(User, other.id).role = "user"  # made a regular user first: now it is allowed
-            db.commit()
+                users.delete_account(db, helpers.admin_id())
+            self.assertIsNotNone(db.get(User, helpers.admin_id()))
         finally:
             db.close()
+
+    def make_admin(self, tag: str = "") -> helpers.Account:
+        """A new admin, promoted by the first (so they hold the admin details key), demoted again when the test ends."""
+        account = helpers.make_user(password=PASSWORD, name=f"Second Admin {tag}")
+        with helpers.client() as first:
+            self.assertEqual(first.post(f"/api/admin/users/{account.id}/role", json={"role": "admin"}).status_code, 200)
+        self.addCleanup(self.demote_quietly, account.id)
+        return account
+
+    def demote_quietly(self, user_id: int) -> None:
+        with helpers.client() as first:
+            first.post(f"/api/admin/users/{user_id}/role", json={"role": "user"})
+
+    def apk_version(self) -> int:
+        db = SessionLocal()
+        try:
+            return admin_key.current_public(db)[1]
+        finally:
+            db.close()
+
+    def test_an_admin_deletes_their_account_while_another_admin_remains_and_that_admin_reads_everything(self):
+        bob = helpers.make_user(password=PASSWORD, name="Bob Readable")
+        second = self.make_admin("deleter")
+        mine = self.populate(second, "admintag")
+        version = self.apk_version()
+        c = self.signed_in(second)
+        r = c.post("/api/account/delete", json={"password": PASSWORD})
+        self.assertEqual((r.status_code, r.json()), (200, {"ok": True}), r.text)
+        self.assertEqual({k: v for k, v in self.counts(mine["ws"], second.id).items() if v}, {})
+        self.assertFalse(any((UPLOAD_DIR / f).exists() for f in mine["files"]))
+        self.assertEqual(self.apk_version(), version + 1)  # the key they held was replaced
+        db = SessionLocal()
+        try:
+            self.assertEqual(sorted(g.apk_version for g in db.query(AdminKeyGrant)), [version + 1])  # the first admin's
+            self.assertEqual(db.query(AdminKeyGrant).one().user_id, helpers.admin_id())
+        finally:
+            db.close()
+        with helpers.client() as first:  # still reads every detail, old and new
+            listed = {u["id"]: u for u in first.get("/api/admin/users").json()["users"]}
+            self.assertNotIn(second.id, listed)
+            self.assertEqual((listed[bob.id]["email"], listed[bob.id]["name"]), (bob.email, "Bob Readable"))
+            self.assertEqual(listed[helpers.admin_id()]["email"], helpers.ADMIN_EMAIL)
+            entry = next(e for e in first.get("/api/admin/audit").json()["entries"] if e["action"] == "user_deleted"
+                         and e["detail"] and e["detail"].get("apk_version") == version + 1)
+            self.assertEqual((entry["admin"], entry["detail"]["role"]), (None, "admin"))
+            self.assertNotIn(second.email, json.dumps(entry))
+        self.assertEqual(self.login(second)[1].status_code, 401)
+
+    def test_an_admin_who_cannot_open_the_admin_key_is_told_to_ask_another_admin(self):
+        first = helpers.Account(helpers.admin_id(), helpers.ADMIN_EMAIL, helpers.ADMIN_PASSWORD, 0)
+        keyless = helpers.make_user(password=PASSWORD, role="admin")  # an admin nobody has shared the key with
+        self.addCleanup(self.demote_quietly, keyless.id)
+        c = self.signed_in(keyless)
+        r = c.post("/api/account/delete", json={"password": PASSWORD})
+        self.assertEqual((r.status_code, r.json()["code"]), (409, "admin_key_missing"), r.text)
+        self.assertIn("Ask another admin", r.json()["detail"])
+        self.assertEqual(c.get("/api/auth/me").status_code, 200)
+        with helpers.client(first.email) as admin_client:  # the admin panel deletes them with its own key
+            self.assertEqual(admin_client.delete(f"/api/admin/users/{keyless.id}").status_code, 200)
+
+    # -- one routine behind both endpoints -----------------------------------------------------------------------
+
+    def delete_through(self, how: str, victim: helpers.Account):
+        """Delete ``victim`` as they would themselves (``self``) or as the admin panel does (``admin``)."""
+        if how == "self":
+            return self.signed_in(victim).post("/api/account/delete", json={"password": PASSWORD})
+        with helpers.client() as admin:
+            return admin.delete(f"/api/admin/users/{victim.id}")
+
+    def test_both_endpoints_remove_the_same_rows_and_files_and_leave_other_people_alone(self):
+        carol = helpers.make_user(password=PASSWORD)
+        theirs = self.populate(carol, "caroltag")
+        before_carol = self.counts(theirs["ws"], carol.id)
+        removed = {}
+        for how in ("self", "admin"):
+            bob = helpers.make_user(password=PASSWORD)
+            mine = self.populate(bob, f"{how}tag")
+            self.signed_in(bob)  # a session to remove
+            before = self.counts(mine["ws"], bob.id)
+            self.assertTrue(all(v >= 1 for k, v in before.items() if k not in ("admin_key_grants", "grants_made_by_user")),
+                            before)
+            self.assertTrue(all((UPLOAD_DIR / f).is_file() for f in mine["files"]))
+            r = self.delete_through(how, bob)
+            self.assertEqual(r.status_code, 200, r.text)
+            removed[how] = self.counts(mine["ws"], bob.id)
+            self.assertEqual({k: v for k, v in removed[how].items() if v}, {}, how)
+            self.assertFalse(any((UPLOAD_DIR / f).exists() for f in mine["files"]), how)
+            self.assertEqual(self.counts(theirs["ws"], carol.id), before_carol, how)
+            self.assertTrue(all((UPLOAD_DIR / f).is_file() for f in theirs["files"]), how)
+        self.assertEqual(removed["self"], removed["admin"])
+        self.assertEqual(self.login(carol)[1].status_code, 200)
+
+    def test_a_failure_midway_leaves_the_account_whole_whichever_endpoint_was_used(self):
+        for how in ("self", "admin"):
+            bob = helpers.make_user(password=PASSWORD)
+            mine = self.populate(bob, f"{how}fail")
+            before = self.counts(mine["ws"], bob.id)  # (sessions come and go with the clients: left out below)
+            with mock.patch.object(migrate_encryption, "owner_of", side_effect=RuntimeError("boom")):  # (after many deletes)
+                with self.assertRaises(RuntimeError):
+                    self.delete_through(how, bob)
+            self.assertEqual(self.counts(mine["ws"], bob.id) | {"sessions": 0}, before | {"sessions": 0}, how)
+            self.assertTrue(all((UPLOAD_DIR / f).is_file() for f in mine["files"]), how)
+            self.assertEqual(self.delete_through(how, bob).status_code, 200, how)  # the lock was let go: it works now
+            self.assertEqual(self.counts(mine["ws"], bob.id)["users"], 0)
+
+    def test_a_failure_while_replacing_the_key_leaves_the_admin_account_whole(self):
+        second = self.make_admin("fails")
+        mine = self.populate(second, "keyfail")
+        before, version = self.counts(mine["ws"], second.id), self.apk_version()
+        c = self.signed_in(second)
+        with mock.patch.object(admin_key, "new_key", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                c.post("/api/account/delete", json={"password": PASSWORD})
+        self.assertEqual(self.counts(mine["ws"], second.id) | {"sessions": 0}, before | {"sessions": 0})
+        self.assertEqual(self.apk_version(), version)
+        self.assertTrue(all((UPLOAD_DIR / f).is_file() for f in mine["files"]))
+        self.assertEqual(c.get("/api/auth/me").status_code, 200)
         self.assertEqual(c.post("/api/account/delete", json={"password": PASSWORD}).status_code, 200)
+
+    def test_a_file_that_cannot_be_deleted_never_leaves_a_half_deleted_account(self):
+        bob = helpers.make_user(password=PASSWORD)
+        mine = self.populate(bob, "stuck")
+        db = SessionLocal()
+        try:
+            with mock.patch("pathlib.Path.unlink", side_effect=PermissionError("no")):
+                result = users.delete_account(db, bob.id)
+        finally:
+            db.close()
+        self.assertEqual((result["workspaces"], result["files"]), (2, 0))  # the rows are gone; the files are not counted
+        self.assertEqual({k: v for k, v in self.counts(mine["ws"], bob.id).items() if v}, {})
+        for name in mine["files"]:  # sealed, so unreadable without anyone's key
+            (UPLOAD_DIR / name).unlink(missing_ok=True)
 
     def test_an_upload_that_lands_while_the_account_is_being_deleted_is_removed_too(self):
         bob = helpers.make_user(password=PASSWORD)
@@ -1067,8 +1208,8 @@ class DeleteAccountTest(AccountTestCase):
         armed = [True]
 
         def upload_now(conn, cursor, statement, parameters, context, executemany):
-            # The moment the delete starts writing: another tab's upload commits just before it.
-            if armed[0] and statement.lstrip().upper().startswith("DELETE"):
+            # The moment the delete takes the write lock: another tab's upload commits just before it.
+            if armed[0] and statement.lstrip().upper().startswith("BEGIN IMMEDIATE"):
                 armed[0] = False
                 other = SessionLocal()
                 try:
@@ -1101,7 +1242,7 @@ class DeleteAccountTest(AccountTestCase):
             result = users.delete_account(db, bob.id)  # as the admin panel will: no key scope of the user's
         finally:
             db.close()
-        self.assertEqual(result, {"workspaces": 2, "files": 2})
+        self.assertEqual(result, {"workspaces": 2, "files": 2, "apk_rotated": False})
         self.assertEqual({k: v for k, v in self.counts(mine["ws"], bob.id).items() if v}, {})
 
     def test_deleting_the_account_ends_every_session_and_pending_sign_in(self):

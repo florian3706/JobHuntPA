@@ -1101,7 +1101,7 @@ class DeleteUserTest(AdminTestCase):
         r = c.delete(f"/api/admin/users/{self.admin_id}")
         self.assertEqual((r.status_code, r.json()["code"]), (409, "self"))
         carol = self.make_admin()
-        with mock.patch.object(admin, "_active_admins", return_value=[]):  # nobody else could take over
+        with mock.patch.object(users, "is_last_admin", return_value=True):  # nobody else could take over
             r = c.delete(f"/api/admin/users/{carol.id}")
         self.assertEqual((r.status_code, r.json()["code"]), (409, "last_admin"))
         self.assertEqual(db_rows(lambda s: s.get(User, carol.id).role), "admin")

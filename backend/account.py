@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend import crypto, sessions, users
+from backend import admin_key, crypto, sessions, users
 from backend.db import User, UserProfile, Workspace, get_db
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
@@ -146,33 +146,33 @@ class DeleteAccountIn(BaseModel):
     password: str = Field("", max_length=4096)
 
 
-def _admin_refusal(db: Session, user_id: int) -> AuthProblem:
-    """Why an admin can't delete their account: the only admin has nobody to ask, so they are told what to do instead."""
-    if db.query(User).filter(User.role == "admin", User.status == "active", User.id != user_id).count() == 0:
-        return AuthProblem(409, "admin_cannot_delete", "You're the only admin. Make someone else an admin first, or "
-                                                       "keep this account.")
-    return AuthProblem(409, "admin_cannot_delete", "Ask another admin to make you a regular user first.")
+def _last_admin() -> AuthProblem:
+    return AuthProblem(409, "admin_cannot_delete", "You're the only admin. Make someone else an admin first, or "
+                                                   "keep this account.")
 
 
 @router.post("/delete")
 def delete_my_account(body: DeleteAccountIn, request: Request, user: AuthUser = Depends(current_user),
                       db: Session = Depends(get_db)):
     """Deletes the signed-in account and everything in it (design §6.8; the work is ``users.delete_account``). It needs
-    the password, entered within the last 15 minutes and once more here. An admin can't delete their own account:
-    the last admin would leave nobody to run JobHuntPA, and deleting any admin has to change the admin details key,
-    which arrives with the admin panel (Phase F); until then another admin makes them a regular user first."""
+    the password, entered within the last 15 minutes and once more here. An admin can delete their own account while
+    another active admin remains (the admin details key is replaced for the others); the last admin can't."""
     from backend.security import confirm_password  # (security imports auth, which imports this module)
 
     require_recent_auth(user)
-    if user.is_admin or db.get(User, user.id).role == "admin":
-        raise _admin_refusal(db, user.id)
+    if users.is_last_admin(db, user.id):
+        raise _last_admin()
     confirm_password(request, db, user, body.password)
     try:
         users.delete_account(db, user.id)
     except users.AccountBusy:
         raise AuthProblem(409, "run_active", "A search is still running. Wait for it to finish, then try again.") from None
     except users.AccountProtected:
-        raise _admin_refusal(db, user.id) from None
+        raise _last_admin() from None
+    except admin_key.ApkUnavailable:
+        raise AuthProblem(409, "admin_key_missing", "You don't have the admin key, so you can't delete your account "
+                                                    "yourself. Ask another admin to delete it, or to share the key "
+                                                    "with you again.") from None
     response = JSONResponse({"ok": True})
     sessions.clear_cookie(response, request.scope)
     response.headers["Clear-Site-Data"] = '"cache"'

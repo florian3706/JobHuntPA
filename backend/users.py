@@ -853,7 +853,7 @@ def disable_totp(db: Session, user: User) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Deleting an account (Phase E; the admin panel calls it for other people's accounts too)
+# Deleting an account (one routine: Settings calls it for your own, the admin panel for anyone's)
 # ---------------------------------------------------------------------------
 
 class AccountBusy(Exception):
@@ -861,40 +861,64 @@ class AccountBusy(Exception):
 
 
 class AccountProtected(Exception):
-    """An admin's account isn't deleted while they are an admin: making them a regular user first (which changes the
-    admin details key, Phase F) is how the last-admin rule is kept."""
+    """The account is the last active admin's: JobHuntPA needs one, and nobody could take the admin details key over."""
 
 
-def delete_account(db: Session, user_id: int) -> dict:
-    """Removes an account and everything of theirs, in one transaction (their sealed upload files after it):
-    workspaces with every row in them (jobs, scores, cover letters, documents, chats, profile, dealbreakers, pins,
-    sources, schedules, runs, merge decisions), sessions, recovery codes, tokens, keys, membership and grants, email
-    preferences and the admin grant. Shared postings, company profiles and the geocode cache stay; so do usage
-    counts (``llm_usage``, no longer tied to anyone) and the audit log (its user ids become NULL).
-
-    Needs no key: it never opens a sealed value. Refuses (AccountBusy) while one of the account's runs is active and
-    (AccountProtected) for an admin. Cancelling a Stripe subscription is the caller's job (Phase I), before this.
-    Explicit deletes, not cascades: a database from before accounts has workspace tables without foreign keys."""
-    from backend import migrate_encryption, sessions, tasks
-
+def is_last_admin(db: Session, user_id: int) -> bool:
+    """Whether this is an active admin and no other active admin exists."""
     user = db.get(User, user_id)
-    if user is None:
+    if user is None or user.role != "admin" or user.status != "active":
+        return False
+    return not db.query(User.id).filter(User.role == "admin", User.status == "active", User.id != user_id).first()
+
+
+def _write_lock(db: Session) -> None:
+    """Take SQLite's write lock now (it is kept until the commit), unless this session already holds it, so what is
+    read next (the admins, the key, the uploads) can't change before the commit."""
+    if not db.connection().connection.driver_connection.in_transaction:
+        db.execute(text("BEGIN IMMEDIATE"))
+
+
+def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None) -> dict:
+    """The one way an account is removed (a person deleting their own, or an admin deleting someone's): the account
+    and everything of theirs, in one transaction (their sealed upload files after it): workspaces with every row in
+    them (jobs, scores, cover letters, documents, chats, profile, dealbreakers, pins, sources, schedules, runs, merge
+    decisions), sessions, recovery codes, tokens, keys, membership and grants, email preferences and the admin grant.
+    Shared postings, company profiles and the geocode cache stay; so do usage counts (``llm_usage``, no longer tied
+    to anyone) and the audit log (its user ids become NULL).
+
+    Deleting an admin replaces the admin details key for the remaining admins, in the same transaction, so what
+    they held opens nothing written afterwards. The key is opened through ``actor_id``'s grant (the admin doing the
+    deleting; their own request's key scope) or, with no ``actor_id``, through the deleted admin's own. An entry in
+    the audit log (no personal details) is written when an admin does the deleting or an admin is deleted.
+
+    Needs no key of the user's: it never opens a sealed value. Refuses (AccountBusy) while one of the account's runs
+    is active and (AccountProtected) for the last active admin; ApkUnavailable when the admin key can't be opened.
+    Cancelling a Stripe subscription is the caller's job (Phase I), before this. Explicit deletes, not cascades: a
+    database from before accounts has workspace tables without foreign keys."""
+    from backend import admin_key, migrate_encryption, sessions, tasks
+
+    if db.get(User, user_id) is None:
         raise LookupError("No such account")
-    if user.role == "admin":
-        raise AccountProtected("Make this person a regular user first")
-    ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
-    jobs = select(Job.id).where(Job.workspace_id.in_(ws_ids))
-    threads = select(ChatThread.id).where(ChatThread.workspace_id.in_(ws_ids))
     with tasks.start_lock():  # no run can be queued for these workspaces while their rows are removed
-        if db.query(SearchRun.id).filter(SearchRun.workspace_id.in_(ws_ids),
-                                         SearchRun.state.in_(["queued", "running"])).first():
-            raise AccountBusy("A search is still running")
         try:
-            db.execute(delete(ChatMessage).where(ChatMessage.thread_id.in_(threads)))
-            # After the first write: it takes SQLite's write lock, which is kept until the commit, so an upload from
-            # another tab either committed before this list is read or waits until the account is gone.
+            _write_lock(db)
+            user = db.get(User, user_id, populate_existing=True)
+            if user is None:
+                raise LookupError("No such account")
+            was_admin = user.role == "admin"
+            if is_last_admin(db, user_id):
+                raise AccountProtected("This is the last admin")
+            ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
+            if db.query(SearchRun.id).filter(SearchRun.workspace_id.in_(ws_ids),
+                                             SearchRun.state.in_(["queued", "running"])).first():
+                raise AccountBusy("A search is still running")
+            apk = admin_key.open_apk(db, user_id if actor_id is None else actor_id) if was_admin else None
+            jobs = select(Job.id).where(Job.workspace_id.in_(ws_ids))
+            threads = select(ChatThread.id).where(ChatThread.workspace_id.in_(ws_ids))
             files = [name for (name,) in db.query(Document.stored_name).filter(Document.workspace_id.in_(ws_ids))
                      if name]
+            db.execute(delete(ChatMessage).where(ChatMessage.thread_id.in_(threads)))
             db.execute(delete(ChatThread).where(ChatThread.workspace_id.in_(ws_ids)))
             db.execute(delete(CoverLetter).where(CoverLetter.job_id.in_(jobs)))
             db.execute(delete(FitResult).where(FitResult.job_id.in_(jobs)))
@@ -905,8 +929,7 @@ def delete_account(db: Session, user_id: int) -> dict:
             for model in (SearchSchedule, UserProfile, DealbreakerSet):  # one row per workspace, id = workspace id
                 db.execute(delete(model).where(model.id.in_(ws_ids)))
             db.execute(update(LlmUsage).where(LlmUsage.workspace_id.in_(ws_ids)).values(workspace_id=None))
-            if hasattr(LlmUsage, "user_id"):  # added with the admin panel's usage statistics (Phase F)
-                db.execute(update(LlmUsage).where(LlmUsage.user_id == user_id).values(user_id=None))
+            db.execute(update(LlmUsage).where(LlmUsage.user_id == user_id).values(user_id=None))
             db.execute(delete(Workspace).where(Workspace.owner_id == user_id))
             db.execute(delete(CommuteCache).where(CommuteCache.owner_id == user_id))
             if migrate_encryption.owner_of(migrate_encryption.state()) == user_id:
@@ -921,6 +944,19 @@ def delete_account(db: Session, user_id: int) -> dict:
             for model in (Membership, EmailPrefs, UserKeys):
                 db.execute(delete(model).where(model.user_id == user_id))
             db.execute(delete(User).where(User.id == user_id))
+            detail: dict[str, Any] = {"role": "admin" if was_admin else "user", "workspaces": len(ws_ids),
+                                      "files": len(files)}
+            if actor_id is not None:
+                detail["user_id"] = user_id
+            public = None
+            if was_admin:
+                remaining = [i for (i,) in db.query(User.id).filter(User.role == "admin")]
+                rotation = admin_key.new_key(db, apk, remaining, actor_id)
+                detail.update(apk_version=rotation.apk.version, resealed=rotation.resealed, stale=rotation.stale,
+                              dropped=rotation.dropped)
+                public = rotation.apk.public
+            if was_admin or actor_id is not None:
+                admin_key.audit(db, actor_id, "user_deleted", None, detail, public=public)
             db.commit()
         except BaseException:
             db.rollback()
@@ -936,4 +972,4 @@ def delete_account(db: Session, user_id: int) -> dict:
             log.warning("Could not delete an upload of deleted user %s: %s", user_id, exc.__class__.__name__)
     sessions._active_on.pop(user_id, None)  # SQLite may give this id to the next account
     log.info("Account deleted: user %s (%d workspace(s), %d file(s))", user_id, len(ws_ids), removed)
-    return {"workspaces": len(ws_ids), "files": removed}
+    return {"workspaces": len(ws_ids), "files": removed, "apk_rotated": was_admin}

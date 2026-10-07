@@ -33,44 +33,25 @@ import logging
 import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import case, delete, func, select, text, update
+from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
-from backend import admin_key, key_rotation, keys, mailer, migrate_encryption, sessions, signup, tokens, users
+from backend import admin_key, key_rotation, keys, mailer, migrate_encryption, signup, tokens, users
 from backend.admin_key import Apk, ApkUnavailable
 from backend.db import (
-    UPLOAD_DIR,
     AdminAudit,
     AdminKeyGrant,
     AuthSession,
     AuthToken,
-    ChatMessage,
-    ChatThread,
-    CommuteCache,
-    CompanySource,
-    CoverLetter,
-    DealbreakerSet,
-    Document,
-    EmailPrefs,
-    FitResult,
-    Job,
-    JobDuplicate,
     LlmUsage,
     Membership,
     MembershipGrant,
-    Pin,
-    RecoveryCode,
-    SearchProfile,
-    SearchRun,
-    SearchSchedule,
     User,
     UserKeys,
-    UserProfile,
     Workspace,
     get_db,
     utcnow,
@@ -121,11 +102,15 @@ def _open_apk(db: Session, admin: AuthUser) -> Optional[Apk]:
         return None
 
 
+def _key_missing() -> AuthProblem:
+    return _problem(409, "admin_key_missing", "You don't have the admin key, so this can't be done. Ask another "
+                                              "admin to share it with you again.")
+
+
 def _need_apk(db: Session, admin: AuthUser) -> Apk:
     apk = _open_apk(db, admin)
     if apk is None:
-        raise _problem(409, "admin_key_missing", "You don't have the admin key, so this can't be done. Ask another "
-                                                  "admin to share it with you again.")
+        raise _key_missing()
     return apk
 
 
@@ -448,87 +433,26 @@ def enable_user(user_id: int, admin: AuthUser = Depends(current_user), db: Sessi
     return {"ok": True, "changed": changed, "user": _summaries(db, _open_apk(db, admin), [target.id])[0]}
 
 
-def _remove_data(db: Session, user_id: int) -> tuple[int, list[str]]:
-    """Delete the account's rows in ``db``'s transaction (not committed): workspaces with everything in them, sessions,
-    tokens, keys, membership, grants, email preferences and the admin key grant. Returns the number of workspaces and
-    the names of their sealed upload files (to delete after the commit). Never opens a sealed value. Explicit deletes,
-    not cascades: a database from before accounts has workspace tables without foreign keys. Shared postings and
-    company profiles stay; so do usage counts (``llm_usage``, no longer tied to anyone) and the audit log (its
-    person ids become NULL)."""
-    ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
-    jobs = select(Job.id).where(Job.workspace_id.in_(ws_ids))
-    threads = select(ChatThread.id).where(ChatThread.workspace_id.in_(ws_ids))
-    files = [name for (name,) in db.query(Document.stored_name).filter(Document.workspace_id.in_(ws_ids)) if name]
-    legacy = migrate_encryption.owner_of(migrate_encryption.state()) == user_id
-    db.execute(delete(ChatMessage).where(ChatMessage.thread_id.in_(threads)))
-    db.execute(delete(ChatThread).where(ChatThread.workspace_id.in_(ws_ids)))
-    db.execute(delete(CoverLetter).where(CoverLetter.job_id.in_(jobs)))
-    db.execute(delete(FitResult).where(FitResult.job_id.in_(jobs)))
-    db.execute(delete(JobDuplicate).where(JobDuplicate.workspace_id.in_(ws_ids)))
-    db.execute(delete(Job).where(Job.workspace_id.in_(ws_ids)))
-    for model in (Document, Pin, CompanySource, SearchRun):
-        db.execute(delete(model).where(model.workspace_id.in_(ws_ids)))
-    for model in (SearchSchedule, UserProfile, DealbreakerSet):  # one row per workspace, id = workspace id
-        db.execute(delete(model).where(model.id.in_(ws_ids)))
-    db.execute(update(LlmUsage).where(LlmUsage.workspace_id.in_(ws_ids)).values(workspace_id=None))
-    db.execute(update(LlmUsage).where(LlmUsage.user_id == user_id).values(user_id=None))
-    db.execute(delete(Workspace).where(Workspace.owner_id == user_id))
-    db.execute(delete(CommuteCache).where(CommuteCache.owner_id == user_id))
-    if legacy:
-        db.execute(delete(SearchProfile))  # the single row from before accounts, sealed under this account's key
-    db.execute(update(AdminAudit).where(AdminAudit.admin_id == user_id).values(admin_id=None))
-    db.execute(update(AdminAudit).where(AdminAudit.target_user_id == user_id).values(target_user_id=None))
-    db.execute(update(AdminKeyGrant).where(AdminKeyGrant.granted_by == user_id).values(granted_by=None))
-    db.execute(update(MembershipGrant).where(MembershipGrant.created_by == user_id).values(created_by=None))
-    db.execute(update(AuthToken).where(AuthToken.created_by == user_id).values(created_by=None))
-    for model in (AuthSession, RecoveryCode, AuthToken, AdminKeyGrant, MembershipGrant, Membership, EmailPrefs,
-                  UserKeys):
-        db.execute(delete(model).where(model.user_id == user_id))
-    db.execute(delete(User).where(User.id == user_id))
-    return len(ws_ids), files
-
-
 @router.delete("/users/{user_id}")
 def delete_user(user_id: int, admin: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
-    """Remove an account and everything of theirs (their sealed upload files too). Not your own account, not the last
-    admin, and not while one of their searches is running. Removing an admin replaces the admin key, as demoting does,
-    so the key they held opens nothing written afterwards. The audit entry holds no personal details. Recent password
-    required."""
+    """Remove an account and everything of theirs (their sealed upload files too; the work is
+    ``users.delete_account``). Not your own account, not the last admin, and not while one of their searches is
+    running. Removing an admin replaces the admin key, as demoting does, so the key they held opens nothing written
+    afterwards. The audit entry holds no personal details. Recent password required."""
     require_recent_auth(admin)
-    _exclusive(db)
     target = _target(db, user_id)
     if target.id == admin.id:
         raise _problem(409, "self", "You can't delete your own account here. Use Settings.")
-    was_admin = target.role == "admin"
-    if was_admin and target.status == "active" and not _active_admins(db, besides=target.id):
+    try:
+        result = users.delete_account(db, target.id, actor_id=admin.id)
+    except users.AccountProtected:
         raise _problem(409, "last_admin", "This is the last admin, so their account can't be deleted. Make someone "
-                                          "else an admin first.")
-    apk = _need_apk(db, admin) if was_admin else None
-    if db.query(SearchRun.id).join(Workspace, Workspace.id == SearchRun.workspace_id).filter(
-            Workspace.owner_id == target.id, SearchRun.state.in_(["queued", "running"])).first():
-        raise _problem(409, "busy", "A search of theirs is still running. Try again when it has finished.")
-    gone = target.id  # the row is deleted below: nothing may be read from ``target`` after this
-    workspaces, files = _remove_data(db, gone)
-    detail: dict[str, Any] = {"user_id": gone, "role": "admin" if was_admin else "user", "workspaces": workspaces,
-                              "files": len(files)}
-    public = None
-    if was_admin:
-        remaining = [i for (i,) in db.query(User.id).filter(User.role == "admin", User.id != gone)]
-        rotation = admin_key.new_key(db, apk, remaining, admin.id)
-        detail.update(apk_version=rotation.apk.version, resealed=rotation.resealed, stale=rotation.stale,
-                      dropped=rotation.dropped)
-        public = rotation.apk.public
-    admin_key.audit(db, admin.id, "user_deleted", None, detail, public=public)
-    db.commit()
-    for name in files:  # after the commit: a failed delete leaves an unreadable file, never a half-deleted account
-        if Path(name).name == name:
-            try:
-                (UPLOAD_DIR / name).unlink(missing_ok=True)
-            except OSError as exc:
-                log.warning("Could not delete an upload of deleted user %s (%s)", gone, exc.__class__.__name__)
-    sessions._active_on.pop(gone, None)  # SQLite may give this id to the next account
-    log.info("Account deleted by an admin: user %s (%d workspace(s), %d file(s))", gone, workspaces, len(files))
-    return {"ok": True, "apk_rotated": was_admin}
+                                          "else an admin first.") from None
+    except users.AccountBusy:
+        raise _problem(409, "busy", "A search of theirs is still running. Try again when it has finished.") from None
+    except ApkUnavailable:
+        raise _key_missing() from None
+    return {"ok": True, "apk_rotated": result["apk_rotated"]}
 
 
 def notify_mfa_disabled(db: Session, admin: AuthUser, target: User, apk: Optional[Apk]) -> bool:

@@ -164,9 +164,10 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
 - **Delete your account** (Settings > Account): enter your password and everything of yours is
   removed: workspaces, jobs, documents and the uploaded files, chats, cover letters, keys and
   sessions. Job postings and company research that everyone shares stay, because they hold nothing of
-  yours. It can't be undone, and it waits while one of your searches is running. An admin can't delete
-  their own account (for now: the last admin would leave nobody to run JobHuntPA, and changing an
-  admin's account needs the admin panel's key change); another admin makes them a regular user first.
+  yours. It can't be undone, and it waits while one of your searches is running. An admin can delete
+  their own account while another admin remains (the admin key is replaced for the others, so the one
+  you held opens nothing new); the last admin can't, because nobody would be left to run JobHuntPA.
+  Make someone else an admin first. The admin panel's **delete their account** removes exactly the same things.
 - **Download your data:** **Settings > Download your data** makes a zip file with everything JobHuntPA
   keeps for your account, as Markdown files in folders made for people: `Account.md`; for each
   workspace its search setup, sources, documents (with the original files you uploaded, byte for byte),
