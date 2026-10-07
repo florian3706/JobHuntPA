@@ -1591,6 +1591,41 @@ class AdminSide(Base):
         self.assertEqual((r.status_code, r.json()["code"]), (502, "stripe_failed"))
         self.assertFalse(self.member(acct.id).exempt)  # nothing changed
 
+    def test_turning_off_a_subscriber_says_they_are_still_billed_and_changes_nothing_at_stripe(self):
+        acct, c, ref = self.subscriber()
+        r = self.admin.post(f"/api/admin/users/{acct.id}/disable")
+        self.assertEqual((r.status_code, r.json()["subscription"], r.json()["user"]["status"]),
+                         (200, "still_billing", "disabled"))
+        self.stripe.v1.subscriptions.update.assert_not_called()
+        self.assertFalse(self.member(acct.id).cancel_at_period_end)
+        plain = helpers.make_user()
+        self.assertEqual(self.admin.post(f"/api/admin/users/{plain.id}/disable").json()["subscription"], "none")
+
+    def test_turning_off_a_subscriber_can_end_the_subscription_at_the_period_end(self):
+        acct, c, ref = self.subscriber()
+        self.stripe.v1.subscriptions.list.return_value = {"data": [stripe_sub(ref)]}
+        r = self.admin.post(f"/api/admin/users/{acct.id}/disable", json={"cancel_subscription_at_period_end": True})
+        self.assertEqual((r.status_code, r.json()["subscription"]), (200, "cancelled"))
+        self.stripe.v1.subscriptions.update.assert_called_once_with("sub_123", params={"cancel_at_period_end": True})
+        self.assertTrue(self.member(acct.id).cancel_at_period_end)
+        again = self.admin.post(f"/api/admin/users/{acct.id}/disable")  # (already ending: nothing to warn about)
+        self.assertEqual(again.json()["subscription"], "cancelled")
+
+    def test_a_stripe_failure_still_turns_the_account_off_and_says_so(self):
+        acct, c, ref = self.subscriber()
+        self.stripe.v1.subscriptions.list.side_effect = RuntimeError("down")
+        self.stripe.v1.subscriptions.search.side_effect = RuntimeError("down")
+        r = self.admin.post(f"/api/admin/users/{acct.id}/disable", json={"cancel_subscription_at_period_end": True})
+        self.assertEqual((r.status_code, r.json()["subscription"], r.json()["user"]["status"]),
+                         (200, "failed", "disabled"))
+        self.assertFalse(self.member(acct.id).cancel_at_period_end)
+
+    def test_a_refused_turn_off_never_reaches_stripe(self):
+        self.stripe.v1.subscriptions.update.reset_mock()
+        r = self.admin.post(f"/api/admin/users/{helpers.admin_id()}/disable", json={"cancel_subscription_at_period_end": True})
+        self.assertEqual((r.status_code, r.json()["code"]), (409, "self"))
+        self.stripe.v1.subscriptions.update.assert_not_called()
+
     def test_the_users_list_shows_how_each_person_pays(self):
         acct, c, ref = self.subscriber()
         users = self.admin.get("/api/admin/users").json()["users"]

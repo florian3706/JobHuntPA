@@ -553,6 +553,32 @@ class ExportTest(unittest.TestCase):
         read.assert_not_called()  # the stored uploads' sizes were enough to know
         self.assertNotIn(self.bob.id, export._running)
 
+    def test_a_refused_or_failed_export_leaves_no_open_zip_behind(self):
+        made = []
+
+        class Recording(export.Archive):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                made.append(self)
+
+        class TooBig(Recording):
+            def add(self, path, data):
+                raise export.too_large()
+
+        with mock.patch.object(export, "Archive", Recording), mock.patch.object(export, "MAX_EXPORT_BYTES", 10):
+            self.assertEqual(self.export().status_code, 413)
+        self.assertEqual(made, [], "refused on the uploads' sizes alone: no zip was started")
+        with mock.patch.object(export, "Archive", TooBig):
+            self.assertEqual(self.export().status_code, 413)
+        with mock.patch.object(export, "Archive", Recording), mock.patch.object(export, "_account_md",
+                                                                                side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):  # (the test client re-raises what the server would answer 500 to)
+                self.export()
+        self.assertEqual(len(made), 2)
+        for arc in made:
+            self.assertTrue(arc.buffer.closed)
+            self.assertIsNone(arc.zip.fp, "the ZipFile was closed, so the garbage collector has nothing to finish")
+
     def test_the_running_total_stops_a_zip_that_grows_past_the_limit(self):
         arc = export.Archive("root", __import__("datetime").datetime(2026, 1, 1))
         with mock.patch.object(export, "MAX_EXPORT_BYTES", 100):

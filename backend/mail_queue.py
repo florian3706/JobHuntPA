@@ -21,6 +21,7 @@ from backend import mailer
 log = logging.getLogger(__name__)
 
 MAX_WAITING = 200  # messages waiting for the mail server; more are dropped (a flood, or a server that is down)
+NOTICE_RESERVE = 50  # the last of those places are for security notices (``priority``): links anyone can ask for stop first
 OFF_TEXT = ("Email isn't set up on this JobHuntPA yet. An admin sets it up in the admin panel (Server): the mail "
             "server and the public address.")
 
@@ -52,11 +53,17 @@ def _pool() -> ThreadPoolExecutor:
         return _executor
 
 
-def submit(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Optional[Future]:
+def _limit(priority: bool) -> int:
+    return MAX_WAITING if priority else MAX_WAITING - NOTICE_RESERVE
+
+
+def submit(fn: Callable[..., Any], *args: Any, priority: bool = False, **kwargs: Any) -> Optional[Future]:
     """Run ``fn`` on the mail thread, after the work already waiting. Returns its Future, or None when too much is
-    waiting. ``fn``'s exceptions are logged (class name only) and never reach the caller."""
+    waiting: ``priority`` jobs (security notices) may use the places the others can't, so someone who can fill the
+    queue with reset and sign-up links still can't keep an owner's "password changed" notice out. ``fn``'s
+    exceptions are logged (class name only) and never reach the caller."""
     with _lock:
-        if len(_waiting) >= MAX_WAITING:
+        if len(_waiting) >= _limit(priority):
             log.warning("Email work dropped: %d jobs are waiting for the mail server", len(_waiting))
             return None
 
@@ -74,11 +81,11 @@ def submit(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Optional[Future
     return future
 
 
-def has_room() -> bool:
+def has_room(priority: bool = False) -> bool:
     """Whether ``submit`` would take another job now. Callers that change something before sending (a new link
     replaces the old one) look first, so a full queue doesn't cost the person the link they have."""
     with _lock:
-        return len(_waiting) < MAX_WAITING
+        return len(_waiting) < _limit(priority)
 
 
 def _forget(future: Future) -> None:
@@ -95,12 +102,13 @@ def deliver_now(to: str, template: tuple, user_id: Optional[int] = None) -> mail
     return result
 
 
-def send(to: str, template: tuple, *, user_id: Optional[int] = None) -> Optional[Future]:
+def send(to: str, template: tuple, *, user_id: Optional[int] = None, priority: bool = False) -> Optional[Future]:
     """Queue one message (``template`` is what ``backend.email_templates`` returns). The Future's result is a
-    ``mailer.SendResult``. None when email is off or too much is waiting: the caller decides whether that matters."""
+    ``mailer.SendResult``. None when email is off or too much is waiting: the caller decides whether that matters.
+    ``priority`` is for security notices (see ``submit``)."""
     if not enabled():
         return None
-    return submit(deliver_now, to, template, user_id)
+    return submit(deliver_now, to, template, user_id, priority=priority)
 
 
 def drain(timeout: float = 15.0) -> bool:

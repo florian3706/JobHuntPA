@@ -415,9 +415,22 @@ class MailThreadTest(MailTestCase):
 
     def test_too_much_waiting_is_dropped_not_piled_up(self):
         gate = threading.Event()
-        with mock.patch.object(mail_queue, "MAX_WAITING", 3):
+        with mock.patch.object(mail_queue, "MAX_WAITING", 3), mock.patch.object(mail_queue, "NOTICE_RESERVE", 0):
             futures = [mail_queue.submit(gate.wait, 5) for _ in range(5)]
             self.assertEqual([f is not None for f in futures], [True, True, True, False, False])
+            gate.set()
+            self.assertTrue(mail_queue.drain(10))
+
+    def test_the_last_places_are_kept_for_security_notices(self):
+        gate = threading.Event()
+        with mock.patch.object(mail_queue, "MAX_WAITING", 5), mock.patch.object(mail_queue, "NOTICE_RESERVE", 2):
+            ordinary = [mail_queue.submit(gate.wait, 5) is not None for _ in range(5)]
+            self.assertEqual(ordinary, [True, True, True, False, False])
+            self.assertFalse(mail_queue.has_room())
+            self.assertTrue(mail_queue.has_room(priority=True))
+            notices = [mail_queue.submit(gate.wait, 5, priority=True) is not None for _ in range(3)]
+            self.assertEqual(notices, [True, True, False])
+            self.assertFalse(mail_queue.has_room(priority=True))
             gate.set()
             self.assertTrue(mail_queue.drain(10))
 

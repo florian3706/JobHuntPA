@@ -16,7 +16,7 @@ from tests.mail_helpers import BASE, MailTestCase, html_of, text_of, token_in  #
 
 from sqlalchemy import text  # noqa: E402
 
-from backend import auth, email_templates, mail_queue, mailer, schedule, tokens, users  # noqa: E402
+from backend import account_email, auth, email_templates, mail_queue, mailer, schedule, tokens, users  # noqa: E402
 from backend.db import AuthSession, AuthToken, SessionLocal, User, engine, utcnow  # noqa: E402
 
 PASSWORD = "user-password-123"
@@ -224,6 +224,18 @@ class VerifyTest(AccountMailCase):
         self.assertEqual(r.status_code, 201, r.text)
         self.assertEqual(token_rows(self.user_id_of(email), "verify_email"), [])
 
+    def test_a_notice_still_goes_when_ordinary_mail_has_filled_its_places_and_a_full_queue_is_logged(self):
+        bob = helpers.make_user()
+        with mock.patch.object(mail_queue, "MAX_WAITING", 1), mock.patch.object(mail_queue, "NOTICE_RESERVE", 1):
+            self.assertIsNone(mail_queue.send("x@example.invalid", ("S", "t", "<p>h</p>", {})))  # ordinary: no room
+            self.assertTrue(account_email.notify("password_changed", bob.email, bob.id))
+            self.flush()
+        self.assertEqual(len(self.to(bob.email)), 1)
+        with mock.patch.object(mail_queue, "MAX_WAITING", 0), self.assertLogs("backend.account_email", "WARNING") as logs:
+            self.assertFalse(account_email.notify("password_changed", bob.email, bob.id))
+        self.assertIn("queue is full", logs.output[0])
+        self.assertNotIn(bob.email, logs.output[0])
+
     def test_resend_needs_a_session_and_email(self):
         self.assertEqual(self.anonymous().post("/api/auth/verify-email/resend").status_code, 401)
         self.assertEqual(self.anonymous().get("/api/auth/email").status_code, 401)
@@ -394,6 +406,54 @@ class ChangeEmailTest(AccountMailCase):
         c2, r = self.login(bob.email, "a brand new password")
         c2.headers["X-CSRF-Token"] = r.json()["csrf"]
         self.assertEqual(c2.get("/api/auth/me").json()["user"]["email"], bob.email)
+
+    def test_a_request_whose_key_was_replaced_before_it_finished_starts_no_change(self):
+        bob, c = self.person()
+        with engine.begin() as conn:  # (a wipe reset committed after this session loaded: the row has a new key id)
+            conn.execute(text("UPDATE user_keys SET dek_kid = :k WHERE user_id = :u"), {"k": b"\x00\x01\x02\x03", "u": bob.id})
+        r = self.start(c, self.new_email("moved"))
+        self.assertEqual((r.status_code, r.json()["code"]), (401, "signed_out"))
+        self.assertEqual(token_rows(bob.id, "email_change"), [])
+
+    def stripe(self, key="sk_test_" + "a1B2c3D4" * 4):
+        """Billing on with a mocked Stripe whose search finds customer cus_1 (the link opens without the person's key)."""
+        stripe = mock.MagicMock()
+        stripe.v1.customers.search.return_value = {"data": [{"id": "cus_1"}]}
+        env = mock.patch.dict(os.environ, {"STRIPE_SECRET_KEY": key})
+        env.start()
+        patcher = mock.patch("backend.billing._client", return_value=stripe)
+        patcher.start()
+        self.addCleanup(env.stop)
+        self.addCleanup(patcher.stop)
+        return stripe
+
+    def change(self, c, new):
+        self.start(c, new)
+        return self.confirm(token_in(self.last_to(new), "verify-email.html"))
+
+    def test_the_stripe_customer_gets_the_new_address(self):
+        bob, c = self.person()
+        stripe = self.stripe()
+        new = self.new_email("moved")
+        self.assertEqual(self.change(c, new).status_code, 200)
+        stripe.v1.customers.update.assert_called_once_with("cus_1", params={"email": new})
+
+    def test_a_stripe_that_fails_or_a_person_without_one_never_stops_the_change(self):
+        bob, c = self.person()
+        stripe = self.stripe()
+        stripe.v1.customers.update.side_effect = RuntimeError("down")
+        self.assertEqual(self.change(c, self.new_email("moved")).status_code, 200)
+        stripe.v1.customers.search.return_value = {"data": []}  # no customer: nothing to tell
+        stripe.v1.subscriptions.search.return_value = {"data": []}
+        stripe.v1.customers.update.reset_mock()
+        self.assertEqual(self.change(c, self.new_email("again")).status_code, 200)
+        stripe.v1.customers.update.assert_not_called()
+
+    def test_without_billing_stripe_is_never_called(self):
+        bob, c = self.person()
+        stripe = self.stripe(key="")
+        self.assertEqual(self.change(c, self.new_email("moved")).status_code, 200)
+        self.assertEqual(stripe.mock_calls, [])
 
     def test_the_request_limit(self):
         bob, c = self.person()

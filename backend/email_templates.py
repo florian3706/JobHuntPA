@@ -9,7 +9,7 @@ CSS stripped, and the text part carries the same content.
 
 Link targets. A token that gives access (a reset or an email check) sits in the address's fragment, after "#": a
 browser never sends the fragment to a server or in a Referer header, so it can't end up in an access log. The page reads
-it with ``location.hash`` and posts it. An invitation links to the sign-up page itself (Phase F built it to read
+it with ``location.hash`` and posts it. An invitation links to the sign-up page itself (it reads
 ``?invite=``):
     {base}/reset-password.html#token=...   {base}/verify-email.html#token=...   {base}/signup.html?invite=...
     {base}/job.html?id=ID[&ws=WORKSPACE]   {base}/unsubscribe?token=...

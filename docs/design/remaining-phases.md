@@ -20,11 +20,14 @@ Everything since v1.13.0 is on GitHub `main` (pushed 2026-10-07, not released or
 | C | Accounts and sessions: first run, sign-in, cookie-wrapped data key, CSRF, rate limits, admin-only global settings | done |
 | D | Encrypting user data and migrating it | done (see the commit log on `wip/accounts`) |
 | K | Sign-up wizard (`welcome.html`): theme first, then search setup | done |
-| Email core | `backend/mailer.py`, `backend/email_templates.py`. Not wired in yet | done |
-| Billing core | `backend/access.py` (membership gate) and `backend/billing.py` (Stripe). Not wired in yet | done |
+| Email core | `backend/mailer.py`, `backend/email_templates.py` | done, wired in by H |
+| Billing core | `backend/access.py` (membership gate) and `backend/billing.py` (Stripe) | done, wired in by I |
 | E, F, G | Below. Built in parallel and merged | done (merged 2026-10-07) |
-| X | Data export (added on 2026-10-07) | built, reviewed in wave 2 |
-| H, I, J, L | Below | **to do** |
+| H | Email: settings, address checks, forgot password, notices | done (merged at 7d74fd7) |
+| I | Memberships and Stripe | done (merged at 7d74fd7) |
+| X | Data export (added on 2026-10-07) | done (merged at 7d74fd7) |
+| J | Job digest emails | in progress (worktree `phase-j`) |
+| L | Hardening and final review | **to do** |
 
 ## Order and what can run in parallel
 
@@ -152,7 +155,7 @@ D (done) ───┼── F  (admin panel) ───────────�
 - An admin user type with an admin panel.
 - See the users.
 - Send password-reset emails. Build the button and the endpoint here; the email itself is sent once Phase H wires
-  mail in. Until then, show "email isn't set up yet".
+  mail in. Until then, show "email isn't set up yet". (Historical: Phase H has since wired it in.)
 - LLM usage stats.
 - The number of users, and active users in the past week and month.
 - Manually change membership time frames; add free periods for users; exempt users from payment entirely.
@@ -240,7 +243,8 @@ D (done) ───┼── F  (admin panel) ───────────�
 ## Phase H: email wiring
 
 **Design:** §9, §13 items 1–2, §16 (the link names, the SMTP password decision, sending from one background thread).
-Uses `backend/mailer.py` and `backend/email_templates.py`, which exist but aren't wired in.
+Uses `backend/mailer.py` and `backend/email_templates.py`, which existed but weren't wired in when this brief was
+written (historical: this brief describes the state before H was merged).
 
 **Build:**
 - **SMTP and public-address settings** in the admin panel (Phase F): `SMTP_*` and `PUBLIC_BASE_URL`. Add a "send a
@@ -270,8 +274,9 @@ Uses `backend/mailer.py` and `backend/email_templates.py`, which exist but aren'
 
 ## Phase I: memberships and Stripe
 
-**Design:** §8, §11 row I, §13 item 3. Uses `backend/access.py` and `backend/billing.py`, which exist with tests but
-aren't wired in. Read their module docstrings and the notes in their tests.
+**Design:** §8, §11 row I, §13 item 3. Uses `backend/access.py` and `backend/billing.py`, which existed with tests but
+weren't wired in when this brief was written (historical: this brief describes the state before I was merged). Read
+their module docstrings and the notes in their tests.
 
 **The user's rules:**
 - Stripe takes payments.

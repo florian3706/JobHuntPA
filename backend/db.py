@@ -112,6 +112,10 @@ class Workspace(Base):
     (``owner_id``); a workspace from before accounts has none until the first admin claims it (backend.users)."""
 
     __tablename__ = "workspaces"
+    # An id is never given out twice: a request that resolved a workspace before it was deleted (a password reset that
+    # wiped the data, an account deletion) must not write into the next account's new one.
+    # (_rebuild_workspaces_for_autoincrement does this for a database made without it.)
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(SealedText(), nullable=False)
@@ -1105,6 +1109,38 @@ def _rebuild_for_workspaces(table_name: str) -> None:
     log.info("migrated %s to per-workspace uniqueness", table_name)
 
 
+def _rebuild_workspaces_for_autoincrement() -> None:
+    """Replace a workspaces table made without AUTOINCREMENT (SQLite can't add it in place): create-copy-drop-rename
+    with foreign keys off, as ``_rebuild_for_workspaces`` does, so the rows that reference it are untouched. Ids
+    given out before this are not remembered, only the highest one still there."""
+    with engine.connect() as conn:
+        sql = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'").scalar()
+    if not sql or "AUTOINCREMENT" in sql.upper():
+        return
+    table = Base.metadata.tables["workspaces"]
+    old_cols = {c["name"] for c in inspect(engine).get_columns("workspaces")}
+    cols = ", ".join(c.name for c in table.columns if c.name in old_cols)
+    ddl = str(CreateTable(table).compile(engine)).replace("CREATE TABLE workspaces ", "CREATE TABLE workspaces_new ", 1)
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        try:
+            conn.exec_driver_sql("DROP TABLE IF EXISTS workspaces_new")
+            conn.exec_driver_sql(ddl)
+            conn.exec_driver_sql(f"INSERT INTO workspaces_new ({cols}) SELECT {cols} FROM workspaces")
+            conn.exec_driver_sql("DROP TABLE workspaces")
+            conn.exec_driver_sql("ALTER TABLE workspaces_new RENAME TO workspaces")
+            for index in table.indexes:
+                index.create(conn, checkfirst=True)
+            problems = conn.exec_driver_sql("PRAGMA foreign_key_check(workspaces)").fetchall()
+            if problems:
+                conn.rollback()
+                raise RuntimeError(f"workspaces migration failed foreign key check: {problems[:5]}")
+            conn.commit()
+        finally:
+            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+    log.info("migrated workspaces to ids that are never reused")
+
+
 def encryption_done(conn) -> bool:
     """Whether the encryption migration (backend.migrate_encryption) has finished on this database."""
     raw = conn.execute(text("SELECT value_json FROM app_settings WHERE key = 'encryption_migration'")).scalar()
@@ -1165,6 +1201,7 @@ def init_db() -> None:
         with engine.begin() as conn:  # a database from before accounts (only this column: see _rebuild_for_workspaces)
             conn.execute(text("ALTER TABLE workspaces ADD COLUMN owner_id INTEGER"))
         log.info("migrated: added workspaces.owner_id")
+    _rebuild_workspaces_for_autoincrement()
     with engine.begin() as conn:
         # The first workspace, only on a fresh database: the first admin claims it (backend.users). Once there
         # are accounts, every workspace is made by and for one of them.

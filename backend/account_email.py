@@ -29,6 +29,7 @@ never block or fail the action they are about.
 from __future__ import annotations
 
 import base64
+import hmac
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -39,7 +40,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend import crypto, email_templates, mail_queue, ratelimit, tokens, users
+from backend import crypto, email_templates, mail_queue, membership, ratelimit, tokens, users
 from backend.db import AuthToken, SessionLocal, User, UserKeys, get_db, utcnow
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
@@ -83,7 +84,10 @@ def notify(event: str, address: Optional[str], user_id: Optional[int] = None) ->
         return False
     try:
         template = email_templates.security_notice(event, when=_utc(utcnow()))
-        return mail_queue.send(address, template, user_id=user_id) is not None
+        queued = mail_queue.send(address, template, user_id=user_id, priority=True) is not None
+        if not queued and mail_queue.enabled():
+            log.warning("A security notice was not queued: the mail queue is full (user %s)", user_id)
+        return queued
     except Exception as exc:  # noqa: BLE001  (a notice must never undo what it is about)
         log.warning("A security notice could not be queued (%s)", exc.__class__.__name__)
         return False
@@ -231,12 +235,15 @@ def change_email(body: ChangeEmailIn, auth: AuthUser = Depends(current_user), db
     info = users.details(db, auth.id)
     old = info.get("email") or ""
     name = info.get("name") or ""
-    keys = db.get(UserKeys, auth.id)
+    scope = crypto.current()
+    keys = db.get(UserKeys, auth.id, populate_existing=True)
+    if not hmac.compare_digest(scope.kid, bytes(keys.dek_kid)):  # the key was replaced under this request (a wipe reset)
+        raise AuthProblem(401, "signed_out", "You're signed out. Sign in to continue.")
     _forget_unused(db, auth.id, CHANGE_KIND)
     token, row = tokens.create(db, CHANGE_KIND, ttl=VERIFY_TTL, user_id=auth.id, payload={
         "email": new, "old": old, "name": name,
         "pii_self": _b64(crypto.seal(users._details(new, name), f"users.pii_self|{auth.id}")),
-        "kid": _b64(bytes(keys.dek_kid))})
+        "kid": _b64(scope.kid)})  # the key that sealed it: _confirm_change checks it is still the account's
     db.commit()
     template = email_templates.verify_email(token, expires=_utc(row.expires_at))
     queued = mail_queue.send(new, template, user_id=auth.id)
@@ -314,5 +321,6 @@ def _confirm_change(db: Session, row: AuthToken, user: User, payload: dict, toke
         tokens.release(db, row.id)
         raise AuthProblem(409, "email_taken", TAKEN + " Ask for a new link with another address.") from None
     log.info("Email address changed: user %s", user.id)
+    membership.update_customer_email(db, user.id, new)
     notify("email_changed", old, user.id)
     return {"ok": True, "email_verified": True, "changed": True}

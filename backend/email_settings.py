@@ -12,7 +12,7 @@
                                      (``error`` is the exception's class name, e.g. "SMTPAuthenticationError")
 
 Email is on only while SMTP and the public address are both set (``enabled``); until then every email feature says
-so. Values are validated by ``app_settings.ENV_RULES`` (no line breaks, quotes or "#": a value can't start a new line
+so. Values are validated by ``app_settings.ENV_RULES`` (no line breaks or quotes: a value can't start a new line
 or a second setting, nor a header) and saved to .env like the other server settings, and take effect at once.
 
 **The SMTP password.** The form removes every space and tab (Gmail shows its app passwords in groups of four, and they

@@ -54,7 +54,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger(__name__)
 
 # Log hygiene: URLs and queries can hold search terms, place names and (later) tokens.
-for _name in ("httpx", "httpcore"):  # they log every request URL at INFO
+for _name in ("httpx", "httpcore", "httpx2", "httpcore2"):  # they log every request URL at INFO (the anthropic SDK's
+    # client is httpx2)
     logging.getLogger(_name).setLevel(logging.WARNING)
 
 

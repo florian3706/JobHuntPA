@@ -622,7 +622,7 @@ def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) ->
     account without it, or whose server key can't be opened, nothing changes: False (the caller then offers the
     reset that deletes the data). Recovery codes keep working: the data key doesn't change.
 
-    The caller (Phase H) has already checked the reset token and, with two-step sign-in on, the code, and decides
+    The caller (password_reset.py) has already checked the reset token and, with two-step sign-in on, the code, and decides
     what to do about a disabled account (this works for one too: it can't sign in afterwards). AccountError for a
     password that's too short or too long, before anything is touched."""
     row = db.get(UserKeys, user_id)
@@ -850,8 +850,15 @@ def spend_recovery_code(db: Session, code_id: int) -> bool:
 
 def replace_recovery_codes(db: Session, user_id: int, dek: bytes) -> list[str]:
     """Eight new codes in place of all the old ones (used or not), with a new salt, kept sealed in
-    ``pending_codes_enc`` until the person confirms saving them. In ``db``'s transaction; the caller commits."""
-    row = db.get(UserKeys, user_id)
+    ``pending_codes_enc`` until the person confirms saving them. In ``db``'s transaction; the caller commits.
+    Refuses (``crypto.KeyMismatch``) a key that isn't the account's current one, as ``apply_new_password`` does: a
+    request that held the old key across a wipe reset must not wrap it under new codes. The write lock is taken
+    and the row read again first, so the check can't pass against a copy from before that wipe."""
+    _write_lock(db)
+    db.flush()  # (a caller's own changes to the row, such as the wipe's new key id, must survive the reload)
+    row = db.get(UserKeys, user_id, populate_existing=True)
+    if row is None or not hmac.compare_digest(crypto.key_id(dek), bytes(row.dek_kid)):
+        raise crypto.KeyMismatch("That isn't this account's data key")
     salt = crypto.new_salt()
     codes = [new_recovery_code() for _ in range(RECOVERY_CODES)]
     db.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))

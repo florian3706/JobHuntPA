@@ -32,9 +32,9 @@ no data key in use: its row holds the DEK wrapped under the cookie secret with i
 /api/auth/login/mfa (which checks the code, then makes a new ``active`` session with a new cookie secret) and
 /api/auth/logout; every other path answers 401 ``mfa_required`` and keeps the cookie, so the sign-in page can go on.
 Flipping ``state`` in the database doesn't turn a pending row into a usable session: the DEK wouldn't unwrap.
-Later phases add their own paths: the unsubscribe link and Stripe's webhook (no session, no CSRF; signed instead).
-Sign-up, forgot, reset and opening a verification link (Phase H) are PRE_SESSION too: a token in the body proves what
-a session would.
+The unsubscribe link is still to come (no session, no CSRF; signed instead). Stripe's webhook is outside the
+session check the same way (``STRIPE_WEBHOOK``). Sign-up, forgot, reset and opening a verification link are
+PRE_SESSION too: a token in the body proves what a session would.
 
 The DB work runs in the thread pool, so a slow write elsewhere never stalls the event loop.
 """

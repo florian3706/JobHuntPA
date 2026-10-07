@@ -1,8 +1,8 @@
 """Stripe memberships (accounts design, section 8), through the official ``stripe`` SDK.
 
-The server is not reachable by Stripe yet, so status is kept current by checking the Checkout session when the
-person returns (``fetch_checkout_session``) and by polling (``sync_subscription``). ``verify_webhook`` is off
-until ``STRIPE_WEBHOOK_SECRET`` is set.
+Stripe tells us through the webhook (``verify_webhook``; the route is in membership.py and answers only once
+``STRIPE_WEBHOOK_SECRET`` is set). Without it, status is refreshed when the person returns from Checkout
+(``fetch_checkout_session``), when the membership page is opened and by the 6-hourly sync (``sync_subscription``).
 
 Settings (.env, admin only, see backend/app_settings.py): STRIPE_SECRET_KEY (``sk_test_`` means test mode),
 STRIPE_PRICE_LOOKUP_KEY (default ``jobhunt_monthly``), STRIPE_WEBHOOK_SECRET.
@@ -432,6 +432,17 @@ def set_customer_ref(customer_id: str, ref: str) -> None:
         raise
     except Exception as exc:
         raise _fail("mark the customer", exc) from None
+
+
+def set_customer_email(customer_id: str, email: str) -> None:
+    """The address Stripe sends receipts and payment notices to (a customer made by Checkout got the address the
+    person had then)."""
+    try:
+        _client().v1.customers.update(_check_id(customer_id), params={"email": email})
+    except BillingError:
+        raise
+    except Exception as exc:
+        raise _fail("update the customer's address", exc) from None
 
 
 def live_subscription_id(customer_id: Optional[str] = None, ref: Optional[str] = None) -> Optional[str]:

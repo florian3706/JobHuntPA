@@ -404,23 +404,55 @@ def regrant(user_id: int, admin: AuthUser = Depends(current_user), db: Session =
 # Turning accounts off and on, two-step sign-in, password reset
 # ---------------------------------------------------------------------------
 
+class DisableIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # For someone who pays: also end their Stripe subscription when the period they paid for is over. An explicit
+    # choice, never done by itself (they can't sign in to cancel it themselves while they are off).
+    cancel_subscription_at_period_end: bool = False
+
+
+def _subscription_after_disable(db: Session, admin: AuthUser, target: User, cancel: bool) -> str:
+    """What happens to the subscription of an account being turned off: ``none`` (no live one), ``cancelled`` (set to
+    end with the paid period), ``failed`` (asked to end it, but Stripe couldn't) or ``still_billing`` (live, and not
+    asked to end it: the person is charged for a service they can't use until the admin ends it)."""
+    m = db.get(Membership, target.id)
+    if m is None or m.stripe_status not in membership.LIVE_STATUSES:
+        return "none"
+    if m.cancel_at_period_end:
+        return "cancelled"
+    if not cancel:
+        return "still_billing"
+    if not billing.status()["configured"]:
+        return "failed"
+    try:
+        return "cancelled" if membership.cancel_at_period_end_for(m, _open_apk(db, admin)) > 0 else "failed"
+    except billing.BillingError as exc:  # (nothing was changed: ``m`` is only touched after Stripe says yes)
+        log.warning("Subscription of user %s not ended on disable: %s", target.id, exc.__class__.__name__)
+        return "failed"
+
+
 @router.post("/users/{user_id}/disable")
-def disable_user(user_id: int, admin: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
+def disable_user(user_id: int, body: Optional[DisableIn] = None, admin: AuthUser = Depends(current_user),
+                 db: Session = Depends(get_db)):
     """Turn an account off: they are signed out everywhere and can't sign in. Not your own account, and not the last
-    admin."""
+    admin. A subscription they pay for keeps renewing, and they can't reach the billing page to end it:
+    ``subscription`` in the answer says ``still_billing`` for that, or (with ``cancel_subscription_at_period_end``)
+    ``cancelled`` or ``failed``; ``none`` when they have no live one. Stripe is only asked after the refusals above."""
     _exclusive(db)
     target = _target(db, user_id)
     if target.id == admin.id:
         raise _problem(409, "self", "You can't turn off your own account.")
     if target.role == "admin" and target.status == "active" and not _active_admins(db, besides=target.id):
         raise _problem(409, "last_admin", "This is the last admin, so their account can't be turned off.")
+    subscription = _subscription_after_disable(db, admin, target, bool(body and body.cancel_subscription_at_period_end))
     changed = target.status != "disabled"
     target.status = "disabled"
     db.query(AuthSession).filter(AuthSession.user_id == target.id).delete(synchronize_session=False)
     if changed:
-        audit(db, admin, "user_disabled", target.id)
+        audit(db, admin, "user_disabled", target.id, {} if subscription == "none" else {"subscription": subscription})
     db.commit()
-    return {"ok": True, "changed": changed, "user": _summaries(db, _open_apk(db, admin), [target.id])[0]}
+    return {"ok": True, "changed": changed, "subscription": subscription,
+            "user": _summaries(db, _open_apk(db, admin), [target.id])[0]}
 
 
 @router.post("/users/{user_id}/enable")
@@ -536,7 +568,7 @@ def reset_email(user_id: int, admin: AuthUser = Depends(current_user), db: Sessi
 
 
 # ---------------------------------------------------------------------------
-# Membership: stored here, applied by the gate (Phase I)
+# Membership: stored here, applied by the gate (backend/membership.py)
 # ---------------------------------------------------------------------------
 
 class MembershipIn(BaseModel):

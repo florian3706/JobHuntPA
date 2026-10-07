@@ -171,7 +171,8 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
 - **Your email address** (Settings): once email is set up, a new account gets a link to confirm its address
   (*Send it again* is on the Settings tab; the link lasts 24 hours). An address an admin invited you at counts as
   confirmed. **Changing your address** asks for your password, sends a link to the *new* address, and changes
-  nothing until you open it; the old address then gets a notice. You are also emailed when your password is
+  nothing until you open it; the old address then gets a notice, and Stripe (if you pay) is told the new address
+  for its receipts. You are also emailed when your password is
   changed and when an admin turns off your two-step sign-in. These emails never contain your address or any of your data.
 - **Password, recovery codes and sessions** (Settings > Password, Recovery codes and Signed-in devices): change your password (your data
   stays readable and other browsers are signed out unless you untick that), make 8 new recovery
@@ -196,8 +197,9 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   disk on the server (an export is refused above 200 MB of files, and the server makes only a couple at
   a time: try again in a minute). **The zip is not encrypted**: keep it somewhere safe. It holds only your own data
   (admins can't export other people's), and never your password, recovery codes or keys.
-- **What only the admin sees:** the AI provider, model, API key and reasoning levels, and the
-  commute API keys, are set by the admin for everyone (admin panel, Server). Other accounts see whether AI
+- **What only the admin sees:** the AI provider, model, API key and reasoning levels, the
+  commute API keys, the [email](#setting-up-email) settings and the [Stripe](#memberships-and-payments-optional)
+  keys are set by the admin for everyone (admin panel, Server). Other accounts see whether AI
   scoring and commute times are available, and everything of their own: workspaces, search setup,
   documents, schedule and theme. Each workspace belongs to one account; nobody else can open it.
 - **Letting other people in (admins):** the admin chooses who can sign up: **by invitation** (the
@@ -277,7 +279,8 @@ documents or searches. It has five parts:
   how much came from the cache, by model and purpose, by person and by day.
 - **People:** each account's email, name, role, status, last active day and membership. The columns
   sort (below 640 px wide, each person becomes a card with a "Sort by" menu). Buttons make someone an
-  admin or a regular user, disable or enable them, **unlock** someone who has to wait after wrong
+  admin or a regular user, disable or enable them (someone who pays by subscription keeps being charged
+  while they are off and can't cancel it themselves: the panel says so, and *Membership* can end it), **unlock** someone who has to wait after wrong
   passwords, turn off their two-step sign-in, **delete their account** (with everything in it, their
   uploaded files included; not your own, not the last admin and not while their search is running; deleting
   an admin replaces the admin key like demoting does), and open their
@@ -294,7 +297,8 @@ documents or searches. It has five parts:
   recovery codes and the setup walkthrough, as on first run. Open sign-up lets anyone who can reach the
   server use the AI service you pay for, so use it only on a private network.
 - **Server:** the AI provider (provider, model, key, reasoning levels, *Test connection*), the commute
-  keys, which used to be on the Settings tab, and [email](#setting-up-email) (changes are logged by name, never the value);
+  keys, which used to be on the Settings tab, [email](#setting-up-email) and the **Payments (Stripe)** card
+  (see [Memberships and payments](#memberships-and-payments-optional)); changes are logged by name, never the value;
   **Replace the server key**; and the report of
   **unencrypted copies of data** with *Delete these files now* for the backups and old page cache that
   the one-time encryption leaves.
@@ -671,6 +675,15 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **The reset page says my data will be deleted:** background access is off for that account, so the saved data
   is locked with the old password. A recovery code keeps it (*I have a recovery code*); otherwise tick the box
   to start again with an empty account.
+- **Memberships don't switch on:** Stripe has no active price with the right lookup key. In the Stripe
+  dashboard check that the price's **lookup key** is `jobhunt_monthly` (or the one set in the Payments (Stripe)
+  card) and that you are in the same mode (test or live) as the key you pasted, then press **Sync now** in the card.
+- **"You have used your free searches" (or "Scheduled searches need a membership") although I paid:** open
+  **Account > Membership**. It asks Stripe again and updates your status; if you paid a moment ago and it still
+  says no, wait a minute and reload.
+- **"Download your data" is refused:** over 200 MB the zip is too big to make in one go (delete uploaded files you
+  no longer need), "other exports are being made" means try again in a minute, and "still being made" means your
+  last request hasn't finished: wait for it.
 - **Lost your authenticator app:** sign in with a recovery code instead of the app's code, then turn
   two-step sign-in off and on again in Settings > Two-step sign-in.
 - **The last admin lost their password and every recovery code:** people can still sign in, but
@@ -788,8 +801,10 @@ sessions), `backend/totp.py` (authenticator codes), `backend/admin.py` (the admi
 `backend/export.py` (data export), `backend/account.py` (preferences, the walkthrough step, deleting
 an account), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
 `new-admin-key` and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
-(account cards), `background.js`, `export.js`, `admin.js` and `server-settings.js` (the admin panel),
-`dialogs.js` (its dialogs) and `signup.js`.
+(account cards), `account-email.js` and `email-settings.js` (email address and server settings), `background.js`,
+`export.js`, `admin.js`, `server-settings.js` and `stripe-settings.js` (the admin panel), `dialogs.js` (its
+dialogs), `signup.js`, `forgot.js`, `reset-password.js` and `verify-email.js` (the link pages), `billing.js`
+(`billing.html`, Account > Membership) and `free-searches.js` (the Jobs tab's free-search note).
 
 **Email** (design §9, §16): `backend/mailer.py` (SMTP, never logs an address) and `backend/email_templates.py`
 (HTML and text parts); `backend/mail_queue.py` sends from one background thread and says whether email is on
@@ -799,6 +814,13 @@ notices), `backend/password_reset.py` (forgot, reset). Links that give access ca
 (`reset-password.html#token=…`, `verify-email.html#token=…`). Tests mock SMTP with `mailer.capture()` and wait for the
 thread with `mail_queue.drain()` (`tests/mail_helpers.py`). `backend/schedule.py`'s loop also clears expired
 sessions and links every 10 minutes (`auth.cleanup_tick`; off with `JOBHUNT_SCHEDULER=off`).
+
+**Memberships** (design §8): `backend/access.py` (pure decisions: who has access and why, no database or
+network), `backend/billing.py` (the only module that talks to Stripe, through the official SDK),
+`backend/membership.py` (the gate every paid endpoint depends on, free searches, `/api/billing/*` and the webhook).
+`backend/schedule.py` also syncs subscriptions with Stripe every 6 hours. Stripe is mocked in tests by patching
+`backend.billing._client` with a `MagicMock` (`tests/test_membership.py`, `tests/test_billing.py` show the shapes
+Stripe answers with); nothing in the tests reaches the network.
 
 **Encrypted columns** (`backend/crypto.py`, `docs/design/accounts.md` §2): personal columns use the
 `Sealed*` types, which encrypt under the key of the request's account (or the background run's). The

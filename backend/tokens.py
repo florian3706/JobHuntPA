@@ -1,5 +1,4 @@
-"""Single-use links kept in ``auth_tokens`` (accounts design §4): invites now, password resets and email checks
-later (Phase H).
+"""Single-use links kept in ``auth_tokens`` (accounts design §4): invites, password resets and email checks.
 
 The link carries a random 256-bit token. The database keeps only its SHA-256 (``token_hash``), so a copy of the
 database can't be turned into working links, and a payload (an invite carries the address to pre-fill) sealed under a

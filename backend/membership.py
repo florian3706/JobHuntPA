@@ -505,6 +505,24 @@ def cancel_for_deletion(db: Session, user_id: int, actor_id: Optional[int] = Non
     return "cancelled" if count else "none"
 
 
+def update_customer_email(db: Session, user_id: int, email: str) -> None:
+    """After an address change: tell Stripe the new address, so its receipts and payment notices stop going to the
+    old one. Never raises: the change stands either way (the person can still edit it in the portal). The customer
+    is the stored one when this request can open it; the link is usually opened without the person's key, so
+    otherwise they are found by the member's reference. Nothing is logged here but billing's own class-only line."""
+    if not billing.status()["configured"]:
+        return
+    m = db.get(Membership, user_id)
+    if m is None:
+        return
+    try:
+        customer = stored_ids(m).get("customer") or billing.find_customer_id(m.stripe_ref)
+        if customer:
+            billing.set_customer_email(customer, email)
+    except billing.BillingError:
+        pass  # logged by billing
+
+
 # ---------------------------------------------------------------------------
 # The person's state, for the billing page
 # ---------------------------------------------------------------------------

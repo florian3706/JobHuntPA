@@ -5,6 +5,7 @@ SMTP is captured, never used.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -17,7 +18,7 @@ from tests.mail_helpers import BASE, MailTestCase, html_of, text_of, token_in  #
 
 from sqlalchemy import text  # noqa: E402
 
-from backend import docs, mailer, tokens, totp, users  # noqa: E402
+from backend import crypto, docs, mailer, tokens, totp, users  # noqa: E402
 from backend.db import (  # noqa: E402
     AdminKeyGrant,
     AuthSession,
@@ -28,6 +29,7 @@ from backend.db import (  # noqa: E402
     FitResult,
     Job,
     Membership,
+    RecoveryCode,
     SearchRun,
     SessionLocal,
     User,
@@ -519,7 +521,8 @@ class WipeTest(ResetCase):
         self.assertEqual(self.count("workspaces", f"id IN ({marks})"), 0)
         self.assertEqual(self.pin_labels(c), [])
         me = c.get("/api/auth/me").json()
-        self.assertEqual(len(me["workspaces"]), 1)  # (its id may be an old one: SQLite reuses the highest)
+        self.assertEqual(len(me["workspaces"]), 1)
+        self.assertNotIn(c.get("/api/workspaces").json()[0]["id"], made["ws"])  # an id is never given out twice
         self.assertEqual([w["name"] for w in c.get("/api/workspaces").json()], ["My job search"])
         for name in made["files"]:
             self.assertFalse((docs.UPLOAD_DIR / name).exists(), "an upload of the wiped account is still on disk")
@@ -615,6 +618,34 @@ class WipeTest(ResetCase):
     def demote(self, user_id: int) -> None:
         with helpers.client() as first:
             first.post(f"/api/admin/users/{user_id}/role", json={"role": "user"})
+
+    def test_a_request_holding_the_old_key_cannot_wrap_it_under_new_codes_after_the_wipe(self):
+        bob = self.user()
+        _, old_dek = helpers.unlock(bob.email, PASSWORD)
+        db = SessionLocal()
+        try:
+            wiped = users.reset_password_wiping_data(db, bob.id, NEW_PASSWORD, bob.email)
+            db.expunge_all()  # (a handler's session may have read the row before the wipe)
+            with self.assertRaises(crypto.KeyMismatch):
+                users.replace_recovery_codes(db, bob.id, old_dek)
+            db.rollback()
+            # the codes the reset page showed still open the new key, and nothing wraps the old one
+            opened = users.open_recovery_code(db, bob.id, wiped.recovery_codes[0])
+            self.assertEqual(opened[1], wiped.dek)
+            self.assertEqual(db.query(RecoveryCode).filter(RecoveryCode.user_id == bob.id,
+                                                                 RecoveryCode.wrapped_dek.isnot(None)).count(), 8)
+            row = db.get(UserKeys, bob.id)
+            with crypto.as_user(bob.id, wiped.dek):
+                self.assertEqual(len(json.loads(crypto.unseal(bytes(row.pending_codes_enc), users._codes_label(bob.id)))), 8)
+        finally:
+            db.close()
+
+    def test_new_codes_for_a_signed_in_person_whose_key_was_replaced_answer_signed_out(self):
+        bob = self.user()
+        c = self.signed_in(bob)
+        with mock.patch("backend.users.replace_recovery_codes", side_effect=crypto.KeyMismatch("x")):
+            r = c.post("/api/auth/recovery-codes")
+        self.assertEqual((r.status_code, r.json()["code"]), (401, "signed_out"))
 
     def _audit(self) -> list[dict]:
         with helpers.client() as first:

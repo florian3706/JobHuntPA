@@ -261,6 +261,15 @@ class Archive:
         self.files += 1
         return path
 
+    def abort(self) -> None:
+        """Gives the memory back when the export is refused or fails half way: an unclosed ZipFile is closed by the
+        garbage collector after its buffer, which prints an error."""
+        try:
+            self.zip.close()
+        except Exception:  # noqa: BLE001  (nothing more to save)
+            pass
+        self.buffer.close()
+
     def finish(self) -> io.BytesIO:
         """The finished zip, read from the start. Not copied: the response streams it."""
         self.zip.close()
@@ -696,7 +705,6 @@ def build(db: Session, user_id: int, now: Optional[datetime] = None) -> tuple[io
     stamp = now or datetime.utcnow()
     user = db.get(User, user_id)
     root = f"JobHuntPA export {stamp.strftime('%Y-%m-%d')}"
-    arc = Archive(root, stamp)
     workspaces = db.query(Workspace).filter(Workspace.owner_id == user_id).order_by(Workspace.id).all()
     stored = 0
     for (name,) in db.query(Document.stored_name).filter(Document.workspace_id.in_([w.id for w in workspaces])):
@@ -706,37 +714,42 @@ def build(db: Session, user_id: int, now: Optional[datetime] = None) -> tuple[io
             pass
     if stored > MAX_EXPORT_BYTES:
         raise too_large()
-    ws_names = Folder()
-    plans = []
-    for ws in workspaces:
-        base = f"Workspaces/{ws_names.name(ws.name, 'Workspace')}"
-        entries, filtered = _plan_jobs(db, ws, base)
-        plans.append((ws, base, entries, filtered))
-    # Company research for the companies of the jobs that have a file
-    wanted: dict[str, str] = {}
-    for _ws, _base, entries, _f in plans:
-        for e in entries.values():
-            if e.path and e.company:
-                wanted.setdefault(company_key(e.company), e.company)
-    companies: dict[str, str] = {}
-    profiles = {p.key: p for p in db.query(CompanyProfile).filter(CompanyProfile.key.in_(list(wanted))).all()} if wanted else {}
-    folder = Folder()
-    for key, p in sorted(profiles.items()):
-        companies[key] = f"Companies/{folder.name(p.official_name or p.name, 'Company', '.md')}"
-    jobs_total = 0
-    for ws, base, entries, filtered in plans:
-        arc.add(f"{base}/Search setup.md", _setup_md(db, ws))
-        arc.add(f"{base}/Sources.md", _sources_md(db, ws))
-        _documents(db, ws, base, arc)
-        _jobs(db, ws, base, arc, companies, entries, filtered)
-        jobs_total += sum(1 for e in entries.values() if e.path)
-        _chats(db, ws, base, arc, entries)
-        arc.add(f"{base}/Search history.md", _history_md(db, ws))
-    for key, path in companies.items():
-        arc.add(path, _company_md(profiles[key]))
-    arc.add("Account.md", _account_md(db, user, workspaces))
-    arc.add("README.md", _readme(stamp, {"workspaces": len(workspaces), "jobs": jobs_total}))
-    count = arc.files
+    arc = Archive(root, stamp)  # (after the size check: a refused export builds nothing)
+    try:
+        ws_names = Folder()
+        plans = []
+        for ws in workspaces:
+            base = f"Workspaces/{ws_names.name(ws.name, 'Workspace')}"
+            entries, filtered = _plan_jobs(db, ws, base)
+            plans.append((ws, base, entries, filtered))
+        # Company research for the companies of the jobs that have a file
+        wanted: dict[str, str] = {}
+        for _ws, _base, entries, _f in plans:
+            for e in entries.values():
+                if e.path and e.company:
+                    wanted.setdefault(company_key(e.company), e.company)
+        companies: dict[str, str] = {}
+        profiles = {p.key: p for p in db.query(CompanyProfile).filter(CompanyProfile.key.in_(list(wanted))).all()} if wanted else {}
+        folder = Folder()
+        for key, p in sorted(profiles.items()):
+            companies[key] = f"Companies/{folder.name(p.official_name or p.name, 'Company', '.md')}"
+        jobs_total = 0
+        for ws, base, entries, filtered in plans:
+            arc.add(f"{base}/Search setup.md", _setup_md(db, ws))
+            arc.add(f"{base}/Sources.md", _sources_md(db, ws))
+            _documents(db, ws, base, arc)
+            _jobs(db, ws, base, arc, companies, entries, filtered)
+            jobs_total += sum(1 for e in entries.values() if e.path)
+            _chats(db, ws, base, arc, entries)
+            arc.add(f"{base}/Search history.md", _history_md(db, ws))
+        for key, path in companies.items():
+            arc.add(path, _company_md(profiles[key]))
+        arc.add("Account.md", _account_md(db, user, workspaces))
+        arc.add("README.md", _readme(stamp, {"workspaces": len(workspaces), "jobs": jobs_total}))
+        count = arc.files
+    except BaseException:
+        arc.abort()
+        raise
     return arc.finish(), count, f"JobHuntPA-export-{stamp.strftime('%Y-%m-%d')}.zip"
 
 

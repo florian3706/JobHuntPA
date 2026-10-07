@@ -19,8 +19,10 @@ from tests import helpers  # noqa: E402  (sets the test environment first)
 
 from fastapi import Depends, FastAPI, Request  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 
 from backend import config, crypto, ratelimit, sessions, users  # noqa: E402
+from backend import db as db_module  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import AuthSession, RecoveryCode, SessionLocal, User, UserKeys, Workspace, engine, utcnow  # noqa: E402
 
@@ -507,6 +509,49 @@ class CsrfAndOriginTest(SignInTestCase):
         c = self.signed_in()
         r = c.get("/api/workspaces", headers={"Origin": "https://evil.example"})
         self.assertNotIn("access-control-allow-origin", r.headers)
+
+
+class WorkspaceIdTest(unittest.TestCase):
+    """A workspace id is never given out twice (a request from before a wipe or a deletion must not write into the
+    next account's workspace)."""
+
+    def test_a_deleted_workspace_id_is_not_reused(self):
+        helpers.started()
+        first = helpers.make_user()
+        with engine.begin() as conn:  # the highest id in the table, deleted: SQLite would hand it out again
+            top = conn.execute(text("SELECT MAX(id) FROM workspaces")).scalar()
+            conn.execute(text("DELETE FROM workspaces WHERE id = :i"), {"i": top})
+        second = helpers.make_user()
+        self.assertGreater(second.workspace_id, max(top, first.workspace_id))
+
+    def test_a_database_made_without_autoincrement_is_rebuilt_once(self):
+        from sqlalchemy import create_engine, event
+
+        folder = helpers.scratch_folder()
+        legacy = create_engine(f"sqlite:///{folder}/legacy.db")
+        event.listen(legacy, "connect", lambda conn, _r: conn.execute("PRAGMA foreign_keys=ON"))
+        with legacy.begin() as conn:
+            for ddl in ("CREATE TABLE users (id INTEGER NOT NULL PRIMARY KEY)",
+                        "CREATE TABLE workspaces (id INTEGER NOT NULL, name BLOB, created_at DATETIME, "
+                        "owner_id INTEGER, PRIMARY KEY (id))",
+                        "CREATE TABLE pins (id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL "
+                        "REFERENCES workspaces (id) ON DELETE CASCADE)",
+                        "INSERT INTO workspaces (id, name) VALUES (1, 'a'), (2, 'b')",
+                        "INSERT INTO pins (id, workspace_id) VALUES (1, 2)"):
+                conn.execute(text(ddl))
+        with mock.patch.object(db_module, "engine", legacy):
+            db_module._rebuild_workspaces_for_autoincrement()
+            db_module._rebuild_workspaces_for_autoincrement()  # (a second start changes nothing)
+        with legacy.begin() as conn:
+            self.assertIn("AUTOINCREMENT", conn.execute(text("SELECT sql FROM sqlite_master WHERE name = 'workspaces'")).scalar())
+            self.assertEqual([r[0] for r in conn.execute(text("SELECT id FROM workspaces ORDER BY id"))], [1, 2])
+            self.assertEqual(conn.execute(text("SELECT COUNT(*) FROM pins")).scalar(), 1)
+            self.assertEqual(conn.execute(text("PRAGMA foreign_keys")).scalar(), 1)
+            conn.execute(text("DELETE FROM workspaces WHERE id = 2"))  # the foreign key still cascades
+            self.assertEqual(conn.execute(text("SELECT COUNT(*) FROM pins")).scalar(), 0)
+            conn.execute(text("INSERT INTO workspaces (name) VALUES ('c')"))
+            self.assertEqual(conn.execute(text("SELECT MAX(id) FROM workspaces")).scalar(), 3)
+        legacy.dispose()
 
 
 class OwnershipTest(SignInTestCase):

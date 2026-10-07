@@ -1,5 +1,7 @@
 """App-wide settings made in the admin panel's Server section and kept in .env: the LLM (provider address, model, API
-key) and the API keys for commute times.
+key), the API keys for commute times, email (SMTP_*, PUBLIC_BASE_URL; saved through backend/email_settings.py) and
+Stripe (STRIPE_*; saved through backend/admin.py). The two endpoints below are the LLM's and the commute keys';
+the others write through ``_save`` with the same rules.
 
     GET  /api/settings/keys        {"tfnsw": {"set": bool, "hint": "…abcd" | null}, "tomtom": {...}}  (never a key)
     PUT  /api/settings/keys        {"tfnsw"?: "<key>", "tomtom"?: "<key>"}: "" clears a key, an omitted one is unchanged
@@ -17,8 +19,9 @@ A saved value takes effect at once (os.environ is updated; backend.commute.keys(
 read it on every call) and is written to .env (backend.config.ENV_PATH) so it survives a restart. That file holds the
 LLM key, which costs the owner money, and the app can be reachable by other devices, so writing it is locked down:
   * only the names in ENV_RULES can be written, whatever a request says, and each has its own strict value rule
-    (keys: KEY_RE; model: MODEL_RE; address: normalise_base_url): no whitespace, newline, "=", "#" or quote, so a
-    value can't start a new line or a second setting;
+    (keys: KEY_RE; model: MODEL_RE; address: normalise_base_url; the email and Stripe names: their own): never a
+    newline or a quote, and the keys, model and address no whitespace, "=" or "#" either, so a value can't start a new
+    line or a second setting;
   * the LLM address can't be pointed at another server without the API key typed again in the same request, so a
     saved key can't be redirected to a server someone else controls;
   * the file is replaced atomically (temp file in the same folder, then os.replace), keeping every other line

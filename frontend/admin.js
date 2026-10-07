@@ -248,8 +248,8 @@ async function personAction(act, id, btn) {
     await run('Sharing the admin key', () => reauth(() => post(`/api/admin/users/${id}/regrant`)), () => `Shared the admin key with ${l}.`);
   } else if (act === 'disable') {
     if (!(await confirmDialog({ title: `Disable ${l}?`, ok: 'Disable', returnTo: back,
-      text: 'They are signed out everywhere and can\'t sign in until you enable them again. Their data is kept.' }))) return;
-    await run('Disabling', () => post(`/api/admin/users/${id}/disable`), () => `${l} is disabled and signed out.`);
+      text: `They are signed out everywhere and can't sign in until you enable them again. Their data is kept.${LIVE_SUB.includes(u.membership.stripe_status) ? ' They pay by subscription, which keeps renewing while they are off, and they can\'t cancel it themselves.' : ''}` }))) return;
+    await run('Disabling', () => post(`/api/admin/users/${id}/disable`), (r) => `${l} is disabled and signed out.${r?.subscription === 'still_billing' ? ' Their subscription is still active and they are still charged. Open Membership to exempt them and end it at the period end, or cancel it in Stripe.' : ''}`);
   } else if (act === 'enable') {
     await run('Enabling', () => post(`/api/admin/users/${id}/enable`), () => `${l} can sign in again.`);
   } else if (act === 'unlock') {

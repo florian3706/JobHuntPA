@@ -244,7 +244,11 @@ def new_recovery_codes(body: Optional[SecondFactorIn] = None, auth: AuthUser = D
         if wait:
             raise _too_many(wait, "passwords or codes")
         check_second_factor(db, user, body or SecondFactorIn())
-    users.replace_recovery_codes(db, auth.id, crypto.current().dek)
+    try:
+        users.replace_recovery_codes(db, auth.id, crypto.current().dek)
+    except crypto.KeyMismatch:  # the key was replaced under this request (a password reset that deleted the data)
+        db.rollback()
+        raise AuthProblem(401, "signed_out", "You're signed out. Sign in to continue.") from None
     db.commit()
     scrub_wal()  # the old codes' copies of the data key
     log.info("New recovery codes made: user %s", auth.id)

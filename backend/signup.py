@@ -5,7 +5,7 @@
   * ``invite`` (the default): only someone with a valid invitation link;
   * ``open``: anyone (an invitation still works, and pre-fills the address);
   * ``closed``: nobody, not even with an invitation.
-``app_settings["free_searches"]`` is how many free searches a new account gets (3; Phase I gives them out).
+``app_settings["free_searches"]`` is how many free searches a new account gets (3; ``membership.charge_search`` gives them out).
 
 An invitation is an ``auth_tokens`` row of kind ``invite`` (backend/tokens.py): 7 days, single use, only the hash of its
 token stored, and the address it was made for (if the admin gave one) sealed under a key made from the token.
