@@ -6,10 +6,11 @@ that phase must follow.
 
 ## Where things stand (2026-10-07)
 
-GitHub `main` and the Raspberry Pi's live app (port 8040) run **v1.13.0**, with no accounts. The test instance on the
-Pi (port 8001) runs v1.13.0 too, with its own copy of the data.
+The last release is **v1.13.0** (tag), which has no accounts. The Raspberry Pi's live app (port 8040) still runs
+**v1.12.3**, as the user asked. The Pi's test instance (port 8001) runs v1.13.0, with its own copy of the data.
 
-Everything since v1.13.0 is on the work branch **`wip/accounts`**:
+Everything since v1.13.0 is on GitHub `main` (pushed 2026-10-07, not released or tagged). The work branch
+**`wip/accounts`** points at the same commit; cloud sessions start from it:
 
 | Phase | What it built | State |
 |---|---|---|
