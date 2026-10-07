@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from backend import llm_providers
 from backend.db import CompanyProfile, CoverLetter, Document, FitResult, Job, company_key, get_db
 from backend.workspaces import current_workspace, owned
 
@@ -145,7 +146,7 @@ def draft_cover_letter(job_id: int, payload: DraftRequest, db: Session = Depends
     try:
         text = _clean_letter(call_model(messages, {**cfg, "timeout_s": max(cfg["timeout_s"], 300)}, json_mode=False))
     except ScorerError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     if not text:
         raise HTTPException(status_code=502, detail="The model returned an empty letter; try again.")
     cl = db.query(CoverLetter).filter(CoverLetter.job_id == job_id).first() or CoverLetter(job_id=job_id)

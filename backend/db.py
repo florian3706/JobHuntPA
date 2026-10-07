@@ -654,6 +654,9 @@ class LlmUsage(Base):
     created_at = Column(DateTime, default=utcnow, index=True)
     # Kept when the workspace is deleted: usage happened all the same.
     workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Whose request it was (the admin panel's usage per user); NULL once the account is deleted. Older rows have
+    # none: the statistics fall back to the workspace's owner.
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     purpose = Column(String, nullable=True)         # scoring | chat | cover_letter | research | concise | summary ...
     provider = Column(String, nullable=True)        # llm_providers.provider_for: openai | anthropic | ...
     model = Column(String, nullable=True)

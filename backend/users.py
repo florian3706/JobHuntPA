@@ -274,6 +274,22 @@ def _remove_first_run_token() -> None:
         log.warning("Could not delete %s: %s", FIRST_RUN_FILE, exc.__class__.__name__)
 
 
+def _finish_key_rotation(loaded: keys.ServerKeys) -> None:
+    """A server-key rotation the last process didn't finish (the file still holds the old KEK): carry on with it
+    (backend.key_rotation). Start-up goes on whatever happens: both keys are still in the file, so nothing is
+    locked."""
+    if not loaded.kek_rotation_pending:
+        return
+    from backend import key_rotation
+
+    try:
+        moved = key_rotation.finish_pending(loaded)
+        log.info("Finished the server key rotation a previous run left (%d value(s) re-wrapped)", moved)
+    except Exception as exc:  # noqa: BLE001
+        log.error("The server key rotation a previous run left could not be finished (%s); both keys stay in the "
+                  "key file. Run: python -m backend.keys rotate-kek", exc.__class__.__name__)
+
+
 def startup() -> None:
     """At every start, after init_db: load (or, with no accounts, create) the server key file and check it belongs
     to this database, clear expired sessions, then either create the admin from the process environment, or write
@@ -294,6 +310,7 @@ def startup() -> None:
     _users_exist = has_users
     if has_users:
         _remove_first_run_token()
+        _finish_key_rotation(loaded)
         return
     email, password = config.process_env(ADMIN_EMAIL_ENV).strip(), config.process_env(ADMIN_PASSWORD_ENV)
     if email and password:

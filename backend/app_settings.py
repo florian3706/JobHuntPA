@@ -1,4 +1,4 @@
-"""App-wide settings made in the dashboard's Settings tab and kept in .env: the LLM (provider address, model, API
+"""App-wide settings made in the admin panel's Server section and kept in .env: the LLM (provider address, model, API
 key) and the API keys for commute times.
 
     GET  /api/settings/keys        {"tfnsw": {"set": bool, "hint": "…abcd" | null}, "tomtom": {...}}  (never a key)
@@ -9,6 +9,7 @@ key) and the API keys for commute times.
     PUT  /api/settings/llm         {"base_url"?, "model"?, "api_key"?}: same omitted / "" semantics; see put_llm for the
                                    rule that moving to another server needs the key typed again
 
+Every change is written to the admin audit log (``server_settings_changed``: which settings, never a value).
 Admins only, for reading as well as writing (accounts design §14.8): these settings serve every account, and the
 keys cost the operator money. Everyone else is refused with 403.
 
@@ -39,9 +40,11 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.orm import Session
 
-from backend import commute, config, llm_providers, mailer, scorer
-from backend.sessions import require_admin
+from backend import admin_key, commute, config, llm_providers, mailer, scorer
+from backend.db import get_db
+from backend.sessions import AuthUser, require_admin
 
 log = logging.getLogger(__name__)
 
@@ -238,7 +241,7 @@ def _save(updates: dict[str, str]) -> None:
 
 
 @router.put("/keys")
-def put_keys(body: KeysIn):
+def put_keys(body: KeysIn, admin: AuthUser = Depends(require_admin), db: Session = Depends(get_db)):
     updates: dict[str, str] = {}
     for name, var in KEY_VARS.items():
         value = getattr(body, name)
@@ -250,6 +253,8 @@ def put_keys(body: KeysIn):
         updates[var] = value
     if updates:
         _save(updates)
+        admin_key.audit_settings(db, admin.id, {f"{name}_key": bool(updates[var])
+                                                for name, var in KEY_VARS.items() if var in updates})
     return key_status()
 
 
@@ -309,7 +314,7 @@ def get_llm():
 
 
 @router.put("/llm")
-def put_llm(body: LlmIn):
+def put_llm(body: LlmIn, admin: AuthUser = Depends(require_admin), db: Session = Depends(get_db)):
     """Save the LLM address, model and/or key. ``""`` clears a value, an omitted (or null) one is unchanged.
 
     Moving to a different server (another scheme, host or port than the saved address) needs ``api_key`` in the same
@@ -344,4 +349,6 @@ def put_llm(body: LlmIn):
         updates["LLM_API_KEY"] = key
     if updates:
         _save(updates)
+        names = {"LLM_BASE_URL": "ai_address", "LLM_MODEL": "ai_model", "LLM_API_KEY": "ai_key"}
+        admin_key.audit_settings(db, admin.id, {names[var]: bool(value) for var, value in updates.items()})
     return llm_state()

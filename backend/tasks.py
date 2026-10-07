@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from sqlalchemy.orm import load_only
 
-from backend import crypto
+from backend import crypto, llm_providers
 from backend.db import SearchRun, SessionLocal
 from backend.threads import submit
 
@@ -121,8 +121,10 @@ def _execute(run_id: int, job: Callable[[Progress], dict]) -> None:
         summary = job(progress)
     except Exception as exc:
         log.error("run %s failed: %s", run_id, exc.__class__.__name__)  # the message may hold user data
+        # An AI error is shown as the person may see it (not the provider's address or answer).
+        text = llm_providers.user_message(exc) if isinstance(exc, llm_providers.ScorerError) else f"{exc.__class__.__name__}: {exc}"
         try:
-            _update(run_id, state="failed", error=f"{exc.__class__.__name__}: {exc}", finished_at=datetime.utcnow())
+            _update(run_id, state="failed", error=text, finished_at=datetime.utcnow())
         except crypto.CryptoError:  # no key to seal the error with: record that it failed all the same
             _update(run_id, state="failed", error_code="failed", finished_at=datetime.utcnow())
         return

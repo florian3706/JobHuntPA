@@ -1,6 +1,10 @@
 """Signing in and out, and the first run (accounts design, sections 3, 5 and 6).
 
-    GET  /api/auth/state                  {setup_required, signed_in, mfa_pending?}        (no session needed)
+    GET  /api/auth/state[?invite=<token>] {setup_required, signed_in, mfa_pending?, signup?} (no session needed)
+                                          signup: {mode: invite|open|closed, allowed, encrypting,
+                                                   invite: {valid, email}}
+    POST /api/auth/signup                 {email, password, name?, remember?, invite?}
+                                          -> 201 {csrf, recovery_codes} + session cookie (Phase F)
     POST /api/auth/first-run              {token, email, password, name?, remember?, background?}
                                           -> 201 {csrf, recovery_codes: [8 codes, shown once]} + session cookie
     POST /api/auth/login                  {email, password, remember?} -> {csrf, user} + session cookie; with two-step
@@ -25,13 +29,13 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend import account, crypto, migrate_encryption, ratelimit, sessions, users
-from backend.db import AuthSession, SessionLocal, User, get_db
+from backend import account, crypto, migrate_encryption, ratelimit, sessions, signup, users
+from backend.db import AuthSession, SessionLocal, User, get_db, utcnow
 from backend.sessions import REAUTH_REQUIRED, AuthProblem, AuthUser, current_user, require_recent_auth  # noqa: F401
 
 log = logging.getLogger(__name__)
@@ -73,6 +77,15 @@ def _end_browser_session(request: Request) -> None:
         db.close()
 
 
+class SignupIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field("", max_length=1000)
+    password: str = Field("", max_length=4096)
+    name: Optional[str] = Field(None, max_length=1000)
+    remember: bool = False
+    invite: Optional[str] = Field(None, max_length=200)
+
+
 def _signed_in(request: Request, secret: bytes, remember: bool, body: dict, status: int = 200) -> JSONResponse:
     _end_browser_session(request)
     response = JSONResponse({**body, "csrf": crypto.csrf_token(secret)}, status_code=status)
@@ -81,12 +94,14 @@ def _signed_in(request: Request, secret: bytes, remember: bool, body: dict, stat
 
 
 @router.get("/state")
-def auth_state(request: Request):
-    state = {"setup_required": not users.users_exist(), "signed_in": sessions.signed_in_user(request) is not None}
+def auth_state(request: Request, invite: Optional[str] = Query(None, max_length=200), db: Session = Depends(get_db)):
+    out = {"setup_required": not users.users_exist(), "signed_in": sessions.signed_in_user(request) is not None}
     secret = sessions.read_secret(request.scope)
-    if secret and not state["signed_in"] and sessions.is_pending(secret):
-        state["mfa_pending"] = True  # the password was right; the sign-in page asks for the code
-    return state
+    if secret and not out["signed_in"] and sessions.is_pending(secret):
+        out["mfa_pending"] = True  # the password was right; the sign-in page asks for the code
+    if not out["setup_required"]:  # what the sign-up page needs: the mode, and whether this invitation works
+        out["signup"] = signup.public_state(db, invite)
+    return out
 
 
 @router.post("/first-run", status_code=201)
@@ -113,6 +128,22 @@ def first_run(body: FirstRunIn, request: Request):
     # Encrypt the data from before accounts with the new admin's key (a new install: next to nothing, done here;
     # a big database carries on in the background while the app shows the progress).
     migrate_encryption.ensure_started(account.user_id, account.dek, wait_s=5)
+    return _signed_in(request, secret, body.remember, {"ok": True, "recovery_codes": account.recovery_codes}, 201)
+
+
+@router.post("/signup", status_code=201)
+def sign_up(body: SignupIn, request: Request):
+    """Create an account (the admin's sign-up mode or an invitation allows it) and sign it in. The new person sees
+    their recovery codes next, then the wizard, as after the first run."""
+    if not users.users_exist():
+        raise AuthProblem(409, "setup_required", "JobHuntPA isn't set up yet: create the admin account first.")
+    account = signup.sign_up(body.email, body.password, name=body.name or "", invite=body.invite)
+    db = SessionLocal()
+    try:
+        secret = sessions.create(db, db.get(User, account.user_id), account.dek, persistent=body.remember)
+        db.commit()
+    finally:
+        db.close()
     return _signed_in(request, secret, body.remember, {"ok": True, "recovery_codes": account.recovery_codes}, 201)
 
 
@@ -335,8 +366,8 @@ def me(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
         "csrf": user.csrf,
         "recovery_codes_pending": users.pending_recovery_codes(db, user.id) is not None,
         "workspaces": users.workspace_ids(db, user.id),
-        # What this version offers; the account menu shows "Admin" once the admin panel exists (Phase F).
-        "features": account.features(),
+        # What this version offers; admin_panel is true for admins only.
+        "features": account.features(admin=user.is_admin),
         # The sign-up walkthrough (Phase K): the step to show next, NULL once finished; and the theme saved for the
         # account, which pages apply when this browser has none of its own.
         "onboarding_step": db.get(User, user.id).onboarding_step,

@@ -29,10 +29,13 @@ A crash anywhere leaves a file with every KEK still in use; at start-up, ``kek_r
 again. (The design sets the new KEK current after step 2; setting it in step 1 is as safe and means a wrap made
 while step 2 runs can't be left under a key that is about to be dropped.)
 
-Command line (run with the app stopped)::
+Command line (run with the app stopped; the commands refuse while it is running)::
 
     python -m backend.keys bench-kdf [--profile default|low|all] [--runs N]
-    python -m backend.keys rotate-kek | recover-lost --admin-email X | new-admin-key --email X   (not yet available)
+    python -m backend.keys rotate-kek                 replace the server key (backend/key_rotation.py)
+    python -m backend.keys new-admin-key --email X    a new admin details key, after the last admin lost theirs
+                                                      (backend/admin_key.py)
+    python -m backend.keys recover-lost --admin-email X                                   (not yet available)
 """
 from __future__ import annotations
 
@@ -195,7 +198,22 @@ class ServerKeys:
         doc["created_at"] = self.created_at
         return (json.dumps(doc, indent=2) + "\n").encode("utf-8")
 
+    def _check_unchanged(self) -> None:
+        """Refuse when the file on disk isn't what this process loaded: another process (``python -m backend.keys
+        rotate-kek``) replaced it, and writing from this stale copy would drop its keys and orphan everything wrapped
+        under them. Nothing is written or changed."""
+        stale = KeyFileError("The key file was changed by something else since JobHuntPA started, so it wasn't "
+                             "touched. Restart JobHuntPA and try again.")
+        try:
+            doc = json.loads(self.path.read_bytes())
+            sections, retired, _created = _parse(doc, self.path)
+        except (OSError, ValueError, KeyFileError):
+            raise stale from None
+        if not hmac.compare_digest(self._dump(sections, retired), self._dump(self._sections, self._retired)):
+            raise stale
+
     def _commit(self, sections: dict, retired: dict) -> None:
+        self._check_unchanged()
         crypto.write_private(self.path, self._dump(sections, retired))
         self._sections, self._retired = sections, retired
 
@@ -288,6 +306,7 @@ class ServerKeys:
         with self._lock:
             if not self.kek_rotation_pending:
                 return 0
+            self._check_unchanged()  # before anything is re-wrapped in the database
             current = self.current_kek_id
             todo: list[tuple[Any, str, bytes]] = []
             failed: list[Any] = []
@@ -506,12 +525,8 @@ def load_or_create(has_users: Union[bool, Callable[[], bool]], stored_fingerprin
 # ---------------------------------------------------------------------------
 
 _NOT_YET = {
-    "rotate-kek": "rotate-kek isn't available yet: it arrives with user accounts (accounts design, Phase C/D). "
-                  "Until then nothing is wrapped with the server key, so there is nothing to rotate.",
     "recover-lost": "recover-lost isn't available yet: it arrives with user accounts (accounts design, Phase C/D), "
                     "when there are accounts to recover.",
-    "new-admin-key": "new-admin-key isn't available yet: it arrives with admin accounts (accounts design, "
-                     "Phase C/D).",
 }
 
 
@@ -549,11 +564,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     bench = sub.add_parser("bench-kdf", help="time the password key derivation (argon2id) profiles on this machine")
     bench.add_argument("--profile", choices=["default", "low", "all"], default="all")
     bench.add_argument("--runs", type=int, default=3)
-    sub.add_parser("rotate-kek", help="replace the server key (not available yet)")
+    sub.add_parser("rotate-kek", help="replace the server key and re-wrap everything that uses it")
     recover = sub.add_parser("recover-lost", help="rebuild a lost key file (not available yet)")
     recover.add_argument("--admin-email", required=True)
-    admin_key = sub.add_parser("new-admin-key", help="new admin details key after losing the last admin (not "
-                                                     "available yet)")
+    admin_key = sub.add_parser("new-admin-key", help="make --email an admin with a new admin details key (after the "
+                                                     "last admin lost theirs)")
     admin_key.add_argument("--email", required=True)
     args = parser.parse_args(argv)
     if args.command == "bench-kdf":
@@ -561,6 +576,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             parser.error("--runs must be at least 1")
         bench_kdf(["default", "low"] if args.profile == "all" else [args.profile], args.runs)
         return 0
+    if args.command == "rotate-kek":
+        from backend import key_rotation
+
+        return key_rotation.rotate_kek_command()
+    if args.command == "new-admin-key":
+        from backend import admin_key
+
+        return admin_key.new_admin_key_command(args.email)
     print(_NOT_YET[args.command] + " Nothing was changed.", file=sys.stderr)
     return 2
 

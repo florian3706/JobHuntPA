@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Create your account · JobHuntPA</title>
+  <script>
+    // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
+    (function () {
+      var t = "dark";
+      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <link rel="stylesheet" href="./themes.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="auth-page" data-page="signup">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="app-header auth-header">
+    <div class="header-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span class="brand-text"><span class="brand-name">JobHuntPA</span><span class="subtitle">Personal job-hunt dashboard</span></span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="main auth-main" tabindex="-1">
+    <section class="card auth-card" aria-labelledby="page-title">
+      <h1 id="page-title" tabindex="-1">Create your account</h1>
+      <p id="auth-status" class="muted" role="status">Checking the invitation…</p>
+      <div id="error-summary" class="error-summary" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
+        <h2 id="error-summary-title">There is a problem</h2>
+        <ul id="error-summary-list"></ul>
+      </div>
+
+      <div id="closed-step" class="auth-step" hidden>
+        <p id="closed-text"></p>
+        <p><a href="login.html">Sign in</a> if you already have an account.</p>
+      </div>
+
+      <div id="setup-step" class="auth-step" hidden>
+        <p id="signup-intro">Make an account to search for jobs with JobHuntPA. Your jobs, documents and searches are
+          encrypted so that only you can read them, not even the person who runs this server.</p>
+        <form id="signup-form" class="auth-form" novalidate>
+          <div class="auth-field">
+            <label for="email">Email address</label>
+            <p id="email-hint" class="hint">You sign in with it.</p>
+            <input id="email" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="none"
+                   spellcheck="false" aria-describedby="email-hint" required />
+          </div>
+          <div class="auth-field">
+            <label for="name">Your name <span class="muted">(optional)</span></label>
+            <input id="name" name="name" type="text" autocomplete="name" />
+          </div>
+          <div class="auth-field">
+            <label for="password">Password</label>
+            <p id="password-hint" class="hint">At least 10 characters. A few random words work well; a password manager
+              can make and remember one for you.</p>
+            <div class="pw-row">
+              <input id="password" name="password" type="password" autocomplete="new-password" spellcheck="false"
+                     aria-describedby="password-hint" required />
+              <button class="btn pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show password</button>
+            </div>
+          </div>
+          <div class="auth-field">
+            <label class="check"><input id="remember" name="remember" type="checkbox" aria-describedby="remember-hint" /> Keep me signed in</label>
+            <p id="remember-hint" class="hint">On this device, until you sign out or haven't used JobHuntPA for 30 days. Don't tick it on a shared computer.</p>
+          </div>
+          <button id="signup-submit" class="btn btn-primary auth-submit" type="submit">Create account</button>
+        </form>
+      </div>
+
+      <div id="codes-step" class="codes-step" hidden>
+        <h2 id="codes-title" tabindex="-1">Save your recovery codes</h2>
+        <p>If you ever forget your password, a recovery code is how you get back in and keep your data. Each code
+          works once. Keep them somewhere safe, such as your password manager or a printed copy: JobHuntPA shows them
+          only until you confirm you've saved them.</p>
+        <ol id="codes-list" class="codes-list" aria-label="Your recovery codes"></ol>
+        <div class="toolbar-row codes-actions">
+          <button id="codes-copy" class="btn" type="button">Copy all</button>
+          <button id="codes-download" class="btn" type="button">Download .txt</button>
+          <button id="codes-print" class="btn" type="button">Print</button>
+          <span id="codes-status" class="muted" role="status"></span>
+        </div>
+        <div class="auth-field">
+          <label class="check"><input id="codes-saved" type="checkbox" /> I've saved my recovery codes</label>
+        </div>
+        <button id="codes-continue" class="btn btn-primary auth-submit" type="button">Continue to JobHuntPA</button>
+      </div>
+    </section>
+
+    <section class="auth-help" aria-labelledby="help-title">
+      <h2 id="help-title">Trouble signing in?</h2>
+      <ul>
+        <li>Already have an account? <a href="login.html">Sign in</a> instead.</li>
+        <li>Forgotten your password? <a href="recover.html">I have a recovery code</a>: it lets you set a new password and keep your data.</li>
+        <li>Your password manager can fill in and save the fields, and pasting works too.</li>
+        <li>An invitation link works once and for 7 days. If it doesn't work, ask the person who runs this JobHuntPA for a new one.</li>
+        <li>Forgotten your password? Ask the person who runs this JobHuntPA. Keep your recovery codes: they are what lets you set a new password and keep your data.</li>
+      </ul>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
+
+  <script src="./common.js"></script>
+  <script src="./auth.js"></script>
+  <script src="./signup.js"></script>
+</body>
+</html>

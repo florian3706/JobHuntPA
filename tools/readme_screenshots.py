@@ -329,21 +329,19 @@ def shot_search(s: Shooter) -> None:
 
 
 def shot_settings(s: Shooter) -> None:
-    """The Settings tab below the Theme card (Scheduled searches, LLM provider/model/key and reasoning levels, commute
-    API keys), the Scheduled searches card alone, and the top of the Theme card (its first three families of themes).
-    The demo LLM is a fake key at llm.example.com, shown as Custom; nothing calls it."""
+    """The Settings tab below the Theme card (Scheduled searches and the AI status with the Rescore buttons), the
+    Scheduled searches card alone, and the top of the Theme card (its first three families of themes). The AI provider,
+    model, key and commute keys are in the admin panel (admin.html#server), not on this tab."""
     ctx = s.context()
     page = s.page(ctx)
     page.goto(f"{s.base}/#settings")
     page.wait_for_function("document.querySelector('#sched-status').textContent.includes('Next search')")
-    page.wait_for_function("document.querySelector('[data-task=scoring]').options.length > 1")
     page.wait_for_function("!document.querySelector('#scorer-info').textContent.includes('(LLM_MODEL not set)') "
                            "&& document.querySelector('#scorer-info').textContent.length > 0")
-    page.wait_for_function("[...document.querySelectorAll('.key-state')].every(e => e.textContent.trim())")
-    page.wait_for_function("document.querySelector('#llm-provider').options.length > 1 && document.querySelector('#llm-model').value")
     s.settle(page)
     top = s.rect(page, "#schedule-card")
-    last = s.rect(page, "#commute-keys-card")
+    last = page.evaluate("""() => { const r = document.querySelector('#scorer-info').closest('.card').getBoundingClientRect();
+        return { y: r.top + scrollY, h: r.height }; }""")  # the AI card, the last one of the tab
     s.save("settings", s.grab(page, (CONTENT_X, int(top["y"]) - 10, CONTENT_W, int(last["y"] + last["h"] - top["y"]) + 24)))
     card = s.rect(page, "#schedule-card")
     s.save("search-schedule", s.grab(page, (CONTENT_X, int(card["y"]) - 10, CONTENT_W, int(card["h"]) + 20)))

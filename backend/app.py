@@ -19,8 +19,9 @@ from sqlalchemy.orm import Session
 from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import crypto, migrate_encryption, schedule, tasks, users
+from backend import crypto, llm_providers, migrate_encryption, schedule, tasks, users
 from backend.account import router as account_router
+from backend.admin import router as admin_router
 from backend.app_settings import router as app_settings_router
 from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
@@ -29,6 +30,7 @@ from backend.security import router as security_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
+from backend.export import router as export_router
 from backend.commute import router as commute_router
 from backend.commute import status_router as commute_status_router
 from backend.duplicates import router as duplicates_router
@@ -118,6 +120,8 @@ app.add_middleware(NoStoreApi)
 app.include_router(auth_router)
 app.include_router(security_router)
 app.include_router(account_router)
+app.include_router(export_router)
+app.include_router(admin_router)
 app.include_router(geo_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)
@@ -372,7 +376,7 @@ def _score(ws: int, mode: str, progress, office_slack: int = 0) -> dict:
     try:
         return score_jobs(ws, ids, progress)
     except ScorerError as exc:
-        return {"aborted": str(exc)}
+        return {"aborted": llm_providers.user_message(exc)}
 
 
 def start_search_run(ws: int, scheduled: bool = False) -> dict:
@@ -480,7 +484,7 @@ def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Dep
     try:
         score_one(job_id, text, phash, cfg)
     except ScorerError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     db.expire_all()
     return get_job(job_id, office_slack, db, ws)
 
@@ -529,7 +533,7 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
         try:
             summary = {"research": research_companies(companies, progress)}
         except ScorerError as exc:
-            return {"research": {"aborted": str(exc)}}
+            return {"research": {"aborted": llm_providers.user_message(exc)}}
         if payload.name:  # one company: place its jobs at the offices research found
             from backend.offices import assign_company
 
@@ -542,7 +546,7 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
             try:
                 summary["offices"] = find_offices(ws, payload.job_ids, progress)
             except ScorerError as exc:
-                summary["offices"] = {"aborted": str(exc)}
+                summary["offices"] = {"aborted": llm_providers.user_message(exc)}
         return summary
 
     return tasks.start("research", job, ws)

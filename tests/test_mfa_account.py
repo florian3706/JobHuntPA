@@ -218,11 +218,11 @@ class RecentSignInTest(AccountTestCase):
         self.make_stale(admin)
         from backend import migrate_encryption
         with mock.patch.object(migrate_encryption, "delete_leftovers", return_value=[]) as deleted:
-            r = admin.post("/api/encryption/leftovers/delete")
+            r = admin.post("/api/admin/plaintext-files/delete")
             self.assertEqual((r.status_code, r.json()["code"]), (403, "reauth_required"))
             deleted.assert_not_called()
             self.assertEqual(admin.post("/api/auth/reauth", json={"password": helpers.ADMIN_PASSWORD}).status_code, 200)
-            self.assertEqual(admin.post("/api/encryption/leftovers/delete").status_code, 200)
+            self.assertEqual(admin.post("/api/admin/plaintext-files/delete").status_code, 200)
             deleted.assert_called_once()
 
 
@@ -315,7 +315,8 @@ class MfaSignInTest(AccountTestCase):
         cookie = c.cookies.get("jh_session")
         self.assertTrue(cookie)
         self.assertNotIn("Max-Age", r.headers["set-cookie"])  # even with "keep me signed in", until the code is in
-        self.assertEqual(c.get("/api/auth/state").json(),
+        state = c.get("/api/auth/state").json()
+        self.assertEqual({k: state[k] for k in ("setup_required", "signed_in", "mfa_pending")},
                          {"setup_required": False, "signed_in": False, "mfa_pending": True})
         for path in ("/api/auth/me", "/api/workspaces", "/api/pins", "/api/jobs", "/api/auth/security",
                      "/api/account/prefs", "/api/documents"):

@@ -239,7 +239,8 @@ ADMIN_ENV = {"JOBHUNT_ADMIN_EMAIL": "ci@example.invalid", "JOBHUNT_ADMIN_PASSWOR
 class BootstrapAndRestartTest(unittest.TestCase):
     def test_environment_bootstrap_then_a_session_survives_a_restart(self):
         boot = scenario(BOOT, env=ADMIN_ENV)
-        self.assertEqual(boot["state"], {"setup_required": False, "signed_in": False})
+        self.assertEqual({k: boot["state"][k] for k in ("setup_required", "signed_in")},
+                         {"setup_required": False, "signed_in": False})
         self.assertFalse(boot["token_file"])
         self.assertEqual(boot["login"], 200)
         self.assertEqual(boot["users"], [["admin", "bootstrap"]])
@@ -293,7 +294,9 @@ class LoginTest(SignInTestCase):
     def test_sign_in_me_and_sign_out(self):
         alice = helpers.make_user(name="Alice Example", password=PASSWORD)
         c = self.anonymous()
-        self.assertEqual(c.get("/api/auth/state").json(), {"setup_required": False, "signed_in": False})
+        state = c.get("/api/auth/state").json()
+        self.assertEqual((state["setup_required"], state["signed_in"]), (False, False))
+        self.assertEqual(state["signup"]["mode"], "invite")  # (sign-up: tests/test_admin.py)
         r = c.post("/api/auth/login", json={"email": f"  {alice.email.upper()} ", "password": PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
         csrf = r.json()["csrf"]

@@ -285,7 +285,7 @@ async function apiResponse(url, opts = {}, retried = false) {
     const err = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
     err.status = res.status;
     err.code = code; // e.g. 'reauth_required' (withRecentAuth)
-    err.field = data && typeof data === 'object' ? data.field : undefined; // the form field a 422 is about
+    err.field = data && typeof data === 'object' ? data.field : undefined; // the form field a refusal is about
     throw err;
   }
   return { data, headers: res.headers };
@@ -492,35 +492,16 @@ function fmtBytes(n) {
 }
 
 /* After the encryption: the copies of the data that still hold it unencrypted (the backup it made first, older
-   backups, an old page cache) are listed for an admin, with "Delete them now", until they are gone (accounts design
-   §5.5). Nothing is deleted without that click. */
+   backups, an old page cache) are reported in the admin panel's Server section (accounts design §5.5), where an
+   admin can delete them. This notice only points there, until they are gone. */
 async function remindLeftovers(me) {
   if (me?.user?.role !== 'admin') return;
   let status;
   try { status = await api('/api/encryption/status'); } catch { return; }
   const files = status?.leftovers || [];
   if (status?.state !== 'done' || !files.length) return;
-  const el = pageNotice('leftovers', `<p><strong>Your data is encrypted now.</strong> These files from before still hold it
-      unencrypted. You only need the backup to go back to an older version of JobHuntPA.</p>
-    <ul class="leftover-files">${files.map((f) => `<li><code>${esc(f.path)}</code> (${fmtBytes(f.bytes)})</li>`).join('')}</ul>
-    <p><button type="button" class="btn btn-primary btn-sm" id="leftovers-delete">Delete them now (recommended)</button></p>`);
-  el?.querySelector('#leftovers-delete').addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    setBusy(btn, true);
-    try {
-      const out = await withRecentAuth(() => api('/api/encryption/leftovers/delete', { method: 'POST' }));
-      if (out.leftovers?.length) {
-        toast(`${out.leftovers.length} file(s) could not be deleted. Check the data folder's permissions.`, 'err', 10000);
-      } else {
-        pageNotice('leftovers', '<p>Deleted. No unencrypted copy of your data is left in the data folder.</p>');
-        announce('Deleted the unencrypted copies of your data.');
-      }
-    } catch (err) {
-      toast(err.message, 'err', 10000);
-    } finally {
-      setBusy(btn, false);
-    }
-  });
+  pageNotice('leftovers', `<p><strong>Your data is encrypted now.</strong> ${files.length === 1 ? 'A file' : `${files.length} files`} from before still
+      ${files.length === 1 ? 'holds' : 'hold'} it unencrypted. <a href="admin.html#server">See them in the admin panel</a>, where you can delete them.</p>`);
 }
 
 /* ---------- the account menu in the header ----------

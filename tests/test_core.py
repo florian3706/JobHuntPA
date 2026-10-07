@@ -1390,7 +1390,7 @@ class CommuteTest(unittest.TestCase):
             self.assertEqual(out["car"]["there"]["minutes"], 66)
             self.assertFalse(out["car"]["there"]["traffic"])
             self.assertTrue(any("only a city" in n for n in out["notes"]))
-            self.assertTrue(any("TomTom" in n and "Settings tab" in n for n in out["notes"]))  # where to add the key
+            self.assertTrue(any("TomTom" in n and "admin panel" in n for n in out["notes"]))  # where to add the key
             self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": False})
             c.delete(f"/api/workspaces/{ws}")
 

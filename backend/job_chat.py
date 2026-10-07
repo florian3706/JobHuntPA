@@ -256,7 +256,7 @@ def ask(db: Session, ws: int, jobs: list[Job], history: list[dict], message: str
             text = call_model(messages, {**cfg, "timeout_s": max(cfg["timeout_s"], 300)}, json_mode=False)
             text, sources = keep_known_links(text, known_links(db, jobs)), []
     except ScorerError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     text = (text or "").strip()
     if not text:
         raise HTTPException(status_code=502, detail="The model returned an empty answer; try again.")

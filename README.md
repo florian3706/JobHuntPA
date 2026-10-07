@@ -42,7 +42,7 @@ underneath.
 **Settings**: the theme, scheduled searches (by themselves at set times on workdays, skipping public
 holidays), your AI provider, model and key, how long the AI thinks for each task, and the commute keys.
 
-![The Settings tab: scheduled searches, the AI provider with its model, key and reasoning levels, and the commute API keys](docs/screenshots/settings.png)
+![The Settings tab: scheduled searches, the AI status and the Rescore buttons](docs/screenshots/settings.png)
 
 **Themes**: Dark (above), Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and Everforest
 families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from live
@@ -69,7 +69,7 @@ previews on the Settings tab.
   [Meta](https://dev.meta.ai/) (Muse Spark), Mistral, Groq, xAI (Grok), DeepSeek or OpenRouter, or
   any other service with an OpenAI-compatible API. A model running on your own computer with
   [Ollama](https://ollama.com/) needs no key. Setup lets you pick the provider, then asks for the
-  model and your key; you can change them any time under **Settings > LLM**. Using the model costs
+  model and your key; you can change them any time in the admin panel (Account > Admin > Server). Using the model costs
   money on your provider account. The app still collects and filters jobs without one, but
   scoring, cover letters, title suggestions, chat and company research need it.
 - Company research, finding offices and *Search the web* in chats use the provider's web search,
@@ -167,10 +167,29 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   yours. It can't be undone, and it waits while one of your searches is running. An admin can't delete
   their own account (for now: the last admin would leave nobody to run JobHuntPA, and changing an
   admin's account needs the admin panel's key change); another admin makes them a regular user first.
+- **Download your data:** **Settings > Download your data** makes a zip file with everything JobHuntPA
+  keeps for your account, as Markdown files in folders made for people: `Account.md`; for each
+  workspace its search setup, sources, documents (with the original files you uploaded, byte for byte),
+  jobs sorted into folders by your status (each with its fit score, description, cover letter and the
+  other sites that advertised it), jobs the filters left out, your chats and search history; and the
+  company research behind your jobs. Links between the files work offline. It asks for your password
+  again if you haven't entered it in the last 15 minutes, and is made in memory, so nothing is written to
+  disk on the server (an export is refused above 200 MB of files, and the server makes only a couple at
+  a time: try again in a minute). **The zip is not encrypted**: keep it somewhere safe. It holds only your own data
+  (admins can't export other people's), and never your password, recovery codes or keys.
 - **What only the admin sees:** the AI provider, model, API key and reasoning levels, and the
-  commute API keys, are set by the admin for everyone (Settings tab). Other accounts see whether AI
+  commute API keys, are set by the admin for everyone (admin panel, Server). Other accounts see whether AI
   scoring and commute times are available, and everything of their own: workspaces, search setup,
   documents, schedule and theme. Each workspace belongs to one account; nobody else can open it.
+- **Letting other people in (admins):** the admin chooses who can sign up: **by invitation** (the
+  default: the admin makes an invite link, good for 7 days and one sign-up), **open** (anyone with
+  the address) or **closed**. New people get their own account, recovery codes and walkthrough, as
+  above. Admins see each person's email, name, role, last day active (the day only), whether
+  two-step sign-in and background access are on, and their membership, and they can turn accounts
+  off and on, turn off someone's two-step sign-in, give free periods and exempt people from
+  payment, and see the AI usage figures. They **never** see anyone's searches, documents or jobs,
+  and people's email addresses and names are encrypted so that only signed-in admins can open them
+  (the admin key; see below). Every admin action is written to an audit log.
 - **Headless servers and CI:** instead of the first-run page, start JobHuntPA with
   `JOBHUNT_ADMIN_EMAIL` and `JOBHUNT_ADMIN_PASSWORD` in its environment (exported, or in the
   service definition; never in `.env`, which is ignored for these two) and that admin is created
@@ -214,6 +233,57 @@ your password when you next sign in. With **background access** (scheduled searc
 while you're signed out; the first account has it on), the server keeps a copy of your key in
 `data/server-keys.json`, so whoever runs the server could read your data with that file. On SSDs and
 SD cards, deleted data may linger in storage the disk manages itself.
+
+## Sharing JobHuntPA (admins)
+
+Admins open the **admin panel** from **Account > Admin** (`admin.html`). It never shows anyone's jobs,
+documents or searches. It has five parts:
+
+- **Summary and AI use:** people, admins, how many were active in 7 and 30 days and how many joined
+  in 30 days, and the AI service's use for the last 7 to 365 days: requests, tokens in and out, and
+  how much came from the cache, by model and purpose, by person and by day.
+- **People:** each account's email, name, role, status, last active day and membership. The columns
+  sort (below 640 px wide, each person becomes a card with a "Sort by" menu). Buttons make someone an
+  admin or a regular user, disable or enable them, **unlock** someone who has to wait after wrong
+  passwords, turn off their two-step sign-in, **delete their account** (with everything in it, their
+  uploaded files included; not your own, not the last admin and not while their search is running; deleting
+  an admin replaces the admin key like demoting does), and open their
+  membership: **exempt from payment**, the number of free searches used, and **free periods**
+  (start, end or number of days, a note only admins see; "End now" keeps the period in the history).
+  *Send reset email* answers that email isn't set up yet; until it is, the person can use a recovery
+  code on the sign-in page to choose a new password.
+- **Sign-up and invitations:** choose who can create an account: **only with an invitation link** (the
+  default), **anyone** (open sign-up) or **nobody**. An invitation link (`signup.html?invite=…`) is shown
+  once when you make it, works for one sign-up and lasts 7 days. Give an email address to fill in the
+  form for them; the address then counts as verified. Send the link yourself for now. New people get
+  recovery codes and the setup walkthrough, as on first run. Open sign-up lets anyone who can reach the
+  server use the AI service you pay for, so use it only on a private network.
+- **Server:** the AI provider (provider, model, key, reasoning levels, *Test connection*) and the commute
+  keys, which used to be on the Settings tab (changes are logged by name, never the value);
+  **Replace the server key**; and the report of
+  **unencrypted copies of data** with *Delete these files now* for the backups and old page cache that
+  the one-time encryption leaves.
+- **Audit log:** every admin action, newest first: what was done, by whom, to whom, and details such as
+  dates or counts (never anyone's content). The details are readable while you hold the current admin key.
+
+**Roles and the admin details key.** People's emails, names, notes and billing details are encrypted
+so that only admins can open them, with an *admin key* that each admin holds a copy of (sealed to their
+own password). Making someone an admin shares the key with them. Making an admin a regular user
+**replaces the key** and shares the new one only with the admins who remain, so the person who was
+demoted can't open anything new. These actions ask for your password again if you haven't entered it in
+the last 15 minutes. JobHuntPA keeps you from removing the last admin and warns while only one exists:
+with a single admin who loses their password and recovery codes, nobody can read people's details. If
+an admin shows "Admin key not shared with them", use *Share the admin key again* (another admin does
+this). **Recovering when no admin can open the key:** stop JobHuntPA and run
+`python -m backend.keys new-admin-key --email you@example.com`. That person becomes an admin with a new
+key, and everyone's details are sealed to it again as they sign in.
+
+**Rotating the server key.** The server key (`data/server-keys.json`) protects the keys kept for
+background searches and two-step sign-in. *Replace the server key* moves them all to a new one and drops
+the old one; if something can't be moved, the old key is kept and nothing is lost. You can also run
+`python -m backend.keys rotate-kek` with JobHuntPA stopped (these commands refuse while it is running; if
+it isn't, delete `data/running.json`). A running JobHuntPA also won't overwrite a key file that something
+else changed: it stops with "The key file was changed by something else", and a restart picks up the new file.
 
 ## Using it
 
@@ -337,7 +407,7 @@ can live in their own **workspaces** (switcher at the top right).
   contrast minimums it is a little lighter or darker in the same hue (themes.css lists each change).
   Labels, marks or shapes always accompany colours, so nothing relies on colour alone. See
   [Accessibility](#accessibility).
-- **Reasoning level** (Settings > LLM): how long the AI thinks, set separately for scoring,
+- **Reasoning level** (admin panel > Server): how long the AI thinks, set separately for scoring,
   cover letters, company research and job chat. *Detect supported levels* shows what your model accepts.
 
 ## Adding company careers pages
@@ -430,7 +500,7 @@ show as closed.
 
 ## Changing your AI provider or key
 
-Only the admin account can see or change these; they apply to everyone. Open **Settings > LLM**: pick the provider (it fills in the API address and suggests models),
+Only the admin account can see or change these; they apply to everyone. Open the **admin panel** (Account > Admin), **Server > AI provider**: pick the provider (it fills in the API address and suggests models),
 choose the model, paste your key and click **Save**. It takes effect straight away; click
 **Detect supported levels** afterwards, as each model offers different reasoning levels, and
 **Test connection** to check the key. The key is saved in the `.env` file in the app folder and
@@ -442,8 +512,7 @@ edit `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` in `.env` and restart the app
 
 ## Commute times (optional)
 
-The commute on each job's page uses two free services. The admin adds their keys under **Settings > API keys
-for commute times** (they work straight away for everyone; **Test saved keys** checks them), or when setup
+The commute on each job's page uses two free services. The admin adds their keys in the admin panel under **Server > Commute data** (they work straight away for everyone; **Test saved keys** checks them), or when setup
 asks, or in `.env` followed by a restart:
 
 - `TFNSW_API_KEY`: public transport in NSW. Sign up at https://opendata.transport.nsw.gov.au,
@@ -484,6 +553,16 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
   can't be read, by you, the admin or anyone else.
 - **Lost your authenticator app:** sign in with a recovery code instead of the app's code, then turn
   two-step sign-in off and on again in Settings > Account.
+- **The last admin lost their password and every recovery code:** people can still sign in, but
+  admins can't read names and email addresses any more ("Details unavailable until this person
+  signs in"). Stop JobHuntPA and run `python -m backend.keys new-admin-key --email you@example.com`
+  (in the app folder, with the app's Python: `.venv/bin/python` on macOS and Linux). That account
+  becomes an admin with a new admin key; everyone's details are re-sealed to it when they next
+  sign in (at once for people with background access).
+- **Changing the server key:** the admin panel's *Replace the server key* button (Server) (it asks for your
+  password again), or with JobHuntPA stopped, `python -m backend.keys rotate-kek`. The server key
+  opens background-access keys and two-step secrets; rotating it is safe to interrupt, and the next
+  start finishes it.
 - **"JobHuntPA is waiting for its admin to sign in, to finish encrypting the data":** the one-time
   encryption after an update needs the first admin's password; it carries on when they sign in.
 - **"Encrypting your data stopped (...)":** JobHuntPA tries again a minute later and whenever the
@@ -568,9 +647,12 @@ database, `.env` and key file, with `JOBHUNT_TESTING=1` and the fast `JOBHUNT_KD
 (tests/__init__.py); `tests/helpers.py` gives signed-in clients (`with helpers.client() as c:`),
 other accounts (`helpers.make_user()`) and the admin's key scope (`helpers.as_admin()`). Code and the
 design notes: `backend/users.py` (accounts, first run, deleting an account), `backend/sessions.py`
-(sessions, CSRF, the checks on every request), `backend/auth.py` (signing in, the two-step code, resetting
-with a recovery code), `backend/security.py` (password, two-step setup, recovery codes, other sessions),
-`backend/totp.py` (authenticator codes), `docs/design/accounts.md`.
+(sessions, CSRF, the checks on every request), `backend/auth.py` (signing in, sign-up, the two-step code,
+resetting with a recovery code), `backend/security.py` (password, two-step setup, recovery codes, other
+sessions), `backend/totp.py` (authenticator codes), `backend/admin.py` (the admin panel's API) with
+`backend/admin_key.py` (the admin key: grants, replacing it, healing details), `backend/signup.py` and
+`backend/tokens.py` (sign-up modes and invitations), `backend/key_rotation.py` (the server key),
+`docs/design/accounts.md`.
 
 **Encrypted columns** (`backend/crypto.py`, `docs/design/accounts.md` §2): personal columns use the
 `Sealed*` types, which encrypt under the key of the request's account (or the background run's). The

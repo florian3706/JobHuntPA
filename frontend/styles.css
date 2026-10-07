@@ -970,3 +970,68 @@ dialog.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
   .toasts, #auth-status { display: none !important; }
   .auth-card { border: none; box-shadow: none; }
 }
+
+/* ======================= Admin panel (admin.html + admin.js; accounts design §7) =======================
+   Sections are cards; summary figures are a definition list in tiles; tables become cards below 640 px (the
+   .stack-table rules above), where the header row is hidden and a "Sort by" menu replaces its sort buttons. */
+.admin-main { display: flex; flex-direction: column; gap: 16px; max-width: 1200px; }
+.admin-main .panel-head { margin: 0; }
+.admin-nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.admin-nav a { color: var(--accent-text); display: inline-flex; align-items: center; min-height: 28px; }
+.admin-warnings:empty { display: none; }
+.admin-warnings { display: flex; flex-direction: column; gap: 8px; }
+.admin-warnings p { margin: 0; }
+.admin-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.admin-section > h2, .admin-section .card-head h2 { margin: 0; font-size: 20px; }
+.admin-section h3 { margin: 6px 0 0; font-size: 16px; }
+.admin-section h4 { margin: 4px 0 0; font-size: 14px; }
+#server.admin-section { gap: 16px; }
+#server > h2 { margin: 0; font-size: 20px; }
+.admin-section p { margin: 0; }
+.inline-field { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 10px; margin: 0; }
+.tile { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.tile dt { color: var(--muted); font-size: 13px; }
+.tile dd { margin: 2px 0 0; font-size: 26px; font-weight: 700; }
+.tile-hint { font-size: 13px; font-weight: 400; color: var(--muted); }
+.admin-table { margin-top: 0; }
+.admin-table th[aria-sort] { white-space: nowrap; }
+.admin-table td, .admin-table th { overflow-wrap: anywhere; }
+.sort-btn { background: none; border: none; color: inherit; font: inherit; font-weight: 600; cursor: pointer; padding: 2px 0; min-height: 24px; }
+.sort-btn:hover { text-decoration: underline; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.sort-select { display: none; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.admin-form { display: flex; flex-direction: column; gap: 12px; }
+.admin-form .field.narrow { max-width: 22rem; }
+.admin-form input[type="date"] { background: var(--field); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; font-size: 14px; min-height: 36px; max-width: 100%; }
+.admin-form .form-group { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.admin-form .form-group > legend { padding: 0 6px; font-weight: 600; }
+.usage-days summary { cursor: pointer; color: var(--accent-text); min-height: 24px; margin-bottom: 8px; }
+.admin-section .callout h4 { margin: 0 0 4px; }
+.admin-section .callout p + .key-row, .admin-section .callout .key-row + p { margin-top: 8px; }
+.admin-section .leftover-files { margin: 6px 0; padding-left: 20px; overflow-wrap: anywhere; }
+dialog.admin-dialog {
+  padding: 0; border: none; background: transparent; color: var(--text);
+  width: min(760px, calc(100% - 32px)); max-width: none; max-height: calc(100dvh - 32px); overflow: visible;
+}
+dialog.admin-dialog-small { width: min(520px, calc(100% - 32px)); }
+dialog.admin-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+.admin-dialog-box {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  display: flex; flex-direction: column; max-height: calc(100dvh - 32px); overflow: hidden;
+}
+.admin-dialog-body { padding: 12px 16px 16px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.admin-dialog-body p { margin: 0; }
+.admin-dialog .modal-title:focus-visible { outline-offset: 2px; }
+@media (max-width: 640px) {
+  .sort-select { display: flex; }
+  .report.stack-table.admin-table thead { display: none; }
+  .report.stack-table.admin-table td, .report.stack-table.admin-table th[scope="row"] { display: flex; gap: 10px; }
+  .report.stack-table.admin-table th[scope="row"]::before { content: none; }
+  .report.stack-table.admin-table th[scope="row"] { display: block; font-weight: 400; }
+  dialog.admin-dialog { width: 100%; max-height: 100dvh; margin: 0; height: 100%; }
+  dialog.admin-dialog-small { height: auto; }
+  .admin-dialog-box { border-radius: 0; border: none; max-height: 100dvh; height: 100%; }
+  dialog.admin-dialog-small .admin-dialog-box { height: auto; }
+}
+.admin-table td[data-label="Role"], .admin-table td[data-label="State"] { overflow-wrap: normal; }

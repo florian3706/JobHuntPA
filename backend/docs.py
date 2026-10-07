@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import crypto
+from backend import crypto, llm_providers
 from backend.db import DOCUMENT_KINDS, NOTE_FILETYPE, SUMMARY_FILETYPE, UPLOAD_DIR, Document, get_db
 from backend.workspaces import current_workspace, owned
 
@@ -352,7 +352,7 @@ def _rewrite(cfg: dict, system: str, user: str) -> str:
         text = _clean(call_model([{"role": "system", "content": system}, {"role": "user", "content": user}], cfg,
                                  json_mode=False))
     except ScorerError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     if not text:
         raise HTTPException(status_code=502, detail="The model returned no text; try again.")
     return text

@@ -168,9 +168,11 @@ with TestClient(app) as c:
     job_ids = {j["url"]: j["id"] for j in out["api"]["jobs"]}
     out["api"]["letter"] = c.get(f"/api/jobs/{job_ids['https://jobs.example/public/1']}/cover-letter").json()
     out["status"] = c.get("/api/encryption/status").json()
-    out["delete_without_csrf"] = c.post("/api/encryption/leftovers/delete").status_code
-    deleted = c.post("/api/encryption/leftovers/delete", headers={"X-CSRF-Token": csrf})
+    out["delete_without_csrf"] = c.post("/api/admin/plaintext-files/delete").status_code
+    out["old_route"] = c.post("/api/encryption/leftovers/delete", headers={"X-CSRF-Token": csrf}).status_code
+    deleted = c.post("/api/admin/plaintext-files/delete", headers={"X-CSRF-Token": csrf})
     out["deleted"] = deleted.json()
+    out["audit_actions"] = [e["action"] for e in c.get("/api/admin/audit").json()["entries"]]
 '''
 
 
@@ -284,6 +286,9 @@ with engine.connect() as conn:
                          ["cache/old.html", "jobhunt.db.bak-before-encryption", "jobhunt.db.bak-before-job-pool"])
         self.assertEqual(self.read["deleted"]["leftovers"], [])
         self.assertEqual(self.read["delete_without_csrf"], 403)
+        # One way to delete them, the admin panel's, and it leaves a trace in the audit log.
+        self.assertIn(self.read["old_route"], (404, 405))
+        self.assertIn("plaintext_files_deleted", self.read["audit_actions"])
 
     def test_everything_reads_back_through_the_api(self):
         api = self.read["api"]

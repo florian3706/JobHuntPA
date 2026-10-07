@@ -476,11 +476,13 @@ class ClaudeChatTest(ProviderTestCase):
         self.assertEqual((ctx.exception.status_code, ctx.exception.detail), (502, "API key rejected (HTTP 401)."))
 
     def test_max_is_a_level_the_settings_accept(self):
-        with mock.patch.object(ls, "_get", return_value=None), mock.patch.object(ls, "_set") as save:
-            ls.update_reasoning(ls.ReasoningUpdate(scoring="max"))
+        who = (mock.Mock(id=1), mock.Mock())  # the admin and the database session (the audit entry is made there)
+        with mock.patch.object(ls, "_get", return_value=None), mock.patch.object(ls, "_set") as save, \
+                mock.patch.object(ls.admin_key, "audit_settings"):
+            ls.update_reasoning(ls.ReasoningUpdate(scoring="max"), *who)
             self.assertEqual(save.call_args.args[1]["scoring"], "max")
             with self.assertRaises(ls.HTTPException):
-                ls.update_reasoning(ls.ReasoningUpdate(scoring="bogus"))
+                ls.update_reasoning(ls.ReasoningUpdate(scoring="bogus"), *who)
 
     def test_the_connection_test_goes_through_the_sdk(self):
         fake, patch = claude(sdk_message([text_block('{"ok": true}')], beta=True))
@@ -807,7 +809,7 @@ class NoWebSearchTest(ProviderTestCase):
                     lp.web_search(cfg_for(base), instructions="I", input="Q", feature="Company research")
             message = str(ctx.exception)
             self.assertTrue(message.startswith(f"Company research needs web search, which {label} doesn't offer through this app"), message)
-            self.assertIn("Settings > LLM", message)
+            self.assertIn("admin panel (Server, AI provider)", message)
             for ok in ("OpenAI", "Anthropic (Claude)", "Google Gemini", "xAI (Grok)", "OpenRouter"):
                 self.assertIn(ok, message)
             self.assertFalse(ctx.exception.auth)

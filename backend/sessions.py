@@ -54,7 +54,7 @@ from starlette.datastructures import Headers
 from starlette.requests import cookie_parser
 from starlette.responses import JSONResponse, Response
 
-from backend import crypto, mailer, ratelimit, users
+from backend import admin_key, crypto, mailer, ratelimit, users
 from backend.db import AuthSession, SessionLocal, User, utcnow
 
 log = logging.getLogger(__name__)
@@ -75,12 +75,13 @@ LOGIN = "/api/auth/login"
 LOGOUT = "/api/auth/logout"
 LOGIN_MFA = "/api/auth/login/mfa"   # the code step: its session is still pending_mfa
 RECOVER = "/api/auth/recover"       # a forgotten password, reset with a recovery code (the data is kept)
+SIGNUP = "/api/auth/signup"
 # Answered without a session.
-OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, LOGOUT})
+OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, LOGOUT, SIGNUP})
 # Answered before the first account exists.
 SETUP_PATHS = frozenset({HEALTH, STATE, FIRST_RUN})
 # Sign-in endpoints: JSON only and rate-limited per client address; no CSRF token (there may be no session yet).
-PRE_SESSION = frozenset({FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER})
+PRE_SESSION = frozenset({FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, SIGNUP})
 UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
@@ -153,7 +154,9 @@ def clear_cookie(response: Response, scope) -> None:
 # ---------------------------------------------------------------------------
 
 def create(db: Session, user: User, dek: bytes, *, persistent: bool, state: str = "active") -> bytes:
-    """A new session for ``user`` (added to ``db``, not committed). Returns the cookie secret."""
+    """A new session for ``user`` (added to ``db``, not committed). Returns the cookie secret. Signing in also
+    re-seals the person's details for admins when they aren't sealed to the current admin key (backend.admin_key)."""
+    admin_key.heal_details(db, user, dek)
     secret = crypto.new_key()
     now = utcnow()
     absolute = now + ABSOLUTE[persistent]
