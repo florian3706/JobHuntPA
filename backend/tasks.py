@@ -55,6 +55,12 @@ def active_run(ws: Optional[int] = None) -> Optional[dict]:
         db.close()
 
 
+def start_lock() -> threading.Lock:
+    """Held while a run is queued. ``users.delete_account`` holds it while it checks for active runs and removes the
+    account's workspaces, so no run can be queued for them in between."""
+    return _start_lock
+
+
 def mark_interrupted() -> None:
     """Runs left running by a previous server process can never finish. Written without anyone's key: the error
     is a code, which ``SearchRun.to_dict`` turns into words."""

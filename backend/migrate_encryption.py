@@ -53,7 +53,7 @@ from sqlalchemy import Table, select, text, update
 
 from backend import crypto
 from backend.db import DATA_DIR, DB_PATH, UPLOAD_DIR, Base, engine
-from backend.sessions import AuthUser, current_user, has_recent_auth
+from backend.sessions import AuthUser, current_user, require_recent_auth
 
 log = logging.getLogger(__name__)
 
@@ -662,8 +662,6 @@ def delete_leftover_files(user: AuthUser = Depends(current_user)):
         raise HTTPException(status_code=403, detail="Only an admin can delete these files.")
     if not is_done():
         raise HTTPException(status_code=409, detail="Wait until your data is encrypted.")
-    if not has_recent_auth(user):
-        raise HTTPException(status_code=403, detail="For your safety, sign out and sign in again, then delete them "
-                                                    "within 15 minutes.")
+    require_recent_auth(user)  # 403 reauth_required: the page asks for the password and tries again
     deleted = delete_leftovers()
     return {"ok": True, "deleted": deleted, "leftovers": [_public(i) for i in leftover_files()]}

@@ -146,6 +146,27 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   *Keep me signed in* on your own device to stay signed in for up to 30 days of not using it
   (otherwise 24 hours). **Account > Sign out** at the top right signs this browser out. After 5
   wrong passwords in a row, the next try has to wait 30 seconds, then longer each time, up to 15 minutes.
+- **Two-step sign-in** (Settings > Account): add an authenticator app (any app that makes 6-digit
+  codes) by scanning the QR code, or by typing the setup key if you can't scan. After that, signing
+  in asks for the app's code after your password. A code works once, and a recovery code works instead
+  of the app (each recovery code once; the page says how many are left). Turning it off needs your
+  password and a code.
+- **Forgot your password?** On the sign-in page, *Trouble signing in?* then *I have a recovery code*:
+  enter your email, a recovery code and a new password. **Your data is kept**, because the recovery
+  code unlocks it; every other browser is signed out. With two-step sign-in on, you also enter the
+  app's code or a second recovery code. This works without any email set up.
+- **Password, recovery codes and sessions** (Settings > Account): change your password (your data
+  stays readable and other browsers are signed out unless you untick that), make 8 new recovery
+  codes (the old ones stop working; with two-step sign-in on you also enter the app's code; you save
+  the new ones the same way as the first set), and *Sign out
+  everywhere else*. Anything sensitive asks you to confirm your password first, if you haven't
+  entered it in the last 15 minutes.
+- **Delete your account** (Settings > Account): enter your password and everything of yours is
+  removed: workspaces, jobs, documents and the uploaded files, chats, cover letters, keys and
+  sessions. Job postings and company research that everyone shares stay, because they hold nothing of
+  yours. It can't be undone, and it waits while one of your searches is running. An admin can't delete
+  their own account (for now: the last admin would leave nobody to run JobHuntPA, and changing an
+  admin's account needs the admin panel's key change); another admin makes them a regular user first.
 - **What only the admin sees:** the AI provider, model, API key and reasoning levels, and the
   commute API keys, are set by the admin for everyone (Settings tab). Other accounts see whether AI
   scoring and commute times are available, and everything of their own: workspaces, search setup,
@@ -458,9 +479,11 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **The first-run page says the setup code isn't right:** close JobHuntPA and start it again; it
   prints a fresh link, and the code is in `data/first-run.txt`. The code only works until the first
   account exists; after that, sign in instead.
-- **Forgotten password:** keep your recovery codes: a coming version uses them to set a new password
-  and keep your data. Without your password or a recovery code, your encrypted data can't be read,
-  by you, the admin or anyone else.
+- **Forgotten password:** on the sign-in page choose *Trouble signing in?* and use a recovery code to set
+  a new password and keep your data. Without your password or a recovery code, your encrypted data
+  can't be read, by you, the admin or anyone else.
+- **Lost your authenticator app:** sign in with a recovery code instead of the app's code, then turn
+  two-step sign-in off and on again in Settings > Account.
 - **"JobHuntPA is waiting for its admin to sign in, to finish encrypting the data":** the one-time
   encryption after an update needs the first admin's password; it carries on when they sign in.
 - **"Encrypting your data stopped (...)":** JobHuntPA tries again a minute later and whenever the
@@ -544,8 +567,10 @@ environment (not `.env`) create the first admin at start-up, which is how CI sig
 database, `.env` and key file, with `JOBHUNT_TESTING=1` and the fast `JOBHUNT_KDF_PROFILE=test`
 (tests/__init__.py); `tests/helpers.py` gives signed-in clients (`with helpers.client() as c:`),
 other accounts (`helpers.make_user()`) and the admin's key scope (`helpers.as_admin()`). Code and the
-design notes: `backend/users.py` (accounts, first run), `backend/sessions.py` (sessions, CSRF, the
-checks on every request), `backend/auth.py` (the endpoints), `docs/design/accounts.md`.
+design notes: `backend/users.py` (accounts, first run, deleting an account), `backend/sessions.py`
+(sessions, CSRF, the checks on every request), `backend/auth.py` (signing in, the two-step code, resetting
+with a recovery code), `backend/security.py` (password, two-step setup, recovery codes, other sessions),
+`backend/totp.py` (authenticator codes), `docs/design/accounts.md`.
 
 **Encrypted columns** (`backend/crypto.py`, `docs/design/accounts.md` §2): personal columns use the
 `Sealed*` types, which encrypt under the key of the request's account (or the background run's). The

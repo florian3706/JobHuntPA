@@ -54,6 +54,29 @@
         </div>
         <button id="login-submit" class="btn btn-primary auth-submit" type="submit">Sign in</button>
       </form>
+
+      <form id="mfa-form" class="auth-form" novalidate hidden>
+        <p id="mfa-intro">Your account uses two-step sign-in.</p>
+        <input class="visually-hidden" id="mfa-username" type="text" name="username" autocomplete="username" tabindex="-1"
+               readonly aria-hidden="true" aria-label="Email address" />
+        <div id="code-field" class="auth-field">
+          <label for="code">Code from your authenticator app</label>
+          <p id="code-hint" class="hint">6 digits. Spaces and hyphens are fine, and pasting works.</p>
+          <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none"
+                 spellcheck="false" aria-describedby="code-hint" required />
+        </div>
+        <div id="recovery-field" class="auth-field" hidden>
+          <label for="recovery-code">Recovery code</label>
+          <p id="recovery-hint" class="hint">One of the codes you saved when you made your account. Capitals, spaces and hyphens don't matter. Each code works once.</p>
+          <input id="recovery-code" name="recovery-code" type="text" autocomplete="off" autocapitalize="none"
+                 spellcheck="false" aria-describedby="recovery-hint" required />
+        </div>
+        <button id="mfa-submit" class="btn btn-primary auth-submit" type="submit">Sign in</button>
+        <div class="auth-links">
+          <button id="mfa-switch" class="btn-link" type="button">Use a recovery code instead</button>
+          <button id="mfa-restart" class="btn-link" type="button">Start again with your password</button>
+        </div>
+      </form>
     </section>
 
     <section class="auth-help" aria-labelledby="help-title">
@@ -62,7 +85,7 @@
         <li>Use the email address your account was made with. Capitals and spaces around it don't matter; in the password they do.</li>
         <li>Your password manager can fill in both fields, and pasting works too.</li>
         <li>After 5 wrong passwords in a row, JobHuntPA asks you to wait a little before the next try.</li>
-        <li>Forgotten your password? Ask the person who runs this JobHuntPA. Keep your recovery codes: they are what lets you set a new password and keep your data.</li>
+        <li>Forgotten your password? <a href="recover.html">I have a recovery code</a>: it lets you set a new password and keep your data. Without one, ask the person who runs this JobHuntPA.</li>
       </ul>
     </section>
   </main>

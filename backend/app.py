@@ -25,6 +25,7 @@ from backend.app_settings import router as app_settings_router
 from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
 from backend.auth import router as auth_router
+from backend.security import router as security_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
@@ -115,6 +116,7 @@ app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=5)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(NoStoreApi)
 app.include_router(auth_router)
+app.include_router(security_router)
 app.include_router(account_router)
 app.include_router(geo_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}

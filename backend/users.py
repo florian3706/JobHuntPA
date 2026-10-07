@@ -33,25 +33,45 @@ import secrets
 import threading
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import text, update
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.orm import Session
 
-from backend import config, crypto, keys
+from backend import config, crypto, keys, ratelimit, totp
 from backend.db import (
     DB_PATH,
+    UPLOAD_DIR,
+    AdminAudit,
     AdminKeyGrant,
     AppSetting,
     AuthSession,
+    AuthToken,
+    ChatMessage,
+    ChatThread,
+    CommuteCache,
+    CompanySource,
+    CoverLetter,
+    DealbreakerSet,
+    Document,
     EmailPrefs,
+    FitResult,
+    Job,
+    JobDuplicate,
+    LlmUsage,
     Membership,
+    MembershipGrant,
+    Pin,
     RecoveryCode,
+    SearchProfile,
+    SearchRun,
+    SearchSchedule,
     SessionLocal,
     User,
     UserKeys,
+    UserProfile,
     Workspace,
     utcnow,
 )
@@ -511,3 +531,292 @@ def is_locked(user: User, now: Optional[datetime] = None) -> float:
     """Seconds until this account may try a password again (0 when it may now)."""
     now = now or utcnow()
     return max(0.0, (user.locked_until - now).total_seconds()) if user.locked_until else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Checking a signed-in user's password (Phase E): the same failure counts and waits as signing in
+# ---------------------------------------------------------------------------
+
+class AccountLocked(Exception):
+    """Too many wrong passwords or codes in a row: ``wait`` seconds until the next try."""
+
+    def __init__(self, wait: float):
+        super().__init__("locked")
+        self.wait = wait
+
+
+class WrongPassword(Exception):
+    """The password given isn't the account's."""
+
+
+def record_failed_attempt(db: Session, user: User) -> None:
+    """One more wrong password or code in a row; after 5, the next try must wait (backend.ratelimit.lockout_seconds).
+    Committed at once, so a failed request can't undo it."""
+    db.execute(update(User).where(User.id == user.id).values(failed_logins=User.failed_logins + 1))
+    db.refresh(user)
+    seconds = ratelimit.lockout_seconds(user.failed_logins)
+    if seconds:
+        user.locked_until = utcnow() + timedelta(seconds=seconds)
+    db.commit()
+
+
+def check_signed_in_password(db: Session, user: User, password: Any, *, reset: bool = True) -> bytes:
+    """The user's DEK if ``password`` is theirs. For sensitive actions by someone who is signed in (confirming the
+    password, changing it, turning two-step off, deleting the account): a wrong one counts like a wrong password at
+    sign-in (AccountLocked after 5 in a row, WrongPassword before), so a stolen session can't be used to guess it.
+    A right one clears the count, unless ``reset`` is False: a caller that checks a code as well keeps the count while
+    the code is guessed, and clears it itself once the code is right (``clear_failed_attempts``)."""
+    wait = is_locked(user)
+    if wait:
+        raise AccountLocked(wait)
+    dek = unlock_with_password(db, user, password)
+    if dek is None:
+        record_failed_attempt(db, user)
+        log.info("Password check failed for user %s (%d in a row)", user.id, user.failed_logins)
+        raise WrongPassword()
+    if reset:
+        clear_failed_attempts(db, user)
+    return dek
+
+
+def clear_failed_attempts(db: Session, user: User) -> None:
+    """Back to no wrong tries in a row (committed, when there was anything to clear)."""
+    if user.failed_logins or user.locked_until:
+        user.failed_logins, user.locked_until = 0, None
+        db.commit()
+
+
+@dataclass(frozen=True, repr=False)
+class NewPassword:
+    """A new password's salt, settings and keys (derived once: it costs about a second on a Raspberry Pi)."""
+    salt: bytes
+    params: crypto.KdfParams
+    derived: crypto.PasswordKeys
+
+    def __repr__(self) -> str:  # never the keys
+        return "<users.NewPassword>"
+
+
+def new_password_keys(password: str) -> NewPassword:
+    salt, params = crypto.new_salt(), crypto.kdf_profile()
+    return NewPassword(salt, params, crypto.derive_password(password, salt, params))
+
+
+def apply_new_password(db: Session, user: User, dek: bytes, new: NewPassword) -> None:
+    """The DEK under the new password, in ``db``'s transaction (the caller commits). Nothing is re-encrypted: the
+    data is under the DEK, which doesn't change."""
+    row = db.get(UserKeys, user.id)
+    if not hmac.compare_digest(crypto.key_id(dek), bytes(row.dek_kid)):
+        raise crypto.KeyMismatch("That isn't this account's data key")
+    user.kdf_salt, user.kdf_params, user.pw_verifier = new.salt, new.params.to_json(), new.derived.auth
+    row.pw_wrapped_dek = crypto.wrap(new.derived.kek, dek, f"pw|{user.id}")
+    user.failed_logins, user.locked_until = 0, None
+
+
+# ---------------------------------------------------------------------------
+# Recovery codes in use (Phase E)
+# ---------------------------------------------------------------------------
+
+def recovery_codes_left(db: Session, user_id: int) -> int:
+    return db.query(RecoveryCode).filter(RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None),
+                                         RecoveryCode.wrapped_dek.isnot(None)).count()
+
+
+def open_recovery_code(db: Session, user_id: int, typed: Any, *, not_id: Optional[int] = None
+                       ) -> Optional[tuple[int, bytes]]:
+    """``(code id, DEK)`` if ``typed`` is one of this user's unused recovery codes (the code's own wrap opens it, so
+    nothing else is compared), else None. Nothing is used up yet: ``spend_recovery_code`` does that. ``not_id`` skips
+    one code (the first of two typed)."""
+    code = normalise_recovery_code(typed)
+    row = db.get(UserKeys, user_id)
+    if code is None or row is None:
+        return None
+    kek = crypto.recovery_kek(code, row.recovery_salt)
+    for rc in db.query(RecoveryCode).filter(RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None),
+                                            RecoveryCode.wrapped_dek.isnot(None)).order_by(RecoveryCode.id):
+        if rc.id == not_id:
+            continue
+        try:
+            return rc.id, crypto.unwrap(kek, rc.wrapped_dek, f"rc|{user_id}|{rc.id}")
+        except crypto.CryptoError:
+            continue
+    return None
+
+
+def spend_recovery_code(db: Session, code_id: int) -> bool:
+    """Uses a code up (and drops its wrap of the DEK), in ``db``'s transaction. False if someone else just used it
+    (two requests with the same code: only one gets it)."""
+    return db.execute(update(RecoveryCode).where(RecoveryCode.id == code_id, RecoveryCode.used_at.is_(None))
+                      .values(used_at=utcnow(), wrapped_dek=None)).rowcount == 1
+
+
+def replace_recovery_codes(db: Session, user_id: int, dek: bytes) -> list[str]:
+    """Eight new codes in place of all the old ones (used or not), with a new salt, kept sealed in
+    ``pending_codes_enc`` until the person confirms saving them. In ``db``'s transaction; the caller commits."""
+    row = db.get(UserKeys, user_id)
+    salt = crypto.new_salt()
+    codes = [new_recovery_code() for _ in range(RECOVERY_CODES)]
+    db.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
+    for code in codes:
+        rc = RecoveryCode(user_id=user_id)
+        db.add(rc)
+        db.flush()
+        rc.wrapped_dek = crypto.wrap(crypto.recovery_kek(normalise_recovery_code(code), salt), dek,
+                                     f"rc|{user_id}|{rc.id}")
+    row.recovery_salt = salt
+    with crypto.as_user(user_id, dek):
+        row.pending_codes_enc = crypto.seal(json.dumps(codes).encode("ascii"), _codes_label(user_id))
+    return codes
+
+
+# ---------------------------------------------------------------------------
+# Authenticator-app codes (Phase E). The secret is wrapped with the server KEK, labelled ``totp|{uid}|{kek_id}``
+# (design §3 item 6 and §15): not with the DEK, so a password reset by email can still ask for a code.
+# ---------------------------------------------------------------------------
+
+def seal_totp(user_id: int, secret: str) -> bytes:
+    return server_keys().kek_wrap(secret.encode("ascii"), f"totp|{user_id}")[1]
+
+
+def open_totp(user_id: int, blob: Optional[bytes]) -> Optional[str]:
+    """The base32 secret in ``blob``, or None (nothing stored, or it doesn't open with the key file: fail closed)."""
+    if not blob:
+        return None
+    try:
+        return server_keys().kek_unwrap(bytes(blob), f"totp|{user_id}").decode("ascii")
+    except (crypto.CryptoError, UnicodeError):
+        log.warning("user %s: the two-step secret doesn't open with the key file", user_id)
+        return None
+
+
+def start_totp_enrolment(db: Session, user: User) -> str:
+    """A new pending secret (replacing any earlier one). Returns it for the QR code and the written key."""
+    secret = totp.new_secret()
+    user.totp_pending_enc = seal_totp(user.id, secret)
+    db.commit()
+    return secret
+
+
+def verify_totp(db: Session, user: User, code: Any) -> bool:
+    """Whether ``code`` is a current code for this user's secret: within a step of now, and not for a step already
+    used (``totp_last_step``, updated atomically, so one code can't be used twice, not even by two requests at the
+    same moment). Committed at once."""
+    secret = open_totp(user.id, user.totp_secret_enc)
+    if secret is None:
+        return False
+    step = totp.match_step(secret, code)
+    if step is None:
+        return False
+    claimed = db.execute(update(User).where(User.id == user.id, or_(User.totp_last_step.is_(None),
+                                                                   User.totp_last_step < step))
+                         .values(totp_last_step=step)).rowcount
+    db.commit()
+    db.expire(user, ["totp_last_step"])
+    return claimed == 1
+
+
+def enable_totp(db: Session, user: User, code: Any) -> Optional[bool]:
+    """Finishes enrolment: ``code`` must fit the pending secret, which then becomes the account's. None if no
+    enrolment was started, False for a wrong code."""
+    secret = open_totp(user.id, user.totp_pending_enc)
+    if secret is None:
+        return None
+    step = totp.match_step(secret, code)
+    if step is None:
+        return False
+    user.totp_secret_enc, user.totp_pending_enc = seal_totp(user.id, secret), None
+    user.totp_last_step, user.mfa_enabled = step, True  # the code that finished enrolment can't be used again
+    db.commit()
+    return True
+
+
+def disable_totp(db: Session, user: User) -> None:
+    user.mfa_enabled, user.totp_secret_enc, user.totp_pending_enc, user.totp_last_step = False, None, None, None
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Deleting an account (Phase E; the admin panel calls it for other people's accounts too)
+# ---------------------------------------------------------------------------
+
+class AccountBusy(Exception):
+    """One of the account's runs is still queued or running."""
+
+
+class AccountProtected(Exception):
+    """An admin's account isn't deleted while they are an admin: making them a regular user first (which changes the
+    admin details key, Phase F) is how the last-admin rule is kept."""
+
+
+def delete_account(db: Session, user_id: int) -> dict:
+    """Removes an account and everything of theirs, in one transaction (their sealed upload files after it):
+    workspaces with every row in them (jobs, scores, cover letters, documents, chats, profile, dealbreakers, pins,
+    sources, schedules, runs, merge decisions), sessions, recovery codes, tokens, keys, membership and grants, email
+    preferences and the admin grant. Shared postings, company profiles and the geocode cache stay; so do usage
+    counts (``llm_usage``, no longer tied to anyone) and the audit log (its user ids become NULL).
+
+    Needs no key: it never opens a sealed value. Refuses (AccountBusy) while one of the account's runs is active and
+    (AccountProtected) for an admin. Cancelling a Stripe subscription is the caller's job (Phase I), before this.
+    Explicit deletes, not cascades: a database from before accounts has workspace tables without foreign keys."""
+    from backend import migrate_encryption, sessions, tasks
+
+    user = db.get(User, user_id)
+    if user is None:
+        raise LookupError("No such account")
+    if user.role == "admin":
+        raise AccountProtected("Make this person a regular user first")
+    ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
+    jobs = select(Job.id).where(Job.workspace_id.in_(ws_ids))
+    threads = select(ChatThread.id).where(ChatThread.workspace_id.in_(ws_ids))
+    with tasks.start_lock():  # no run can be queued for these workspaces while their rows are removed
+        if db.query(SearchRun.id).filter(SearchRun.workspace_id.in_(ws_ids),
+                                         SearchRun.state.in_(["queued", "running"])).first():
+            raise AccountBusy("A search is still running")
+        try:
+            db.execute(delete(ChatMessage).where(ChatMessage.thread_id.in_(threads)))
+            # After the first write: it takes SQLite's write lock, which is kept until the commit, so an upload from
+            # another tab either committed before this list is read or waits until the account is gone.
+            files = [name for (name,) in db.query(Document.stored_name).filter(Document.workspace_id.in_(ws_ids))
+                     if name]
+            db.execute(delete(ChatThread).where(ChatThread.workspace_id.in_(ws_ids)))
+            db.execute(delete(CoverLetter).where(CoverLetter.job_id.in_(jobs)))
+            db.execute(delete(FitResult).where(FitResult.job_id.in_(jobs)))
+            db.execute(delete(JobDuplicate).where(JobDuplicate.workspace_id.in_(ws_ids)))
+            db.execute(delete(Job).where(Job.workspace_id.in_(ws_ids)))
+            for model in (Document, Pin, CompanySource, SearchRun):
+                db.execute(delete(model).where(model.workspace_id.in_(ws_ids)))
+            for model in (SearchSchedule, UserProfile, DealbreakerSet):  # one row per workspace, id = workspace id
+                db.execute(delete(model).where(model.id.in_(ws_ids)))
+            db.execute(update(LlmUsage).where(LlmUsage.workspace_id.in_(ws_ids)).values(workspace_id=None))
+            if hasattr(LlmUsage, "user_id"):  # added with the admin panel's usage statistics (Phase F)
+                db.execute(update(LlmUsage).where(LlmUsage.user_id == user_id).values(user_id=None))
+            db.execute(delete(Workspace).where(Workspace.owner_id == user_id))
+            db.execute(delete(CommuteCache).where(CommuteCache.owner_id == user_id))
+            if migrate_encryption.owner_of(migrate_encryption.state()) == user_id:
+                db.execute(delete(SearchProfile))  # the legacy single row, sealed under this account's key
+            db.execute(update(AdminAudit).where(AdminAudit.admin_id == user_id).values(admin_id=None))
+            db.execute(update(AdminAudit).where(AdminAudit.target_user_id == user_id).values(target_user_id=None))
+            db.execute(update(AdminKeyGrant).where(AdminKeyGrant.granted_by == user_id).values(granted_by=None))
+            db.execute(update(MembershipGrant).where(MembershipGrant.created_by == user_id).values(created_by=None))
+            db.execute(update(AuthToken).where(AuthToken.created_by == user_id).values(created_by=None))
+            for model in (AuthSession, RecoveryCode, AuthToken, AdminKeyGrant, MembershipGrant):
+                db.execute(delete(model).where(model.user_id == user_id))
+            for model in (Membership, EmailPrefs, UserKeys):
+                db.execute(delete(model).where(model.user_id == user_id))
+            db.execute(delete(User).where(User.id == user_id))
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+    removed = 0
+    for name in files:  # after the commit: a failed delete leaves an unreadable file, never a half-deleted account
+        if not name or Path(name).name != name:
+            continue
+        try:
+            (UPLOAD_DIR / name).unlink(missing_ok=True)
+            removed += 1
+        except OSError as exc:
+            log.warning("Could not delete an upload of deleted user %s: %s", user_id, exc.__class__.__name__)
+    sessions._active_on.pop(user_id, None)  # SQLite may give this id to the next account
+    log.info("Account deleted: user %s (%d workspace(s), %d file(s))", user_id, len(ws_ids), removed)
+    return {"workspaces": len(ws_ids), "files": removed}

@@ -858,6 +858,7 @@ class AuthSession(Base):
     idle_expires_at = Column(DateTime, nullable=False)
     absolute_expires_at = Column(DateTime, nullable=False)
     reauth_at = Column(DateTime, nullable=True)     # the password was last entered (sensitive actions need 15 min)
+    mfa_failures = Column(Integer, nullable=False, default=0, server_default="0")  # wrong codes while pending_mfa (Phase E)
 
 
 class AuthToken(Base):

@@ -2678,6 +2678,7 @@ function applyAccount(me) {
   initAccountMenu(me);
   remindRecoveryCodes(me);
   remindLeftovers(me);
+  showSignInNotice();
 }
 
 function loadAll() {

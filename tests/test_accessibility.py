@@ -10,7 +10,10 @@ README's Accessibility section says how it was run.
 """
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 import sys
 import unittest
 from html.parser import HTMLParser
@@ -21,8 +24,8 @@ FRONTEND = ROOT / "frontend"
 sys.path.insert(0, str(ROOT / "tools"))
 import theme_contrast  # noqa: E402
 
-PAGES = ("index.html", "job.html", "login.html", "first-run.html", "welcome.html")
-AUTH_PAGES = ("login.html", "first-run.html")
+PAGES = ("index.html", "job.html", "login.html", "first-run.html", "recover.html", "welcome.html")
+AUTH_PAGES = ("login.html", "first-run.html", "recover.html")
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 FOCUSABLE = {"a", "button", "input", "select", "textarea", "summary"}
 
@@ -226,7 +229,7 @@ class GeneratedMarkupTest(unittest.TestCase):
 
     def test_templates_label_their_controls(self):
         problems = []
-        for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js"):
+        for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js", "account.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
 
@@ -243,6 +246,8 @@ class AuthPagesTest(unittest.TestCase):
             "login.html": {"email": ("email", "username"), "password": ("password", "current-password")},
             "first-run.html": {"email": ("email", "username"), "password": ("password", "new-password"),
                                "name": ("text", "name")},
+            "recover.html": {"email": ("email", "username"), "password": ("password", "new-password"),
+                             "code": ("text", "one-time-code")},
         }
         for name, fields in expected.items():
             inputs = self.inputs(parse(name))
@@ -254,7 +259,7 @@ class AuthPagesTest(unittest.TestCase):
             self.assertEqual(len(passwords), 1, f"{name}: one password field, no 'confirm password' (3.3.7)")
 
     def test_paste_and_password_managers_are_never_blocked(self):
-        for name in AUTH_PAGES + ("auth.js", "common.js"):
+        for name in AUTH_PAGES + ("auth.js", "common.js", "account.js"):
             src = (FRONTEND / name).read_text(encoding="utf-8")
             with self.subTest(file=name):
                 self.assertNotRegex(src, r"on(paste|copy|cut|drop)\s*=", "no handlers that block pasting")
@@ -304,6 +309,294 @@ class AuthPagesTest(unittest.TestCase):
                 self.assertEqual(btn["attrs"].get("aria-expanded"), "false")
                 self.assertEqual(btn["attrs"].get("aria-controls"), "account-panel")
                 self.assertTrue(any(n["attrs"].get("id") == "account-signout" for n in page.nodes))
+
+
+class CodeStepAndRecoveryTest(unittest.TestCase):
+    """Two-step sign-in on login.html, the recovery-code path (recover.html) and "Trouble signing in?"."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.login = parse("login.html")
+        cls.recover = parse("recover.html")
+        cls.js = (FRONTEND / "auth.js").read_text(encoding="utf-8")
+
+    def by_id(self, page, ident):
+        return next(n for n in page.nodes if n["attrs"].get("id") == ident)
+
+    def test_the_code_field_is_a_one_time_code(self):
+        code = self.by_id(self.login, "code")["attrs"]
+        self.assertEqual(code.get("autocomplete"), "one-time-code")
+        self.assertEqual(code.get("inputmode"), "numeric")
+        self.assertEqual(code.get("type"), "text", "type=number would drop spaces and hyphens")
+        self.assertNotIn("maxlength", code, "spaces and hyphens are allowed (3.3.8)")
+        self.assertIn("code-hint", code.get("aria-describedby", ""))
+
+    def test_the_code_step_keeps_password_managers_working(self):
+        user = self.by_id(self.login, "mfa-username")["attrs"]
+        self.assertEqual(user.get("autocomplete"), "username")
+        self.assertEqual(user.get("aria-hidden"), "true")
+        self.assertTrue(user.get("aria-label"))
+        form = self.by_id(self.login, "mfa-form")
+        self.assertIn("hidden", form["attrs"], "the code step shows only after the password")
+        self.assertIn("novalidate", form["attrs"])
+
+    def test_a_recovery_code_can_be_used_instead(self):
+        switch = self.by_id(self.login, "mfa-switch")
+        self.assertEqual((switch["tag"], switch["attrs"].get("type")), ("button", "button"))
+        self.assertIn("Use a recovery code instead", switch["text"])
+        self.assertIn("hidden", self.by_id(self.login, "recovery-field")["attrs"])
+        self.assertIn("Start again", self.by_id(self.login, "mfa-restart")["text"], "a way back to the password step")
+        self.assertIn("state.data.mfa_pending", self.js, "a reload shows the code step, not the password")
+        self.assertIn("mfa_expired", self.js, "an expired half-open sign-in goes back to the password")
+
+    def test_the_code_step_moves_focus_and_says_where_you_are(self):
+        self.assertIn("document.title = 'Enter your code", self.js)
+        self.assertIn(".focus()", self.js.split("function setCodeMode")[1].split("async function initLogin")[0])
+        self.assertIn("showErrors([{ field, message", self.js, "an empty code is an error in the summary")
+
+    def test_trouble_signing_in_links_to_the_recovery_page_everywhere(self):
+        for name in AUTH_PAGES:
+            page = parse(name)
+            links = [n["attrs"].get("href") for n in page.nodes if n["tag"] == "a"]
+            with self.subTest(page=name):
+                if name != "recover.html":
+                    self.assertIn("recover.html", links)
+                help_ = next(n for n in page.nodes if n["attrs"].get("id") == "help-title")
+                self.assertEqual(help_["tag"], "h2")
+
+    def test_the_recovery_form(self):
+        form = self.by_id(self.recover, "recover-form")
+        self.assertIn("novalidate", form["attrs"])
+        second = self.by_id(self.recover, "code-field")
+        self.assertIn("hidden", second["attrs"], "asked for only when the server says the account needs it")
+        self.assertIn("Code from your authenticator app, or a second recovery code", self.by_id(self.recover, "code-field")["text"])
+        self.assertEqual(self.by_id(self.recover, "recovery-code")["attrs"].get("autocomplete"), "off")
+        self.assertIn("second_factor_required", self.js)
+        self.assertIn("showRecovered", self.js)
+        done = self.by_id(self.recover, "recover-done")
+        self.assertIn("hidden", done["attrs"])
+
+    def test_buttons_that_look_like_links_are_big_enough(self):
+        css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("min-height: 44px", re.search(r"\.btn-link \{([^}]*)\}", css).group(1))
+
+
+class ConfirmPasswordDialogTest(unittest.TestCase):
+    """The "Confirm your password" dialog in common.js (WCAG 2.4.3 focus order, 3.3.1 errors, 3.3.7, 3.3.8)."""
+
+    @classmethod
+    def setUpClass(cls):
+        src = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        cls.src = src
+        cls.body = src[src.index("async function openConfirmDialog"):src.index("/* A notice at the top of the page")]
+
+    def test_it_is_a_labelled_native_dialog(self):
+        self.assertIn("createElement('dialog')", self.body)
+        self.assertIn("aria-labelledby', 'confirm-title'", self.body)
+        self.assertIn("aria-describedby', 'confirm-intro'", self.body)
+        self.assertIn('<h2 id="confirm-title">Confirm your password</h2>', self.body)
+        self.assertIn("showModal()", self.body)
+
+    def test_focus_goes_in_and_comes_back_and_escape_cancels(self):
+        self.assertIn("const opener = document.activeElement", self.body)
+        self.assertIn("opener.focus()", self.body)
+        self.assertIn("input.focus()", self.body)
+        self.assertIn("resolve(confirmed)", self.body)
+        self.assertNotIn("preventDefault()", self.body.split("addEventListener('close'")[1][:200])
+        self.assertNotRegex(self.body, r"addEventListener\('cancel'.*preventDefault", "Escape must not be swallowed")
+
+    def test_fields_for_password_managers_and_the_show_button(self):
+        self.assertIn('autocomplete="current-password"', self.body)
+        self.assertRegex(self.body, r'name="username" autocomplete="username"')
+        self.assertIn("aria-hidden=\"true\" aria-label=\"Email address\" value=\"${esc(email)}\"", self.body)
+        self.assertIn('class="btn pw-toggle" type="button" aria-controls="confirm-password" aria-pressed="false">Show password', self.body)
+        self.assertNotRegex(self.body, r"addEventListener\(\s*['\"](paste|copy|cut|drop)['\"]")
+
+    def test_errors_are_inline_and_announced_and_it_posts_to_reauth(self):
+        self.assertIn("'/api/auth/reauth'", self.body)
+        self.assertIn('class="field-error"', self.body.replace("note.className = 'field-error'", 'class="field-error"'))
+        self.assertIn("aria-invalid", self.body)
+        # The page's live regions are inert while the modal is open: the error is read as an alert inside the dialog
+        # (and from the focused field), and "Checking…" goes to a status region inside it.
+        self.assertIn("note.setAttribute('role', 'alert')", self.body)
+        self.assertIn('<div id="confirm-status" class="visually-hidden" role="status"></div>', self.body)
+        self.assertIn("setText(status, 'Checking your password…')", self.body)
+        self.assertNotIn("announce(", self.body)
+        self.assertIn("Cancel", self.body)
+
+    def test_two_requests_share_one_dialog(self):
+        self.assertIn("if (!confirmDialogOpen)", self.src)
+
+    def test_the_dialog_is_big_enough_on_a_phone(self):
+        css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"dialog\.confirm-dialog \{[^}]*width: min\(28rem, calc\(100% - 32px\)\)")
+        self.assertIn("min-height: 44px", re.search(r"\.confirm-actions \.btn \{([^}]*)\}", css).group(1))
+        self.assertIn("font-size: 16px", re.search(r"\.confirm-box input\[type=\"password\"\][^{]*\{([^}]*)\}", css).group(1))
+
+    def test_every_page_that_asks_loads_common_js(self):
+        for name in ("index.html", "job.html", "welcome.html"):
+            self.assertIn('src="./common.js"', (FRONTEND / name).read_text(encoding="utf-8"), name)
+
+
+class AccountCardsTest(unittest.TestCase):
+    """The Settings account cards (account.js): the slots they fill, and what their templates promise."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.index = parse("index.html")
+        cls.src = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        cls.js = (FRONTEND / "account.js").read_text(encoding="utf-8")
+
+    def test_loaded_after_the_dashboard_and_fills_only_its_slots(self):
+        self.assertLess(self.src.index("common.js"), self.src.index("account.js"))
+        ids = {n["attrs"].get("id") for n in self.index.nodes}
+        self.assertIn("account-security-slot", ids)
+        self.assertIn("account-delete-slot", ids)
+        for slot in ("account-background-slot", "account-email-slot", "account-export-slot"):
+            self.assertNotIn(slot, self.js, "those slots belong to other phases")
+
+    def test_each_card_is_a_headed_section_with_a_status_region(self):
+        self.assertIn('<h3 id="${id}-heading" tabindex="-1">', self.js)
+        self.assertIn('role="status"', self.js)
+        for title in ("Password", "Two-step sign-in", "Recovery codes", "Signed-in devices", "Delete account"):
+            self.assertIn(title, self.js)
+
+    def test_password_fields_say_what_they_are_for(self):
+        self.assertIn("pwField('acct-pw-current', 'Current password', 'current-password')", self.js)
+        self.assertIn("pwField('acct-pw-new', 'New password', 'new-password'", self.js)
+        self.assertIn("pwField('acct-del-password', 'Your password', 'current-password')", self.js)
+        self.assertIn("pwField('acct-mfa-off-password', 'Your password', 'current-password')", self.js)
+        self.assertIn('autocomplete="username"', self.js, "a hidden username field for password managers")
+        self.assertIn('autocomplete="one-time-code"', self.js)
+        self.assertIn('inputmode="numeric"', self.js)
+        self.assertIn('class="btn pw-toggle" type="button" aria-controls="${id}" aria-pressed="false">Show password', self.js)
+
+    def test_sign_out_others_is_ticked_by_default(self):
+        self.assertRegex(self.js, r'<input id="acct-pw-others" type="checkbox" checked />\s*Sign out other devices')
+
+    def test_everything_sensitive_goes_through_with_recent_auth(self):
+        for path in ("/api/auth/mfa/setup", "/api/auth/mfa/enable", "/api/auth/mfa/disable", "/api/auth/recovery-codes",
+                     "/api/auth/password", "/api/auth/sessions/end-others"):
+            line = next(l for l in self.js.splitlines() if path in l and "post(" in l)
+            self.assertTrue("withRecentAuth" in line or "recentWith" in line, f"{path} must go through withRecentAuth")
+        self.assertIn("withRecentAuth(fn)", self.js)
+        delete = next(l for l in self.js.splitlines() if "/api/account/delete" in l)
+        self.assertIn("recentWith", delete)
+
+    def test_two_step_setup_offers_every_way_to_enrol(self):
+        self.assertIn("setup.qr_svg", self.js)
+        self.assertIn("setup.secret_groups", self.js)
+        self.assertIn("setup.otpauth_uri", self.js)
+        self.assertIn("Copy key", self.js)
+        self.assertIn("Can't scan?", self.js, "the key as text, for people who can't scan")
+        self.assertIn("recovery code works instead of the app", self.js)
+
+    def test_new_recovery_codes_reuse_the_first_run_step(self):
+        self.assertIn("location.assign('first-run.html')", self.js)
+        self.assertNotIn("codes-download", self.js, "the Copy / Download / Print step lives in first-run.html")
+
+    def test_delete_says_what_goes_and_shows_the_servers_refusal(self):
+        self.assertIn("can't be undone", self.js)
+        for what in ("workspaces", "documents", "uploaded", "keys"):
+            self.assertIn(what, self.js)
+        self.assertIn("showError(form.querySelector('.acct-error')", self.js, "an admin's refusal is shown as the server wrote it")
+        self.assertIn("e.message", self.js)
+
+    def test_controls_are_big_enough_and_use_16px_text(self):
+        css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        field = re.search(r"\.account-card input\[type=\"password\"\][^{]*\{([^}]*)\}", css).group(1)
+        self.assertIn("font-size: 16px", field)
+        self.assertIn("min-height: 44px", field)
+        self.assertIn("min-height: 44px", re.search(r"\.account-card \.btn:not\(\.btn-sm\)[^{]*\{([^}]*)\}", css).group(1))
+        self.assertRegex(css, r"\.qr-box svg \{[^}]*width: 100%")
+
+
+class SignInPagesBehaviourTest(unittest.TestCase):
+    """Fixes from review: where sign-in goes next, the leftovers button, and the account cards' announcements."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.auth = (FRONTEND / "auth.js").read_text(encoding="utf-8")
+        cls.common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        cls.account = (FRONTEND / "account.js").read_text(encoding="utf-8")
+        cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed to run nextPage()")
+    def test_next_stays_on_this_site_whatever_the_url_parser_does_with_it(self):
+        fn = re.search(r"function nextPage\(\) \{.*?\n\}\n", self.auth, re.S).group(0)
+        script = ("global.location = { origin: 'http://127.0.0.1:8000', search: '' };\n"
+                  f"{fn}\nconst out = {{}};\n"
+                  "for (const next of JSON.parse(process.argv[1])) { location.search = '?next=' + encodeURIComponent(next);"
+                  " out[next] = nextPage(); }\nconsole.log(JSON.stringify(out));")
+        cases = ["/\t/evil.example/x", "/\n/evil.example", "//evil.example", "/\\evil.example",
+                 "https://evil.example", "javascript:alert(1)", "/login.html", "/recover.html?x=1", "/first-run.html",
+                 "/job.html?id=3#notes", "/", ""]
+        done = subprocess.run(["node", "-e", script, json.dumps(cases)], capture_output=True, text=True, check=True)
+        out = json.loads(done.stdout)
+        for bad in cases[:8] + [""]:
+            self.assertEqual(out[bad], "./", repr(bad))
+        self.assertEqual(out["/job.html?id=3#notes"], "/job.html?id=3#notes")
+        self.assertEqual(out["/"], "/")
+
+    def test_the_leftovers_button_asks_for_the_password_when_it_is_needed(self):
+        line = next(l for l in self.common.splitlines() if "/api/encryption/leftovers/delete" in l)
+        self.assertIn("withRecentAuth(", line)
+
+    def test_every_call_to_a_recent_sign_in_endpoint_goes_through_the_dialog(self):
+        """Any frontend call to an endpoint that answers reauth_required must be wrapped in withRecentAuth (or
+        recentWith, which wraps it) so a stale session meets the dialog, not a dead-end message."""
+        guarded: set[str] = set()
+        for path in (ROOT / "backend").glob("*.py"):
+            src = path.read_text(encoding="utf-8")
+            prefix = re.search(r'APIRouter\(prefix="([^"]*)"', src)
+            routes = list(re.finditer(r'@router\.(?:get|post|put|delete)\("([^"]+)"', src))
+            for here, nxt in zip(routes, routes[1:] + [None]):
+                if "require_recent_auth(" in src[here.end():nxt.start() if nxt else len(src)]:
+                    guarded.add((prefix.group(1) if prefix else "") + here.group(1))
+        self.assertIn("/api/encryption/leftovers/delete", guarded)
+        self.assertIn("/api/auth/mfa/setup", guarded)
+        for name in ("app.js", "job.js", "welcome.js", "account.js", "common.js"):
+            for number, line in enumerate((FRONTEND / name).read_text(encoding="utf-8").splitlines(), 1):
+                for path in guarded:
+                    if f"'{path}'" in line and "api(" in line or f"'{path}'" in line and "post(" in line:
+                        self.assertTrue("withRecentAuth" in line or "recentWith" in line,
+                                        f"{name}:{number} calls {path} without withRecentAuth")
+
+    def test_the_recovery_codes_page_asks_for_the_password_when_it_is_needed(self):
+        shown = self.auth[self.auth.index("async function initFirstRun"):self.auth.index("async function submitSetup")]
+        self.assertIn("reauth_required", shown)
+        self.assertIn("confirmPassword()", shown)
+
+    def test_a_recovery_code_sign_in_says_how_many_are_left(self):
+        start = self.auth.index("$('#mfa-form').addEventListener('submit'")
+        step = self.auth[start:self.auth.index("$('#mfa-switch').addEventListener", start)]
+        self.assertIn("recovery_codes_left", step)
+        self.assertIn("SIGN_IN_NOTICE_KEY", step)
+        self.assertIn("showSignInNotice();", self.app[self.app.index("function applyAccount"):])
+        self.assertIn("sessionStorage.removeItem(SIGN_IN_NOTICE_KEY)", self.common)
+
+    def test_the_code_step_after_a_reload_still_names_the_account_for_password_managers(self):
+        self.assertIn("sessionStorage.setItem(EMAIL_KEY, email)", self.auth)
+        self.assertIn("loginEmail = sessionStorage.getItem(EMAIL_KEY)", self.auth)
+        self.assertIn("rememberEmail('')", self.auth, "forgotten once signed in")
+
+    def test_results_on_the_account_cards_are_announced_through_the_permanent_live_region(self):
+        say = next(l for l in self.account.splitlines() if l.startswith("  const say = "))
+        self.assertIn("announce(text)", say)
+
+    def test_focus_stays_in_the_password_card_after_a_change(self):
+        changed = self.account[self.account.index("async function changePassword"):self.account.index("/* ---------- two-step")]
+        self.assertRegex(changed, r"renderPassword\(\);\s*document\.getElementById\('acct-pw-heading'\)\?\.focus\(\)")
+
+    def test_the_setup_key_has_no_name_attribute_a_code_element_cannot_take(self):
+        self.assertRegex(self.account, r'<code class="mfa-secret">')
+        self.assertNotIn("aria-labelledby", re.search(r"<code class=\"mfa-secret\"[^>]*>", self.account).group(0))
+
+    def test_new_recovery_codes_ask_for_a_code_when_two_step_is_on(self):
+        card = self.account[self.account.index("function renderCodes"):self.account.index("/* ---------- sign out")]
+        self.assertIn('id="acct-rc-code"', card)
+        self.assertIn("codeBody(code.value.trim())", card)
+        self.assertIn("withRecentAuth(() => post('/api/auth/recovery-codes', body))", card)
 
 
 class WelcomePageTest(unittest.TestCase):

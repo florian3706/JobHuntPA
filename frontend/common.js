@@ -95,7 +95,7 @@ function setFieldError(input, msg, { focus = true } = {}) {
     el = document.createElement('p');
     el.id = id;
     el.className = 'field-error';
-    (input.closest('.key-row, .tag-input, .sched-add') || input).insertAdjacentElement('afterend', el);
+    (input.closest('.key-row, .tag-input, .sched-add, .pw-row') || input).insertAdjacentElement('afterend', el);
   }
   el.innerHTML = `<span aria-hidden="true">⚠ </span>${esc(msg)}`;
   input.setAttribute('aria-invalid', 'true');
@@ -285,9 +285,25 @@ async function apiResponse(url, opts = {}, retried = false) {
     const err = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
     err.status = res.status;
     err.code = code; // e.g. 'reauth_required' (withRecentAuth)
+    err.field = data && typeof data === 'object' ? data.field : undefined; // the form field a 422 is about
     throw err;
   }
   return { data, headers: res.headers };
+}
+
+/* A one-off message from a sign-in page (auth.js) for the page that opens next, such as how many recovery codes are
+   left after signing in with one. It is kept for this tab only and shown once. */
+const SIGN_IN_NOTICE_KEY = 'jobhunt.signin-notice';
+
+function recoveryLeftText(left) {
+  if (left <= 0) return 'You have no recovery codes left. Make new ones in Settings > Account.';
+  return `You have ${left} recovery code${left === 1 ? '' : 's'} left. Make new ones in Settings > Account.`;
+}
+
+function showSignInNotice() {
+  let msg = '';
+  try { msg = sessionStorage.getItem(SIGN_IN_NOTICE_KEY) || ''; sessionStorage.removeItem(SIGN_IN_NOTICE_KEY); } catch { /* private mode */ }
+  if (msg) toast(msg, '', 15000);
 }
 
 /* Sensitive actions (accounts design §3) answer 403 {code: 'reauth_required'} unless the password was entered in
@@ -302,11 +318,102 @@ async function withRecentAuth(fn) {
   }
 }
 
-/* Asks for the password again (POST /api/auth/reauth) and resolves true once it is confirmed, false if the person
-   cancels. Phase E replaces this placeholder with the "Confirm your password" dialog; until then the refusal's own
-   message is shown. */
-async function confirmPassword() {
-  return false;
+/* Asks for the password again (POST /api/auth/reauth) in a "Confirm your password" dialog and resolves true once it
+   is confirmed, false if the person cancels (Cancel or Escape). A native <dialog>: focus moves into it and goes back
+   to the control that opened it. A wrong password is said under the field and announced; the dialog stays open.
+   Two calls at once share one dialog. A hidden username field holds the account email, so password managers fill in
+   the right password. */
+let confirmDialogOpen = null;
+function confirmPassword() {
+  if (!confirmDialogOpen) confirmDialogOpen = openConfirmDialog().finally(() => { confirmDialogOpen = null; });
+  return confirmDialogOpen;
+}
+
+async function openConfirmDialog() {
+  const opener = document.activeElement;
+  const email = (SESSION.me || await loadSession())?.user?.email || '';
+  const dlg = document.createElement('dialog');
+  dlg.className = 'confirm-dialog';
+  dlg.setAttribute('aria-labelledby', 'confirm-title');
+  dlg.setAttribute('aria-describedby', 'confirm-intro');
+  dlg.innerHTML = `<form class="confirm-box" novalidate>
+    <h2 id="confirm-title">Confirm your password</h2>
+    <p id="confirm-intro">To keep your account safe, enter your password to go on. You won't be asked again for 15 minutes.</p>
+    <div id="confirm-status" class="visually-hidden" role="status"></div>
+    <input class="visually-hidden" type="text" name="username" autocomplete="username" tabindex="-1" readonly
+           aria-hidden="true" aria-label="Email address" value="${esc(email)}" />
+    <div class="auth-field">
+      <label for="confirm-password">Password</label>
+      <div class="pw-row">
+        <input id="confirm-password" name="password" type="password" autocomplete="current-password" spellcheck="false" required />
+        <button id="confirm-toggle" class="btn pw-toggle" type="button" aria-controls="confirm-password" aria-pressed="false">Show password</button>
+      </div>
+    </div>
+    <div class="confirm-actions">
+      <button id="confirm-cancel" class="btn" type="button">Cancel</button>
+      <button id="confirm-submit" class="btn btn-primary" type="submit">Confirm</button>
+    </div>
+  </form>`;
+  document.body.appendChild(dlg);
+  const form = dlg.querySelector('form');
+  const input = dlg.querySelector('#confirm-password');
+  const toggle = dlg.querySelector('#confirm-toggle');
+  const submit = dlg.querySelector('#confirm-submit');
+  const status = dlg.querySelector('#confirm-status');
+  let confirmed = false;
+  let busy = false;
+  const problem = (msg) => {
+    setFieldError(input, '');
+    if (!msg) return;
+    const note = document.createElement('p');
+    note.id = 'confirm-password-error';
+    note.className = 'field-error';
+    note.setAttribute('role', 'alert'); // read out inside the dialog, where the page's own live regions are inert
+    note.innerHTML = `<span class="visually-hidden">Error: </span>${esc(msg)}`;
+    input.closest('.pw-row').insertAdjacentElement('afterend', note);
+    input.setAttribute('aria-invalid', 'true');
+    input.setAttribute('aria-describedby', note.id);
+    input.addEventListener('input', () => problem(''), { once: true });
+    input.focus(); // the error is read from here (aria-describedby)
+  };
+  toggle.addEventListener('click', () => {
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    toggle.setAttribute('aria-pressed', String(show));
+  });
+  dlg.querySelector('#confirm-cancel').addEventListener('click', () => dlg.close());
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    const old = document.getElementById('confirm-password-error');
+    if (old) { old.remove(); input.removeAttribute('aria-invalid'); input.removeAttribute('aria-describedby'); }
+    if (!input.value) { problem('Enter your password.'); return; }
+    busy = true;
+    setBusy(submit, true);
+    setText(status, 'Checking your password…'); // inside the dialog: the rest of the page is inert while it is open
+    input.type = 'password';
+    toggle.setAttribute('aria-pressed', 'false');
+    try {
+      await api('/api/auth/reauth', { method: 'POST', body: JSON.stringify({ password: input.value }) });
+      confirmed = true;
+      dlg.close();
+    } catch (err) {
+      setText(status, '');
+      problem(err.message || "That didn't work. Try again.");
+    } finally {
+      busy = false;
+      setBusy(submit, false);
+    }
+  });
+  return new Promise((resolve) => {
+    dlg.addEventListener('close', () => {
+      dlg.remove();
+      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+      resolve(confirmed);
+    });
+    dlg.showModal(); // Escape fires 'cancel', which closes the dialog: resolved as false
+    input.focus();
+  });
 }
 
 /* A notice at the top of the page that stays until the situation changes. One per kind; showing it again
@@ -401,7 +508,7 @@ async function remindLeftovers(me) {
     const btn = e.currentTarget;
     setBusy(btn, true);
     try {
-      const out = await api('/api/encryption/leftovers/delete', { method: 'POST' });
+      const out = await withRecentAuth(() => api('/api/encryption/leftovers/delete', { method: 'POST' }));
       if (out.leftovers?.length) {
         toast(`${out.leftovers.length} file(s) could not be deleted. Check the data folder's permissions.`, 'err', 10000);
       } else {

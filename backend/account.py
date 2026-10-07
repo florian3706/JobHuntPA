@@ -4,6 +4,7 @@
     PUT /api/account/prefs         {theme}: saves it, sealed under the user's key (``users.prefs_enc``)
     GET /api/account/onboarding    {step, path, features}: where the sign-up walkthrough stands
     PUT /api/account/onboarding    {step: n} remembers the step to show next; {done: true} ends the walkthrough
+    POST /api/account/delete       {password} (recent sign-in): deletes the account and all its data (Phase E)
 
 ``users.onboarding_step`` is the number (counting from 1) of the walkthrough step to show next, NULL once the
 walkthrough is finished or skipped. The page (frontend/welcome.html) builds its list of steps and saves the number
@@ -23,13 +24,14 @@ import json
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend import crypto
+from backend import crypto, sessions, users
 from backend.db import User, UserProfile, Workspace, get_db
-from backend.sessions import AuthUser, current_user
+from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
 log = logging.getLogger(__name__)
 
@@ -135,3 +137,41 @@ def put_onboarding(body: OnboardingIn, user: AuthUser = Depends(current_user), d
     row.onboarding_step = None if body.done else body.step
     db.commit()
     return onboarding_info(db, user.id)
+
+
+class DeleteAccountIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: str = Field("", max_length=4096)
+
+
+def _admin_refusal(db: Session, user_id: int) -> AuthProblem:
+    """Why an admin can't delete their account: the only admin has nobody to ask, so they are told what to do instead."""
+    if db.query(User).filter(User.role == "admin", User.status == "active", User.id != user_id).count() == 0:
+        return AuthProblem(409, "admin_cannot_delete", "You're the only admin. Make someone else an admin first, or "
+                                                       "keep this account.")
+    return AuthProblem(409, "admin_cannot_delete", "Ask another admin to make you a regular user first.")
+
+
+@router.post("/delete")
+def delete_my_account(body: DeleteAccountIn, request: Request, user: AuthUser = Depends(current_user),
+                      db: Session = Depends(get_db)):
+    """Deletes the signed-in account and everything in it (design §6.8; the work is ``users.delete_account``). It needs
+    the password, entered within the last 15 minutes and once more here. An admin can't delete their own account:
+    the last admin would leave nobody to run JobHuntPA, and deleting any admin has to change the admin details key,
+    which arrives with the admin panel (Phase F); until then another admin makes them a regular user first."""
+    from backend.security import confirm_password  # (security imports auth, which imports this module)
+
+    require_recent_auth(user)
+    if user.is_admin or db.get(User, user.id).role == "admin":
+        raise _admin_refusal(db, user.id)
+    confirm_password(request, db, user, body.password)
+    try:
+        users.delete_account(db, user.id)
+    except users.AccountBusy:
+        raise AuthProblem(409, "run_active", "A search is still running. Wait for it to finish, then try again.") from None
+    except users.AccountProtected:
+        raise _admin_refusal(db, user.id) from None
+    response = JSONResponse({"ok": True})
+    sessions.clear_cookie(response, request.scope)
+    response.headers["Clear-Site-Data"] = '"cache"'
+    return response

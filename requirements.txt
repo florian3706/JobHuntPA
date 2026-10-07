@@ -26,3 +26,6 @@ argon2-cffi>=23.1,<26
 argon2-cffi-bindings>=21.2,<26; sys_platform == "darwin" and platform_machine == "x86_64"
 # Stripe memberships (accounts: Checkout, billing portal, subscription sync). Pure Python, no compiled parts.
 stripe>=16,<17
+# Two-step sign-in: authenticator-app codes (TOTP) and the QR code for setting one up, drawn on the server as inline SVG.
+pyotp>=2.9,<3
+segno>=1.6,<2
