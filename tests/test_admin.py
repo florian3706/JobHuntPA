@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from backend import admin, admin_key, crypto, docs, key_rotation, keys, llm_providers, migrate_encryption, ratelimit  # noqa: E402
-from backend import tokens, users  # noqa: E402
+from backend import tokens, totp, users  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import (  # noqa: E402
     DB_PATH,
@@ -915,6 +915,75 @@ class KekRotationTest(AdminTestCase):
         self.assertFalse(server.kek_rotation_pending)
         self.assertEqual(db_rows(lambda s: users.background_key(s, a.user_id)), a.dek)
 
+    def test_a_wrap_not_yet_committed_holds_the_rotation_back(self):
+        """A wrap made before a rotation but committed after it would sit under a dropped key for good."""
+        plain = helpers.make_user()
+        server = users.server_keys()
+        secret = "JBSWY3DPEHPK3PXP"
+        wrapped, release, result = threading.Event(), threading.Event(), {}
+
+        def writer():  # what users.enable_totp does
+            db = SessionLocal()
+            try:
+                with server.wrapping():
+                    blob = users.seal_totp(plain.id, secret)
+                    wrapped.set()
+                    release.wait(10)
+                    db.query(User).filter(User.id == plain.id).update({User.totp_secret_enc: blob})
+                    db.commit()
+            finally:
+                db.close()
+
+        def rotator():
+            result["moved"] = key_rotation.rotate(server)
+
+        w = threading.Thread(target=writer)
+        w.start()
+        self.assertTrue(wrapped.wait(10))
+        r = threading.Thread(target=rotator)
+        r.start()
+        r.join(0.5)
+        self.assertTrue(r.is_alive(), "the rotation waits for the wrap's commit")
+        release.set()
+        w.join(10)
+        r.join(30)
+        self.assertEqual(server.kek_ids, [server.current_kek_id])
+        blob = db_rows(lambda s: bytes(s.get(User, plain.id).totp_secret_enc))
+        self.assertEqual(users.open_totp(plain.id, blob), secret)
+        self.assertEqual(server.kek_id_of(blob), server.current_kek_id)
+
+    def test_the_users_wrap_paths_hold_the_lock_until_they_commit(self):
+        a = users.create_user(f"hold-{os.urandom(4).hex()}@example.invalid", PASSWORD)
+        seen = []
+        real = keys.ServerKeys.wrapping
+
+        def spy(self):
+            seen.append(1)
+            return real(self)
+
+        with mock.patch.object(keys.ServerKeys, "wrapping", spy):
+            db = SessionLocal()
+            try:
+                users.enable_background(db, a.user_id, a.dek)
+                users.create_user(f"hold-{os.urandom(4).hex()}@example.invalid", PASSWORD, background=True)
+                user = db.get(User, a.user_id)
+                users.start_totp_enrolment(db, user)
+                secret = users.open_totp(a.user_id, user.totp_pending_enc)
+                self.assertTrue(users.enable_totp(db, user, totp.code_at(secret, totp.current_step())))
+            finally:
+                db.close()
+        self.assertEqual(len(seen), 4)
+
+    def test_rotation_leaves_no_old_copy_in_the_log(self):
+        a = self.background_user()
+        old = db_rows(lambda s: bytes(s.get(UserKeys, a.user_id).server_wrapped_dek))
+        key_rotation.rotate(users.server_keys())
+        self.assertNotEqual(db_rows(lambda s: bytes(s.get(UserKeys, a.user_id).server_wrapped_dek)), old)
+        for suffix in ("", "-wal"):  # raw bytes, no checkpoint first
+            path = DB_PATH.with_name(DB_PATH.name + suffix)
+            if path.exists():
+                self.assertNotIn(old, path.read_bytes(), f"the retired key's copy is in {path.name}")
+
     def test_the_command_line_uses_the_same_code(self):
         a = self.background_user()
         old_id = users.server_keys().current_kek_id
@@ -980,7 +1049,7 @@ class ErrorHygieneTest(AdminTestCase):
             self.assertEqual((r.status_code, r.json()["detail"]), (400, llm_providers.USER_NOT_SET_UP))
             from backend.scorer import config_problem
             with helpers.as_admin():
-                self.assertIn("in .env and restart", config_problem())
+                self.assertIn("in the admin panel (Server > AI provider)", config_problem())
             with helpers.as_account(bob):
                 self.assertEqual(config_problem(), llm_providers.USER_NOT_SET_UP)
             self.assertEqual(config_problem(), llm_providers.USER_NOT_SET_UP)  # no key scope: fail closed
@@ -1052,6 +1121,28 @@ class DeleteUserTest(AdminTestCase):
                     "usage": s.query(LlmUsage).filter(LlmUsage.user_id == account.id).count(),
                     "user": s.query(User).filter(User.id == account.id).count()}
         return db_rows(read)
+
+    def test_the_delete_holds_the_start_lock_so_no_run_is_queued_meanwhile(self):
+        """tasks.start takes this lock too: while the rows go, a run can't be queued for the workspace."""
+        from backend import tasks
+        c = self.signed_in()
+        bob = helpers.make_user(name="Bob")
+        finished = threading.Event()
+        statuses = []
+
+        def delete():
+            statuses.append(c.delete(f"/api/admin/users/{bob.id}").status_code)
+            finished.set()
+
+        with tasks.start_lock():  # a start is in progress
+            t = threading.Thread(target=delete)
+            t.start()
+            self.assertFalse(finished.wait(0.7), "the delete waits for the start lock")
+            self.assertEqual(self.counts(bob)["user"], 1)
+        self.assertTrue(finished.wait(20))
+        t.join()
+        self.assertEqual(statuses, [200])
+        self.assertEqual(self.counts(bob)["user"], 0)
 
     def test_the_rows_and_files_go_and_another_account_is_untouched(self):
         c = self.signed_in()

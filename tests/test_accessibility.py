@@ -396,10 +396,19 @@ class ConfirmPasswordDialogTest(unittest.TestCase):
 
     def test_it_is_a_labelled_native_dialog(self):
         self.assertIn("createElement('dialog')", self.body)
-        self.assertIn("aria-labelledby', 'confirm-title'", self.body)
-        self.assertIn("aria-describedby', 'confirm-intro'", self.body)
-        self.assertIn('<h2 id="confirm-title">Confirm your password</h2>', self.body)
+        self.assertIn("aria-labelledby', 'confirm-pw-title'", self.body)
+        self.assertIn("aria-describedby', 'confirm-pw-intro'", self.body)
+        self.assertIn('<h2 id="confirm-pw-title">Confirm your password</h2>', self.body)
         self.assertIn("showModal()", self.body)
+
+    def test_its_ids_do_not_clash_with_the_admin_pages_own_dialog(self):
+        # admin.html has a static confirm dialog (confirm-title, confirm-cancel, confirm-text): a duplicate id would
+        # give this dialog the wrong accessible name
+        admin = (FRONTEND / "admin.html").read_text(encoding="utf-8")
+        ids = set(re.findall(r'\bid="(confirm-[\w-]+)"', self.body))
+        self.assertTrue({"confirm-pw-title", "confirm-pw-intro", "confirm-pw-cancel", "confirm-pw-status"} <= ids)
+        for name in ids:
+            self.assertNotIn(f'id="{name}"', admin, f"{name} is also on admin.html")
 
     def test_focus_goes_in_and_comes_back_and_escape_cancels(self):
         self.assertIn("const opener = document.activeElement", self.body)
@@ -423,7 +432,7 @@ class ConfirmPasswordDialogTest(unittest.TestCase):
         # The page's live regions are inert while the modal is open: the error is read as an alert inside the dialog
         # (and from the focused field), and "Checking…" goes to a status region inside it.
         self.assertIn("note.setAttribute('role', 'alert')", self.body)
-        self.assertIn('<div id="confirm-status" class="visually-hidden" role="status"></div>', self.body)
+        self.assertIn('<div id="confirm-pw-status" class="visually-hidden" role="status"></div>', self.body)
         self.assertIn("setText(status, 'Checking your password…')", self.body)
         self.assertNotIn("announce(", self.body)
         self.assertIn("Cancel", self.body)
@@ -534,13 +543,22 @@ class SignInPagesBehaviourTest(unittest.TestCase):
                   " out[next] = nextPage(); }\nconsole.log(JSON.stringify(out));")
         cases = ["/\t/evil.example/x", "/\n/evil.example", "//evil.example", "/\\evil.example",
                  "https://evil.example", "javascript:alert(1)", "/login.html", "/recover.html?x=1", "/first-run.html",
-                 "/job.html?id=3#notes", "/", ""]
+                 "/job.html?id=3#notes", "/", "", "/signup.html?invite=x"]
         done = subprocess.run(["node", "-e", script, json.dumps(cases)], capture_output=True, text=True, check=True)
         out = json.loads(done.stdout)
         for bad in cases[:8] + [""]:
             self.assertEqual(out[bad], "./", repr(bad))
         self.assertEqual(out["/job.html?id=3#notes"], "/job.html?id=3#notes")
         self.assertEqual(out["/"], "/")
+        for page in ("/first-run.html", "/signup.html?invite=x"):
+            self.assertEqual(out[page], "./", page)
+
+    def test_every_signed_in_page_shows_the_sign_in_notice_and_the_codes_reminder(self):
+        """A sign-in can return to any page (?next=), and the notice is shown once, by the first page that asks."""
+        for name in ("app.js", "job.js", "admin.js"):
+            src = (FRONTEND / name).read_text(encoding="utf-8")
+            self.assertIn("showSignInNotice()", src, name)
+            self.assertIn("remindRecoveryCodes(me)", src, name)
 
     def test_every_call_to_a_recent_sign_in_endpoint_goes_through_the_dialog(self):
         """Any frontend call to an endpoint that answers reauth_required must be wrapped in withRecentAuth (or
@@ -891,11 +909,12 @@ class BackgroundAccessCardTest(unittest.TestCase):
         self.assertRegex(self.js, r"withRecentAuth\(\(\) => api\('/api/account/background'")
         self.assertIn("renderBackground(); // the switch goes back", self.js, "a refusal puts the switch back")
 
-    def test_the_words_are_the_designs(self):
-        for words in ("Only you can unlock your data. JobHuntPA can't run searches while you're away or email you new jobs.",
-                      "JobHuntPA keeps a key on the server so it can run scheduled searches and email you new jobs. "
-                      "The server's operator could technically read your data, and a password reset by email keeps your data."):
-            self.assertIn(words, self.js)
+    def test_the_words_come_from_common_js_and_promise_nothing_that_does_not_exist(self):
+        common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        self.assertIn("Only you can unlock your data. JobHuntPA can't run searches while you're away.", common)
+        self.assertIn("JobHuntPA keeps a key on the server so it can run scheduled searches while you're away.", common)
+        self.assertIn("BACKGROUND_ON_COPY", self.js)
+        self.assertIn("BACKGROUND_OFF_COPY", self.js)
 
     def test_the_generated_and_static_controls_have_names(self):
         self.assertEqual(GeneratedMarkupTest().check_file("background.js"), [])

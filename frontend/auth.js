@@ -1,4 +1,4 @@
-/* JobHuntPA sign-in pages: login.html and first-run.html (accounts design, sections 5 and 6).
+/* JobHuntPA sign-in pages: login.html, first-run.html, recover.html and signup.html (accounts design, sections 5 and 6).
 
    There is no workspace and often no session yet, so these pages call /api/auth themselves rather than through
    common.js's api(). WCAG 2.2 notes:
@@ -38,7 +38,7 @@ function nextPage() {
   if (!next.startsWith('/')) return './';
   let url;
   try { url = new URL(next, location.origin); } catch { return './'; }
-  if (url.origin !== location.origin || /^\/(login|first-run|recover)\.html/.test(url.pathname)) return './';
+  if (url.origin !== location.origin || /^\/(login|first-run|recover|signup)\.html/.test(url.pathname)) return './';
   return url.pathname + url.search + url.hash;
 }
 

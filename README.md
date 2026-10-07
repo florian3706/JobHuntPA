@@ -40,7 +40,9 @@ underneath.
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
 **Settings**: the theme, scheduled searches (by themselves at set times on workdays, skipping public
-holidays), your AI provider, model and key, how long the AI thinks for each task, and the commute keys.
+holidays), the AI status with the Rescore buttons, and your account (password, two-step sign-in,
+recovery codes, background access, download your data). The admin sets the AI provider and the
+commute keys in the admin panel.
 
 ![The Settings tab: scheduled searches, the AI status and the Rescore buttons](docs/screenshots/settings.png)
 
@@ -146,7 +148,7 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   *Keep me signed in* on your own device to stay signed in for up to 30 days of not using it
   (otherwise 24 hours). **Account > Sign out** at the top right signs this browser out. After 5
   wrong passwords in a row, the next try has to wait 30 seconds, then longer each time, up to 15 minutes.
-- **Two-step sign-in** (Settings > Account): add an authenticator app (any app that makes 6-digit
+- **Two-step sign-in** (Settings > Two-step sign-in): add an authenticator app (any app that makes 6-digit
   codes) by scanning the QR code, or by typing the setup key if you can't scan. After that, signing
   in asks for the app's code after your password. A code works once, and a recovery code works instead
   of the app (each recovery code once; the page says how many are left). Turning it off needs your
@@ -155,13 +157,13 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   enter your email, a recovery code and a new password. **Your data is kept**, because the recovery
   code unlocks it; every other browser is signed out. With two-step sign-in on, you also enter the
   app's code or a second recovery code. This works without any email set up.
-- **Password, recovery codes and sessions** (Settings > Account): change your password (your data
+- **Password, recovery codes and sessions** (Settings > Password, Recovery codes and Signed-in devices): change your password (your data
   stays readable and other browsers are signed out unless you untick that), make 8 new recovery
   codes (the old ones stop working; with two-step sign-in on you also enter the app's code; you save
   the new ones the same way as the first set), and *Sign out
   everywhere else*. Anything sensitive asks you to confirm your password first, if you haven't
   entered it in the last 15 minutes.
-- **Delete your account** (Settings > Account): enter your password and everything of yours is
+- **Delete your account** (Settings > Delete account): enter your password and everything of yours is
   removed: workspaces, jobs, documents and the uploaded files, chats, cover letters, keys and
   sessions. Job postings and company research that everyone shares stay, because they hold nothing of
   yours. It can't be undone, and it waits while one of your searches is running. An admin can delete
@@ -239,12 +241,9 @@ disk manages itself.
 Settings > **Background access** is a switch for your account.
 
 - **Off** (the default for a new account): only you can unlock your data. JobHuntPA can't run
-  searches while you're away, so **scheduled searches are skipped** (the schedule card says so) and
-  nothing can email you new jobs.
+  searches while you're away, so **scheduled searches are skipped** (the schedule card says so).
 - **On** (the first account has it on): JobHuntPA keeps a key on the server so it can run scheduled
-  searches and email you new jobs. The server's operator could technically read your data, and a
-  password reset by email keeps your data (without it, a reset by email gives you a fresh, empty
-  account).
+  searches while you're away. The server's operator could technically read your data.
 
 How it works: turning it on (it asks for your password again if you haven't typed it in the last 15
 minutes) stores a copy of your data key locked with the server's own key, in `data/server-keys.json`.
@@ -506,9 +505,10 @@ the admin's key:
 3. It checks that nothing is left unencrypted, then rebuilds the database file so the old
    unencrypted pages are gone.
 
-Afterwards the dashboard lists the files that still hold your data unencrypted (that backup, older
-`data/jobhunt.db.bak-*` backups and the `data/cache` pages of an earlier version) with **Delete them
-now (recommended)**, until they're gone. Keep the backup only if you might go back to an older
+Afterwards the dashboard shows admins a notice that links to the admin panel's **Server** section.
+Its "Unencrypted copies of data" part lists the files that still hold your data unencrypted (that
+backup, older `data/jobhunt.db.bak-*` backups and the `data/cache` pages of an earlier version) with
+**Delete these files now**, which asks for your password, until they're gone. Keep the backup only if you might go back to an older
 version: **older versions can't read the encrypted database**. To go back, stop JobHuntPA, install
 the older version, and replace `data/jobhunt.db` with the backup (delete `data/jobhunt.db-wal` and
 `data/jobhunt.db-shm` too); anything you did since the update is lost.
@@ -574,7 +574,7 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
   a new password and keep your data. Without your password or a recovery code, your encrypted data
   can't be read, by you, the admin or anyone else.
 - **Lost your authenticator app:** sign in with a recovery code instead of the app's code, then turn
-  two-step sign-in off and on again in Settings > Account.
+  two-step sign-in off and on again in Settings > Two-step sign-in.
 - **The last admin lost their password and every recovery code:** people can still sign in, but
   admins can't read names and email addresses any more ("Details unavailable until this person
   signs in"). Stop JobHuntPA and run `python -m backend.keys new-admin-key --email you@example.com`
@@ -594,7 +594,8 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
   is missing or isn't the one that belongs to this database. Put back the `data/server-keys.json`
   from the same backup as the database. A new key file is never made while accounts exist.
 - **The key file is lost and there is no backup:** nobody can sign in, because email addresses are
-  found through that file. With JobHuntPA stopped, an admin can make a new one: run
+  found through that file. With JobHuntPA stopped (the command refuses while it is running), an active
+  admin can make a new one: run
   `.venv/bin/python -m backend.keys recover-lost --admin-email you@example.com` (on Windows,
   `.venv\Scripts\python -m backend.keys ...`) from the JobHuntPA folder and type that admin's
   password when asked. It writes a new `data/server-keys.json` and works out every account's email
@@ -630,10 +631,11 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 - **Motion:** with *reduce motion* set on the device, spinners, progress bars and map animations
   stop.
 
-**How it was tested** (October 2026): [axe-core](https://github.com/dequelabs/axe-core) 4.13 with
+**How it was tested** (October 2026; the account cards, admin panel, sign-up and recover pages have
+only the automated checks in `tests/test_accessibility.py`, not this run): [axe-core](https://github.com/dequelabs/axe-core) 4.13 with
 the WCAG 2.0, 2.1 and 2.2 A and AA rules plus best practices, in headless Chromium (Playwright),
-on 19 screens and states (every tab, every dialog, the chat, the job page, the map in both modes,
-loading, empty and error states) at 320, 375, 768 and 1280 px wide: no violations. Its colour
+on 19 screens and states of the dashboard and job page (every tab, every dialog, the chat, the map
+in both modes, loading, empty and error states) at 320, 375, 768 and 1280 px wide: no violations. Its colour
 contrast rule ran on 12 of those screens in all 28 themes: no violations. Scripts also pressed Tab
 through every page (a visible focus ring on every stop, none hidden, no traps), drove the dialogs,
 the chat, the tabs, the theme picker and the map by keyboard, measured touch targets (24 px or more,
@@ -684,7 +686,12 @@ resetting with a recovery code), `backend/security.py` (password, two-step setup
 sessions), `backend/totp.py` (authenticator codes), `backend/admin.py` (the admin panel's API) with
 `backend/admin_key.py` (the admin key: grants, replacing it, healing details), `backend/signup.py` and
 `backend/tokens.py` (sign-up modes and invitations), `backend/key_rotation.py` (the server key),
-`docs/design/accounts.md`.
+`backend/background.py` (background access), `backend/key_recovery.py` (the `recover-lost` command),
+`backend/export.py` (data export), `backend/account.py` (preferences, the walkthrough step, deleting
+an account), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
+`new-admin-key` and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
+(account cards), `background.js`, `export.js`, `admin.js` and `server-settings.js` (the admin panel),
+`dialogs.js` (its dialogs) and `signup.js`.
 
 **Encrypted columns** (`backend/crypto.py`, `docs/design/accounts.md` §2): personal columns use the
 `Sealed*` types, which encrypt under the key of the request's account (or the background run's). The

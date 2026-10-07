@@ -27,7 +27,8 @@ email lookup and orphan every background-access key.
      transaction), check that none is left, then write the file with only the current KEK.
 A crash anywhere leaves a file with every KEK still in use; at start-up, ``kek_rotation_pending`` says to run step 2
 again. (The design sets the new KEK current after step 2; setting it in step 1 is as safe and means a wrap made
-while step 2 runs can't be left under a key that is about to be dropped.)
+after step 1 is under the new key.) A wrap made *before* step 1 but stored after step 2 would be left under a dropped
+key, so whoever wraps holds ``wrapping()`` from the wrap until the row is committed: a rotation waits for it.
 
 Command line (run with the app stopped; the commands refuse while it is running)::
 
@@ -55,10 +56,11 @@ import sys
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional, Union
+from typing import Any, Callable, Iterable, Iterator, Optional, Union
 
 from backend import config, crypto
 
@@ -254,6 +256,14 @@ class ServerKeys:
     def kek_rotation_pending(self) -> bool:
         """More than one KEK in the file: a rotation was started and not finished. Run finish_kek_rotation."""
         return len(self._sections["kek"]["keys"]) > 1
+
+    @contextmanager
+    def wrapping(self) -> Iterator[None]:
+        """Hold this from a ``kek_wrap`` until the row it goes into is committed. A rotation takes the same lock, so
+        it can't finish (and drop the KEK) between the wrap and the commit and leave the stored blob under a key
+        that is gone. Take it before touching the database, as a rotation does, and keep what's inside short."""
+        with self._lock:
+            yield
 
     def kek_wrap(self, secret: bytes, label: str) -> tuple[str, bytes]:
         """``secret`` wrapped under the current KEK, labelled ``{label}|{kek_id}``: ``(kek_id, blob)``. Store the

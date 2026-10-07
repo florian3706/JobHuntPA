@@ -9,6 +9,7 @@ import os
 import time
 import unittest
 from datetime import timedelta
+from pathlib import Path
 from unittest import mock
 
 from tests import helpers  # noqa: E402  (sets the test environment first)
@@ -529,6 +530,17 @@ class MfaRecoveryCodeAtSignInTest(AccountTestCase):
 # ---------------------------------------------------------------------------
 
 class MfaDisableTest(AccountTestCase):
+    def test_the_secret_does_not_linger_in_the_log(self):
+        alice, secret = self.with_mfa()
+        db = SessionLocal()
+        try:
+            blob = bytes(db.get(User, alice.id).totp_secret_enc)
+        finally:
+            db.close()
+        self.assertEqual(self.mfa_client(alice, secret).post(
+            "/api/auth/mfa/disable", json={"password": PASSWORD, "code": self.code(secret)}).status_code, 200)
+        self.assertEqual(on_disk(blob), [])
+
     def test_it_takes_the_password_and_a_code(self):
         alice, secret = self.with_mfa()
         c = self.mfa_client(alice, secret)
@@ -778,7 +790,33 @@ class RecoveryCodesTest(AccountTestCase):
 # Changing the password, and signing out elsewhere
 # ---------------------------------------------------------------------------
 
+def on_disk(blob: bytes) -> list[str]:
+    """Which of the database file and its write-ahead log hold ``blob``, read as raw bytes (no checkpoint first)."""
+    found = []
+    for suffix in ("", "-wal"):
+        path = Path(str(engine.url.database) + suffix)
+        if path.exists() and bytes(blob) in path.read_bytes():
+            found.append(path.name)
+    return found
+
+
 class PasswordChangeTest(AccountTestCase):
+    def test_the_old_passwords_copy_of_the_data_key_does_not_linger_in_the_log(self):
+        alice = helpers.make_user(password=PASSWORD)
+        old = bytes(self.row_keys(alice.id).pw_wrapped_dek)
+        r = self.signed_in(alice).post("/api/auth/password", json={"current_password": PASSWORD,
+                                                                  "new_password": NEW_PASSWORD})
+        self.assertEqual(r.status_code, 200)
+        self.assertNotEqual(bytes(self.row_keys(alice.id).pw_wrapped_dek), old)
+        self.assertEqual(on_disk(old), [])
+
+    def row_keys(self, user_id: int):
+        db = SessionLocal()
+        try:
+            return db.get(UserKeys, user_id)
+        finally:
+            db.close()
+
     def test_the_data_stays_readable_and_the_new_password_opens_it(self):
         alice = helpers.make_user(password=PASSWORD)
         self.write_pin(alice, "Kept through a password change MARKER")

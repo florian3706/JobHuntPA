@@ -77,7 +77,7 @@ def config_problem(cfg: Optional[dict] = None) -> Optional[str]:
         return None
     if not llm_providers.viewer_is_admin():  # what to set, and where, is for the admin (accounts design §14.8)
         return llm_providers.USER_NOT_SET_UP
-    return f"Set {', '.join(missing)} in .env and restart the server."
+    return f"Set {', '.join(missing)} in the admin panel (Server > AI provider)."
 
 
 def public_config() -> dict[str, Any]:

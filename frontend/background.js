@@ -11,8 +11,8 @@
 'use strict';
 
 const BACKGROUND_COPY = {
-  off: "Only you can unlock your data. JobHuntPA can't run searches while you're away or email you new jobs.",
-  on: "JobHuntPA keeps a key on the server so it can run scheduled searches and email you new jobs. The server's operator could technically read your data, and a password reset by email keeps your data.",
+  off: BACKGROUND_OFF_COPY,
+  on: BACKGROUND_ON_COPY,
   moreOff: 'Turning it on asks for your password. Scheduled searches are skipped until you do.',
   moreOn: 'Turning it off deletes the key the server holds. Scheduled searches are then skipped until you turn it on again.',
 };

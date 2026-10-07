@@ -28,7 +28,7 @@ from typing import Any
 from sqlalchemy import or_, update
 
 from backend import crypto, keys
-from backend.db import DATA_DIR, AppSetting, SessionLocal, User, UserKeys, engine, init_db
+from backend.db import DATA_DIR, AppSetting, SessionLocal, User, UserKeys, engine, init_db, scrub_wal
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +91,9 @@ def rotate(server: keys.ServerKeys) -> int:
     """Rotate the KEK (both steps). Returns how many values were re-wrapped. keys.RotationIncomplete if some value
     couldn't be moved: the old KEK then stays in the key file and nothing is lost."""
     rows, seen = _rows_factory(server)
-    return server.rotate_kek(rows, _store_factory(seen))
+    moved = server.rotate_kek(rows, _store_factory(seen))
+    scrub_wal()  # the values under the retired key must not linger in the write-ahead log
+    return moved
 
 
 def finish_pending(server: keys.ServerKeys) -> int:
@@ -99,7 +101,9 @@ def finish_pending(server: keys.ServerKeys) -> int:
     if not server.kek_rotation_pending:
         return 0
     rows, seen = _rows_factory(server)
-    return server.finish_kek_rotation(rows, _store_factory(seen))
+    moved = server.finish_kek_rotation(rows, _store_factory(seen))
+    scrub_wal()
+    return moved
 
 
 def _process_alive(pid: int) -> bool:

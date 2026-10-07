@@ -244,7 +244,7 @@ class PresetsTest(ProviderTestCase):
                 sc.call_model([{"role": "user", "content": "x"}], sc.get_config())
             self.assertEqual(sent[0]["headers"]["Authorization"], "Bearer ollama")
         with mock.patch.dict(os.environ, {**env, "LLM_BASE_URL": "https://api.openai.com/v1"}):
-            self.assertEqual(sc.config_problem(sc.get_config()), "Set LLM_API_KEY in .env and restart the server.")
+            self.assertEqual(sc.config_problem(sc.get_config()), "Set LLM_API_KEY in the admin panel (Server > AI provider).")
 
 
 # --------------------------------------------------------------------------

@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from backend import crypto, ratelimit, sessions, totp, users
 from backend.auth import _too_many
-from backend.db import AuthSession, User, get_db, utcnow
+from backend.db import AuthSession, User, get_db, scrub_wal, utcnow
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
 log = logging.getLogger(__name__)
@@ -120,6 +120,7 @@ def change_password(body: ChangePasswordIn, request: Request, auth: AuthUser = D
         ended = db.query(AuthSession).filter(AuthSession.user_id == auth.id, AuthSession.id != auth.session_id
                                              ).delete(synchronize_session=False)
     db.commit()
+    scrub_wal()  # the old password's copy of the data key must not linger in the write-ahead log
     log.info("Password changed: user %s (%d other session(s) ended)", auth.id, ended)
     return {"ok": True, "signed_out_others": ended}
 
@@ -243,6 +244,7 @@ def new_recovery_codes(body: Optional[SecondFactorIn] = None, auth: AuthUser = D
         check_second_factor(db, user, body or SecondFactorIn())
     users.replace_recovery_codes(db, auth.id, crypto.current().dek)
     db.commit()
+    scrub_wal()  # the old codes' copies of the data key
     log.info("New recovery codes made: user %s", auth.id)
     return {"ok": True, "recovery_codes_left": users.RECOVERY_CODES, "recovery_codes_pending": True}
 

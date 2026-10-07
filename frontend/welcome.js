@@ -22,10 +22,6 @@
 /* The page works on the account's first workspace; the server picks it when none is named. */
 function currentWorkspace() { return 0; }
 
-/* What the Background access card says (frontend/background.js has the same words). */
-const BACKGROUND_ON_COPY = "JobHuntPA keeps a key on the server so it can run scheduled searches and email you new jobs. The server's operator could technically read your data, and a password reset by email keeps your data.";
-const BACKGROUND_OFF_COPY = "Only you can unlock your data. JobHuntPA can't run searches while you're away or email you new jobs.";
-
 const wiz = {
   me: null,
   short: false, // the first admin's short path

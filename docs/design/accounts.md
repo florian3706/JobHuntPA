@@ -387,7 +387,7 @@ Notes:
    **Resuming:** rows are selected by whether they are still plaintext, so a restart just carries on. At startup, `running` becomes `pending`, and the run resumes at that admin's next login, when their key is available.
 
    **While it runs:** data APIs answer 423 `{"code":"encrypting","done","total"}` and the page shows accessible progress (a `role="progressbar"` plus text). Sign-up is blocked.
-5. **After the run:** the completion screen lists leftover plaintext files: the new backup, older `jobhunt.db.bak-*` files and `data/cache/*.html`. It offers "Delete them now (recommended)", and the admin panel keeps showing a warning until they are gone.
+5. **After the run:** the completion screen lists leftover plaintext files: the new backup, older `jobhunt.db.bak-*` files and `data/cache/*.html`. The dashboard shows admins a notice that links to the admin panel's Server section, where the list has "Delete these files now" (it asks for the password) and keeps showing a warning until they are gone.
    - From this release on, every connection uses `PRAGMA secure_delete=ON`.
    - Going back to an older version is not supported; the README explains how to restore a backup.
 6. **Local single-user installs** follow the same code path: the first launch after updating opens the first-run page, and accounts are always on.

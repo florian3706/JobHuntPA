@@ -24,6 +24,7 @@ once for the first run and the environment admin, otherwise at their next sign-i
 from __future__ import annotations
 
 import base64
+import contextlib
 import hmac
 import json
 import logging
@@ -361,6 +362,11 @@ def _wrap_for_server(row: UserKeys, user_id: int, dek: bytes) -> None:
     row.background_since = utcnow()
 
 
+def _wrapping_if(wanted: bool):
+    """``server_keys().wrapping()`` when something will be wrapped under the server key, else nothing to hold."""
+    return server_keys().wrapping() if wanted else contextlib.nullcontext()
+
+
 def _create_user(db: Session, *, email: str, password: str, name: str, role: str, created_via: str,
                  background: bool) -> NewAccount:
     """The user row with every key of section 1.2, 8 recovery codes, a membership and email preferences, in ``db``'s
@@ -419,11 +425,12 @@ def create_user(email: str, password: str, *, name: str = "", role: str = "user"
         raise AccountError("email", "JobHuntPA is encrypting its data. Try again in a few minutes.")
     db = SessionLocal()
     try:
-        account = _create_user(db, email=email, password=password, name=name, role=role, created_via=created_via,
-                               background=background)
-        with crypto.as_user(account.user_id, account.dek):  # the workspace's name is sealed under the new key
-            db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=account.user_id))
-            db.commit()
+        with _wrapping_if(background):  # the server-key wrap is committed with the account
+            account = _create_user(db, email=email, password=password, name=name, role=role, created_via=created_via,
+                                   background=background)
+            with crypto.as_user(account.user_id, account.dek):  # the workspace's name is sealed under the new key
+                db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=account.user_id))
+                db.commit()
         log.info("Account created: user %s (%s)", account.user_id, created_via)
         return account
     finally:
@@ -437,7 +444,7 @@ def create_first_admin(email: str, password: str, *, name: str = "", created_via
     theirs (or a first workspace is made). AlreadySetUp if an account exists; AccountError for a bad value."""
     global _users_exist
     email, password, name = clean_email(email), check_password(password), clean_name(name)
-    with _create_lock:
+    with _wrapping_if(background), _create_lock:  # (key lock first, as a rotation takes it)
         db = SessionLocal()
         try:
             db.execute(text("BEGIN IMMEDIATE"))  # no other connection can add a user meanwhile
@@ -577,14 +584,15 @@ def enable_background(db: Session, user_id: int, dek: bytes) -> None:
     """Allow background access: wrap ``dek`` (the signed-in user's key, from the request's key scope) under the
     current server KEK. Refuses a key that isn't this account's (ValueError). Commits. The caller has checked recent
     sign-in (sessions.require_recent_auth)."""
-    row = db.get(UserKeys, user_id)
-    if row is None:
-        raise ValueError("No such account")
-    if not hmac.compare_digest(crypto.key_id(dek), bytes(row.dek_kid)):
-        raise ValueError("That key isn't this account's data key")
-    _wrap_for_server(row, user_id, dek)
-    _clear_skipped(db, user_id)
-    db.commit()
+    with server_keys().wrapping():  # a key rotation can't finish between the wrap and the commit
+        row = db.get(UserKeys, user_id)
+        if row is None:
+            raise ValueError("No such account")
+        if not hmac.compare_digest(crypto.key_id(dek), bytes(row.dek_kid)):
+            raise ValueError("That key isn't this account's data key")
+        _wrap_for_server(row, user_id, dek)
+        _clear_skipped(db, user_id)
+        db.commit()
     log.info("user %s: background access turned on", user_id)
 
 
@@ -636,6 +644,7 @@ def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) ->
     except BaseException:
         db.rollback()
         raise
+    scrub_wal()  # the old password's copy of the data key
     log.info("user %s: password reset by email; the data was kept (background access)", user_id)
     return True
 
@@ -809,8 +818,9 @@ def open_totp(user_id: int, blob: Optional[bytes]) -> Optional[str]:
 def start_totp_enrolment(db: Session, user: User) -> str:
     """A new pending secret (replacing any earlier one). Returns it for the QR code and the written key."""
     secret = totp.new_secret()
-    user.totp_pending_enc = seal_totp(user.id, secret)
-    db.commit()
+    with server_keys().wrapping():
+        user.totp_pending_enc = seal_totp(user.id, secret)
+        db.commit()
     return secret
 
 
@@ -841,15 +851,17 @@ def enable_totp(db: Session, user: User, code: Any) -> Optional[bool]:
     step = totp.match_step(secret, code)
     if step is None:
         return False
-    user.totp_secret_enc, user.totp_pending_enc = seal_totp(user.id, secret), None
-    user.totp_last_step, user.mfa_enabled = step, True  # the code that finished enrolment can't be used again
-    db.commit()
+    with server_keys().wrapping():
+        user.totp_secret_enc, user.totp_pending_enc = seal_totp(user.id, secret), None
+        user.totp_last_step, user.mfa_enabled = step, True  # the code that finished enrolment can't be used again
+        db.commit()
     return True
 
 
 def disable_totp(db: Session, user: User) -> None:
     user.mfa_enabled, user.totp_secret_enc, user.totp_pending_enc, user.totp_last_step = False, None, None, None
     db.commit()
+    scrub_wal()  # the secret must not linger in the write-ahead log
 
 
 # ---------------------------------------------------------------------------
@@ -970,6 +982,7 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
             removed += 1
         except OSError as exc:
             log.warning("Could not delete an upload of deleted user %s: %s", user_id, exc.__class__.__name__)
+    scrub_wal()  # the deleted account's key copies and secrets must not linger in the write-ahead log
     sessions._active_on.pop(user_id, None)  # SQLite may give this id to the next account
     log.info("Account deleted: user %s (%d workspace(s), %d file(s))", user_id, len(ws_ids), removed)
     return {"workspaces": len(ws_ids), "files": removed, "apk_rotated": was_admin}

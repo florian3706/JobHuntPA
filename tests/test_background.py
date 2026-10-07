@@ -521,6 +521,21 @@ before = state()
 out["with_file"] = recover("root@example.invalid", ADMIN_PW)            # a key file exists: refused
 out["file_kept"] = key_path.read_bytes() == old_file
 key_path.unlink()
+run_file = Path(FOLDER) / "running.json"                                # the app is running (a live process)
+run_file.write_text(json.dumps({"port": 8000, "pid": os.getppid()}))
+out["while_running"] = recover("root@example.invalid", ADMIN_PW)
+out["still_no_file"] = not key_path.exists() and not (key_path.parent / "server-keys.json.new").exists()
+run_file.unlink()
+db = SessionLocal()
+db.query(User).filter(User.id == 1).update({User.status: "disabled"})   # a turned-off admin, right password
+db.commit()
+db.close()
+out["disabled_admin"] = recover("root@example.invalid", ADMIN_PW)
+out["after_disabled"] = state() == before and not key_path.exists()
+db = SessionLocal()
+db.query(User).filter(User.id == 1).update({User.status: "active"})
+db.commit()
+db.close()
 out["wrong_password"] = recover("root@example.invalid", "not the password")
 out["wrong_email"] = recover("nobody@example.invalid", ADMIN_PW)
 out["empty_password"] = recover("root@example.invalid", "")
@@ -582,6 +597,18 @@ class RecoverLostKeyFileTest(unittest.TestCase):
         self.assertEqual(out["empty_password"]["status"], 1)
         self.assertIn("No password was entered", out["empty_password"]["err"])
         self.assertTrue(out["nothing_changed"], "no key file, no half-written file, no row changed")
+
+    def test_it_refuses_while_the_app_is_running(self):
+        out = self.out
+        self.assertEqual(out["while_running"]["status"], 1)
+        self.assertIn("JobHuntPA is running", out["while_running"]["err"])
+        self.assertTrue(out["still_no_file"])
+
+    def test_it_refuses_a_turned_off_admin_without_saying_why(self):
+        out = self.out
+        self.assertEqual(out["disabled_admin"]["status"], 1)
+        self.assertIn("No admin account matches that email address and password", out["disabled_admin"]["err"])
+        self.assertTrue(out["after_disabled"], "no key file and nothing changed")
 
     def test_it_writes_a_new_private_key_file_and_nothing_is_left_over(self):
         out = self.out
@@ -674,6 +701,7 @@ const ctx = {
 };
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(common, 'utf8').match(/async function withRecentAuth\(fn\) \{.*?\n\}\n/s)[0], ctx);
+vm.runInContext(fs.readFileSync(common, 'utf8').match(/const BACKGROUND_ON_COPY = .*\nconst BACKGROUND_OFF_COPY = .*\n/)[0], ctx);
 const page = vm.runInContext(fs.readFileSync(script, 'utf8') + '\n;({ background, changeBackground, loadBackground })', ctx);
 (async () => {
   const snap = () => ({ checked: els['#background-switch'].checked, disabled: els['#background-switch'].disabled,
@@ -693,9 +721,9 @@ const page = vm.runInContext(fs.readFileSync(script, 'utf8') + '\n;({ background
 })();
 """
 
-    OFF = "Only you can unlock your data. JobHuntPA can't run searches while you're away or email you new jobs."
-    ON = ("JobHuntPA keeps a key on the server so it can run scheduled searches and email you new jobs. The server's "
-          "operator could technically read your data, and a password reset by email keeps your data.")
+    OFF = "Only you can unlock your data. JobHuntPA can't run searches while you're away."
+    ON = ("JobHuntPA keeps a key on the server so it can run scheduled searches while you're away. The server's "
+          "operator could technically read your data.")
 
     def run_page(self, scenario: dict) -> dict:
         done = subprocess.run(["node", "-e", self.HARNESS, "--", str(FRONTEND / "background.js"),

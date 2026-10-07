@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from backend import account, crypto, migrate_encryption, ratelimit, sessions, signup, users
-from backend.db import AuthSession, SessionLocal, User, get_db, utcnow
+from backend.db import AuthSession, SessionLocal, User, get_db, scrub_wal, utcnow
 from backend.sessions import REAUTH_REQUIRED, AuthProblem, AuthUser, current_user, require_recent_auth  # noqa: F401
 
 log = logging.getLogger(__name__)
@@ -341,6 +341,7 @@ def recover(body: RecoverIn, request: Request, db: Session = Depends(get_db)):
     except BaseException:
         db.rollback()
         raise
+    scrub_wal()  # the old password's copy of the data key must not linger in the write-ahead log
     log.info("Password reset with a recovery code: user %s (%d code(s) used)", user.id, len(spend))
     _after_sign_in(user.id, dek)
     return _signed_in(request, secret, body.remember, {"ok": True, "user": {"id": user.id, "role": user.role},

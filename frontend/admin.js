@@ -675,6 +675,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
   remindRecoveryCodes(me);
+  showSignInNotice();
   ['#person-dialog', '#confirm-dialog'].forEach((s) => initDialog($(s)));
   $('#person-close').addEventListener('click', () => $('#person-dialog').close());
   $('#person-dialog').addEventListener('close', () => { $('#person-body').innerHTML = ''; memberId = null; editingGrant = null; });

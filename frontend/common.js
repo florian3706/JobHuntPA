@@ -205,7 +205,9 @@ function signedOut(code) {
    them, then comes back here), then welcome.html, which resumes where they left off. null when the page may load. */
 function walkthroughPage(me) {
   if (!me.onboarding_step) return null;
-  if (document.body?.dataset.page === 'welcome') return null;
+  // first-run.html is where the codes are shown: sending it there again would reload it for ever (its password
+  // dialog calls loadSession() first)
+  if (['welcome', 'first-run'].includes(document.body?.dataset.page)) return null;
   return me.recovery_codes_pending ? 'first-run.html' : 'welcome.html';
 }
 
@@ -296,8 +298,8 @@ async function apiResponse(url, opts = {}, retried = false) {
 const SIGN_IN_NOTICE_KEY = 'jobhunt.signin-notice';
 
 function recoveryLeftText(left) {
-  if (left <= 0) return 'You have no recovery codes left. Make new ones in Settings > Account.';
-  return `You have ${left} recovery code${left === 1 ? '' : 's'} left. Make new ones in Settings > Account.`;
+  if (left <= 0) return 'You have no recovery codes left. Make new ones in Settings > Recovery codes.';
+  return `You have ${left} recovery code${left === 1 ? '' : 's'} left. Make new ones in Settings > Recovery codes.`;
 }
 
 function showSignInNotice() {
@@ -305,6 +307,11 @@ function showSignInNotice() {
   try { msg = sessionStorage.getItem(SIGN_IN_NOTICE_KEY) || ''; sessionStorage.removeItem(SIGN_IN_NOTICE_KEY); } catch { /* private mode */ }
   if (msg) toast(msg, '', 15000);
 }
+
+/* What the Background access card (background.js) and the walkthrough's automatic-searches step (welcome.js) say.
+   Say only what exists: the server key runs scheduled searches; email digests and reset by email come later. */
+const BACKGROUND_ON_COPY = "JobHuntPA keeps a key on the server so it can run scheduled searches while you're away. The server's operator could technically read your data.";
+const BACKGROUND_OFF_COPY = "Only you can unlock your data. JobHuntPA can't run searches while you're away.";
 
 /* Sensitive actions (accounts design §3) answer 403 {code: 'reauth_required'} unless the password was entered in
    the last 15 minutes. withRecentAuth(fn) runs fn (which calls api()); on that refusal it asks for the password with
@@ -334,12 +341,12 @@ async function openConfirmDialog() {
   const email = (SESSION.me || await loadSession())?.user?.email || '';
   const dlg = document.createElement('dialog');
   dlg.className = 'confirm-dialog';
-  dlg.setAttribute('aria-labelledby', 'confirm-title');
-  dlg.setAttribute('aria-describedby', 'confirm-intro');
+  dlg.setAttribute('aria-labelledby', 'confirm-pw-title');
+  dlg.setAttribute('aria-describedby', 'confirm-pw-intro');
   dlg.innerHTML = `<form class="confirm-box" novalidate>
-    <h2 id="confirm-title">Confirm your password</h2>
-    <p id="confirm-intro">To keep your account safe, enter your password to go on. You won't be asked again for 15 minutes.</p>
-    <div id="confirm-status" class="visually-hidden" role="status"></div>
+    <h2 id="confirm-pw-title">Confirm your password</h2>
+    <p id="confirm-pw-intro">To keep your account safe, enter your password to go on. You won't be asked again for 15 minutes.</p>
+    <div id="confirm-pw-status" class="visually-hidden" role="status"></div>
     <input class="visually-hidden" type="text" name="username" autocomplete="username" tabindex="-1" readonly
            aria-hidden="true" aria-label="Email address" value="${esc(email)}" />
     <div class="auth-field">
@@ -350,7 +357,7 @@ async function openConfirmDialog() {
       </div>
     </div>
     <div class="confirm-actions">
-      <button id="confirm-cancel" class="btn" type="button">Cancel</button>
+      <button id="confirm-pw-cancel" class="btn" type="button">Cancel</button>
       <button id="confirm-submit" class="btn btn-primary" type="submit">Confirm</button>
     </div>
   </form>`;
@@ -359,14 +366,14 @@ async function openConfirmDialog() {
   const input = dlg.querySelector('#confirm-password');
   const toggle = dlg.querySelector('#confirm-toggle');
   const submit = dlg.querySelector('#confirm-submit');
-  const status = dlg.querySelector('#confirm-status');
+  const status = dlg.querySelector('#confirm-pw-status');
   let confirmed = false;
   let busy = false;
   const problem = (msg) => {
     setFieldError(input, '');
     if (!msg) return;
     const note = document.createElement('p');
-    note.id = 'confirm-password-error';
+    note.id = 'confirm-pw-error';
     note.className = 'field-error';
     note.setAttribute('role', 'alert'); // read out inside the dialog, where the page's own live regions are inert
     note.innerHTML = `<span class="visually-hidden">Error: </span>${esc(msg)}`;
@@ -381,11 +388,11 @@ async function openConfirmDialog() {
     input.type = show ? 'text' : 'password';
     toggle.setAttribute('aria-pressed', String(show));
   });
-  dlg.querySelector('#confirm-cancel').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#confirm-pw-cancel').addEventListener('click', () => dlg.close());
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (busy) return;
-    const old = document.getElementById('confirm-password-error');
+    const old = document.getElementById('confirm-pw-error');
     if (old) { old.remove(); input.removeAttribute('aria-invalid'); input.removeAttribute('aria-describedby'); }
     if (!input.value) { problem('Enter your password.'); return; }
     busy = true;

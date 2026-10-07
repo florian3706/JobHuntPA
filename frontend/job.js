@@ -254,7 +254,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('themechange', () => { if (view.map) drawMap(...(lastCommute || [null])); });
   if (!JOB_ID) { showPageError('No job given. Open a job from the dashboard (Open ↗ on a job card).'); return; }
   try {
-    initAccountMenu(await loadSession()); // signed out: goes to the sign-in page, then back here
+    const me = await loadSession(); // signed out: goes to the sign-in page, then back here
+    initAccountMenu(me);
+    remindRecoveryCodes(me);
+    showSignInNotice();
     const workspaces = await api('/api/workspaces');
     const ws = workspaces.find((w) => w.id === currentWorkspace());
     if (ws) $('#ws-name').textContent = ws.name;

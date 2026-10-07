@@ -22,7 +22,9 @@ Everything since v1.13.0 is on GitHub `main` (pushed 2026-10-07, not released or
 | K | Sign-up wizard (`welcome.html`): theme first, then search setup | done |
 | Email core | `backend/mailer.py`, `backend/email_templates.py`. Not wired in yet | done |
 | Billing core | `backend/access.py` (membership gate) and `backend/billing.py` (Stripe). Not wired in yet | done |
-| E, F, G, H, I, J, L, X | Below (X, the data export, was added on 2026-10-07) | **to do** |
+| E, F, G | Below. Built in parallel and merged | done (merged 2026-10-07) |
+| X | Data export (added on 2026-10-07) | built, reviewed in wave 2 |
+| H, I, J, L | Below | **to do** |
 
 ## Order and what can run in parallel
 

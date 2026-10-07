@@ -446,7 +446,7 @@ class LlmConfigTest(unittest.TestCase):
         from unittest import mock
         from backend.scorer import config_problem, get_config
         with mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "", "LLM_MODEL": ""}):
-            self.assertEqual(config_problem(get_config()), "Set LLM_BASE_URL, LLM_MODEL in .env and restart the server.")
+            self.assertEqual(config_problem(get_config()), "Set LLM_BASE_URL, LLM_MODEL in the admin panel (Server > AI provider).")
         with mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://x/v1/", "LLM_MODEL": "m"}):
             cfg = get_config()
             self.assertIsNone(config_problem(cfg))

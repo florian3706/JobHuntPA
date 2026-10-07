@@ -7,7 +7,8 @@ because no email address finds its account. What it can't give back is the KEK's
 people can also unlock with their passwords or recovery codes. So:
 
   1. An admin proves who they are: the password is checked against the admin accounts (the email can't be used to
-     look one up: that needs the lost pepper) and the account's own copy of its details must name ``--admin-email``.
+     look one up: that needs the lost pepper) and the account's own copy of its details must name ``--admin-email``. A turned-off admin is refused like any
+     other mismatch.
   2. Their key opens their copy of the admin details key (APK), which opens every account's ``pii_admin``.
   3. A new key file is made. Every ``email_hash`` is computed again with the new pepper from the decrypted email
      address, every ``server_wrapped_dek`` is deleted (background access is off until each person turns it on
@@ -31,7 +32,7 @@ from typing import Callable, Optional
 
 from sqlalchemy import func, update
 
-from backend import crypto, keys
+from backend import crypto, key_rotation, keys
 from backend.db import DB_PATH, AdminKeyGrant, AppSetting, SessionLocal, User, UserKeys, scrub_wal
 
 log = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ def _find_admin(db, admin_email: str, password: str) -> tuple[User, bytes]:
     """The admin row whose password this is and whose own copy of its details names ``admin_email``, with its data
     key. The password is checked against every admin row (there are few), then the email against the match."""
     wanted = keys.normalise_email(admin_email)
-    for user in db.query(User).filter(User.role == "admin").order_by(User.id):
+    for user in db.query(User).filter(User.role == "admin", User.status == "active").order_by(User.id):
         derived = crypto.derive_password(password, user.kdf_salt, crypto.KdfParams.from_json(user.kdf_params))
         if not crypto.verify_password(user.pw_verifier, derived):
             continue
@@ -115,6 +116,10 @@ def run(admin_email: str, *, ask_password: Optional[Callable[[str], str]] = None
 
 
 def _recover(admin_email: str, ask_password: Callable[[str], str], out, path: Path) -> int:
+    try:
+        key_rotation.refuse_while_running()  # a running app would go on wrapping under the keys thrown away here
+    except keys.KeyFileError as exc:
+        raise RecoveryError(str(exc)) from None
     if path.exists():
         raise RecoveryError(f"A key file already exists ({path}). recover-lost is only for a lost one; if this file "
                             "is the wrong one, move it away first. Nothing was changed.")

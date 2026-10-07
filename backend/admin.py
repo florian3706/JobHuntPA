@@ -54,6 +54,7 @@ from backend.db import (
     UserKeys,
     Workspace,
     get_db,
+    scrub_wal,
     utcnow,
 )
 from backend.sessions import AuthProblem, AuthUser, current_user, require_admin, require_recent_auth
@@ -478,6 +479,7 @@ def disable_mfa(user_id: int, admin: AuthUser = Depends(current_user), db: Sessi
     if changed:
         audit(db, admin, "mfa_disabled", target.id)
     db.commit()
+    scrub_wal()  # the secret must not linger in the write-ahead log
     apk = _open_apk(db, admin)
     try:
         notified = notify_mfa_disabled(db, admin, target, apk)

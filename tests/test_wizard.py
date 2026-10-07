@@ -262,6 +262,11 @@ class RoutingTest(unittest.TestCase):
         self.assertIsNone(self.route({"onboarding_step": 0, "recovery_codes_pending": False}))
         self.assertIsNone(self.route({"onboarding_step": 2, "recovery_codes_pending": False}, "welcome"))
 
+    def test_first_run_page_is_not_sent_to_itself(self):
+        """Its password dialog calls loadSession(); redirecting first-run.html to first-run.html reloaded it for ever."""
+        self.assertIsNone(self.route({"onboarding_step": 1, "recovery_codes_pending": True}, "first-run"))
+        self.assertIsNone(self.route({"onboarding_step": 1, "recovery_codes_pending": False}, "first-run"))
+
     def test_first_run_ends_at_the_dashboard_which_routes_on(self):
         """first-run.html sends people to './' once the codes are saved, and './' goes through loadSession()."""
         auth = (FRONTEND / "auth.js").read_text(encoding="utf-8")
@@ -307,6 +312,7 @@ const ctx = {
 vm.createContext(ctx);
 const m = fs.readFileSync(common, 'utf8').match(/async function withRecentAuth\(fn\) \{.*?\n\}\n/s);
 vm.runInContext(m[0], ctx);
+vm.runInContext(fs.readFileSync(common, 'utf8').match(/const BACKGROUND_ON_COPY = .*\nconst BACKGROUND_OFF_COPY = .*\n/)[0], ctx);
 const page = vm.runInContext(fs.readFileSync(welcome, 'utf8') + '\n;({ wiz, STEPS, buildSteps })', ctx);
 Object.assign(page.wiz, scenario.wiz || {});
 (async () => {
@@ -348,15 +354,12 @@ Object.assign(page.wiz, scenario.wiz || {});
         self.assertIn('id="wz-auto"', html)
         self.assertNotIn(" checked", html.split("<input")[1].split(">")[0], "off by default for a new account")
         self.assertIn('aria-describedby="wz-auto-hint"', html)
-        self.assertIn("JobHuntPA keeps a key on the server so it can run scheduled searches and email you new jobs.", html)
+        self.assertIn("JobHuntPA keeps a key on the server so it can run scheduled searches while you&#39;re away.", html)
         self.assertIn("Only you can unlock your data. JobHuntPA can&#39;t run searches while you&#39;re away", html)
-        # the same words as the Settings card
-        card = (FRONTEND / "background.js").read_text(encoding="utf-8")
-        for words in ("JobHuntPA keeps a key on the server so it can run scheduled searches and email you new jobs. "
-                      "The server's operator could technically read your data, and a password reset by email keeps your data.",
-                      "Only you can unlock your data. JobHuntPA can't run searches while you're away or email you new jobs."):
-            self.assertIn(words, card)
-            self.assertIn(words, (FRONTEND / "welcome.js").read_text(encoding="utf-8"))
+        # the same words as the Settings card: one definition, in common.js
+        self.assertNotIn("BACKGROUND_ON_COPY =", (FRONTEND / "welcome.js").read_text(encoding="utf-8"))
+        self.assertNotIn("BACKGROUND_ON_COPY =", (FRONTEND / "background.js").read_text(encoding="utf-8"))
+        self.assertIn("BACKGROUND_ON_COPY =", (FRONTEND / "common.js").read_text(encoding="utf-8"))
 
     def test_it_starts_ticked_when_searches_already_run_automatically(self):
         html = self.run_page({"html": True, "wiz": {"features": {"scheduled_searches": True},
