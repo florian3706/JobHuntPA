@@ -282,9 +282,31 @@ async function apiResponse(url, opts = {}, retried = false) {
     // stop quietly (no "could not load" errors on the way), as for a 401.
     if (res.status === 423) { showAccessNotice('encrypting', data); return new Promise(() => {}); }
     const detail = data && typeof data === 'object' && data.detail ? data.detail : text;
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    const err = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    err.status = res.status;
+    err.code = code; // e.g. 'reauth_required' (withRecentAuth)
+    throw err;
   }
   return { data, headers: res.headers };
+}
+
+/* Sensitive actions (accounts design §3) answer 403 {code: 'reauth_required'} unless the password was entered in
+   the last 15 minutes. withRecentAuth(fn) runs fn (which calls api()); on that refusal it asks for the password with
+   confirmPassword() and, once confirmed, runs fn again. Everything that needs recent sign-in goes through it. */
+async function withRecentAuth(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e?.code !== 'reauth_required' || !(await confirmPassword())) throw e;
+    return fn();
+  }
+}
+
+/* Asks for the password again (POST /api/auth/reauth) and resolves true once it is confirmed, false if the person
+   cancels. Phase E replaces this placeholder with the "Confirm your password" dialog; until then the refusal's own
+   message is shown. */
+async function confirmPassword() {
+  return false;
 }
 
 /* A notice at the top of the page that stays until the situation changes. One per kind; showing it again

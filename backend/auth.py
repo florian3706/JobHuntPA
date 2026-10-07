@@ -27,28 +27,13 @@ from sqlalchemy.orm import Session
 
 from backend import account, crypto, migrate_encryption, ratelimit, sessions, users
 from backend.db import SessionLocal, User, get_db, utcnow
-from backend.sessions import AuthUser, current_user
+from backend.sessions import REAUTH_REQUIRED, AuthProblem, AuthUser, current_user, require_recent_auth  # noqa: F401
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 WRONG = "That email address and password don't match an account. Check both and try again."
-
-
-class AuthProblem(Exception):
-    """An error answer in this module's shape (app.py turns it into the response)."""
-
-    def __init__(self, status: int, code: str, detail: str, field: Optional[str] = None,
-                 headers: Optional[dict] = None):
-        super().__init__(detail)
-        self.status, self.code, self.detail, self.field, self.headers = status, code, detail, field, headers
-
-    def response(self) -> JSONResponse:
-        body = {"detail": self.detail, "code": self.code}
-        if self.field:
-            body["field"] = self.field
-        return JSONResponse(body, status_code=self.status, headers=self.headers)
 
 
 def _too_many(seconds: float) -> AuthProblem:

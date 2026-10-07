@@ -222,6 +222,31 @@ def has_recent_auth(user: AuthUser, now: Optional[datetime] = None) -> bool:
     return user.reauth_at is not None and (now or utcnow()) - user.reauth_at <= RECENT_AUTH
 
 
+class AuthProblem(Exception):
+    """An error answer shaped ``{"detail", "code", "field"?}`` (app.py turns it into the response)."""
+
+    def __init__(self, status: int, code: str, detail: str, field: Optional[str] = None,
+                 headers: Optional[dict] = None):
+        super().__init__(detail)
+        self.status, self.code, self.detail, self.field, self.headers = status, code, detail, field, headers
+
+    def response(self) -> JSONResponse:
+        body = {"detail": self.detail, "code": self.code}
+        if self.field:
+            body["field"] = self.field
+        return JSONResponse(body, status_code=self.status, headers=self.headers)
+
+
+REAUTH_REQUIRED = "reauth_required"
+
+
+def require_recent_auth(user: AuthUser) -> None:
+    """Refuses a sensitive action unless the password was entered in the last 15 minutes (design §3). The page
+    answers the 403 by asking for the password again (``withRecentAuth`` in frontend/common.js) and retrying."""
+    if not has_recent_auth(user):
+        raise AuthProblem(403, REAUTH_REQUIRED, "For your safety, enter your password again to do this.")
+
+
 # ---------------------------------------------------------------------------
 # The checks (see the module docstring)
 # ---------------------------------------------------------------------------
