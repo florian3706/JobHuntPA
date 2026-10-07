@@ -1,6 +1,7 @@
 """SQLite storage via SQLAlchemy: every table the app uses lives here.
 
-DB file: <project_root>/data/jobhunt.db (override with JOBHUNT_DB_PATH).
+DB file: <project_root>/data/jobhunt.db (override with JOBHUNT_DB_PATH, or the whole data folder with
+JOBHUNT_DATA_DIR).
 ``init_db()`` creates missing tables and adds missing columns to existing
 ones (SQLite ``ALTER TABLE ADD COLUMN``), so older databases keep working.
 """
@@ -37,9 +38,11 @@ from sqlalchemy.schema import CreateTable
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
+# The data folder: data/ in the app folder. JOBHUNT_DATA_DIR moves it (tests and tools point it at a throwaway
+# folder, so they never touch the real uploads); JOBHUNT_DB_PATH moves just the database.
+DATA_DIR = Path(os.getenv("JOBHUNT_DATA_DIR") or PROJECT_ROOT / "data")
 UPLOAD_DIR = DATA_DIR / "uploads"
-DB_PATH = Path(os.getenv("JOBHUNT_DB_PATH", DATA_DIR / "jobhunt.db"))
+DB_PATH = Path(os.getenv("JOBHUNT_DB_PATH") or DATA_DIR / "jobhunt.db")
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
 
 engine = create_engine(

@@ -51,7 +51,8 @@ def scenario(code: str, folder: str | None = None, env: dict | None = None) -> d
     The admin variables from tests/__init__.py are left out unless ``env`` sets them."""
     folder = folder or scratch_folder()
     run_env = {k: v for k, v in os.environ.items() if not k.startswith("JOBHUNT_ADMIN_")}
-    run_env.update({"JOBHUNT_DB_PATH": os.path.join(folder, "jobhunt.db"), "JOBHUNT_ENV_PATH": os.path.join(folder, ".env"),
+    run_env.update({"JOBHUNT_DATA_DIR": folder, "JOBHUNT_DB_PATH": os.path.join(folder, "jobhunt.db"),
+                    "JOBHUNT_ENV_PATH": os.path.join(folder, ".env"),
                     "JOBHUNT_KEY_FILE": os.path.join(folder, "server-keys.json"), "JOBHUNT_SCHEDULER": "off",
                     "JOBHUNT_TESTING": "1", "JOBHUNT_KDF_PROFILE": "test", "PYTHONPATH": str(ROOT)})
     run_env.pop("DATABASE_URL", None)
