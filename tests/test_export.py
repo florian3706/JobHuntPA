@@ -54,6 +54,18 @@ class SafeNameTest(unittest.TestCase):
         self.assertEqual(len({n.casefold() for n in names}), len(names))
         self.assertTrue(all(len(n) <= 80 for n in names))
 
+    def test_a_name_also_fits_the_bytes_file_systems_allow(self):
+        for raw in ("😀" * 80, "日本語" * 40, "é" * 200):
+            name = export.safe_name(raw, "Untitled", ".md")
+            with self.subTest(raw=raw[:3]):
+                self.assertLessEqual(len(name.encode("utf-8")), 255)
+                self.assertTrue(name.endswith(".md"))
+                self.assertEqual(name.encode("utf-8").decode("utf-8"), name)
+        folder = export.Folder()
+        names = [folder.name("😀" * 80, ext=".md") for _ in range(12)]
+        self.assertEqual(len({n.casefold() for n in names}), 12)
+        self.assertTrue(all(len(n.encode("utf-8")) <= 255 for n in names))
+
 
 class MarkdownTest(unittest.TestCase):
     def test_other_peoples_text_is_shown_as_text(self):
@@ -65,6 +77,33 @@ class MarkdownTest(unittest.TestCase):
         self.assertIn("&amp;lt;b&amp;gt;", out)  # an entity typed in the ad stays what was typed
         self.assertEqual(export.text("R&D at 5 < 6"), "R&D at 5 &lt; 6")
         self.assertEqual(export.cell("a | b\nc"), "a \\| b c")
+
+    def test_link_syntax_that_names_its_address_elsewhere_is_escaped(self):
+        out = export.text("Apply [here][1] or [x]\n\n[1]: javascript:alert(1)\n[x]: <file://///a/b>")
+        self.assertIn("\\[here]\\[1]", out)
+        self.assertIn("\n\\[1]: javascript:alert(1)", out)
+        self.assertNotRegex(out, r"(?<!\\)\[")  # no bracket is left that could open a link
+        self.assertEqual(export.text("![t](http://x)"), "!\\[t]\\(http://x)")
+        # a backslash typed before the bracket doesn't cancel the escape
+        self.assertEqual(export.text("\\[1]: javascript:x"), "\\\\\\[1]: javascript:x")
+        # and a label can't close the exporter's own link early
+        self.assertNotIn("](javascript", export.link("a](javascript:x) [b", "https://x.example/"))
+
+    def test_a_backslash_does_not_cancel_the_escape_of_a_pipe(self):
+        self.assertEqual(export.cell("a\\|b"), "a\\\\\\|b")
+        self.assertEqual(export.cell("a\\\\|b"), "a\\\\\\\\\\|b")
+        self.assertEqual(export.esc_pipe("x|y"), "x\\|y")
+        for value in ("a\\|b", "a\\\\|b", "|", "\\|"):
+            cells = re.split(r"(?<!\\)(?:\\\\)*\|", export.cell(value))
+            self.assertEqual(len(cells), 1, value)
+
+    def test_a_table_row_keeps_its_cells_when_the_text_has_backslashes_and_pipes(self):
+        row = f"| {export.cell('a' + chr(92) + '|b')} | {export.cell('c')} |"
+        self.assertEqual(len(re.split(r"(?<!\\)(?:\\\\)*\|", row)), 4)  # the outer pipes and the one between the cells
+
+    def test_facts_with_nothing_to_show_is_empty(self):
+        self.assertEqual(export.facts([("A", ""), ("B", None), ("C", [])]), "")
+        self.assertEqual(export.facts([("A", "x"), ("B", "")]), "- A: x\n")
 
     def test_only_http_addresses_become_links(self):
         self.assertEqual(export.link("Ad", "https://x.example/a(b)"), "[Ad](https://x.example/a%28b%29)")
@@ -218,6 +257,49 @@ class ExportTest(unittest.TestCase):
         self.assertIn("MARK-jobtitle-bob", index)
         self.assertNotIn("MARK-filtered-bob", index)
 
+    def test_copies_of_a_filtered_out_job_are_listed_with_it(self):
+        with helpers.as_account(self.bob):
+            self.add_copy_of_the_filtered_job()
+        z = self.open_zip(self.export())
+        filtered = next(b for n, b in self.texts(z).items() if n.endswith("Filtered out.md"))
+        row = next(r for r in filtered.splitlines() if "MARK-filtered-bob" in r)
+        self.assertIn("(https://third.example/bob/filtered-copy)", row)
+        self.assertEqual(len(re.split(r"(?<!\\)\|", row.strip())), 7)  # the row still has its five cells
+
+    def add_copy_of_the_filtered_job(self):
+        db = SessionLocal()
+        try:
+            main = next(j for j in db.query(Job).filter(Job.workspace_id == self.bob.workspace_id) if j.url == "https://ads.example/bob/filtered")
+            db.add(Job(workspace_id=self.bob.workspace_id, url="https://third.example/bob/filtered-copy", title="Filtered job", company="Filtco",
+                       status="to_review", duplicate_of=main.id, detail_status="full"))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_the_jobs_index_follows_the_folders_with_hidden_jobs_last(self):
+        z = self.open_zip(self.export())
+        index = next(b for n, b in self.texts(z).items() if n.endswith("/Jobs/Jobs.md"))
+        statuses = [r.split("|")[3].strip() for r in index.splitlines() if r.startswith("| [")]
+        order = [*export.STATUS_FOLDER.values(), export.HIDDEN_FOLDER]
+        self.assertIn("Hidden", statuses)
+        self.assertEqual(statuses, sorted(statuses, key=order.index))
+
+    def test_an_empty_dealbreakers_section_says_none(self):
+        with helpers.as_account(self.bob):
+            self.empty_the_dealbreakers()
+        z = self.open_zip(self.export())
+        profile = next(b for n, b in self.texts(z).items() if "## Dealbreakers" in b)
+        self.assertIn("## Dealbreakers\n\nNone.\n", profile)
+
+    def empty_the_dealbreakers(self):
+        db = SessionLocal()
+        try:
+            row = db.get(DealbreakerSet, self.bob.workspace_id)
+            row.industries, row.keywords = [], []
+            db.commit()
+        finally:
+            db.close()
+
     def test_hostile_names_are_safe_and_unique(self):
         z = self.open_zip(self.export())
         names = z.namelist()
@@ -313,6 +395,144 @@ class ExportTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.export()
         self.assertNotIn(self.bob.id, export._running, "a failed export doesn't block the next one")
+
+    def test_a_second_export_started_while_one_is_being_built_is_refused(self):
+        import threading
+        started, release, first = threading.Event(), threading.Event(), {}
+        real_build = export.build
+
+        def slow_build(*args, **kwargs):
+            started.set()
+            self.assertTrue(release.wait(30))
+            return real_build(*args, **kwargs)
+
+        def first_export():
+            first["r"] = self.export()
+        with mock.patch.object(export, "build", side_effect=slow_build):
+            worker = threading.Thread(target=first_export)
+            worker.start()
+            try:
+                self.assertTrue(started.wait(30))
+                r = self.export()
+                self.assertEqual((r.status_code, r.json()["code"]), (429, "export_running"))
+            finally:
+                release.set()
+                worker.join(60)
+        self.assertEqual(first["r"].status_code, 200)
+        self.assertNotIn(self.bob.id, export._running)
+        self.assertEqual(self.export().status_code, 200)
+
+    def test_account_details_membership_and_no_secrets(self):
+        from datetime import datetime
+        from sqlalchemy import text as sql
+        from backend.db import EmailPrefs, Membership, MembershipGrant, UserKeys, engine
+        with engine.begin() as conn:
+            conn.execute(sql("UPDATE users SET totp_secret_enc = :s WHERE id = :u"), {"s": b"MARK-totp-secret-bytes", "u": self.bob.id})
+        db = SessionLocal()
+        try:
+            member = db.get(Membership, self.bob.id)
+            member.stripe_status, member.plan, member.free_searches_used = "active", "monthly", 3
+            member.current_period_end = datetime(2027, 1, 2)
+            db.add(MembershipGrant(user_id=self.bob.id, kind="free_period", starts_at=datetime(2026, 1, 1), ends_at=datetime(2026, 2, 1)))
+            prefs = db.get(EmailPrefs, self.bob.id) or EmailPrefs(user_id=self.bob.id)
+            prefs.digest_enabled, prefs.digest_every_days, prefs.unsubscribe_id = True, 3, "MARK-unsub-id"
+            db.add(prefs)
+            keys = db.get(UserKeys, self.bob.id)
+            self.addCleanup(self.reset_bob)
+            keys.server_wrapped_dek, keys.background_since = b"MARK-wrapped-secret", datetime(2026, 3, 4)
+            ref = member.stripe_ref
+            db.commit()
+        finally:
+            db.close()
+        z = self.open_zip(self.export())
+        root = z.namelist()[0].split("/")[0]
+        account = z.read(f"{root}/Account.md").decode()
+        for expected in ("(background access): on", "since: 2026-03-04", "Free searches used: 3", "Plan: monthly",
+                         "Paid until: 2027-01-02", "| free_period | 2026-01-01 | 2026-02-01 |", "every 3 day(s)"):
+            self.assertIn(expected, account)
+        blob = b"".join(z.read(n) for n in z.namelist())
+        for secret in (b"MARK-totp-secret-bytes", b"MARK-wrapped-secret", ref.encode(), b"MARK-unsub-id"):
+            self.assertNotIn(secret, blob)
+
+    def reset_bob(self):
+        from sqlalchemy import text as sql
+        from backend.db import engine
+        with engine.begin() as conn:
+            conn.execute(sql("UPDATE user_keys SET server_wrapped_dek = NULL, background_since = NULL WHERE user_id = :u"), {"u": self.bob.id})
+            conn.execute(sql("DELETE FROM email_prefs WHERE user_id = :u"), {"u": self.bob.id})
+            conn.execute(sql("DELETE FROM membership_grants WHERE user_id = :u"), {"u": self.bob.id})
+            conn.execute(sql("UPDATE memberships SET stripe_status = NULL, plan = NULL, free_searches_used = 0, "
+                             "current_period_end = NULL WHERE user_id = :u"), {"u": self.bob.id})
+
+    def demote(self, user_id):
+        from sqlalchemy import text as sql
+        from backend.db import engine
+        with engine.begin() as conn:
+            conn.execute(sql("UPDATE users SET role = 'user' WHERE id = :u"), {"u": user_id})
+
+    def test_an_admin_exports_only_their_own_data(self):
+        from sqlalchemy import text as sql
+        from backend.db import engine
+        admin = helpers.make_user(name="MARK-name-admin")
+        with engine.begin() as conn:
+            conn.execute(sql("UPDATE users SET role = 'admin' WHERE id = :u"), {"u": admin.id})
+        self.addCleanup(self.demote, admin.id)
+        z = self.open_zip(self.export(admin))
+        blob = b"".join(z.read(n) for n in z.namelist()) + "\n".join(z.namelist()).encode()
+        self.assertIn(b"MARK-name-admin", blob)
+        self.assertNotIn(b"-bob", blob)
+        self.assertNotIn(b"-alice", blob)
+
+    def test_zip_entries_use_forward_slashes_and_utf8(self):
+        z = self.open_zip(self.export())
+        for info in z.infolist():
+            self.assertNotIn("\\", info.filename)
+            if not info.filename.isascii():
+                self.assertTrue(info.flag_bits & 0x800, info.filename)
+        self.assertTrue(any(not i.filename.isascii() for i in z.infolist()), "the emoji name is in the zip")
+
+    def test_hidden_and_excluded_job_is_in_hidden_and_a_bad_score_does_not_break_the_export(self):
+        with helpers.as_account(self.bob):
+            self.plant_both()
+        self.addCleanup(self.remove_both_as_bob)
+        z = self.open_zip(self.export())
+        hidden = next(n for n in z.namelist() if "MARK-both" in n)
+        self.assertIn("/Jobs/Hidden/", hidden)
+        self.assertIn("MARK-bothreason", z.read(hidden).decode())
+        self.assertNotIn("MARK-both", z.read([n for n in z.namelist() if n.endswith("Filtered out.md")][0]).decode())
+
+    def remove_both_as_bob(self):
+        with helpers.as_account(self.bob):
+            self.remove_both()
+
+    def remove_both(self):
+        db = SessionLocal()
+        try:
+            for job in [j for j in db.query(Job).filter(Job.workspace_id == self.bob.workspace_id) if j.url == "https://ads.example/bob/both"]:
+                db.query(FitResult).filter(FitResult.job_id == job.id).delete()
+                db.delete(job)
+            db.commit()
+        finally:
+            db.close()
+
+    def plant_both(self):
+        db = SessionLocal()
+        try:
+            both = Job(workspace_id=self.bob.workspace_id, url="https://ads.example/bob/both", title="Both MARK-both", company="Bothco",
+                       status="to_review", hidden=True, excluded_reason="MARK-bothreason", detail_status="full")
+            db.add(both)
+            db.flush()
+            db.add(FitResult(job_id=both.id, status="ok", score=5, evidence_json="{not json"))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_links_in_lists_and_tables_stay_working_links(self):
+        self.assertEqual(export.link("T", "https://x.example/a|b\\c"), "[T](https://x.example/a%7Cb%5Cc)")
+        z = self.open_zip(self.export())
+        chat = next(b for n, b in self.texts(z).items() if "/Chats/" in n)
+        self.assertIn("- [T](https://src.example/p)", chat)
+        self.assertEqual(chat.count("Acme%20Corp%20-%20Senior"), 1, "a job and its merged copy are named once")
 
     def test_the_whole_app_makes_only_a_few_exports_at_once(self):
         taken = [export._slots.acquire(blocking=False) for _ in range(export.MAX_AT_ONCE)]

@@ -944,6 +944,13 @@ class ExportCardTest(unittest.TestCase):
         self.assertIn("withRecentAuth(fetchExport)", self.js)
         self.assertIn("URL.createObjectURL(blob)", self.js)
 
+    def test_busy_ends_and_every_outcome_is_said_in_the_status_region(self):
+        self.assertIn("setBusy(btn, false)", self.js)
+        for said in ("Making your file", "Done. Your browser saved", "Nothing was downloaded: confirm your password", "could not be downloaded"):
+            self.assertIn(said, self.js)
+        self.assertIn("Keep it somewhere safe", self.js)
+        self.assertIn("e.status === 413", self.js, "a refusal says what to do (the server's own text)")
+
 
 class WelcomePageTest(unittest.TestCase):
     """The sign-up walkthrough (welcome.html + welcome.js): static checks that need no browser. The steps are

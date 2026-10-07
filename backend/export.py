@@ -83,6 +83,9 @@ HIDDEN_FOLDER = "Hidden"
 RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 _BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
 _ENTITY = re.compile(r"&(?=#?\w+;)")
+_BRACKET = re.compile(r"(\\*)\[")
+_PIPE = re.compile(r"(\\*)\|")
+MAX_PART_BYTES = 240                   # of one name, encoded: file systems stop at 255
 CHUNK = 200
 
 
@@ -90,10 +93,15 @@ CHUNK = 200
 # Safe names
 # ---------------------------------------------------------------------------
 
+def _clip(value: str, chars: int, size: int) -> str:
+    """The start of ``value`` that fits in ``chars`` characters and ``size`` UTF-8 bytes, without cutting a character."""
+    return value[:chars].encode("utf-8")[:max(1, size)].decode("utf-8", "ignore")
+
+
 def safe_name(value: Any, fallback: str = "Untitled", ext: str = "") -> str:
     """A file or folder name that is valid on Windows, macOS and Linux: no ``<>:"/\\|?*`` or control characters, no
     leading or trailing dots or spaces, no reserved Windows name (CON, NUL, COM1...), NFC-normalised, and at most 80
-    characters including ``ext``."""
+    characters (and 240 bytes, which some file systems count instead) including ``ext``."""
     text = unicodedata.normalize("NFC", str(value if value is not None else ""))
     text = "".join(c for c in text if unicodedata.category(c) not in ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"))
     text = _BAD.sub("-", text)
@@ -102,7 +110,8 @@ def safe_name(value: Any, fallback: str = "Untitled", ext: str = "") -> str:
     if text.split(".")[0].upper() in RESERVED:
         text = f"_{text}"
     room = max(1, MAX_PART - len(ext))
-    text = text[:room].rstrip(" .") or fallback[:room]
+    size = MAX_PART_BYTES - len(ext.encode("utf-8"))
+    text = _clip(text, room, size).rstrip(" .") or _clip(fallback, room, size)
     return text + ext
 
 
@@ -120,7 +129,8 @@ class Folder:
         while candidate.casefold() in self.used:
             n += 1
             tail = f" ({n})"
-            stem = stem[: max(1, MAX_PART - len(ext) - len(tail))].rstrip(" .")
+            stem = _clip(stem, max(1, MAX_PART - len(ext) - len(tail)),
+                         MAX_PART_BYTES - len((ext + tail).encode("utf-8"))).rstrip(" .")
             candidate = f"{stem}{tail}{ext}"
         self.used.add(candidate.casefold())
         return candidate
@@ -131,9 +141,12 @@ class Folder:
 # ---------------------------------------------------------------------------
 
 def text(value: Any) -> str:
-    """Other people's text, as Markdown that shows it as it is: raw HTML, images and link syntax are escaped."""
+    """Other people's text, as Markdown that shows it as it is: raw HTML, images and link syntax are escaped. Every
+    ``[`` is escaped (a backslash before it is doubled so it can't cancel the escape), so no inline, reference or
+    definition link can form; only the addresses the exporter builds itself are links."""
     s = str(value if value is not None else "").replace("\r\n", "\n").replace("\r", "\n")
-    s = _ENTITY.sub("&amp;", s).replace("<", "&lt;").replace("![", "!\\[").replace("](", "]\\(")
+    s = _ENTITY.sub("&amp;", s).replace("<", "&lt;")
+    s = _BRACKET.sub(lambda m: m.group(1) * 2 + "\\[", s).replace("](", "]\\(")
     return s
 
 
@@ -142,9 +155,14 @@ def line(value: Any) -> str:
     return re.sub(r"\s+", " ", text(value)).strip()
 
 
+def esc_pipe(value: str) -> str:
+    """``|`` escaped for a table cell; a backslash before it is doubled so it can't cancel the escape."""
+    return _PIPE.sub(lambda m: m.group(1) * 2 + "\\|", value)
+
+
 def cell(value: Any) -> str:
     """A table cell: one line, with ``|`` escaped."""
-    return line(value).replace("|", "\\|")
+    return esc_pipe(line(value))
 
 
 def web_address(value: Any) -> Optional[str]:
@@ -158,7 +176,8 @@ def link(label: Any, address: Any) -> str:
     url = web_address(address)
     if not url:
         return line(label) if label else ""
-    url = url.replace("(", "%28").replace(")", "%29").replace("[", "%5B").replace("]", "%5D")
+    for char, code in (("(", "%28"), (")", "%29"), ("[", "%5B"), ("]", "%5D"), ("|", "%7C"), ("\\", "%5C"), ("`", "%60")):
+        url = url.replace(char, code)
     return f"[{line(label or url)}]({url})"
 
 
@@ -186,7 +205,8 @@ def yes(flag: Any) -> str:
 
 def facts(rows: Iterable[tuple[str, Any]]) -> str:
     """A list of "- Label: value" lines, leaving out what is empty."""
-    return "\n".join(f"- {label}: {value}" for label, value in rows if value not in (None, "", [])) + "\n"
+    lines = [f"- {label}: {value}" for label, value in rows if value not in (None, "", [])]
+    return "\n".join(lines) + "\n" if lines else ""
 
 
 def bullets(items: Iterable[Any]) -> str:
@@ -279,7 +299,7 @@ safe and delete them when you no longer need them.
 
 - Your password, recovery codes and encryption keys, and the secret behind two-step sign-in: they can't and shouldn't be exported.
 - Sign-in sessions, caches and logs.
-- A job that is another copy of the same ad is not a file of its own: it is listed under "Also advertised at" in the main job's file.
+- A job that is another copy of the same ad is not a file of its own: it is listed under "Also advertised at" in the main job's file (or in `Filtered out.md`, when the main job is there).
 - A job the search filters left out and you never touched is only in `Filtered out.md`.
 - Anyone else's data. Admins export only their own account, like everyone else.
 """
@@ -301,11 +321,13 @@ def _account_md(db: Session, user: User, workspaces: list[Workspace]) -> str:
         ("Email address confirmed", yes(user.email_verified)),
         ("Two-step sign-in", "on" if user.mfa_enabled else "off"),
         ("Scheduled searches while signed out (background access)", "on" if keys is not None and keys.server_wrapped_dek is not None else "off"),
+        ("Background access allowed since", when(keys.background_since) if keys is not None and keys.server_wrapped_dek is not None else ""),
         ("Theme", line(prefs.get("theme")) or "not chosen"),
     ]))
     mail = db.get(EmailPrefs, user.id)
     if mail is not None:
-        out.append(facts([("Job digest emails", f"on, every {mail.digest_every_days} day(s)" if mail.digest_enabled else "off")]))
+        out.append(facts([("Job digest emails", f"on, every {mail.digest_every_days} day(s)" if mail.digest_enabled else "off"),
+                          ("Agreed to digest emails", when(mail.opted_in_at)), ("Last digest sent", when(mail.last_sent_at))]))
     out.append("\n## Membership\n\n")
     if member is None:
         out.append("No membership details.\n")
@@ -521,12 +543,16 @@ def _job_md(job: Job, entry: JobEntry, fit: Optional[FitResult], entries: dict[i
         ("Your call on the location", line(job.location_verdict)),
         ("Left out by the search filters", line(job.excluded_reason)),
         ("Original ad", link(job.url, job.url) if web_address(job.url) else ""),
-        ("Source", line(job.source)),
+        ("Source", line(job.source)), ("Industry", line(job.industry)),
         ("Company research", rel_link(job.company, path, companies[company_key(job.company or "")]) if company_key(job.company or "") in companies else ""),
         ("Cover letter", rel_link("Cover letter", path, entry.letter_path) if entry.letter_path else ""),
     ]))
     if fit is not None and fit.status == "ok":
-        data = json.loads(fit.evidence_json or "{}")
+        try:
+            data = json.loads(fit.evidence_json or "{}")
+        except ValueError:
+            data = {}
+        data = data if isinstance(data, dict) else {}
         out.append("\n## How well you fit\n")
         if data.get("summary"):
             out.append(f"\n{text(data['summary'])}\n")
@@ -576,16 +602,21 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
         out.append(f"\nAnother {len(filtered)} job(s) the search filters left out are in {rel_link('Filtered out', index, f'{base}/Jobs/Filtered out.md')}.\n")
     if with_files:
         out.append("\n| Job | Company | Status | Fit | Closed |\n|---|---|---|---|---|\n")
-        for e in sorted(with_files, key=lambda e: (STATUS_FOLDER.get(e.status, "") , _job_label(e).casefold())):
-            status = "Hidden" if "/Hidden/" in e.path else STATUS_FOLDER.get(e.status, e.status)
-            name = rel_link(e.title or "Job", index, e.path).replace("|", "\\|")
-            out.append(f"| {name} | {cell(e.company)} | {cell(status)} | {cell(e.fit)} | {'yes' if e.closed else ''} |\n")
+        folders = [*STATUS_FOLDER.values(), HIDDEN_FOLDER]   # the order of the folders, Hidden last
+
+        def folder(e: JobEntry) -> str:
+            return HIDDEN_FOLDER if f"/Jobs/{HIDDEN_FOLDER}/" in e.path else STATUS_FOLDER.get(e.status, "To review")
+        for e in sorted(with_files, key=lambda e: (folders.index(folder(e)), _job_label(e).casefold())):
+            status = folder(e)
+            name = rel_link(e.title or "Job", index, e.path)
+            out.append(f"| {esc_pipe(name)} | {cell(e.company)} | {cell(status)} | {cell(e.fit)} | {'yes' if e.closed else ''} |\n")
     arc.add(index, "".join(out))
     out = ["# Filtered out\n", "\nJobs the search filters left out. They have no file of their own.\n"]
     if filtered:
-        out.append("\n| Job | Company | Why | Link |\n|---|---|---|---|\n")
+        out.append("\n| Job | Company | Why | Link | Also advertised at |\n|---|---|---|---|---|\n")
         for e in filtered:
-            out.append(f"| {cell(e.title)} | {cell(e.company)} | {cell(e.reason)} | {link('Original ad', e.url)} |\n")
+            same = " ".join(link(c.title or c.company or "The same job", c.url) for c in (entries[i] for i in e.copies if i in entries))
+            out.append(f"| {cell(e.title)} | {cell(e.company)} | {cell(e.reason)} | {link('Original ad', e.url)} | {esc_pipe(same)} |\n")
     else:
         out.append("\nNone.\n")
     arc.add(f"{base}/Jobs/Filtered out.md", "".join(out))
@@ -602,11 +633,14 @@ def _chats(db: Session, ws: Workspace, base: str, arc: Archive, entries: dict[in
             ids = [i for i in json.loads(thread.job_ids_json or "[]") if isinstance(i, int)]
         except ValueError:
             ids = []
-        about = []
+        about, seen = [], set()
         for i in ids:
             e = entries.get(i)
             if e is not None and e.path is None and e.main in entries:
                 e = entries[e.main]  # a merged copy: the job it was merged into
+            if e is not None and id(e) in seen:
+                continue  # a job and its merged copy are one job here
+            seen.add(id(e))
             if e is None:
                 about.append("a job that is no longer in this workspace")
             elif e.path:
@@ -624,7 +658,7 @@ def _chats(db: Session, ws: Workspace, base: str, arc: Archive, entries: dict[in
                 sources = []
             pages = [link(s.get("title") or s.get("url"), s.get("url")) for s in sources if isinstance(s, dict) and web_address(s.get("url"))]
             if pages:
-                out.append("\nPages used:\n\n" + bullets(pages))
+                out.append("\nPages used:\n\n" + "".join(f"- {p}\n" for p in pages))
         arc.add(path, "".join(out))
 
 

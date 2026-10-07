@@ -57,7 +57,8 @@ function initExportCard() {
       saveBlob(blob, name);
       setText(status, `Done. Your browser saved ${name} (${fmtBytes(blob.size)}).`);
     } catch (e) {
-      setText(status, e.status === 429 ? e.message : `Your data could not be downloaded: ${e.message}`);
+      setText(status, e.code === 'reauth_required' ? 'Nothing was downloaded: confirm your password to get your data.'
+        : e.status === 429 || e.status === 413 || e.status === 503 ? e.message : `Your data could not be downloaded: ${e.message}`);
     }
     setBusy(btn, false);
   });
