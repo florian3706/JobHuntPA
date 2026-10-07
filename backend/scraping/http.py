@@ -260,7 +260,10 @@ def _cache_get(key: str, ttl: timedelta) -> Optional[Response]:
 def _cache_put(key: str, status: int, body: str) -> None:
     db = SessionLocal()
     try:
-        db.merge(HttpCache(url=_cache_key(key), status_code=status, body=body, fetched_at=datetime.utcnow()))
+        row_key = _cache_key(key)
+        # Replaced without being read first: a row another process wrote can't be opened with this one's key.
+        db.query(HttpCache).filter(HttpCache.url == row_key).delete(synchronize_session=False)
+        db.add(HttpCache(url=row_key, status_code=status, body=body, fetched_at=datetime.utcnow()))
         db.commit()
     finally:
         db.close()

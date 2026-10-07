@@ -417,6 +417,14 @@ def _encodable(column, value: Any) -> bool:
         return False
 
 
+def _fallback(column) -> Any:
+    """What a NOT NULL column gets in place of a stored value that can't be used: its default, else an empty one."""
+    if column.default is not None and not callable(column.default.arg):
+        return column.default.arg
+    return {crypto.SealedJSON: [], crypto.SealedBool: False, crypto.SealedInt: 0,
+            crypto.SealedFloat: 0.0}.get(type(column.type), "")
+
+
 def _new_value(column, raw: Any, report: dict) -> tuple[bool, Any]:
     """(whether to write this column, the Python value to seal) for one stored value."""
     if isinstance(raw, (bytes, bytearray, memoryview)):
@@ -424,10 +432,11 @@ def _new_value(column, raw: Any, report: dict) -> tuple[bool, Any]:
     if raw is None:
         return column.type.always, None  # an always-sealed column gets its sealed NULL marker
     value = column.type.coerce_legacy(raw)
-    if not _encodable(column, value):  # a stored value of the wrong kind (it couldn't have been used)
+    if value is not None and not _encodable(column, value):  # the wrong kind of value: it couldn't have been used
         report["values_cleared"] += 1
-        default = column.default.arg if column.default is not None and not callable(column.default.arg) else None
-        value = default if default is not None or column.nullable else ""
+        value = None
+    if value is None and not column.nullable:
+        value = _fallback(column)
     return True, value
 
 

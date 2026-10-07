@@ -333,6 +333,12 @@ with TestClient(app) as c:
     out["while"] = [r.status_code, r.json()]
     out["status_while"] = c.get("/api/encryption/status").json()
     out["me_while"] = c.get("/api/auth/me").status_code
+    from backend import users
+    try:
+        users.create_user("newcomer@example.com", "a long enough password")
+        out["signup_while"] = "allowed"
+    except users.AccountError as exc:
+        out["signup_while"] = exc.message
     gate.set()
     for _ in range(300):
         if c.get("/api/encryption/status").json()["state"] == "done":
@@ -353,6 +359,7 @@ class ProgressWhileEncryptingTest(unittest.TestCase):
         self.assertGreater(body["total"], 10)
         self.assertEqual(out["status_while"]["state"], "running")
         self.assertEqual(out["me_while"], 200)  # signing in and out keep working
+        self.assertIn("encrypting", out["signup_while"])  # new accounts wait
         self.assertEqual(out["after"], [200, 2])
 
 

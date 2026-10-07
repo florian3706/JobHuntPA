@@ -366,9 +366,13 @@ def create_user(email: str, password: str, *, name: str = "", role: str = "user"
                 background: bool = False) -> NewAccount:
     """A new account with its own "My job search" workspace (what sign-up does, Phase K; tests use it now).
     Making someone an admin also needs the admin details key shared with them (Phase F)."""
+    from backend import migrate_encryption
+
     email, password, name = clean_email(email), check_password(password), clean_name(name)
     if role not in ("user", "admin"):
         raise ValueError("role must be user or admin")
+    if not migrate_encryption.is_done():  # sign-ups wait for the one-time encryption (accounts design §5.4)
+        raise AccountError("email", "JobHuntPA is encrypting its data. Try again in a few minutes.")
     db = SessionLocal()
     try:
         account = _create_user(db, email=email, password=password, name=name, role=role, created_via=created_via,
