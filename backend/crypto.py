@@ -660,13 +660,6 @@ def _pad(data: bytes, minimum: int) -> bytes:
     return data + b"\x80" + b"\x00" * (size - len(data) - 1)
 
 
-def _unpad(data: bytes) -> bytes:
-    body = data.rstrip(b"\x00")
-    if not body.endswith(b"\x80"):
-        raise Corrupt("A sealed value's padding is damaged")
-    return body[:-1]
-
-
 def always_none() -> None:
     """The ``default`` of an always-sealed column: an INSERT that leaves the column out still writes the sealed
     marker for NULL (``default=None`` would leave SQL NULL, which shows)."""

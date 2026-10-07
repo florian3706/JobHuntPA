@@ -597,6 +597,7 @@ class SqlGuardTest(unittest.TestCase):
                       select(Document.filename).distinct(), select(func.lower(Pin.label)),
                       select(Job.id).where(func.length(Job._description) > 5),
                       select(func.max(Job.last_seen)), select(Workspace).distinct()]
+        helpers.started()
         with engine.connect() as conn:
             for statement in statements:
                 with self.assertRaises(crypto.SealedSqlError):
@@ -604,6 +605,14 @@ class SqlGuardTest(unittest.TestCase):
             # Plaintext columns are fine, and so is counting rows.
             conn.execute(select(Job.id).order_by(Job.first_seen, Job.id).distinct())
             conn.execute(select(func.count()).select_from(Job))
+
+    def test_sealed_columns_have_no_server_default_and_always_sealed_ones_always_write(self):
+        for table in db_module.Base.metadata.sorted_tables:
+            for column in crypto.sealed_columns(table):
+                name = f"{table.name}.{column.name}"
+                self.assertIsNone(column.server_default, name)  # a database default would be plaintext (§15)
+                if column.type.always:  # an INSERT that leaves it out must still write the sealed marker
+                    self.assertIsNotNone(column.default, name)
 
     def test_every_table_with_sealed_columns_is_covered_by_the_migration(self):
         names = {t.name for t, _cols in migrate_encryption.sealed_tables()}
