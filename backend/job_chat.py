@@ -193,7 +193,7 @@ def known_links(db: Session, jobs: list[Job]) -> set[str]:
     urls = set()
     for job in jobs:
         urls.add(job.url or "")
-        urls.update(u for (u,) in db.query(Job.url).filter(Job.duplicate_of == job.id))
+        urls.update(copy.url or "" for copy in db.query(Job).filter(Job.duplicate_of == job.id))
         urls.update(re.findall(r"https?://[^\s)\]>\"']+", job.description or ""))
         profile = db.get(CompanyProfile, company_key(job.company or ""))
         if profile and profile.status == "done":

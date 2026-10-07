@@ -16,9 +16,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import schedule, tasks, users
+from backend import crypto, migrate_encryption, schedule, tasks, users
 from backend.app_settings import router as app_settings_router
 from backend.auth import AuthProblem
 from backend.auth import router as auth_router
@@ -60,6 +61,10 @@ class StripQueryString(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(StripQueryString())
 
+# Uploads (a CV, a saved job page) stay in memory while a request reads them: Starlette would otherwise spool any
+# file over 1 MB to a plaintext temporary file on disk before backend.docs seals it (accounts design §2.2).
+MultiPartParser.spool_max_size = 24 * 1024 * 1024
+
 
 class NoStoreApi:
     """Adds ``Cache-Control: no-store`` to every ``/api`` response, so nothing of it stays in a browser cache."""
@@ -92,6 +97,8 @@ async def lifespan(app: FastAPI):
     # The server key file, then the first admin from the environment or the first-run token (backend.users).
     # A missing or wrong key file stops start-up here, with what to do.
     users.startup()
+    # An encryption run the last process left running waits for its admin's next sign-in; after it, strict mode.
+    migrate_encryption.at_startup()
     tasks.mark_interrupted()
     schedule.start_scheduler(lambda ws: start_search_run(ws, scheduled=True))
     yield
@@ -120,11 +127,21 @@ app.include_router(offices_router)
 app.include_router(commute_router)
 app.include_router(commute_status_router)
 app.include_router(schedule.router)
+app.include_router(migrate_encryption.router)
 
 
 @app.exception_handler(AuthProblem)
 def auth_problem(_request: Request, exc: AuthProblem):
     return exc.response()
+
+
+@app.exception_handler(crypto.KeyMismatch)
+def not_yours(_request: Request, exc: crypto.KeyMismatch):
+    """A sealed value that doesn't open under the request's key: another user's row (a slip past the workspace
+    checks), or one that was moved or changed in the database. Either way it doesn't exist for this user: 404, the
+    same as a row that isn't there (accounts design §2.1 and §4)."""
+    log.warning("A sealed value didn't open under the request's key (%s)", exc.__class__.__name__)
+    return JSONResponse({"detail": "Not found"}, status_code=404)
 
 
 @app.get("/api/health")

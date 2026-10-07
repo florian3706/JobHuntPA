@@ -8,8 +8,10 @@ the schedule is right even when the server's clock runs on UTC (the Pi).
 A slot that passes while another run is busy waits for it, for up to an
 hour; so does a slot missed because the app was off, if the app starts
 within the hour. A slot is passed over when a search of the workspace was
-started since its time (Run search clicked), or when there's nothing to
-search. Workspaces due at the same time run one after another.
+started since its time (Run search clicked), when there's nothing to
+search, or when the workspace's owner hasn't allowed background access
+(the server then has no key to their data). Workspaces due at the same
+time run one after another.
 
 Endpoints:
     GET/PUT /api/schedule
@@ -29,7 +31,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import tasks
+from backend import crypto, tasks
 from backend.db import CompanySource, SearchRun, SearchSchedule, SessionLocal, Workspace, get_db
 from backend.workspaces import current_workspace
 
@@ -169,31 +171,45 @@ def _naive_utc(aware: datetime) -> datetime:
 
 def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) -> Optional[dict]:
     """Start at most one due scheduled search. ``start_search(ws)`` queues
-    the run; returns the run it started, if any."""
+    the run; returns the run it started, if any.
+
+    A workspace's data is sealed under its owner's key, which the server holds only for an owner who allowed
+    background access (``users.background_key``): the search runs inside that key's scope, and a slot of an owner
+    who didn't is passed over."""
+    from backend import migrate_encryption, users
+
     now = now or datetime.now(timezone.utc)
+    if not migrate_encryption.is_done():
+        return None  # the data is being encrypted (or waits for its admin to sign in)
     if tasks.active_run() is not None:
         return None  # due slots wait (up to GRACE) for the worker
     db = SessionLocal()
     try:
         # A workspace with no owner (an install from before accounts, until its first admin is created) waits.
-        for (ws,) in db.query(Workspace.id).filter(Workspace.owner_id.isnot(None)).order_by(Workspace.id).all():
+        for ws, owner in (db.query(Workspace.id, Workspace.owner_id).filter(Workspace.owner_id.isnot(None))
+                          .order_by(Workspace.id).all()):
             row = db.get(SearchSchedule, ws)
             slot = due_slot(get_schedule(db, ws), now, _utc(row.last_slot) if row else None)
             if slot is None:
                 continue
-            reason = None
-            if nothing_to_search(db, ws):
-                reason = "nothing to search"
-            elif (db.query(SearchRun.id).filter(SearchRun.workspace_id == ws, SearchRun.kind == "search",
-                                                SearchRun.started_at >= _naive_utc(slot)).first()):
-                reason = "a search already ran since"
-            if reason is None:
-                run = start_search(ws)
+            reason, run = None, None
+            key = users.background_key(db, owner)
+            if key is None:
+                reason = "the account doesn't allow background access"
+            else:
+                with crypto.as_user(owner, key):
+                    if nothing_to_search(db, ws):
+                        reason = "nothing to search"
+                    elif (db.query(SearchRun.id).filter(SearchRun.workspace_id == ws, SearchRun.kind == "search",
+                                                        SearchRun.started_at >= _naive_utc(slot)).first()):
+                        reason = "a search already ran since"
+                    else:
+                        run = start_search(ws)  # the run's thread inherits this key scope
+            if run is not None:
                 if run.get("already_running"):
                     return None  # someone clicked a run just now; try again next tick
                 log.info("workspace %s: scheduled search for %s started (run %s)", ws, slot.isoformat(), run["id"])
             else:
-                run = None
                 log.info("workspace %s: scheduled search for %s passed over: %s", ws, slot.isoformat(), reason)
             _row(db, ws).last_slot = _naive_utc(slot)
             db.commit()

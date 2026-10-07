@@ -25,6 +25,14 @@ init_db()
 LLM_ENV = {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://llm.example/v1", "LLM_MODEL": "m"}
 
 
+def setUpModule():
+    helpers.enter_admin_scope()  # these tests write rows directly and call background code as the admin
+
+
+def tearDownModule():
+    helpers.exit_admin_scope()
+
+
 class DocsTestCase(unittest.TestCase):
     """Each test gets a workspace of its own (deleted afterwards), so documents from other tests don't mix in."""
 

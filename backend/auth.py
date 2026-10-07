@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from backend import crypto, ratelimit, sessions, users
+from backend import crypto, migrate_encryption, ratelimit, sessions, users
 from backend.db import SessionLocal, User, get_db, utcnow
 from backend.sessions import AuthUser, current_user
 
@@ -112,6 +112,9 @@ def first_run(body: FirstRunIn, request: Request):
         db.commit()
     finally:
         db.close()
+    # Encrypt the data from before accounts with the new admin's key (a new install: next to nothing, done here;
+    # a big database carries on in the background while the app shows the progress).
+    migrate_encryption.ensure_started(account.user_id, account.dek, wait_s=5)
     return _signed_in(request, secret, body.remember, {"ok": True, "recovery_codes": account.recovery_codes}, 201)
 
 
@@ -151,6 +154,8 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     secret = sessions.create(db, user, dek, persistent=body.remember)
     db.commit()
     log.info("Signed in: user %s", user.id)
+    if not migrate_encryption.known_done():  # their key may be the one the encryption run is waiting for
+        migrate_encryption.ensure_started(user.id, dek, wait_s=0)
     return _signed_in(request, secret, body.remember, {"ok": True, "user": {"id": user.id, "role": user.role}})
 
 

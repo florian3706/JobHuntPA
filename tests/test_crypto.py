@@ -291,6 +291,9 @@ class SealedColumnTest(unittest.TestCase):
         self.addCleanup(self.engine.dispose)
         Base.metadata.create_all(self.engine)
         self.dek = crypto.new_key()
+        strict = mock.patch.object(crypto, "_strict", False)  # (the app's own database may have turned it on)
+        strict.start()
+        self.addCleanup(strict.stop)
 
     def raw(self, sql, **params):
         with self.engine.connect() as conn:

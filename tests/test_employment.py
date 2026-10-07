@@ -29,6 +29,14 @@ from backend.pool import merge_posting  # noqa: E402
 init_db()
 
 
+def setUpModule():
+    helpers.enter_admin_scope()  # these tests write rows directly and call background code as the admin
+
+
+def tearDownModule():
+    helpers.exit_admin_scope()
+
+
 class NormaliserTest(unittest.TestCase):
     def test_every_vocabulary_value_maps_to_itself(self):
         for value in EMPLOYMENT_TYPES:

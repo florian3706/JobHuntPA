@@ -41,6 +41,14 @@ Disallow: /companies
 """
 
 
+def setUpModule():
+    helpers.enter_admin_scope()  # these tests write rows directly and call background code as the admin
+
+
+def tearDownModule():
+    helpers.exit_admin_scope()
+
+
 class RobotsTest(unittest.TestCase):
     def test_seek_rules(self):
         r = RobotsRules(SEEK_ROBOTS, "jobhuntpa")
@@ -424,7 +432,8 @@ class ResearchV2Test(unittest.TestCase):
         from backend.db import CompanyProfile, Job, SessionLocal
         from backend.research import RESEARCH_VERSION, companies_to_research
         db = SessionLocal()
-        db.add(Job(url="https://x.example/job/1", title="PM", company="Oldco", status="to_review", detail_status="full"))
+        db.add(Job(workspace_id=1, url="https://x.example/job/1", title="PM", company="Oldco", status="to_review",
+                   detail_status="full"))
         db.add(CompanyProfile(key="oldco", name="Oldco", status="done", research_version=RESEARCH_VERSION - 1,
                               researched_at=datetime.utcnow()))
         db.commit()

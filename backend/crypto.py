@@ -42,12 +42,27 @@ same column. The threat model is someone who can *read* the database (design, "T
 ``with as_user(user_id, dek): ...``. Sealing or opening outside one raises ``Locked``. Thread pools must start work
 through ``submit`` (re-exported from backend/threads.py), which copies the context into the worker.
 
-**Sealed columns.** ``SealedText``, ``SealedJSON``, ``SealedInt`` and ``SealedFloat`` encrypt on write and decrypt
-on read under the current scope. NULL stays NULL; a value that isn't an envelope (plaintext from before encryption,
-or a ``server_default``) is read as it is and coerced to the column's type. SQL can't compare ciphertexts, so any
-operator other than IS NULL / IS NOT NULL raises ``TypeError`` when the query is built. The comparator can't see a
-bare ``order_by(col)``, ``group_by(col)``, ``select(...).distinct()`` or ``func.x(col)``: never use a sealed column
-in those either (sort and de-duplicate in Python, or compare a ``blind_index``).
+**Sealed columns.** ``SealedText``, ``SealedJSON``, ``SealedInt``, ``SealedFloat``, ``SealedBool`` and
+``SealedDateTime`` encrypt on write and decrypt on read under the current scope. NULL stays NULL; a value that isn't
+an envelope (plaintext from before encryption) is read as it is and coerced to the column's type, until the
+encryption migration has finished: from then on **strict mode** (``set_strict``) refuses it with ``Plaintext`` (a
+``KeyMismatch``, so the API answers 404), because someone who can write the database could otherwise swap a sealed
+value for a plaintext one of their choosing. Never give a sealed column a ``server_default``.
+
+``SealedAlways(SealedText)`` (and the other kinds) is for columns where even whether a value is set is personal
+(``jobs.hidden``, ``jobs.excluded_reason``, the office override, a job's own content): NULL is written as a sealed
+marker, every value is padded (to ``pad`` bytes, then to a multiple of 32), so the stored bytes don't show whether
+it is set, and SQL can't test it at all, not even with IS NULL. A model gives such a column ``default=always_none``
+so an INSERT that leaves it out still writes the marker.
+
+SQL can't compare ciphertexts, so any operator other than IS NULL / IS NOT NULL raises ``TypeError`` when the query
+is built. The comparator can't see a bare ``order_by(col)``, ``group_by(col)``, ``select(...).distinct()`` or
+``func.x(col)``, so a compile hook (``_refuse_sql_on_sealed``) refuses those with ``SealedSqlError`` the first time
+a statement of that shape is compiled: sort and de-duplicate in Python, or compare a ``blind_index``.
+
+**The process key.** ``http_cache`` holds listing pages whose URLs carry search terms. Its rows are keyed by
+``process_index(url)`` and its bodies sealed with ``ProcessSealedText``, both under a random key that exists only in
+this process's memory, so they can't be read after a restart (startup deletes them).
 """
 from __future__ import annotations
 
@@ -74,10 +89,16 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from datetime import date, datetime
+
 from sqlalchemy import Column, LargeBinary, Table, event
 from sqlalchemy.exc import DontWrapMixin
-from sqlalchemy.sql import operators
-from sqlalchemy.sql.elements import Null
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql import operators, visitors
+from sqlalchemy.sql.dml import Delete, Update
+from sqlalchemy.sql.elements import ColumnClause, Null
+from sqlalchemy.sql.functions import FunctionElement
+from sqlalchemy.sql.selectable import Select
 from sqlalchemy.types import TypeDecorator
 
 from backend import config  # noqa: F401  (loads .env first: JOBHUNT_KDF_PROFILE may be set there)
@@ -123,9 +144,19 @@ class Corrupt(KeyMismatch):
     this too."""
 
 
+class Plaintext(Corrupt):
+    """Strict mode (after the encryption migration): a sealed column holds plaintext, or an always-sealed column
+    holds NULL. Either was written past the app (or by a bug), so the value is refused rather than trusted."""
+
+
 class SealedValueError(DontWrapMixin, TypeError):
     """A value of the wrong type for a sealed column (a bug). Not wrapped by SQLAlchemy, whose StatementError would
     print the plaintext parameters in its message, and so in logs."""
+
+
+class SealedSqlError(DontWrapMixin, TypeError):
+    """SQL that would sort, group, de-duplicate or run a function over a sealed column (a bug: the database only
+    sees ciphertexts, so the result would be silently wrong)."""
 
 
 # ---------------------------------------------------------------------------
@@ -573,19 +604,34 @@ def verify_password(stored_verifier: bytes, keys: PasswordKeys) -> bool:
 # Sealed column types
 # ---------------------------------------------------------------------------
 
+_strict = False
+
+
+def set_strict(on: bool) -> None:
+    """Strict mode (accounts design §15): once the encryption migration has finished, a sealed column that holds
+    plaintext (or an always-sealed column that holds NULL) raises ``Plaintext`` instead of being read."""
+    global _strict
+    _strict = bool(on)
+
+
+def strict() -> bool:
+    return _strict
+
+
 def _is_null(value: Any) -> bool:
     return value is None or isinstance(value, Null)
 
 
 class _SealedComparator(TypeDecorator.Comparator):
-    """Lets SQL test a sealed column only with IS NULL / IS NOT NULL (``== None`` and ``!= None`` compile to those).
-    Everything else would compare random ciphertexts, which never match: raise at once instead of failing quietly."""
+    """Lets SQL test a sealed column only with IS NULL / IS NOT NULL (``== None`` and ``!= None`` compile to those),
+    and an always-sealed one not at all. Everything else would compare random ciphertexts, which never match: raise
+    at once instead of failing quietly."""
 
     __slots__ = ()
 
     def operate(self, op, *other, **kwargs):
         if op in (operators.is_, operators.is_not, operators.eq, operators.ne) and len(other) == 1 \
-                and _is_null(other[0]):
+                and _is_null(other[0]) and not getattr(self.type, "always", False):
             return super().operate(op, *other, **kwargs)
         raise TypeError(_refusal(self.expr, op))
 
@@ -594,8 +640,36 @@ class _SealedComparator(TypeDecorator.Comparator):
 
 
 def _refusal(expr: Any, op: Any) -> str:
+    if getattr(getattr(expr, "type", None), "always", False):
+        return f"{expr} is always sealed, so SQL can't test it at all (not even IS NULL): decide in Python."
     return (f"{expr} is encrypted, so SQL can only test it with IS NULL / IS NOT NULL (not "
             f"{getattr(op, '__name__', op)}). Filter, sort or de-duplicate in Python, or use a blind index.")
+
+
+# An always-sealed value: a tag byte (none, or a value), then ISO/IEC 7816-4 padding (0x80, then zeros) up to the
+# column's ``pad`` bytes or the next multiple of PAD_BLOCK beyond that, so the stored length doesn't show whether
+# it's set (nor, for values shorter than ``pad``, how long it is).
+_ALWAYS_NONE = b"\x00"
+_ALWAYS_VALUE = b"\x01"
+PAD_BLOCK = 32
+
+
+def _pad(data: bytes, minimum: int) -> bytes:
+    size = max(minimum, -(-(len(data) + 1) // PAD_BLOCK) * PAD_BLOCK)
+    return data + b"\x80" + b"\x00" * (size - len(data) - 1)
+
+
+def _unpad(data: bytes) -> bytes:
+    body = data.rstrip(b"\x00")
+    if not body.endswith(b"\x80"):
+        raise Corrupt("A sealed value's padding is damaged")
+    return body[:-1]
+
+
+def always_none() -> None:
+    """The ``default`` of an always-sealed column: an INSERT that leaves the column out still writes the sealed
+    marker for NULL (``default=None`` would leave SQL NULL, which shows)."""
+    return None
 
 
 class _Sealed(TypeDecorator):
@@ -606,11 +680,14 @@ class _Sealed(TypeDecorator):
     cache_ok = True
     comparator_factory = _SealedComparator
 
-    def __init__(self, label: Optional[str] = None):
+    def __init__(self, label: Optional[str] = None, *, always: bool = False, pad: int = PAD_BLOCK):
         """``label``: the AAD label, normally left out: attaching the column to a table sets ``<table>.<column>``.
-        Give it to keep reading old values after renaming a table or column (use the old name)."""
+        Give it to keep reading old values after renaming a table or column (use the old name).
+        ``always`` and ``pad``: see ``SealedAlways``."""
         super().__init__()
         self.label = label
+        self.always = bool(always)
+        self.pad = int(pad)
         self._aad: Optional[bytes] = None if label is None else b"jh/" + label.encode("utf-8")
 
     def _column_aad(self) -> bytes:
@@ -619,21 +696,45 @@ class _Sealed(TypeDecorator):
                               "to be bound to. Use it in a Column of a Table, or give it label=...")
         return self._aad
 
+    def column_name(self) -> str:
+        """``table.column`` (for messages; never a value)."""
+        return self._aad[3:].decode("utf-8", "replace") if self._aad else type(self).__name__
+
     def process_bind_param(self, value: Any, dialect: Any) -> Optional[bytes]:
-        if value is None:
-            return None  # NULL stays NULL, so IS NULL filters keep working
-        return _seal_scope(self._encode(value), self._column_aad())
+        if not self.always:
+            if value is None:
+                return None  # NULL stays NULL, so IS NULL filters keep working
+            return _seal_scope(self._encode(value), self._column_aad())
+        payload = _ALWAYS_NONE if value is None else _ALWAYS_VALUE + self._encode(value)
+        return _seal_scope(_pad(payload, self.pad), self._column_aad())
 
     def process_result_value(self, value: Any, dialect: Any) -> Any:
         if value is None:
+            if self.always and _strict:
+                raise Plaintext(f"{self.column_name()} is NULL where a sealed value belongs")
             return None
         if isinstance(value, (bytes, bytearray, memoryview)):
             value = bytes(value)
             if value[:1] == bytes([_V1]):
-                return self._decode(_open_scope(value, self._column_aad()))
+                data = _open_scope(value, self._column_aad())
+                if self.always:
+                    data = _unpad(data)
+                    if data == _ALWAYS_NONE:
+                        return None
+                    if data[:1] != _ALWAYS_VALUE:
+                        raise Corrupt(f"{self.column_name()}: unknown sealed value tag")
+                    data = data[1:]
+                return self._decode(data)
         # Not an envelope: plaintext from before encryption (SQLite returns it as TEXT, INTEGER or REAL, never as a
-        # BLOB starting with 0x01) or a server_default. Read it as it is.
+        # BLOB starting with 0x01). Read it as it is, unless the migration has finished (strict mode).
+        if _strict:
+            raise Plaintext(f"{self.column_name()} holds a value that isn't sealed")
         return self._legacy(value)
+
+    def coerce_legacy(self, value: Any) -> Any:
+        """A plaintext value from before encryption, as this column's Python type (the encryption migration seals
+        it). Best effort, like reading it: what can't be coerced is returned unchanged."""
+        return None if value is None else self._legacy(value)
 
     # Subclasses: plaintext <-> bytes, and coercion of legacy plaintext (best effort: what can't be coerced is
     # returned unchanged, which is what the plain column type did before).
@@ -645,6 +746,16 @@ class _Sealed(TypeDecorator):
 
     def _legacy(self, value: Any) -> Any:
         raise NotImplementedError
+
+
+def SealedAlways(kind: type, pad: int = PAD_BLOCK, label: Optional[str] = None) -> "_Sealed":
+    """An always-sealed column of ``kind`` (``SealedText``, ``SealedBool``, ...): NULL is written as a sealed marker
+    and every value is padded to at least ``pad`` bytes (then to a multiple of 32), so neither whether it is set nor
+    (below ``pad``) its length shows, and SQL can't test it at all (accounts design §2.1 and §14.6). Give the Column
+    ``default=always_none`` (or a real default) so an INSERT that leaves it out still seals."""
+    if not (isinstance(kind, type) and issubclass(kind, _Sealed)):
+        raise TypeError("SealedAlways takes a sealed column type, such as SealedText")
+    return kind(label, always=True, pad=pad)
 
 
 def _number(value: Any) -> bool:
@@ -764,6 +875,64 @@ class SealedFloat(_Sealed):
         return value
 
 
+class SealedBool(_Sealed):
+    cache_ok = True  # SQLAlchemy reads it from each class itself, not inherited
+
+    @property
+    def python_type(self):
+        return bool
+
+    def _encode(self, value: Any) -> bytes:
+        if isinstance(value, bool) or (isinstance(value, int) and value in (0, 1)):
+            return b"1" if value else b"0"
+        raise SealedValueError(f"SealedBool takes a bool, not {type(value).__name__}")
+
+    def _decode(self, data: bytes) -> bool:
+        if data not in (b"0", b"1"):
+            raise Corrupt("A sealed bool holds something else")
+        return data == b"1"
+
+    def _legacy(self, value: Any) -> Any:
+        if isinstance(value, (bool, int, float)):
+            return bool(value)
+        if isinstance(value, (str, bytes)):
+            text = (value.decode("utf-8", "replace") if isinstance(value, bytes) else value).strip().lower()
+            if text in ("1", "true", "t", "yes"):
+                return True
+            if text in ("0", "false", "f", "no", ""):
+                return False
+        return value
+
+
+class SealedDateTime(_Sealed):
+    """A ``datetime`` (the app keeps naive UTC), sealed as its ISO 8601 text."""
+
+    cache_ok = True  # SQLAlchemy reads it from each class itself, not inherited
+
+    @property
+    def python_type(self):
+        return datetime
+
+    def _encode(self, value: Any) -> bytes:
+        if isinstance(value, datetime):
+            return value.isoformat().encode("ascii")
+        if isinstance(value, date):
+            return datetime(value.year, value.month, value.day).isoformat().encode("ascii")
+        raise SealedValueError(f"SealedDateTime takes a datetime, not {type(value).__name__}")
+
+    def _decode(self, data: bytes) -> datetime:
+        return datetime.fromisoformat(data.decode("ascii"))
+
+    def _legacy(self, value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, (str, bytes)):  # SQLAlchemy's SQLite format: "2026-10-07 13:42:46.025000"
+            text = value.decode("utf-8", "replace") if isinstance(value, bytes) else value
+            with contextlib.suppress(ValueError):
+                return datetime.fromisoformat(text.strip())
+        return value
+
+
 @event.listens_for(Column, "after_parent_attach")
 def _bind_column_label(column: Column, parent: Any) -> None:
     """Give each sealed column its AAD label, ``jh/<table>.<column>``, when it is attached to its table (so models
@@ -779,3 +948,113 @@ def _bind_column_label(column: Column, parent: Any) -> None:
         copy = sealed.copy()
         copy._aad = aad
         column.type = copy
+
+
+def is_sealed_type(type_: Any) -> bool:
+    """Whether a column type holds ciphertext: the sealed types, and the process-sealed http cache body."""
+    return isinstance(type_, (_Sealed, ProcessSealedText))
+
+
+def sealed_columns(table: Table) -> list[Column]:
+    """The table's columns under a user's key (the ``Sealed*`` types), in table order."""
+    return [c for c in table.columns if isinstance(c.type, _Sealed)]
+
+
+# ---------------------------------------------------------------------------
+# The process key: random, and only ever in this process's memory, for the shared http cache (design 2.2).
+# ---------------------------------------------------------------------------
+
+_PROCESS_KEY = new_key()
+_PROCESS_AEAD = AESGCM(_PROCESS_KEY)
+_PROCESS_KID = key_id(_PROCESS_KEY)
+_PROCESS_INDEX_KEY = hkdf(_PROCESS_KEY, b"jh process index v1")
+
+
+def process_index(purpose: str, value: str) -> str:
+    """``HMAC(process key, purpose \\0 value)`` as hex: a lookup key that means nothing after a restart."""
+    msg = purpose.encode("utf-8") + b"\0" + value.encode("utf-8")
+    return hmac.new(_PROCESS_INDEX_KEY, msg, hashlib.sha256).hexdigest()
+
+
+class ProcessSealedText(TypeDecorator):
+    """Text sealed with the process key (no user scope needed). A row from an earlier process, or plaintext, raises
+    ``KeyMismatch``: callers treat that as a cache miss."""
+
+    impl = LargeBinary
+    cache_ok = True
+    comparator_factory = _SealedComparator
+    always = False
+
+    def __init__(self, label: str):
+        super().__init__()
+        self.label = label
+        self._aad = b"jh-process|" + label.encode("utf-8")
+
+    def process_bind_param(self, value: Any, dialect: Any) -> Optional[bytes]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise SealedValueError(f"ProcessSealedText takes a str, not {type(value).__name__}")
+        return _seal_with(_PROCESS_AEAD, _PROCESS_KID, value.encode("utf-8"), self._aad)
+
+    def process_result_value(self, value: Any, dialect: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if not is_sealed(value):
+            raise KeyMismatch("Not sealed with this process's key")
+        return _open_with(_PROCESS_AEAD, _PROCESS_KID, value, self._aad).decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# No SQL over sealed columns (accounts design §15). The comparator can't see ORDER BY, GROUP BY, DISTINCT or a
+# function call, so statements are checked when they are compiled. SQLAlchemy caches compiled statements by their
+# shape, so this runs once per shape, not once per query.
+# ---------------------------------------------------------------------------
+
+def _sealed_in(clause: Any) -> Optional[str]:
+    """The first sealed column in ``clause`` (as ``table.column``), or None."""
+    for element in visitors.iterate(clause):
+        if isinstance(element, ColumnClause) and is_sealed_type(element.type):
+            return f"{getattr(element.table, 'name', '?')}.{element.name}"
+    return None
+
+
+def check_statement(statement: Any) -> None:
+    """``SealedSqlError`` if ``statement`` sorts, groups, de-duplicates or calls an SQL function over a sealed
+    column."""
+    if isinstance(statement, Select):
+        for what, clauses in (("ORDER BY", statement._order_by_clauses),
+                              ("GROUP BY", statement._group_by_clauses)):
+            for clause in clauses:
+                name = _sealed_in(clause)
+                if name:
+                    raise SealedSqlError(f"{what} {name}: the column is encrypted. Sort or group in Python.")
+        if statement._distinct or statement._distinct_on:
+            for column in statement.selected_columns:
+                name = _sealed_in(column)
+                if name:
+                    raise SealedSqlError(f"DISTINCT over {name}: the column is encrypted. De-duplicate in Python.")
+    for element in visitors.iterate(statement):
+        if isinstance(element, FunctionElement):
+            name = _sealed_in(element.clauses)
+            if name:
+                raise SealedSqlError(f"SQL function {getattr(element, 'name', '?')}() over {name}: the column is "
+                                     "encrypted. Compute it in Python.")
+
+
+@compiles(Select)
+def _refuse_sql_on_sealed(select: Select, compiler: Any, **kw: Any) -> str:
+    check_statement(select)
+    return compiler.visit_select(select, **kw)
+
+
+@compiles(Update)
+def _refuse_update_over_sealed(statement: Update, compiler: Any, **kw: Any) -> str:
+    check_statement(statement)
+    return compiler.visit_update(statement, **kw)
+
+
+@compiles(Delete)
+def _refuse_delete_over_sealed(statement: Delete, compiler: Any, **kw: Any) -> str:
+    check_statement(statement)
+    return compiler.visit_delete(statement, **kw)

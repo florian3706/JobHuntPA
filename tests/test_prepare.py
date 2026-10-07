@@ -28,11 +28,19 @@ from sqlalchemy import text  # noqa: E402
 from sqlalchemy.orm import defer  # noqa: E402
 
 from backend import app as app_module  # noqa: E402
-from backend import tasks, threads  # noqa: E402
+from backend import crypto, tasks, threads  # noqa: E402
 from backend.adapters.base import Adapter, Posting  # noqa: E402
 from backend.db import CompanyProfile, FitResult, Job, SearchRun, SessionLocal, engine, init_db  # noqa: E402
 
 init_db()
+
+
+def setUpModule():
+    helpers.enter_admin_scope()  # these tests write rows directly and call background code as the admin
+
+
+def tearDownModule():
+    helpers.exit_admin_scope()
 
 
 class WorkspaceTestCase(unittest.TestCase):
@@ -193,14 +201,27 @@ class NormalisedReasonTest(WorkspaceTestCase):
         job.excluded_reason = ""
         db.commit()
         raw = db.execute(text("SELECT excluded_reason FROM jobs WHERE id = :i"), {"i": job_id}).scalar()
-        self.assertIsNone(raw)
+        self.assertTrue(crypto.is_sealed(raw))  # NULL is stored as a sealed marker (not even that shows)
+        db.expire_all()
+        self.assertIsNone(db.get(Job, job_id).excluded_reason)
         db.close()
 
     def test_one_time_data_fix(self):
+        """Before encryption, the repair turns a legacy "" into NULL; afterwards the column is sealed and left
+        alone (db._fix_legacy_data)."""
+        from backend import db as db_module
+
         with engine.begin() as conn:
-            conn.execute(text("INSERT INTO jobs (workspace_id, url, excluded_reason, status, detail_status, hidden) "
-                              "VALUES (:w, 'https://norm.example/legacy', '', 'to_review', 'none', 0)"), {"w": self.ws})
-        init_db()
+            conn.execute(text("INSERT INTO jobs (workspace_id, url, excluded_reason, status, detail_status, hidden, "
+                              "origin) VALUES (:w, 'https://norm.example/legacy', '', 'to_review', 'none', 0, "
+                              "'private')"), {"w": self.ws})
+        def remove():  # plaintext in a sealed column: strict mode would refuse it in later tests
+            with engine.begin() as conn:
+                conn.execute(text("DELETE FROM jobs WHERE url = 'https://norm.example/legacy'"))
+
+        self.addCleanup(remove)
+        with mock.patch.object(db_module, "encryption_done", lambda conn: False):
+            init_db()
         with engine.connect() as conn:
             value = conn.execute(text("SELECT excluded_reason FROM jobs WHERE url = 'https://norm.example/legacy'")).scalar()
         self.assertIsNone(value)
@@ -290,7 +311,8 @@ class TaskQueueTest(WorkspaceTestCase):
         db = SessionLocal()
         run = db.get(SearchRun, run_id)
         self.assertEqual((run.state, run.error_code), ("failed", "interrupted"))
-        self.assertEqual(run.error, "interrupted by server restart")  # the visible message is unchanged
+        self.assertIsNone(run.error)  # nothing sealed is written without a key...
+        self.assertEqual(run.to_dict()["error"], "interrupted by server restart")  # ...the visible message is unchanged
         db.close()
 
     def test_failed_run_logs_only_the_class_name(self):

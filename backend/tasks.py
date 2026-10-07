@@ -13,6 +13,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Callable, Optional
 
+from sqlalchemy.orm import load_only
+
+from backend import crypto
 from backend.db import SearchRun, SessionLocal
 from backend.threads import submit
 
@@ -25,37 +28,50 @@ Progress = Callable[[str, dict], None]
 
 
 def _update(run_id: int, **fields) -> None:
+    """Write these fields of a run without loading it (sealed ones are sealed under the current scope)."""
     db = SessionLocal()
     try:
-        run = db.get(SearchRun, run_id)
-        for k, v in fields.items():
-            setattr(run, k, v)
+        db.query(SearchRun).filter(SearchRun.id == run_id).update(
+            {getattr(SearchRun, k): v for k, v in fields.items()}, synchronize_session=False)
         db.commit()
     finally:
         db.close()
 
 
 def active_run(ws: Optional[int] = None) -> Optional[dict]:
-    """The newest queued or running run (of workspace ``ws`` when given, else of any)."""
+    """The newest queued or running run (of workspace ``ws`` when given, else of any), plaintext fields only: the
+    scheduler asks with no key (accounts design §2.3)."""
     db = SessionLocal()
     try:
-        q = db.query(SearchRun).filter(SearchRun.state.in_(["queued", "running"]))
+        q = db.query(SearchRun).options(load_only(SearchRun.id, SearchRun.workspace_id, SearchRun.kind,
+                                                  SearchRun.scheduled, SearchRun.state, SearchRun.started_at,
+                                                  SearchRun.finished_at))
+        q = q.filter(SearchRun.state.in_(["queued", "running"]))
         if ws is not None:
             q = q.filter(SearchRun.workspace_id == ws)
         run = q.order_by(SearchRun.id.desc()).first()
-        return run.to_dict() if run else None
+        return run.plain_dict() if run else None
     finally:
         db.close()
 
 
 def mark_interrupted() -> None:
-    """Runs left running by a previous server process can never finish."""
+    """Runs left running by a previous server process can never finish. Written without anyone's key: the error
+    is a code, which ``SearchRun.to_dict`` turns into words."""
     db = SessionLocal()
     try:
         db.query(SearchRun).filter(SearchRun.state.in_(["queued", "running"])).update(
-            {SearchRun.state: "failed", SearchRun.error: "interrupted by server restart",
-             SearchRun.error_code: "interrupted", SearchRun.finished_at: datetime.utcnow()}, synchronize_session=False)
+            {SearchRun.state: "failed", SearchRun.error_code: "interrupted", SearchRun.finished_at: datetime.utcnow()},
+            synchronize_session=False)
         db.commit()
+    finally:
+        db.close()
+
+
+def _full(run_id: int) -> dict:
+    db = SessionLocal()
+    try:
+        return db.get(SearchRun, run_id).to_dict()
     finally:
         db.close()
 
@@ -63,11 +79,12 @@ def mark_interrupted() -> None:
 def start(kind: str, job: Callable[[Progress], dict], ws: int, scheduled: bool = False) -> dict:
     """Queue ``job(progress)`` for workspace ``ws``; refuses when that workspace already has an active
     run. Runs of other workspaces wait their turn: the single worker takes them first in, first out
-    (one scraper/LLM run at a time keeps crawl delays and rate limits simple)."""
+    (one scraper/LLM run at a time keeps crawl delays and rate limits simple). Called inside the owner's key
+    scope (a request, or the scheduler's), which the worker thread inherits."""
     with _start_lock:
         current = active_run(ws)
         if current is not None:
-            return {**current, "already_running": True}
+            return {**_full(current["id"]), "already_running": True}
         db = SessionLocal()
         try:
             run = SearchRun(workspace_id=ws, kind=kind, scheduled=scheduled, state="queued", progress_json="{}")
@@ -98,7 +115,10 @@ def _execute(run_id: int, job: Callable[[Progress], dict]) -> None:
         summary = job(progress)
     except Exception as exc:
         log.error("run %s failed: %s", run_id, exc.__class__.__name__)  # the message may hold user data
-        _update(run_id, state="failed", error=f"{exc.__class__.__name__}: {exc}", finished_at=datetime.utcnow())
+        try:
+            _update(run_id, state="failed", error=f"{exc.__class__.__name__}: {exc}", finished_at=datetime.utcnow())
+        except crypto.CryptoError:  # no key to seal the error with: record that it failed all the same
+            _update(run_id, state="failed", error_code="failed", finished_at=datetime.utcnow())
         return
     _update(run_id, state="done", stage="done", summary_json=json.dumps(summary, default=str),
             finished_at=datetime.utcnow())
