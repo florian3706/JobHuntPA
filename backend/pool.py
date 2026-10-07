@@ -177,12 +177,21 @@ def sweep(db: Session, now: datetime) -> list[int]:
 # Workspace links
 # --------------------------------------------------------------------------
 
-def jobs_query(db: Session, *, descriptions: bool = False):
+# Sealed job columns the job list's cards never read: left out of its query, as each costs a decryption per job.
+CARD_UNUSED = (Job._external_id, Job._description_hash, Job._detail_fetched_at, Job._industry, Job.office_checked_at,
+               Job.office_lng)
+
+
+def jobs_query(db: Session, *, descriptions: bool = False, card: bool = False):
     """``db.query(Job)`` with each job's posting loaded alongside (one query), the descriptions left out unless
-    asked for (the job list doesn't show them)."""
+    asked for (the job list doesn't show them). ``card``: only what a job card shows (``CARD_UNUSED`` is left
+    out: reading one of those then costs a query per job)."""
     if descriptions:
         return db.query(Job)
-    return db.query(Job).options(defer(Job._description), joinedload(Job.posting).defer(Posting.description))
+    options = [defer(Job._description), joinedload(Job.posting).defer(Posting.description)]
+    if card:
+        options += [defer(column) for column in CARD_UNUSED]
+    return db.query(Job).options(*options)
 
 
 def job_states(db: Session, ws: int) -> list[tuple]:

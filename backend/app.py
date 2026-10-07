@@ -267,8 +267,10 @@ def list_jobs(office_slack: int = OfficeSlack,
     for start in range(0, len(listed_ids), 500):
         chunk = listed_ids[start:start + 500]
         fits = {f.job_id: f for f in db.query(FitResult).filter(FitResult.job_id.in_(chunk))}
-        listed += [(job, fits.get(job.id)) for job in jobs_query(db).filter(Job.id.in_(chunk)).order_by(Job.id)]
-        for copy in jobs_query(db).filter(Job.workspace_id == ws, Job.duplicate_of.in_(chunk)).order_by(Job.id):
+        listed += [(job, fits.get(job.id))
+                   for job in jobs_query(db, card=True).filter(Job.id.in_(chunk)).order_by(Job.id)]
+        for copy in (jobs_query(db, card=True).filter(Job.workspace_id == ws, Job.duplicate_of.in_(chunk))
+                     .order_by(Job.id)):
             copies.setdefault(copy.duplicate_of, []).append(copy)
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
                .filter(Job.workspace_id == ws)}

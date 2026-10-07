@@ -10,11 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
-import sys
-import tempfile
-import textwrap
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -31,42 +26,14 @@ from backend.db import AuthSession, RecoveryCode, SessionLocal, User, UserKeys, 
 
 ROOT = Path(__file__).resolve().parent.parent
 PASSWORD = "correct horse battery"
-_FOLDERS: list[str] = []
 
 
 def tearDownModule():
-    for folder in _FOLDERS:
-        shutil.rmtree(folder, ignore_errors=True)
+    helpers.remove_scratch_folders()
 
 
-def scratch_folder() -> str:
-    folder = tempfile.mkdtemp(prefix="jobhunt-accounts-")
-    _FOLDERS.append(folder)
-    return folder
-
-
-def scenario(code: str, folder: str | None = None, env: dict | None = None) -> dict:
-    """Run ``code`` in a fresh Python process on a throwaway database, .env and key file in ``folder`` (a new one
-    by default; pass the same folder again to "restart"). ``code`` sets ``out``, which comes back as a dict.
-    The admin variables from tests/__init__.py are left out unless ``env`` sets them."""
-    folder = folder or scratch_folder()
-    run_env = {k: v for k, v in os.environ.items() if not k.startswith("JOBHUNT_ADMIN_")}
-    run_env.update({"JOBHUNT_DATA_DIR": folder, "JOBHUNT_DB_PATH": os.path.join(folder, "jobhunt.db"),
-                    "JOBHUNT_ENV_PATH": os.path.join(folder, ".env"),
-                    "JOBHUNT_KEY_FILE": os.path.join(folder, "server-keys.json"), "JOBHUNT_SCHEDULER": "off",
-                    "JOBHUNT_TESTING": "1", "JOBHUNT_KDF_PROFILE": "test", "PYTHONPATH": str(ROOT)})
-    run_env.pop("DATABASE_URL", None)
-    run_env.update(env or {})
-    program = "import json, os\nout = {}\nFOLDER = %r\n%s\nprint('RESULT ' + json.dumps(out, default=str))\n" % (
-        folder, textwrap.dedent(code))
-    done = subprocess.run([sys.executable, "-c", program], cwd=folder, env=run_env, capture_output=True, text=True,
-                          timeout=120)
-    lines = [line for line in done.stdout.splitlines() if line.startswith("RESULT ")]
-    if done.returncode != 0 or not lines:
-        raise AssertionError(f"scenario failed ({done.returncode}):\n{done.stdout[-3000:]}\n{done.stderr[-3000:]}")
-    result = json.loads(lines[-1][len("RESULT "):])
-    result["_folder"] = folder
-    return result
+scratch_folder = helpers.scratch_folder
+scenario = helpers.scenario
 
 
 FIRST_RUN = '''

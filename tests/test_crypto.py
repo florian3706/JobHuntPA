@@ -1,5 +1,6 @@
-"""Tests for the crypto core (accounts design, Phase B): backend/crypto.py and backend/keys.py. Nothing in the app uses
-them yet. Key derivation uses the "low" argon2 profile, so these stay fast.
+"""Tests for the crypto core (accounts design, Phases B and D): backend/crypto.py and backend/keys.py, on databases
+of their own (tests/test_encryption.py covers the app's). Key derivation uses the "low" argon2 profile, so these
+stay fast.
 
 Run:  python3 -m unittest discover -s tests -t .
 """
@@ -283,6 +284,78 @@ class Note(Base):
     salary = Column(SealedInt, nullable=True)
     lat = Column(SealedFloat, nullable=True)
     kind = Column(String, nullable=True)  # plaintext, for contrast
+
+
+class Flag(Base):
+    """The Phase D types: bool, datetime and always-sealed columns."""
+
+    __tablename__ = "flags"
+    id = Column(Integer, primary_key=True)
+    seen = Column(crypto.SealedDateTime, nullable=True)
+    hidden = Column(crypto.SealedAlways(crypto.SealedBool), nullable=False, default=False)
+    reason = Column(crypto.SealedAlways(crypto.SealedText, pad=128), default=crypto.always_none, nullable=True)
+    count = Column(crypto.SealedAlways(crypto.SealedInt), default=crypto.always_none, nullable=True)
+
+
+class PhaseDTypesTest(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite://")
+        self.addCleanup(self.engine.dispose)
+        Base.metadata.create_all(self.engine)
+        self.dek = crypto.new_key()
+        strict = mock.patch.object(crypto, "_strict", False)
+        strict.start()
+        self.addCleanup(strict.stop)
+
+    def test_round_trips_and_padding(self):
+        from datetime import datetime
+
+        when = datetime(2026, 10, 7, 13, 42, 46, 25000)
+        with crypto.as_user(1, self.dek), Session(self.engine) as s:
+            s.add_all([Flag(id=1, seen=when, hidden=True, reason="salary below floor", count=3),
+                       Flag(id=2), Flag(id=3, reason="", count=0)])
+            s.commit()
+            s.expire_all()
+            self.assertEqual([(f.seen, f.hidden, f.reason, f.count) for f in s.query(Flag).order_by(Flag.id)],
+                             [(when, True, "salary below floor", 3), (None, False, None, None), (None, False, "", 0)])
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("SELECT typeof(seen), length(hidden), length(reason), length(count), "
+                                     "typeof(reason) FROM flags ORDER BY id")).fetchall()
+        self.assertEqual(rows[1][0], "null")  # a plain sealed column keeps SQL NULL
+        # Always-sealed: a value, NULL and "" are the same length; nothing shows whether it's set.
+        self.assertEqual({r[1:] for r in rows}, {(crypto.OVERHEAD + 32, crypto.OVERHEAD + 128, crypto.OVERHEAD + 32,
+                                                  "blob")})
+
+    def test_legacy_values_are_coerced_and_strict_mode_refuses_them(self):
+        from datetime import datetime
+
+        with self.engine.begin() as conn:
+            conn.execute(text("INSERT INTO flags (id, seen, hidden, reason) VALUES "
+                              "(1, '2026-09-01 10:00:00.000000', 1, 'old reason')"))
+        with crypto.as_user(1, self.dek), Session(self.engine) as s:
+            f = s.get(Flag, 1)
+            self.assertEqual((f.seen, f.hidden, f.reason, f.count), (datetime(2026, 9, 1, 10), True, "old reason", None))
+        with crypto.as_user(1, self.dek), mock.patch.object(crypto, "_strict", True), Session(self.engine) as s:
+            with self.assertRaises(crypto.Plaintext) as caught:
+                s.get(Flag, 1)
+            self.assertIsInstance(caught.exception, KeyMismatch)  # so the API answers 404
+            self.assertNotIn("old reason", str(caught.exception))
+
+    def test_always_sealed_columns_refuse_even_null_tests(self):
+        for build in (lambda: Flag.reason.is_(None), lambda: Flag.hidden == False,  # noqa: E712
+                      lambda: Flag.count.is_not(None), lambda: Flag.reason == None):  # noqa: E711
+            with self.assertRaises(TypeError):
+                build()
+        Flag.seen.is_(None)  # a plain sealed column still can be
+
+    def test_bad_values_are_refused_without_the_value_in_the_message(self):
+        with crypto.as_user(1, self.dek), Session(self.engine) as s:
+            for wrong in (Flag(hidden=2), Flag(seen="yesterday"), Flag(count="three")):
+                s.add(wrong)
+                with self.assertRaises(crypto.SealedValueError) as caught:
+                    s.flush()
+                self.assertNotIn("yesterday", str(caught.exception))
+                s.rollback()
 
 
 class SealedColumnTest(unittest.TestCase):

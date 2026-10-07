@@ -111,6 +111,7 @@ NONCE_LEN = 12        # 96-bit AES-GCM nonces
 KID_LEN = 4
 TAG_LEN = 16
 _V1 = 0x01            # envelope v1: AES-256-GCM
+_V1_BYTE = bytes([_V1])
 _BOX_V1 = 0x02        # sealed box v1: X25519 + HKDF-SHA256 + AES-256-GCM
 _HEADER_LEN = 1 + KID_LEN
 OVERHEAD = _HEADER_LEN + NONCE_LEN + TAG_LEN                 # 33
@@ -704,27 +705,51 @@ class _Sealed(TypeDecorator):
         if not self.always:
             if value is None:
                 return None  # NULL stays NULL, so IS NULL filters keep working
-            return _seal_scope(self._encode(value), self._column_aad())
-        payload = _ALWAYS_NONE if value is None else _ALWAYS_VALUE + self._encode(value)
-        return _seal_scope(_pad(payload, self.pad), self._column_aad())
+            payload = self._encode(value)
+        else:
+            payload = _pad(_ALWAYS_NONE if value is None else _ALWAYS_VALUE + self._encode(value), self.pad)
+        aad = self._column_aad()
+        scope = _scope.get()  # (_seal_scope, inlined, as in process_result_value)
+        if scope is None:
+            raise Locked("No key is unlocked here (not inside crypto.as_user)")
+        header = _V1_BYTE + scope.kid
+        nonce = os.urandom(NONCE_LEN)
+        return header + nonce + scope._aead.encrypt(nonce, payload, header + aad)
 
     def process_result_value(self, value: Any, dialect: Any) -> Any:
         if value is None:
             if self.always and _strict:
                 raise Plaintext(f"{self.column_name()} is NULL where a sealed value belongs")
             return None
-        if isinstance(value, (bytes, bytearray, memoryview)):
+        if isinstance(value, (bytearray, memoryview)):
             value = bytes(value)
-            if value[:1] == bytes([_V1]):
-                data = _open_scope(value, self._column_aad())
-                if self.always:
-                    data = _unpad(data)
-                    if data == _ALWAYS_NONE:
-                        return None
-                    if data[:1] != _ALWAYS_VALUE:
-                        raise Corrupt(f"{self.column_name()}: unknown sealed value tag")
-                    data = data[1:]
-                return self._decode(data)
+        if type(value) is bytes and value[:1] == _V1_BYTE:
+            # _open_scope, inlined: this runs for every sealed value of every row read (the job list opens tens of
+            # thousands), so the per-call overhead matters on a Raspberry Pi.
+            scope = _scope.get()
+            if scope is None:
+                raise Locked("No key is unlocked here (not inside crypto.as_user)")
+            if len(value) < OVERHEAD:
+                raise Corrupt("Not a sealed value (unknown version, or truncated)")
+            if value[1:_HEADER_LEN] != scope.kid:  # (the kid is public: no need for a constant-time compare)
+                raise KeyMismatch("Sealed under a different key")
+            try:
+                data = scope._aead.decrypt(value[_HEADER_LEN:_HEADER_LEN + NONCE_LEN],
+                                           value[_HEADER_LEN + NONCE_LEN:],
+                                           value[:_HEADER_LEN] + (self._aad or self._column_aad()))
+            except InvalidTag:
+                raise Corrupt("The sealed value doesn't open here (moved from where it was sealed, or changed)") \
+                    from None
+            if self.always:
+                body = data.rstrip(b"\x00")
+                if body[-1:] != b"\x80":
+                    raise Corrupt("A sealed value's padding is damaged")
+                if body[:1] == _ALWAYS_VALUE:
+                    return self._decode(body[1:-1])
+                if body == _ALWAYS_NONE + b"\x80":
+                    return None
+                raise Corrupt(f"{self.column_name()}: unknown sealed value tag")
+            return self._decode(data)
         # Not an envelope: plaintext from before encryption (SQLite returns it as TEXT, INTEGER or REAL, never as a
         # BLOB starting with 0x01). Read it as it is, unless the migration has finished (strict mode).
         if _strict:

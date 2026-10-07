@@ -25,8 +25,15 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import json
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator, Optional
 
 ADMIN_EMAIL = os.environ.setdefault("JOBHUNT_ADMIN_EMAIL", "admin@example.invalid")
@@ -190,3 +197,48 @@ def new_workspace(name: str, owner: Optional[int] = None) -> int:
             return ws.id
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Fresh processes (first run, restarts, the encryption migration): a throwaway data folder of their own
+# ---------------------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parent.parent
+_FOLDERS: list[str] = []
+
+
+def scratch_folder() -> str:
+    folder = tempfile.mkdtemp(prefix="jobhunt-scenario-")
+    _FOLDERS.append(folder)
+    return folder
+
+
+def remove_scratch_folders() -> None:
+    while _FOLDERS:
+        shutil.rmtree(_FOLDERS.pop(), ignore_errors=True)
+
+
+def scenario(code: str, folder: Optional[str] = None, env: Optional[dict] = None, *,
+             returncode: Optional[int] = 0) -> dict:
+    """Run ``code`` in a fresh Python process on a throwaway data folder, database, .env and key file in
+    ``folder`` (a new one by default; pass the same folder again to "restart"). ``code`` sets ``out``, which comes
+    back as a dict. The admin variables from tests/__init__.py are left out unless ``env`` sets them.
+    ``returncode``: the exit status expected (None: any, for a process that is made to crash)."""
+    folder = folder or scratch_folder()
+    run_env = {k: v for k, v in os.environ.items() if not k.startswith("JOBHUNT_ADMIN_")}
+    run_env.update({"JOBHUNT_DATA_DIR": folder, "JOBHUNT_DB_PATH": os.path.join(folder, "jobhunt.db"),
+                    "JOBHUNT_ENV_PATH": os.path.join(folder, ".env"),
+                    "JOBHUNT_KEY_FILE": os.path.join(folder, "server-keys.json"), "JOBHUNT_SCHEDULER": "off",
+                    "JOBHUNT_TESTING": "1", "JOBHUNT_KDF_PROFILE": "test", "PYTHONPATH": str(ROOT)})
+    run_env.pop("DATABASE_URL", None)
+    run_env.update(env or {})
+    program = "import json, os\nout = {}\nFOLDER = %r\n%s\nprint('RESULT ' + json.dumps(out, default=str))\n" % (
+        folder, textwrap.dedent(code))
+    done = subprocess.run([sys.executable, "-c", program], cwd=folder, env=run_env, capture_output=True, text=True,
+                          timeout=180)
+    lines = [line for line in done.stdout.splitlines() if line.startswith("RESULT ")]
+    if returncode is not None and (done.returncode != returncode or (returncode == 0 and not lines)):
+        raise AssertionError(f"scenario failed ({done.returncode}):\n{done.stdout[-3000:]}\n{done.stderr[-3000:]}")
+    result = json.loads(lines[-1][len("RESULT "):]) if lines else {}
+    result.update(_folder=folder, _returncode=done.returncode, _stderr=done.stderr[-3000:])
+    return result
