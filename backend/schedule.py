@@ -13,8 +13,13 @@ search, or when the workspace's owner hasn't allowed background access
 (the server then has no key to their data). Workspaces due at the same
 time run one after another.
 
+A slot passed over because the owner hasn't allowed background access (or the account is turned off) is recorded
+with a reason the person sees under their schedule (``skipped``, from SKIP_TEXT); it goes away when they turn
+background access on, or when a later slot runs.
+
 Endpoints:
-    GET/PUT /api/schedule
+    GET/PUT /api/schedule      the settings, plus next_run, last_run, ``background`` (whether the owner allowed
+                               background access) and ``skipped`` ({reason, text, slot} or null)
 """
 from __future__ import annotations
 
@@ -54,6 +59,13 @@ DEFAULT_TIMES = ["10:00", "12:00", "14:00", "16:00"]
 DEFAULT_DAYS = [0, 1, 2, 3, 4]  # Monday to Friday
 GRACE = timedelta(hours=1)      # how long a due slot may wait for a busy worker
 TICK_SECONDS = 30
+# What a person is told when a slot is passed over for lack of a key (SearchSchedule.skipped_reason).
+SKIP_TEXT = {
+    "background_off": "Scheduled search skipped: background access is off",
+    "account_off": "Scheduled search skipped: this account is turned off",
+    "key_unusable": "Scheduled search skipped: the server can't open your background key. Turn background access "
+                    "off and on again",
+}
 
 
 class ScheduleSchema(BaseModel):
@@ -192,10 +204,11 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
             slot = due_slot(get_schedule(db, ws), now, _utc(row.last_slot) if row else None)
             if slot is None:
                 continue
-            reason, run = None, None
+            reason, run, skipped = None, None, None
             key = users.background_key(db, owner)
             if key is None:
-                reason = "the account doesn't allow background access"
+                skipped = users.background_block(db, owner)
+                reason = f"no background key ({skipped})"
             else:
                 with crypto.as_user(owner, key):
                     if nothing_to_search(db, ws):
@@ -211,7 +224,9 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
                 log.info("workspace %s: scheduled search for %s started (run %s)", ws, slot.isoformat(), run["id"])
             else:
                 log.info("workspace %s: scheduled search for %s passed over: %s", ws, slot.isoformat(), reason)
-            _row(db, ws).last_slot = _naive_utc(slot)
+            sched_row = _row(db, ws)
+            sched_row.last_slot = _naive_utc(slot)
+            sched_row.skipped_reason, sched_row.skipped_slot = skipped, _naive_utc(slot) if skipped else None
             db.commit()
             if run is not None:
                 return run
@@ -249,9 +264,22 @@ def stop_scheduler() -> None:
 # API
 # ---------------------------------------------------------------------------
 
+def skipped_info(db: Session, ws: int) -> Optional[dict[str, Any]]:
+    """The last slot passed over for lack of a key, with the words to show, or None."""
+    row = db.get(SearchSchedule, ws)
+    if row is None or row.skipped_reason not in SKIP_TEXT:
+        return None
+    slot = _utc(row.skipped_slot)
+    return {"reason": row.skipped_reason, "text": SKIP_TEXT[row.skipped_reason],
+            "slot": slot.isoformat() if slot else None}
+
+
 def schedule_info(db: Session, ws: int, now: Optional[datetime] = None) -> dict[str, Any]:
+    from backend import users
+
     now = now or datetime.now(timezone.utc)
     sched = get_schedule(db, ws)
+    owner = db.query(Workspace.owner_id).filter(Workspace.id == ws).scalar()
     nxt = next_run(sched, now)
     last = (db.query(SearchRun).filter(SearchRun.workspace_id == ws, SearchRun.scheduled.is_(True))
             .order_by(SearchRun.id.desc()).first())
@@ -263,6 +291,8 @@ def schedule_info(db: Session, ws: int, now: Optional[datetime] = None) -> dict[
         "skipped_holidays": skipped_holidays(sched, now.astimezone(_tz(sched)).date()),
         "last_run": last.to_dict() if last else None,
         "nothing_to_search": nothing_to_search(db, ws),
+        "background": owner is not None and users.background_enabled(db, owner),
+        "skipped": skipped_info(db, ws),
     }
 
 

@@ -27,6 +27,7 @@ from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
 from backend.auth import router as auth_router
 from backend.security import router as security_router
+from backend.background import router as background_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
@@ -122,6 +123,7 @@ app.include_router(security_router)
 app.include_router(account_router)
 app.include_router(export_router)
 app.include_router(admin_router)
+app.include_router(background_router)
 app.include_router(geo_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)

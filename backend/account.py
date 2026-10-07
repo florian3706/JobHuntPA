@@ -51,11 +51,11 @@ SHORT_PATH_LAST_STEP = 2  # on the short path: 1 theme, 2 "keep your current set
 
 def features(admin: bool = False) -> dict[str, bool]:
     """What this version offers the walkthrough and the account menu. The wizard shows the scheduled-search and
-    digest options only when these are true: background access arrives in Phase G, digests in Phase J (each phase
-    sets its flag to True when its code ships). ``admin_panel`` is true only for an admin (``/api/auth/me`` passes
-    the signed-in person's role): the account menu's "Admin" link needs it, and the panel's endpoints check the
-    role again on the server."""
-    return {"admin_panel": bool(admin), "scheduled_searches": False, "digests": False}
+    digest options only when these are true: background access came in Phase G, digests arrive in Phase J (each
+    phase sets its flag to True when its code ships). ``admin_panel`` is true only for an admin (``/api/auth/me``
+    passes the signed-in person's role): the account menu's "Admin" link needs it, and the panel's endpoints check
+    the role again on the server."""
+    return {"admin_panel": bool(admin), "scheduled_searches": True, "digests": False}
 
 
 def _label(uid: int) -> str:

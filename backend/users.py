@@ -73,6 +73,7 @@ from backend.db import (
     UserKeys,
     UserProfile,
     Workspace,
+    scrub_wal,
     utcnow,
 )
 
@@ -354,6 +355,12 @@ def _details(email: str, name: str) -> bytes:
     return json.dumps({"email": email, "name": name}, ensure_ascii=False).encode("utf-8")
 
 
+def _wrap_for_server(row: UserKeys, user_id: int, dek: bytes) -> None:
+    """Background access: the DEK under the current server KEK (``srv|{uid}|{kek_id}``), set on ``row``."""
+    row.server_kek_id, row.server_wrapped_dek = server_keys().kek_wrap(dek, f"srv|{user_id}")
+    row.background_since = utcnow()
+
+
 def _create_user(db: Session, *, email: str, password: str, name: str, role: str, created_via: str,
                  background: bool) -> NewAccount:
     """The user row with every key of section 1.2, 8 recovery codes, a membership and email preferences, in ``db``'s
@@ -381,9 +388,8 @@ def _create_user(db: Session, *, email: str, password: str, name: str, role: str
                              x25519_pub=pub, x25519_priv_enc=crypto.seal(priv, f"user_keys.x25519_priv|{uid}"),
                              recovery_salt=recovery_salt,
                              pending_codes_enc=crypto.seal(json.dumps(codes).encode("ascii"), _codes_label(uid)))
-    if background:  # the DEK under the server KEK (Phase G runs scheduled searches with it)
-        user_keys.server_kek_id, user_keys.server_wrapped_dek = server.kek_wrap(dek, f"srv|{uid}")
-        user_keys.background_since = utcnow()
+    if background:  # the DEK under the server KEK (scheduled searches run with it)
+        _wrap_for_server(user_keys, uid, dek)
     db.add(user_keys)
     for code in codes:
         row = RecoveryCode(user_id=uid)
@@ -533,11 +539,105 @@ def background_key(db: Session, user_id: int) -> Optional[bytes]:
     user = db.get(User, user_id)
     if row is None or row.server_wrapped_dek is None or user is None or user.status != "active":
         return None
+    return _server_dek(row, user_id)
+
+
+def _server_dek(row: UserKeys, user_id: int) -> Optional[bytes]:
+    """The DEK from ``row.server_wrapped_dek``, or None when it doesn't open with the key file or isn't this user's
+    key (its kid must match ``dek_kid``, so a blob copied from another row is refused)."""
     try:
-        return server_keys().kek_unwrap(row.server_wrapped_dek, f"srv|{user_id}")
+        dek = server_keys().kek_unwrap(row.server_wrapped_dek, f"srv|{user_id}")
     except crypto.CryptoError:
         log.warning("user %s: the background-access key doesn't open with the key file", user_id)
         return None
+    if not hmac.compare_digest(crypto.key_id(dek), bytes(row.dek_kid)):
+        log.warning("user %s: the background-access key isn't this account's key", user_id)
+        return None
+    return dek
+
+
+def background_enabled(db: Session, user_id: int) -> bool:
+    """Whether this account has allowed background access (the server holds a wrapped copy of its key)."""
+    row = db.get(UserKeys, user_id)
+    return row is not None and row.server_wrapped_dek is not None
+
+
+def background_block(db: Session, user_id: int) -> str:
+    """Why ``background_key`` gave nothing: ``account_off`` (turned off or gone), ``background_off`` (not allowed) or
+    ``key_unusable`` (allowed, but the key file can't open it). Used to tell the user why a slot was passed over."""
+    user = db.get(User, user_id)
+    if user is None or user.status != "active":
+        return "account_off"
+    if not background_enabled(db, user_id):
+        return "background_off"
+    return "key_unusable"
+
+
+def enable_background(db: Session, user_id: int, dek: bytes) -> None:
+    """Allow background access: wrap ``dek`` (the signed-in user's key, from the request's key scope) under the
+    current server KEK. Refuses a key that isn't this account's (ValueError). Commits. The caller has checked recent
+    sign-in (sessions.require_recent_auth)."""
+    row = db.get(UserKeys, user_id)
+    if row is None:
+        raise ValueError("No such account")
+    if not hmac.compare_digest(crypto.key_id(dek), bytes(row.dek_kid)):
+        raise ValueError("That key isn't this account's data key")
+    _wrap_for_server(row, user_id, dek)
+    _clear_skipped(db, user_id)
+    db.commit()
+    log.info("user %s: background access turned on", user_id)
+
+
+def disable_background(db: Session, user_id: int) -> None:
+    """Withdraw background access: the server's wrapped copy of the key is deleted (not just ignored). Commits."""
+    row = db.get(UserKeys, user_id)
+    if row is None:
+        return
+    row.server_wrapped_dek = row.server_kek_id = row.background_since = None
+    db.commit()
+    scrub_wal()  # secure_delete zeroes the main file; the log would still hold the old row until emptied
+    log.info("user %s: background access turned off", user_id)
+
+
+def _clear_skipped(db: Session, user_id: int) -> None:
+    """Forget the "scheduled search skipped" notes of the user's workspaces (background access is back)."""
+    ids = select(Workspace.id).where(Workspace.owner_id == user_id)
+    db.execute(update(SearchSchedule).where(SearchSchedule.id.in_(ids)).values(skipped_reason=None,
+                                                                              skipped_slot=None))
+
+
+def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) -> bool:
+    """The "keep data" half of a password reset by email (accounts design 6.5, 13 item 1). For an account with
+    background access the server unwraps the data key with its KEK and wraps it again under ``new_password`` (new
+    salt, KDF settings and verifier), clears the lockout, and ends every session, in one transaction: True. For an
+    account without it, or whose server key can't be opened, nothing changes: False (the caller then offers the
+    reset that deletes the data). Recovery codes keep working: the data key doesn't change.
+
+    The caller (Phase H) has already checked the reset token and, with two-step sign-in on, the code, and decides
+    what to do about a disabled account (this works for one too: it can't sign in afterwards). AccountError for a
+    password that's too short or too long, before anything is touched."""
+    row = db.get(UserKeys, user_id)
+    user = db.get(User, user_id)
+    if row is None or user is None or row.server_wrapped_dek is None:
+        return False
+    new_password = check_password(new_password)
+    dek = _server_dek(row, user_id)
+    if dek is None:
+        return False
+    params = crypto.kdf_profile()
+    salt = crypto.new_salt()
+    derived = crypto.derive_password(new_password, salt, params)
+    try:
+        user.kdf_salt, user.kdf_params, user.pw_verifier = salt, params.to_json(), derived.auth
+        row.pw_wrapped_dek = crypto.wrap(derived.kek, dek, f"pw|{user_id}")
+        user.failed_logins, user.locked_until = 0, None
+        db.query(AuthSession).filter(AuthSession.user_id == user_id).delete(synchronize_session=False)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    log.info("user %s: password reset by email; the data was kept (background access)", user_id)
+    return True
 
 
 def workspace_ids(db: Session, user_id: int) -> list[int]:

@@ -1426,6 +1426,11 @@ function scheduledRunLine(run) {
 function renderScheduleStatus(sch) {
   const lines = [];
   if (!sch.enabled) lines.push('<p class="muted">Automatic searches are off.</p>');
+  else if (sch.background === false || sch.skipped) { // no usable key: every slot is passed over (backend/schedule.py), so say so (Phase G)
+    const when = sch.skipped?.slot ? ` (${fmtScheduleTime(sch.skipped.slot, sch.timezone)})` : '';
+    const again = sch.skipped?.reason === 'key_unusable'; // the server holds a key it can't open: off and on fixes it
+    lines.push(`<p class="sched-warn">${esc(sch.skipped ? `${sch.skipped.text}${when}.` : 'Scheduled searches are skipped while background access is off.')} <button class="link" type="button" data-focus-background>${again ? 'Turn it off and on again' : 'Turn on background access'}</button></p>`);
+  }
   else if (!sch.times.length || !sch.days.length) lines.push('<p class="muted">Add at least one time and one day: nothing is scheduled yet.</p>');
   else if (sch.next_run) lines.push(`<p>Next search: <strong>${esc(fmtScheduleTime(sch.next_run, sch.timezone))}</strong> <span class="muted">(${esc(zoneLabel(sch.timezone))})</span></p>`);
   else lines.push('<p class="muted">No upcoming search found.</p>');
@@ -1437,7 +1442,7 @@ function renderScheduleStatus(sch) {
   $('#sched-status').innerHTML = lines.join('');
 
   const note = $('#next-scheduled');
-  const show = sch.enabled && sch.next_run && !sch.nothing_to_search;
+  const show = sch.enabled && sch.next_run && !sch.nothing_to_search && sch.background !== false && !sch.skipped;
   note.hidden = !show;
   if (show) {
     const away = Intl.DateTimeFormat().resolvedOptions().timeZone !== sch.timezone; // name the zone only when it isn't this browser's

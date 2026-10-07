@@ -22,6 +22,10 @@
 /* The page works on the account's first workspace; the server picks it when none is named. */
 function currentWorkspace() { return 0; }
 
+/* What the Background access card says (frontend/background.js has the same words). */
+const BACKGROUND_ON_COPY = "JobHuntPA keeps a key on the server so it can run scheduled searches and email you new jobs. The server's operator could technically read your data, and a password reset by email keeps your data.";
+const BACKGROUND_OFF_COPY = "Only you can unlock your data. JobHuntPA can't run searches while you're away or email you new jobs.";
+
 const wiz = {
   me: null,
   short: false, // the first admin's short path
@@ -29,6 +33,8 @@ const wiz = {
   steps: [], // step ids in order
   idx: 0,
   profile: null,
+  background: null, // { enabled, since }: background access, when the automatic-searches step is offered
+  schedule: null, // this workspace's schedule, for the same step
   dealbreakers: { industries: [], keywords: [] },
   pins: [],
   homeText: '', // the home place as last saved (its text and radius are kept on the pin)
@@ -317,21 +323,32 @@ const STEPS = {
     },
   },
 
-  /* Shown only when me.features.scheduled_searches is true (Phase G, background access). The digest email option
+  /* Shown only when me.features.scheduled_searches is true (background access, Phase G). Searching by itself needs
+     the server to hold a key (background access), so ticking this turns that on (it asks for the password again if
+     it was entered a while ago) and the explanation says what that means. The digest email option
      (me.features.digests, Phase J) goes in this step too: add its control in html() and its save in save(). */
   auto: {
     title: 'Automatic searches',
-    intro: 'JobHuntPA can look for new jobs by itself, so they are waiting when you sign in.',
+    intro: 'JobHuntPA can look for new jobs by itself while you are away, so they are waiting when you sign in.',
     skippable: true,
     html() {
-      return `<label class="check"><input type="checkbox" id="wz-auto" /> Search for new jobs automatically</label>
-        <p class="hint">You can change the days and times on the Search setup tab.</p>`;
+      const on = !!(wiz.background?.enabled && wiz.schedule?.enabled);
+      return `<label class="check"><input type="checkbox" id="wz-auto" aria-describedby="wz-auto-hint" ${on ? 'checked' : ''} /> Search for new jobs automatically</label>
+        <div id="wz-auto-hint" class="hint">
+          <p><strong>If you tick this:</strong> ${esc(BACKGROUND_ON_COPY)}</p>
+          <p><strong>If you leave it empty:</strong> ${esc(BACKGROUND_OFF_COPY)}</p>
+          <p>You can change this later in Settings: the days and times under Scheduled searches, and Background access.</p>
+        </div>`;
     },
     async save() {
-      const s = await api('/api/schedule');
-      await api('/api/schedule', {
+      const want = $('#wz-auto').checked;
+      if (want && !wiz.background?.enabled) {
+        wiz.background = await withRecentAuth(() => api('/api/account/background', { method: 'POST', body: JSON.stringify({ enabled: true }) }));
+      }
+      const s = wiz.schedule || await api('/api/schedule');
+      wiz.schedule = await api('/api/schedule', {
         method: 'PUT',
-        body: JSON.stringify({ enabled: $('#wz-auto').checked, times: s.times, days: s.days, skip_holidays: s.skip_holidays, state: s.state }),
+        body: JSON.stringify({ enabled: want, times: s.times, days: s.days, skip_holidays: s.skip_holidays, state: s.state }),
       });
       return true;
     },
@@ -464,6 +481,9 @@ async function start() {
     wiz.profile = profile;
     wiz.dealbreakers = dealbreakers;
     wiz.pins = pins;
+    if (wiz.features.scheduled_searches) {
+      [wiz.background, wiz.schedule] = await Promise.all([api('/api/account/background'), api('/api/schedule')]);
+    }
     wiz.steps = buildSteps();
     status('');
     go((info.step || 1) - 1, { remember: false });

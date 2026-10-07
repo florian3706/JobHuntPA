@@ -555,10 +555,13 @@ class SignInPagesBehaviourTest(unittest.TestCase):
                     guarded.add((prefix.group(1) if prefix else "") + here.group(1))
         self.assertIn("/api/admin/plaintext-files/delete", guarded)
         self.assertIn("/api/auth/mfa/setup", guarded)
-        for name in ("app.js", "job.js", "welcome.js", "account.js", "common.js", "admin.js", "export.js"):
+        for name in ("app.js", "job.js", "welcome.js", "account.js", "common.js", "admin.js", "export.js",
+                     "background.js"):
             for number, line in enumerate((FRONTEND / name).read_text(encoding="utf-8").splitlines(), 1):
                 for path in guarded:
-                    if f"'{path}'" in line and "api(" in line or f"'{path}'" in line and "post(" in line:
+                    # A plain api(path) is a GET; the guard is on the calls that change something.
+                    changes = "method:" in line or "post(" in line or "del(" in line
+                    if f"'{path}'" in line and changes and ("api(" in line or "post(" in line or "del(" in line):
                         self.assertTrue(any(w in line for w in ("withRecentAuth", "recentWith", "reauth(")),
                                         f"{name}:{number} calls {path} without withRecentAuth")
 
@@ -844,6 +847,69 @@ class WelcomePageTest(unittest.TestCase):
     def test_the_resume_step_explains_why_and_points_to_documents(self):
         self.assertRegex(self.js, r"fit scores?")
         self.assertIn("Documents tab", self.js)
+
+
+class BackgroundAccessCardTest(unittest.TestCase):
+    """The Settings tab's "Background access" card (frontend/index.html + background.js, Phase G)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = parse("index.html")
+        cls.js = (FRONTEND / "background.js").read_text(encoding="utf-8")
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        cls.ids = {n["attrs"]["id"]: n for n in cls.html.nodes if "id" in n["attrs"]}
+
+    def test_the_card_sits_in_its_slot_under_a_heading(self):
+        card = self.ids["background-card"]
+        slot = self.ids["account-background-slot"]
+        self.assertEqual(self.html.nodes[card["parent"]]["attrs"].get("id"), "account-background-slot")
+        self.assertEqual(slot["tag"], "div")
+        heading = self.ids["background-title"]
+        self.assertEqual(heading["tag"], "h3")
+        self.assertIn("Background access", heading["text"])
+
+    def test_the_control_is_a_labelled_switch_described_by_its_explanation(self):
+        switch = self.ids["background-switch"]
+        self.assertEqual((switch["tag"], switch["attrs"].get("type"), switch["attrs"].get("role")),
+                         ("input", "checkbox", "switch"))
+        label = next(a for a in self.html.ancestors(switch) if a["tag"] == "label")
+        self.assertIn("work while I'm signed out", label["text"], "a visible label that names what it does")
+        self.assertEqual(switch["attrs"].get("aria-describedby"), "background-explain")
+        self.assertIn("background-explain", self.ids)
+
+    def test_errors_are_announced_and_progress_never_drops_focus(self):
+        self.assertEqual(self.ids["background-error"]["attrs"].get("role"), "alert")
+        self.assertIn("hidden", self.ids["background-error"]["attrs"])
+        self.assertIn("announce(", self.js, "changes are said to screen readers")
+        self.assertEqual(self.ids["background-retry"]["tag"], "button")  # a failed load can be tried again
+        self.assertIn("hidden", self.ids["background-retry"]["attrs"])
+        # a busy switch isn't disabled (that would drop keyboard focus); only the not-yet-loaded one is
+        self.assertNotRegex(self.js, r"box\.disabled\s*=\s*(true|background\.busy)")
+        self.assertIn("box.disabled = !background.loaded", self.js)
+
+    def test_turning_it_on_asks_for_the_password_through_the_shared_helper(self):
+        self.assertRegex(self.js, r"withRecentAuth\(\(\) => api\('/api/account/background'")
+        self.assertIn("renderBackground(); // the switch goes back", self.js, "a refusal puts the switch back")
+
+    def test_the_words_are_the_designs(self):
+        for words in ("Only you can unlock your data. JobHuntPA can't run searches while you're away or email you new jobs.",
+                      "JobHuntPA keeps a key on the server so it can run scheduled searches and email you new jobs. "
+                      "The server's operator could technically read your data, and a password reset by email keeps your data."):
+            self.assertIn(words, self.js)
+
+    def test_the_generated_and_static_controls_have_names(self):
+        self.assertEqual(GeneratedMarkupTest().check_file("background.js"), [])
+        # the schedule card's "Turn on background access" button is written by app.js and has text
+        app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        self.assertRegex(app, r'<button class="link" type="button" data-focus-background>\$\{again \? \'Turn it off and on again\' : \'Turn on background access\'\}</button>')
+        self.assertIn("data-focus-background", self.js)
+
+    def test_targets_are_big_enough_and_the_page_scripts_load_in_order(self):
+        self.assertRegex(self.css, r"\.check input[^{]*\{[^}]*width: 18px")  # 24 px high row, 44 px on small screens
+        self.assertIn("min-height: 44px", re.search(r"@media[^{]*\{[^@]*?\.check, \.check-field[^{]*\{([^}]*)\}", self.css, re.S).group(1))
+        src = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        self.assertLess(src.index("./app.js"), src.index("./background.js"))
+        self.assertIn("common.js", src)
 
 
 if __name__ == "__main__":

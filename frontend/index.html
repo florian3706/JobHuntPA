@@ -410,7 +410,8 @@
           <span id="sched-save-status" class="muted" role="status"></span>
         </div>
         <p class="hint">JobHuntPA runs this search by itself at set times while it is running; a search missed because it was closed runs if you start it within the hour.
-          Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.</p>
+          Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.
+          Scheduled searches need <strong>background access</strong> (the card further down this tab); without it they are skipped.</p>
         <label class="check sched-enable"><input type="checkbox" id="sched-enabled" /> Run searches automatically</label>
         <div class="form-grid">
           <div class="form-group">
@@ -459,7 +460,19 @@
            fills its own slot, so the pieces stay apart. -->
       <div id="account-security-slot"></div><!-- password, two-step sign-in, recovery codes, sign out everywhere -->
 
-      <div id="account-background-slot"></div><!-- background access -->
+      <div id="account-background-slot"><!-- background access (frontend/background.js) -->
+        <div id="background-card" class="card form-card">
+          <div class="card-head">
+            <h3 id="background-title">Background access <span class="scope-tag">Your account</span></h3>
+            <span id="background-status" class="muted"></span>
+          </div>
+          <p id="background-error" class="error" role="alert" hidden></p>
+          <button id="background-retry" class="btn" type="button" hidden>Try again</button>
+          <label class="check"><input type="checkbox" id="background-switch" role="switch" aria-describedby="background-explain" disabled /> Let JobHuntPA work while I'm signed out</label>
+          <p id="background-explain" class="hint">Loading…</p>
+          <p id="background-more" class="hint"></p>
+        </div>
+      </div>
 
       <div id="account-email-slot"></div><!-- job digest emails -->
 
@@ -512,5 +525,6 @@
   <script src="./app.js"></script>
   <script src="./account.js"></script>
   <script src="./export.js"></script>
+  <script src="./background.js"></script>
 </body>
 </html>

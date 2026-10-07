@@ -35,7 +35,7 @@ Command line (run with the app stopped; the commands refuse while it is running)
     python -m backend.keys rotate-kek                 replace the server key (backend/key_rotation.py)
     python -m backend.keys new-admin-key --email X    a new admin details key, after the last admin lost theirs
                                                       (backend/admin_key.py)
-    python -m backend.keys recover-lost --admin-email X                                   (not yet available)
+    python -m backend.keys recover-lost --admin-email X     (key file lost: backend/key_recovery.py)
 """
 from __future__ import annotations
 
@@ -524,12 +524,6 @@ def load_or_create(has_users: Union[bool, Callable[[], bool]], stored_fingerprin
 # Command line
 # ---------------------------------------------------------------------------
 
-_NOT_YET = {
-    "recover-lost": "recover-lost isn't available yet: it arrives with user accounts (accounts design, Phase C/D), "
-                    "when there are accounts to recover.",
-}
-
-
 def bench_kdf(profiles: Iterable[str], runs: int = 3, out=None) -> dict[str, float]:
     """Median seconds per password derivation for each profile, on this machine; also printed to ``out``."""
     out = out or sys.stdout
@@ -556,7 +550,8 @@ def bench_kdf(profiles: Iterable[str], runs: int = 3, out=None) -> dict[str, flo
     return results
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None, *, ask_password: Optional[Callable[[str], str]] = None) -> int:
+    """``ask_password`` replaces getpass for recover-lost (tests)."""
     parser = argparse.ArgumentParser(prog="python -m backend.keys",
                                      description="JobHuntPA's server keys (data/server-keys.json). Run with the app "
                                                  "stopped.")
@@ -565,7 +560,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     bench.add_argument("--profile", choices=["default", "low", "all"], default="all")
     bench.add_argument("--runs", type=int, default=3)
     sub.add_parser("rotate-kek", help="replace the server key and re-wrap everything that uses it")
-    recover = sub.add_parser("recover-lost", help="rebuild a lost key file (not available yet)")
+    recover = sub.add_parser("recover-lost", help="make a new key file after losing data/server-keys.json (asks for "
+                                                  "that admin's password)")
     recover.add_argument("--admin-email", required=True)
     admin_key = sub.add_parser("new-admin-key", help="make --email an admin with a new admin details key (after the "
                                                      "last admin lost theirs)")
@@ -584,8 +580,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         from backend import admin_key
 
         return admin_key.new_admin_key_command(args.email)
-    print(_NOT_YET[args.command] + " Nothing was changed.", file=sys.stderr)
-    return 2
+    if args.command == "recover-lost":
+        from backend import key_recovery
+
+        return key_recovery.run(args.admin_email, ask_password=ask_password)
+    parser.error(f"unknown command {args.command}")
 
 
 if __name__ == "__main__":

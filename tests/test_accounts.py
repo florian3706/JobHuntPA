@@ -709,6 +709,7 @@ class StartupAndSchedulerTest(SignInTestCase):
             tick()
             self.assertEqual(started, [ws_id])  # with the owner's background-access key
         finally:
+            db.query(UserProfile).filter(UserProfile.id == ws_id).delete()  # (a reused id mustn't inherit its row)
             db.query(Workspace).filter(Workspace.id == ws_id).delete()
             db.commit()
             db.close()

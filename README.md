@@ -229,10 +229,27 @@ and an excluded job looks the same as one you kept.
 
 **The limits.** The AI provider sees what it scores, chats about or writes. The running app holds
 your data in memory while you use it. Someone who changes the app's code on the server could capture
-your password when you next sign in. With **background access** (scheduled searches keep running
-while you're signed out; the first account has it on), the server keeps a copy of your key in
-`data/server-keys.json`, so whoever runs the server could read your data with that file. On SSDs and
-SD cards, deleted data may linger in storage the disk manages itself.
+your password when you next sign in. With **[background access](#background-access)** on, whoever
+runs the server could read your data. On SSDs and SD cards, deleted data may linger in storage the
+disk manages itself.
+
+#### Background access
+
+Settings > **Background access** is a switch for your account.
+
+- **Off** (the default for a new account): only you can unlock your data. JobHuntPA can't run
+  searches while you're away, so **scheduled searches are skipped** (the schedule card says so) and
+  nothing can email you new jobs.
+- **On** (the first account has it on): JobHuntPA keeps a key on the server so it can run scheduled
+  searches and email you new jobs. The server's operator could technically read your data, and a
+  password reset by email keeps your data (without it, a reset by email gives you a fresh, empty
+  account).
+
+How it works: turning it on (it asks for your password again if you haven't typed it in the last 15
+minutes) stores a copy of your data key locked with the server's own key, in `data/server-keys.json`.
+Whoever has the database **and** that file can read the data of every account with it on. Turning it
+off deletes that copy at once. The setup walkthrough's *Automatic searches* step turns it on for you
+if you tick it. Back up `data/server-keys.json` with the database.
 
 ## Sharing JobHuntPA (admins)
 
@@ -298,6 +315,10 @@ can live in their own **workspaces** (switcher at the top right).
   off, per workspace. Pick your state: it sets which public holidays apply and the time zone of the
   times. Searches only run while JobHuntPA is running; a search missed because it was closed runs
   if you start it within the hour. Each run scores the new jobs it finds, like **Run search**.
+  **Scheduled searches need [background access](#background-access)** (Settings > Background
+  access): your jobs are encrypted, so while you're signed out the server can only search for you if
+  it holds a key. Without it each slot is skipped, and the schedule card says "Scheduled search
+  skipped: background access is off".
 - **Tracking and tidying**: set each job's status (to review, shortlisted, applied, interviewing,
   rejected, not interested). Tick jobs, or filter the list and tick **Select all shown**, to change
   status or **Hide** them in bulk (only jobs on screen are ever affected); hidden jobs stay hidden when a search finds them again, aren't scored or
@@ -571,6 +592,16 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **JobHuntPA stops at start-up with "Restore data/server-keys.json from your backup":** the key file
   is missing or isn't the one that belongs to this database. Put back the `data/server-keys.json`
   from the same backup as the database. A new key file is never made while accounts exist.
+- **The key file is lost and there is no backup:** nobody can sign in, because email addresses are
+  found through that file. With JobHuntPA stopped, an admin can make a new one: run
+  `.venv/bin/python -m backend.keys recover-lost --admin-email you@example.com` (on Windows,
+  `.venv\Scripts\python -m backend.keys ...`) from the JobHuntPA folder and type that admin's
+  password when asked. It writes a new `data/server-keys.json` and works out every account's email
+  lookup again, so everyone signs in as before and **keeps their data**. What everyone must then
+  redo: **turn background access on again** (Settings > Background access; until then scheduled
+  searches are skipped) and, if they used it, **set up two-step sign-in again**. If it says some
+  accounts "could not be worked out", those accounts can't sign in until the original key file is
+  back. Then back up the new file with the database.
 - **Some company sites return no jobs:** they may block automated access or need the browser
   component; setup's step 3 installs it. On Linux you can fix a failed browser install with
   `.venv/bin/python -m playwright install --with-deps chromium`.
@@ -696,7 +727,9 @@ tag, so the tag must exist on GitHub.
 `Run search` starts a background run (`backend/tasks.py`); the page polls its progress.
 `backend/schedule.py` starts the same run at each workspace's scheduled times (public holidays
 from the `holidays` package); runs never overlap, so a due search waits up to an hour for a
-busy one.
+busy one. A workspace's slot runs under its owner's key (`users.background_key`, the data key
+unwrapped with the server key) and is skipped, with a reason recorded for the schedule card, when
+the owner hasn't turned on background access or the account is turned off.
 
 1. **Listing** (`backend/adapters/`): SEEK search pages, then each enabled company source. A
    source URL is resolved in order: an APSJobs search URL (`apsjobs.py`); a known ATS board

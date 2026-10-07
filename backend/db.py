@@ -80,6 +80,22 @@ def _sqlite_pragmas(dbapi_conn, _record) -> None:
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def scrub_wal() -> bool:
+    """After deleting a secret (a key copy), empty the write-ahead log: secure_delete only zeroes the main file, and the
+    log keeps the old page image until a checkpoint truncates it. Best effort: a reader open at the same moment can
+    block it, then the log is emptied by a later checkpoint. Call after the commit. True if it was emptied."""
+    try:
+        with engine.connect() as conn:
+            row = conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        done = bool(row) and row[0] == 0  # row[0] is 1 when the checkpoint was blocked
+        if not done:
+            logging.getLogger(__name__).warning("wal checkpoint after deleting a secret was blocked")
+        return done
+    except Exception as exc:  # never fails the change that was already committed
+        logging.getLogger(__name__).warning("wal checkpoint after deleting a secret failed: %s", exc.__class__.__name__)
+        return False
 Base = declarative_base()
 
 
@@ -737,6 +753,10 @@ class SearchSchedule(Base):
     skip_holidays = Column(Boolean, nullable=False, default=True, server_default="1")
     state = Column(String, nullable=False, default="NSW", server_default="NSW")  # holidays + time zone
     last_slot = Column(DateTime, nullable=True)     # UTC time of the last slot run or passed over
+    # Why the last slot was passed over, when the person can do something about it (backend.schedule SKIP_TEXT:
+    # "background_off", ...), and which slot. Plain codes: the scheduler writes them with nobody's key.
+    skipped_reason = Column(String, nullable=True)
+    skipped_slot = Column(DateTime, nullable=True)
 
 
 class HttpCache(Base):
