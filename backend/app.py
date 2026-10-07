@@ -21,8 +21,11 @@ from starlette.formparsers import MultiPartParser
 from backend import config  # noqa: F401  (loads .env first)
 from backend import crypto, llm_providers, migrate_encryption, schedule, tasks, users
 from backend.account import router as account_router
+from backend.account_email import router as account_email_router
 from backend.admin import router as admin_router
 from backend.app_settings import router as app_settings_router
+from backend.email_settings import router as email_settings_router
+from backend.password_reset import router as password_reset_router
 from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
 from backend.auth import router as auth_router
@@ -120,6 +123,8 @@ app.add_middleware(AuthMiddleware)
 app.add_middleware(NoStoreApi)
 app.include_router(auth_router)
 app.include_router(security_router)
+app.include_router(password_reset_router)
+app.include_router(account_email_router)
 app.include_router(account_router)
 app.include_router(export_router)
 app.include_router(admin_router)
@@ -132,6 +137,7 @@ app.include_router(sources_router)
 app.include_router(workspaces_router)
 app.include_router(llm_router)
 app.include_router(app_settings_router)
+app.include_router(email_settings_router)
 app.include_router(cover_letters_router)
 app.include_router(duplicates_router)
 app.include_router(chat_router)

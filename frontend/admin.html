@@ -109,6 +109,10 @@
           <input id="invite-email" type="email" autocomplete="off" inputmode="email" autocapitalize="none" spellcheck="false" aria-describedby="invite-email-hint" />
           <small id="invite-email-hint" class="hint">Fills in the sign-up form for them. The link works once and for 7 days, whatever the address.</small>
         </div>
+        <div id="invite-send-field" class="field" hidden>
+          <label class="check"><input id="invite-send" type="checkbox" checked aria-describedby="invite-send-hint" /> Email the link to this address</label>
+          <small id="invite-send-hint" class="hint">Needs an address above. You can still copy the link yourself.</small>
+        </div>
         <div class="toolbar-row">
           <button id="invite-create" class="btn btn-primary" type="submit">Create invitation link</button>
           <span id="invite-status" class="muted" role="status"></span>
@@ -116,7 +120,7 @@
       </form>
       <div id="invite-result" class="callout" hidden>
         <h4 id="invite-result-title" tabindex="-1">Invitation link</h4>
-        <p>Copy it now: it is shown only once. Send it to the person yourself (JobHuntPA doesn't send email yet).</p>
+        <p id="invite-result-note">Copy it now: it is shown only once. Send it to the person yourself.</p>
         <div class="key-row">
           <input id="invite-link" class="key-input" type="text" readonly aria-label="Invitation link" />
           <button id="invite-copy" class="btn btn-sm" type="button">Copy link</button>
@@ -214,6 +218,66 @@
         </div>
       </div>
 
+      <div id="email-card" class="card form-card">
+        <h3 id="email-title">Email <span class="scope-tag">Everyone</span></h3>
+        <p id="email-state" class="hint" role="status">Loading…</p>
+        <p class="hint">With email set up, JobHuntPA can send password reset links, address confirmations, invitations and security notices.
+          Use your email provider's own mail server (SMTP). The settings are saved in the <code>.env</code> file on this computer and work
+          straight away. The password is never shown again. To keep messages out of spam, set up SPF, DKIM and DMARC for the From address's
+          domain as your provider describes.</p>
+        <form id="email-form" class="admin-form" autocomplete="off" novalidate>
+          <div class="form-grid">
+            <div class="field">
+              <label class="field-label" for="email-host">Mail server (SMTP host)</label>
+              <input id="email-host" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="smtp.example.com" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-port">Port</label>
+              <input id="email-port" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-security">Encryption</label>
+              <select id="email-security" aria-describedby="email-security-hint"></select>
+              <small id="email-security-hint" class="hint">Use "STARTTLS" (port 587) or "SSL" (port 465). "None" is only for a mail server on this computer.</small>
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-user">User name <span class="muted">(optional)</span></label>
+              <input id="email-user" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore data-lpignore="true" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-password">Password <span class="muted">(optional)</span></label>
+              <div class="key-state" id="email-password-state"></div>
+              <div class="key-row">
+                <input id="email-password" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                       data-1p-ignore data-lpignore="true" aria-describedby="email-password-state email-password-hint" />
+                <button id="email-password-clear" class="btn btn-ghost btn-sm" type="button">Remove<span class="visually-hidden"> the saved password</span></button>
+              </div>
+              <small id="email-password-hint" class="hint">Spaces are removed from the password, so an app password can be pasted as Gmail shows it. Leave this empty to keep the saved one.</small>
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-from">From address</label>
+              <input id="email-from" type="email" autocomplete="off" inputmode="email" autocapitalize="none" spellcheck="false" aria-describedby="email-from-hint" />
+              <small id="email-from-hint" class="hint">One address, such as jobs@example.com. People see the name "JobHuntPA".</small>
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-public">Public address</label>
+              <input id="email-public" type="url" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="email-public-hint" placeholder="https://jobs.example.com" />
+              <small id="email-public-hint" class="hint">The web address people use to reach JobHuntPA. Links in emails point to it. No "/" at the end; http:// works only for localhost.</small>
+              <div class="toolbar-row"><button id="email-use-origin" class="btn btn-sm" type="button">Use this address</button> <span id="email-origin" class="muted"></span></div>
+            </div>
+          </div>
+          <div class="toolbar-row">
+            <button id="email-save" class="btn btn-primary" type="submit">Save email settings</button>
+            <span id="email-save-status" class="muted" role="status"></span>
+          </div>
+          <p id="email-error" class="error" role="alert" hidden></p>
+        </form>
+        <div class="toolbar-row key-test">
+          <button id="email-test" class="btn btn-sm" type="button" title="Sends a short message to your own address">Send a test email</button>
+          <span id="email-test-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
       <div class="card form-card" id="rotate-card">
         <h3>Server key</h3>
         <p>The server key protects the keys JobHuntPA keeps for background searches and two-step sign-in. Replacing it
@@ -277,6 +341,7 @@
   <script src="./common.js"></script>
   <script src="./dialogs.js"></script>
   <script src="./server-settings.js"></script>
+  <script src="./email-settings.js"></script>
   <script src="./admin.js"></script>
 </body>
 </html>

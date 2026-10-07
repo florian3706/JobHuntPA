@@ -25,8 +25,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 import theme_contrast  # noqa: E402
 
 PAGES = ("index.html", "job.html", "login.html", "first-run.html", "recover.html", "welcome.html", "admin.html",
-         "signup.html")
-AUTH_PAGES = ("login.html", "first-run.html", "recover.html", "signup.html")
+         "signup.html", "reset-password.html", "verify-email.html")
+AUTH_PAGES = ("login.html", "first-run.html", "recover.html", "signup.html", "reset-password.html", "verify-email.html")
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 FOCUSABLE = {"a", "button", "input", "select", "textarea", "summary"}
 
@@ -278,6 +278,8 @@ class AuthPagesTest(unittest.TestCase):
 
     def test_show_password_is_a_toggle_button(self):
         for name in AUTH_PAGES:
+            if name == "verify-email.html":
+                continue  # no password on it
             page = parse(name)
             toggles = [n for n in page.nodes if n["tag"] == "button" and "pw-toggle" in n["attrs"].get("class", "")]
             with self.subTest(page=name):
@@ -574,7 +576,7 @@ class SignInPagesBehaviourTest(unittest.TestCase):
         self.assertIn("/api/admin/plaintext-files/delete", guarded)
         self.assertIn("/api/auth/mfa/setup", guarded)
         for name in ("app.js", "job.js", "welcome.js", "account.js", "common.js", "admin.js", "export.js",
-                     "background.js"):
+                     "background.js", "account-email.js", "email-settings.js"):
             for number, line in enumerate((FRONTEND / name).read_text(encoding="utf-8").splitlines(), 1):
                 for path in guarded:
                     # A plain api(path) is a GET; the guard is on the calls that change something.
@@ -929,6 +931,145 @@ class BackgroundAccessCardTest(unittest.TestCase):
         src = (FRONTEND / "index.html").read_text(encoding="utf-8")
         self.assertLess(src.index("./app.js"), src.index("./background.js"))
         self.assertIn("common.js", src)
+
+
+class EmailPagesTest(unittest.TestCase):
+    """Phase H: reset-password.html, verify-email.html, "Email me a link", the Settings address card and the admin
+    panel's Email card (WCAG 2.2 as for the other sign-in pages)."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.reset, cls.verify = parse("reset-password.html"), parse("verify-email.html")
+        cls.reset_src, cls.verify_src = read("reset-password.html"), read("verify-email.html")
+        cls.reset_js, cls.verify_js = read("reset-password.js"), read("verify-email.js")
+        cls.forgot_js, cls.card_js, cls.admin_js = read("forgot.js"), read("account-email.js"), read("email-settings.js")
+        cls.admin_src, cls.admin_page = read("admin.html"), parse("admin.html")
+        cls.login_src, cls.recover_src = read("login.html"), read("recover.html")
+
+    @staticmethod
+    def by_id(page, ident):
+        return next(n for n in page.nodes if n["attrs"].get("id") == ident)
+
+    def test_the_links_carry_a_secret_so_no_referrer_and_scripts_load_in_order(self):
+        for src, js in ((self.reset_src, "reset-password.js"), (self.verify_src, "verify-email.js")):
+            self.assertIn('<meta name="referrer" content="no-referrer" />', src)
+            self.assertLess(src.index("common.js"), src.index("auth.js"))
+            self.assertLess(src.index("auth.js"), src.index(js))
+
+    def test_the_token_comes_from_the_fragment_and_leaves_the_address_bar(self):
+        for js in (self.reset_js, self.verify_js):
+            self.assertIn("location.hash", js)
+            self.assertIn("history.replaceState", js)
+            self.assertNotIn("location.search", js.replace("location.pathname + location.search", ""))
+        self.assertIn("'/api/auth/reset/info'", self.reset_js)
+        self.assertIn("'/api/auth/reset'", self.reset_js)
+        self.assertIn("'/api/auth/verify-email'", self.verify_js)
+
+    def test_reset_fields_say_what_they_are_for(self):
+        pw = self.by_id(self.reset, "password")["attrs"]
+        self.assertEqual((pw.get("type"), pw.get("autocomplete")), ("password", "new-password"))
+        self.assertEqual(self.by_id(self.reset, "code")["attrs"].get("autocomplete"), "one-time-code")
+        self.assertIn("novalidate", self.by_id(self.reset, "reset-form")["attrs"])
+        toggle = next(n for n in self.reset.nodes if "pw-toggle" in n["attrs"].get("class", ""))
+        self.assertEqual(toggle["attrs"].get("aria-pressed"), "false")
+
+    def test_the_locked_warning_the_checkbox_and_the_recovery_link(self):
+        self.assertIn("Your saved searches, documents and jobs are locked with your old password.", self.reset_src)
+        self.assertIn("deletes them, and they can't be brought back.", self.reset_src)
+        self.assertIn("I understand my saved data will be deleted", self.reset_src)
+        self.assertIn('href="recover.html"', self.reset_src)
+        self.assertIn("Your data will be kept", self.reset_src)
+        self.assertIn("accept_wipe", self.reset_js)
+        self.assertIn("'accept-wipe'", self.reset_js, "a refusal about the tick is written under the tick")
+
+    def test_a_wipe_ends_in_the_first_run_recovery_codes_step(self):
+        self.assertIn("showCodes(data.recovery_codes, data.csrf)", self.reset_js)
+        for ident in ("codes-step", "codes-list", "codes-copy", "codes-download", "codes-print", "codes-saved",
+                      "codes-continue", "codes-status", "setup-step"):
+            self.by_id(self.reset, ident)
+        self.assertIn("You no longer have the admin key. Ask another admin to share it with you again.", self.reset_src)
+        self.assertIn("admin_key_lost", self.reset_js)
+
+    def test_every_refusal_is_said_in_words_and_the_second_factor_is_asked_for(self):
+        for code in ("link_invalid", "disabled", "second_factor_required"):
+            self.assertIn(code, self.reset_js)
+        self.assertIn("$('#page-title').focus()", self.reset_js)
+        self.assertIn("announce(", self.reset_js)
+        self.assertIn("link_invalid", self.verify_js)
+        self.assertIn("email_taken", self.verify_js)
+
+    def test_email_me_a_link_is_offered_only_when_email_is_on_and_reuses_the_typed_address(self):
+        for src in (self.login_src, self.recover_src):
+            self.assertIn('<li id="forgot-item" hidden>', src)
+            self.assertIn('id="forgot-btn" class="btn-link" type="button">Email me a link', src)
+            self.assertIn('id="forgot-status" class="muted" role="status"', src)
+            self.assertLess(src.index("auth.js"), src.index("forgot.js"))
+        self.assertIn("email_enabled", self.forgot_js)
+        self.assertIn("$('#email').value", self.forgot_js, "WCAG 3.3.7: the address typed above is carried over")
+        self.assertIn("'/api/auth/forgot'", self.forgot_js)
+        self.assertIn("announce(message)", self.forgot_js)
+
+    def test_the_settings_card_sits_in_its_own_slot_and_uses_recent_sign_in(self):
+        index = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="account-address-slot"', index)
+        self.assertLess(index.index("common.js"), index.index("account-email.js"))
+        self.assertIn("getElementById('account-address-slot')", self.card_js)
+        self.assertIn('<h3 id="acct-addr-heading" tabindex="-1">Your email address', self.card_js)
+        self.assertIn('role="status"', self.card_js)
+        self.assertIn("withRecentAuth(() => post('/api/auth/email/change'", self.card_js)
+        self.assertIn("Send the confirmation again", self.card_js)
+        self.assertIn("Change email address", self.card_js)
+        self.assertIn('<label for="acct-addr-new">New email address</label>', self.card_js)
+        self.assertIn('autocomplete="email"', self.card_js)
+        self.assertIn('aria-expanded', self.card_js)
+        self.assertIn("setFieldError(input, e.message)", self.card_js)
+
+    def test_the_admin_email_card_has_labelled_fields_and_its_buttons(self):
+        for ident, label in (("email-host", "Mail server"), ("email-port", "Port"), ("email-security", "Encryption"),
+                             ("email-user", "User name"), ("email-password", "Password"), ("email-from", "From address"),
+                             ("email-public", "Public address")):
+            node = self.by_id(self.admin_page, ident)
+            self.assertIn(f'for="{ident}"', self.admin_src)
+            self.assertIn(label, self.admin_src[self.admin_src.index(f'for="{ident}"'):][:200])
+            self.assertIsNotNone(node)
+        self.assertEqual(self.by_id(self.admin_page, "email-password")["attrs"].get("type"), "password")
+        self.assertIn("Spaces are removed from the password", self.admin_src)
+        self.assertIn("Use this address", self.admin_src)
+        self.assertIn("Send a test email", self.admin_src)
+        self.assertEqual(self.by_id(self.admin_page, "email-test-status")["attrs"].get("role"), "status")
+        self.assertEqual(self.by_id(self.admin_page, "email-error")["attrs"].get("role"), "alert")
+        self.assertLess(self.admin_src.index("server-settings.js"), self.admin_src.index("email-settings.js"))
+        self.assertLess(self.admin_src.index("email-settings.js"), self.admin_src.index("admin.js"))
+
+    def test_small_fixes_in_the_email_pages(self):
+        self.assertIn('aria-describedby="email-password-state email-password-hint"', self.admin_src)
+        self.assertGreaterEqual(self.admin_js.count("withRecentAuth("), 2, "saving asks for the password")
+        self.assertIn("document.title = \"This link doesn't work", self.reset_js)
+        self.assertIn("I have a recovery code</a>: it lets you set a new password and keep your data.", self.verify_src)
+        card = self.card_js
+        self.assertLess(card.index("render();\n        say('Your address is already confirmed.')"),
+                        card.index("acct-addr-heading').focus()"), "said after the rebuild, then focus moves to the heading")
+        self.assertNotIn("if (await load()) { changing = false; render(); }", card)
+
+    def test_the_admin_email_card_shows_only_set_or_not_set_and_names_a_refused_field(self):
+        self.assertIn("password.set", self.admin_js)
+        self.assertNotIn("st.password.value", self.admin_js)
+        self.assertIn("EMAIL_FIELDS[ex.field]", self.admin_js)
+        self.assertIn("setFieldError(", self.admin_js)
+        self.assertIn("location.origin", self.admin_js)
+        self.assertIn("'/api/settings/email/test'", self.admin_js)
+        self.assertIn("status === 'failed'", self.admin_js)
+
+    def test_invitations_offer_to_email_and_say_what_happened(self):
+        self.assertIn('id="invite-send"', self.admin_src)
+        self.assertIn('id="invite-result-note"', self.admin_src)
+        admin_js = (FRONTEND / "admin.js").read_text(encoding="utf-8")
+        self.assertIn("body.send = $('#invite-send').checked", admin_js)
+        for status in ("queued", "not_set_up", "no_address", "busy", "off"):
+            self.assertIn(status, admin_js)
+        self.assertIn("initEmailSettings();", admin_js)
+        self.assertIn("loadEmailSettings();", admin_js)
 
 
 if __name__ == "__main__":

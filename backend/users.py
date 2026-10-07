@@ -94,7 +94,8 @@ ADMIN_PASSWORD_ENV = "JOBHUNT_ADMIN_PASSWORD"
 FIRST_RUN_FILE = "first-run.txt"
 DEFAULT_WORKSPACE = "My job search"
 
-_EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s.]+(\.[^@\s.]+)+")
+# One address, nothing a mail header or an SMTP envelope would read as a list or a name: no , ; < > ( ) [ ] \ " or :
+_EMAIL_RE = re.compile(r"[^@\s,;<>()\[\]\\\":]{1,64}@[^@\s.,;<>()\[\]\\\":]+(\.[^@\s.,;<>()\[\]\\\":]+)+")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -649,6 +650,77 @@ def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) ->
     return True
 
 
+@dataclass(frozen=True, repr=False)
+class WipedReset:
+    """What ``reset_password_wiping_data`` made: the new data key (to sign the person in), the new recovery codes
+    (shown once), and whether the account lost its share of the admin details key."""
+    dek: bytes
+    recovery_codes: list[str]
+    admin_key_lost: bool
+
+    def __repr__(self) -> str:  # never the key or the codes
+        return "<users.WipedReset>"
+
+
+def reset_password_wiping_data(db: Session, user_id: int, new_password: Any, email: Any) -> WipedReset:
+    """The other half of a password reset by email (design 6.5), for an account the server can't open (no background
+    access): the saved data is locked with the old password and can't be brought back, so it is thrown away and the
+    account starts again under the new password. In one transaction: the workspaces and everything in them, the
+    sealed upload files (after the commit), the recovery codes and ``billing_self`` go (the same removal as deleting
+    the account, ``_remove_workspace_data``); the account gets a new data key, key pair and eight new recovery codes
+    (kept sealed until the person confirms saving them), a fresh "My job search" workspace and ``pii_self`` rebuilt
+    from ``email`` (the name is lost: only an admin's copy has it). Kept: the account row, ``pii_admin``, the
+    membership, email preferences, the two-step secret and the admin role. Every session ends. An admin loses their
+    share of the admin details key (its copy was sealed to the old key pair): the grant is deleted, an entry goes in
+    the audit log, and another admin can share the key again.
+
+    The caller has checked the reset token and, with two-step sign-in on, the code. AccountError for a bad password
+    or address, AccountBusy while a run of the account is active, LookupError for an unknown account."""
+    from backend import admin_key, tasks
+
+    new_password, email = check_password(new_password), clean_email(email)
+    new = new_password_keys(new_password)  # about a second on a Pi: before the database's write lock
+    dek = crypto.new_key()
+    priv, pub = crypto.new_keypair()
+    with tasks.start_lock():  # no run can be queued for these workspaces while their rows are removed
+        try:
+            _write_lock(db)
+            user = db.get(User, user_id, populate_existing=True)
+            row = db.get(UserKeys, user_id, populate_existing=True)
+            if user is None or row is None:
+                raise LookupError("No such account")
+            ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
+            _refuse_active_runs(db, ws_ids)
+            files = _remove_workspace_data(db, user_id, ws_ids)
+            user.kdf_salt, user.kdf_params, user.pw_verifier = new.salt, new.params.to_json(), new.derived.auth
+            user.failed_logins, user.locked_until = 0, None
+            user.prefs_enc = None  # sealed under the old key
+            user.onboarding_step = 1  # the search setup is gone: the sign-up walkthrough runs again
+            row.dek_kid, row.pw_wrapped_dek = crypto.key_id(dek), crypto.wrap(new.derived.kek, dek, f"pw|{user_id}")
+            row.server_wrapped_dek = row.server_kek_id = row.background_since = None  # (a copy of the old key)
+            row.x25519_pub = pub
+            with crypto.as_user(user_id, dek):
+                row.x25519_priv_enc = crypto.seal(priv, f"user_keys.x25519_priv|{user_id}")
+                user.pii_self = crypto.seal(_details(email, ""), f"users.pii_self|{user_id}")
+                db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=user_id))
+                codes = replace_recovery_codes(db, user_id, dek)  # the old codes and their wraps of the old key go
+                db.flush()
+            db.execute(update(Membership).where(Membership.user_id == user_id).values(billing_self=None))
+            lost = db.execute(delete(AdminKeyGrant).where(AdminKeyGrant.user_id == user_id)).rowcount > 0
+            if lost:
+                admin_key.audit(db, user_id, "admin_key_lost", user_id, {"reason": "password reset by email"})
+            db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+    removed = _remove_uploads(user_id, files)
+    scrub_wal()  # the old password's, the old recovery codes' and the old key's copies of the data key
+    log.info("user %s: password reset by email without a key; the saved data was deleted (%d workspace(s), %d "
+             "file(s))", user_id, len(ws_ids), removed)
+    return WipedReset(dek, codes, lost)
+
+
 def workspace_ids(db: Session, user_id: int) -> list[int]:
     return [ws for (ws,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id).order_by(Workspace.id)]
 
@@ -891,6 +963,69 @@ def _write_lock(db: Session) -> None:
         db.execute(text("BEGIN IMMEDIATE"))
 
 
+def has_active_runs(db: Session, user_id: int) -> bool:
+    """Whether one of the account's workspaces has a queued or running search (a quick look: deleting data checks
+    again under the lock)."""
+    ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
+    try:
+        _refuse_active_runs(db, ws_ids)
+    except AccountBusy:
+        return True
+    return False
+
+
+def _refuse_active_runs(db: Session, ws_ids: list[int]) -> None:
+    """AccountBusy while one of these workspaces has a queued or running search."""
+    if db.query(SearchRun.id).filter(SearchRun.workspace_id.in_(ws_ids),
+                                     SearchRun.state.in_(["queued", "running"])).first():
+        raise AccountBusy("A search is still running")
+
+
+def _remove_workspace_data(db: Session, user_id: int, ws_ids: list[int]) -> list[str]:
+    """Everything the account saved in its workspaces, in ``db``'s transaction (not committed): jobs with their
+    scores, cover letters and merge decisions, documents, chats, profile, dealbreakers, pins, sources, schedules, runs,
+    the workspaces themselves, the commute cache and the pre-accounts search profile when this account holds it.
+    Returns the stored names of the sealed upload files: delete them (``_remove_uploads``) after the commit. The
+    caller holds ``tasks.start_lock`` and the database's write lock. Shared by deleting an account and by a password
+    reset that has to throw the saved data away (``reset_password_wiping_data``)."""
+    from backend import migrate_encryption
+
+    jobs = select(Job.id).where(Job.workspace_id.in_(ws_ids))
+    threads = select(ChatThread.id).where(ChatThread.workspace_id.in_(ws_ids))
+    files = [name for (name,) in db.query(Document.stored_name).filter(Document.workspace_id.in_(ws_ids)) if name]
+    db.execute(delete(ChatMessage).where(ChatMessage.thread_id.in_(threads)))
+    db.execute(delete(ChatThread).where(ChatThread.workspace_id.in_(ws_ids)))
+    db.execute(delete(CoverLetter).where(CoverLetter.job_id.in_(jobs)))
+    db.execute(delete(FitResult).where(FitResult.job_id.in_(jobs)))
+    db.execute(delete(JobDuplicate).where(JobDuplicate.workspace_id.in_(ws_ids)))
+    db.execute(delete(Job).where(Job.workspace_id.in_(ws_ids)))
+    for model in (Document, Pin, CompanySource, SearchRun):
+        db.execute(delete(model).where(model.workspace_id.in_(ws_ids)))
+    for model in (SearchSchedule, UserProfile, DealbreakerSet):  # one row per workspace, id = workspace id
+        db.execute(delete(model).where(model.id.in_(ws_ids)))
+    db.execute(update(LlmUsage).where(LlmUsage.workspace_id.in_(ws_ids)).values(workspace_id=None))
+    db.execute(delete(Workspace).where(Workspace.owner_id == user_id))
+    db.execute(delete(CommuteCache).where(CommuteCache.owner_id == user_id))
+    if migrate_encryption.owner_of(migrate_encryption.state()) == user_id:
+        db.execute(delete(SearchProfile))  # the legacy single row, sealed under this account's key
+    return files
+
+
+def _remove_uploads(user_id: int, files: list[str]) -> int:
+    """Deletes the sealed upload files named in ``files`` (after the commit: a failed delete leaves an unreadable file,
+    never a half-removed account). Returns how many were removed."""
+    removed = 0
+    for name in files:
+        if not name or Path(name).name != name:
+            continue
+        try:
+            (UPLOAD_DIR / name).unlink(missing_ok=True)
+            removed += 1
+        except OSError as exc:
+            log.warning("Could not delete an upload of user %s: %s", user_id, exc.__class__.__name__)
+    return removed
+
+
 def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None) -> dict:
     """The one way an account is removed (a person deleting their own, or an admin deleting someone's): the account
     and everything of theirs, in one transaction (their sealed upload files after it): workspaces with every row in
@@ -908,7 +1043,7 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
     is active and (AccountProtected) for the last active admin; ApkUnavailable when the admin key can't be opened.
     Cancelling a Stripe subscription is the caller's job (Phase I), before this. Explicit deletes, not cascades: a
     database from before accounts has workspace tables without foreign keys."""
-    from backend import admin_key, migrate_encryption, sessions, tasks
+    from backend import admin_key, sessions, tasks
 
     if db.get(User, user_id) is None:
         raise LookupError("No such account")
@@ -922,30 +1057,10 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
             if is_last_admin(db, user_id):
                 raise AccountProtected("This is the last admin")
             ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
-            if db.query(SearchRun.id).filter(SearchRun.workspace_id.in_(ws_ids),
-                                             SearchRun.state.in_(["queued", "running"])).first():
-                raise AccountBusy("A search is still running")
+            _refuse_active_runs(db, ws_ids)
             apk = admin_key.open_apk(db, user_id if actor_id is None else actor_id) if was_admin else None
-            jobs = select(Job.id).where(Job.workspace_id.in_(ws_ids))
-            threads = select(ChatThread.id).where(ChatThread.workspace_id.in_(ws_ids))
-            files = [name for (name,) in db.query(Document.stored_name).filter(Document.workspace_id.in_(ws_ids))
-                     if name]
-            db.execute(delete(ChatMessage).where(ChatMessage.thread_id.in_(threads)))
-            db.execute(delete(ChatThread).where(ChatThread.workspace_id.in_(ws_ids)))
-            db.execute(delete(CoverLetter).where(CoverLetter.job_id.in_(jobs)))
-            db.execute(delete(FitResult).where(FitResult.job_id.in_(jobs)))
-            db.execute(delete(JobDuplicate).where(JobDuplicate.workspace_id.in_(ws_ids)))
-            db.execute(delete(Job).where(Job.workspace_id.in_(ws_ids)))
-            for model in (Document, Pin, CompanySource, SearchRun):
-                db.execute(delete(model).where(model.workspace_id.in_(ws_ids)))
-            for model in (SearchSchedule, UserProfile, DealbreakerSet):  # one row per workspace, id = workspace id
-                db.execute(delete(model).where(model.id.in_(ws_ids)))
-            db.execute(update(LlmUsage).where(LlmUsage.workspace_id.in_(ws_ids)).values(workspace_id=None))
+            files = _remove_workspace_data(db, user_id, ws_ids)
             db.execute(update(LlmUsage).where(LlmUsage.user_id == user_id).values(user_id=None))
-            db.execute(delete(Workspace).where(Workspace.owner_id == user_id))
-            db.execute(delete(CommuteCache).where(CommuteCache.owner_id == user_id))
-            if migrate_encryption.owner_of(migrate_encryption.state()) == user_id:
-                db.execute(delete(SearchProfile))  # the legacy single row, sealed under this account's key
             db.execute(update(AdminAudit).where(AdminAudit.admin_id == user_id).values(admin_id=None))
             db.execute(update(AdminAudit).where(AdminAudit.target_user_id == user_id).values(target_user_id=None))
             db.execute(update(AdminKeyGrant).where(AdminKeyGrant.granted_by == user_id).values(granted_by=None))
@@ -973,15 +1088,7 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
         except BaseException:
             db.rollback()
             raise
-    removed = 0
-    for name in files:  # after the commit: a failed delete leaves an unreadable file, never a half-deleted account
-        if not name or Path(name).name != name:
-            continue
-        try:
-            (UPLOAD_DIR / name).unlink(missing_ok=True)
-            removed += 1
-        except OSError as exc:
-            log.warning("Could not delete an upload of deleted user %s: %s", user_id, exc.__class__.__name__)
+    removed = _remove_uploads(user_id, files)  # after the commit
     scrub_wal()  # the deleted account's key copies and secrets must not linger in the write-ahead log
     sessions._active_on.pop(user_id, None)  # SQLite may give this id to the next account
     log.info("Account deleted: user %s (%d workspace(s), %d file(s))", user_id, len(ws_ids), removed)

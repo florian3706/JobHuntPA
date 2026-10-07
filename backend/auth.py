@@ -1,6 +1,7 @@
 """Signing in and out, and the first run (accounts design, sections 3, 5 and 6).
 
-    GET  /api/auth/state[?invite=<token>] {setup_required, signed_in, mfa_pending?, signup?} (no session needed)
+    GET  /api/auth/state[?invite=<token>] {setup_required, signed_in, mfa_pending?, signup?, email_enabled?} (no
+                                          session needed; email_enabled: reset links by email work, set once set up)
                                           signup: {mode: invite|open|closed, allowed, encrypting,
                                                    invite: {valid, email}}
     POST /api/auth/signup                 {email, password, name?, remember?, invite?}
@@ -27,15 +28,17 @@ Changing the password, two-step sign-in, new recovery codes and signing out else
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend import account, crypto, migrate_encryption, ratelimit, sessions, signup, users
-from backend.db import AuthSession, SessionLocal, User, get_db, scrub_wal, utcnow
+from backend import account, account_email, crypto, mail_queue, migrate_encryption, ratelimit, sessions, signup, users
+from backend.db import AuthSession, AuthToken, SessionLocal, User, get_db, scrub_wal, utcnow
 from backend.sessions import REAUTH_REQUIRED, AuthProblem, AuthUser, current_user, require_recent_auth  # noqa: F401
 
 log = logging.getLogger(__name__)
@@ -101,6 +104,7 @@ def auth_state(request: Request, invite: Optional[str] = Query(None, max_length=
         out["mfa_pending"] = True  # the password was right; the sign-in page asks for the code
     if not out["setup_required"]:  # what the sign-up page needs: the mode, and whether this invitation works
         out["signup"] = signup.public_state(db, invite)
+        out["email_enabled"] = mail_queue.enabled()  # reset links by email work (the sign-in page offers them)
     return out
 
 
@@ -138,6 +142,7 @@ def sign_up(body: SignupIn, request: Request):
     if not users.users_exist():
         raise AuthProblem(409, "setup_required", "JobHuntPA isn't set up yet: create the admin account first.")
     account = signup.sign_up(body.email, body.password, name=body.name or "", invite=body.invite)
+    account_email.verify_after_sign_up(account.user_id, body.email)  # when email is set up and it isn't verified yet
     db = SessionLocal()
     try:
         secret = sessions.create(db, db.get(User, account.user_id), account.dek, persistent=body.remember)
@@ -336,6 +341,7 @@ def recover(body: RecoverIn, request: Request, db: Session = Depends(get_db)):
                 raise AuthProblem(401, "wrong_recovery", RECOVER_FAILED)  # used by another request just now
         users.apply_new_password(db, user, dek, fresh)
         db.query(AuthSession).filter(AuthSession.user_id == user.id).delete(synchronize_session=False)
+        account_email.end_open_links(db, user.id)  # a reset link already sent must not undo this
         secret = sessions.create(db, user, dek, persistent=body.remember)
         db.commit()
     except BaseException:
@@ -343,6 +349,7 @@ def recover(body: RecoverIn, request: Request, db: Session = Depends(get_db)):
         raise
     scrub_wal()  # the old password's copy of the data key must not linger in the write-ahead log
     log.info("Password reset with a recovery code: user %s (%d code(s) used)", user.id, len(spend))
+    account_email.notify_with_key(db, user.id, dek, "password_changed")
     _after_sign_in(user.id, dek)
     return _signed_in(request, secret, body.remember, {"ok": True, "user": {"id": user.id, "role": user.role},
                                                        "recovery_codes_left": users.recovery_codes_left(db, user.id)})
@@ -392,3 +399,37 @@ def recovery_codes(user: AuthUser = Depends(current_user), db: Session = Depends
 def acknowledge_codes(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
     users.acknowledge_recovery_codes(db, user.id)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Periodic clean-up (accounts design §9; run by backend/schedule.py's loop)
+# ---------------------------------------------------------------------------
+
+TOKEN_KEEP = timedelta(days=1)     # a used or expired reset or verification link is kept this long, then deleted
+INVITE_KEEP = timedelta(days=30)   # invitations stay in the admin's list this long after they end (see admin.py)
+
+
+def cleanup_tick(now: Optional[datetime] = None) -> dict:
+    """Deletes sessions past their idle or absolute limit and links that can't be used any more: reset and
+    verification links a day after they were used or expired, invitations a month after (the admin's list shows them
+    until then). Returns the counts. Needs no key."""
+    now = now or utcnow()
+    db = SessionLocal()
+    try:
+        sessions_gone = db.query(AuthSession).filter((AuthSession.absolute_expires_at <= now)
+                                                    | (AuthSession.idle_expires_at <= now)
+                                                    ).delete(synchronize_session=False)
+        ended = (AuthToken.used_at.isnot(None)) | (AuthToken.expires_at <= now)
+        tokens_gone = db.query(AuthToken).filter(AuthToken.kind != signup.INVITE_KIND, ended,
+                                                 func.coalesce(AuthToken.used_at, AuthToken.expires_at)
+                                                 <= now - TOKEN_KEEP).delete(synchronize_session=False)
+        invites_gone = db.query(AuthToken).filter(AuthToken.kind == signup.INVITE_KIND, ended,
+                                                  func.coalesce(AuthToken.used_at, AuthToken.expires_at)
+                                                  <= now - INVITE_KEEP).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    if sessions_gone or tokens_gone or invites_gone:
+        log.info("Clean-up: %d expired session(s), %d link(s), %d invitation(s) removed", sessions_gone, tokens_gone,
+                 invites_gone)
+    return {"sessions": sessions_gone, "tokens": tokens_gone, "invites": invites_gone}

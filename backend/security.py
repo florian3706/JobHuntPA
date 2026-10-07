@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend import crypto, ratelimit, sessions, totp, users
+from backend import account_email, crypto, ratelimit, sessions, totp, users
 from backend.auth import _too_many
 from backend.db import AuthSession, User, get_db, scrub_wal, utcnow
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
@@ -119,9 +119,11 @@ def change_password(body: ChangePasswordIn, request: Request, auth: AuthUser = D
     if body.sign_out_others:
         ended = db.query(AuthSession).filter(AuthSession.user_id == auth.id, AuthSession.id != auth.session_id
                                              ).delete(synchronize_session=False)
+    account_email.end_open_links(db, auth.id)  # a reset link already sent must not undo this
     db.commit()
     scrub_wal()  # the old password's copy of the data key must not linger in the write-ahead log
     log.info("Password changed: user %s (%d other session(s) ended)", auth.id, ended)
+    account_email.notify_in_session(db, auth.id, "password_changed")
     return {"ok": True, "signed_out_others": ended}
 
 

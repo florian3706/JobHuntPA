@@ -7,8 +7,11 @@ Accessibility: ``<html lang>``, a real ``<title>``, layout tables with ``role="p
 images, links whose text names their target, and colours above 4.5:1 (checked in tests). The page reads fine with
 CSS stripped, and the text part carries the same content.
 
-Link targets (the pages that consume them belong to the wiring phases):
-    {base}/reset-password.html?token=...   {base}/accept-invite.html?token=...   {base}/verify-email.html?token=...
+Link targets. A token that gives access (a reset or an email check) sits in the address's fragment, after "#": a
+browser never sends the fragment to a server or in a Referer header, so it can't end up in an access log. The page reads
+it with ``location.hash`` and posts it. An invitation links to the sign-up page itself (Phase F built it to read
+``?invite=``):
+    {base}/reset-password.html#token=...   {base}/verify-email.html#token=...   {base}/signup.html?invite=...
     {base}/job.html?id=ID[&ws=WORKSPACE]   {base}/unsubscribe?token=...
 """
 from __future__ import annotations
@@ -116,7 +119,7 @@ def _simple(title: str, intro: str, link: Optional[tuple[str, str]], after: Iter
 
 def password_reset(token: str, expires: Any, *, base_url: Optional[str] = None) -> Template:
     """A password reset: a link carrying ``token`` and the time (or text, e.g. "1 hour") it stops working."""
-    url = f"{_base(base_url)}/reset-password.html?token={quote(token, safe='')}"
+    url = f"{_base(base_url)}/reset-password.html#token={quote(token, safe='')}"
     subject = "Reset your JobHuntPA password"
     text, html = _simple(
         "Reset your password",
@@ -129,7 +132,7 @@ def password_reset(token: str, expires: Any, *, base_url: Optional[str] = None) 
 
 def invite(token: str, *, inviter: Optional[str] = None, expires: Any = None, base_url: Optional[str] = None) -> Template:
     """An invitation to create an account; ``inviter`` is a display name (optional)."""
-    url = f"{_base(base_url)}/accept-invite.html?token={quote(token, safe='')}"
+    url = f"{_base(base_url)}/signup.html?invite={quote(token, safe='')}"
     who = f"{inviter} has invited you" if inviter else "You have been invited"
     after = [f"The invitation expires {_when(expires)}."] if expires else []
     after.append("If you were not expecting this, you can ignore this email.")
@@ -142,7 +145,7 @@ def invite(token: str, *, inviter: Optional[str] = None, expires: Any = None, ba
 
 def verify_email(token: str, *, expires: Any = None, base_url: Optional[str] = None) -> Template:
     """Confirm an email address (new account or a change of address)."""
-    url = f"{_base(base_url)}/verify-email.html?token={quote(token, safe='')}"
+    url = f"{_base(base_url)}/verify-email.html#token={quote(token, safe='')}"
     after = [f"The link expires {_when(expires)}."] if expires else []
     after.append("If you did not create or change a JobHuntPA account with this address, ignore this email.")
     text, html = _simple(
@@ -159,11 +162,15 @@ SECURITY_EVENTS = {
     "mfa_disabled_by_admin": ("Two-step sign-in was turned off on your JobHuntPA account",
                               "An administrator turned off two-step sign-in (MFA) for your JobHuntPA account.",
                               "You can turn it on again in your account settings."),
+    "email_changed": ("The email address on your JobHuntPA account was changed",
+                      "The email address of your JobHuntPA account was just changed to a different one. This notice "
+                      "goes to the old address.",
+                      "If you made this change, nothing more is needed."),
 }
 
 
 def security_notice(event: str, *, when: Any = None, base_url: Optional[str] = None) -> Template:
-    """A security notice. ``event`` is "password_changed" or "mfa_disabled_by_admin"."""
+    """A security notice. ``event`` is "password_changed", "mfa_disabled_by_admin" or "email_changed"."""
     if event not in SECURITY_EVENTS:
         raise ValueError(f"Unknown security event: {event}")
     subject, intro, note = SECURITY_EVENTS[event]
@@ -176,6 +183,18 @@ def security_notice(event: str, *, when: Any = None, base_url: Optional[str] = N
         link = (f"{base.rstrip('/')}/", "Open JobHuntPA")
     text, html = _simple(subject, intro, link, after)
     return subject, text, html, {"Auto-Submitted": "auto-generated"}
+
+
+def smtp_test_message(*, base_url: Optional[str] = None) -> Template:
+    """What an admin gets from "Send a test email": proof that mail leaves this server."""
+    base = base_url or mailer.public_base_url()
+    link = (f"{base.rstrip('/')}/", "Open JobHuntPA") if base else None
+    text, html = _simple(
+        "Email is working",
+        "This is a test message from your JobHuntPA. If you can read it, JobHuntPA can send password resets, "
+        "invitations and security notices.",
+        link, ["You asked for this test in the admin panel. Nothing else is needed."])
+    return "JobHuntPA test email", text, html, {"Auto-Submitted": "auto-generated"}
 
 
 # -- the job digest ----------------------------------------------------------------------------------------------

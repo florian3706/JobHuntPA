@@ -7,13 +7,13 @@
     POST   /api/admin/users/{id}/disable | enable
     DELETE /api/admin/users/{id}                          removes the account and all its data (recent password)
     POST   /api/admin/users/{id}/mfa/disable              clears two-step sign-in, signs them out (recent password)
-    POST   /api/admin/users/{id}/reset-email              answers 409 email_not_set_up until Phase H wires email in
+    POST   /api/admin/users/{id}/reset-email              emails them a reset link (409 email_not_set_up while mail is off)
     PUT    /api/admin/users/{id}/membership               {exempt?, free_searches_used?}
     POST   /api/admin/users/{id}/grants                   {kind, starts_at?, ends_at | days, note?}
     PATCH  /api/admin/users/{id}/grants/{gid}             {starts_at?, ends_at? | days?, note?}
     DELETE /api/admin/users/{id}/grants/{gid}             ends the grant now (it stays in the history)
     GET    /api/admin/signup   PUT /api/admin/signup      {mode: invite|open|closed, free_searches}
-    POST   /api/admin/invites {email?}                    -> {link, ...}; GET /api/admin/invites; DELETE .../{id}
+    POST   /api/admin/invites {email?, send?}             -> {link, emailed, ...}; GET /api/admin/invites; DELETE .../{id}
     GET    /api/admin/audit?limit=&before_id=             what admins did
     GET    /api/admin/plaintext-audit                     plaintext left from before encryption
     POST   /api/admin/plaintext-files/delete              (recent password)
@@ -40,7 +40,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
-from backend import admin_key, key_rotation, keys, mailer, migrate_encryption, signup, tokens, users
+from backend import account_email, admin_key, email_templates, key_rotation, keys, mail_queue, mailer, migrate_encryption
+from backend import password_reset, ratelimit, signup, tokens, users
 from backend.admin_key import Apk, ApkUnavailable
 from backend.db import (
     AdminAudit,
@@ -457,10 +458,11 @@ def delete_user(user_id: int, admin: AuthUser = Depends(current_user), db: Sessi
 
 
 def notify_mfa_disabled(db: Session, admin: AuthUser, target: User, apk: Optional[Apk]) -> bool:
-    """Phase H: send the person a security notice that an admin turned off their two-step sign-in (their address
-    is in ``pii_admin``: ``_details_of(target, apk)``). Returns whether a notice went out. Nothing is sent until
-    email is wired in."""
-    return False
+    """Sends the person a security notice that an admin turned off their two-step sign-in, to the address in their
+    ``pii_admin`` (this admin's key opens it). Returns whether a notice was queued: False while email is off or when
+    this admin can't read the address (the answer says so, and the person is told in person)."""
+    info = _details_of(target, apk)
+    return account_email.notify("mfa_disabled_by_admin", info.get("email") if info else None, target.id)
 
 
 @router.post("/users/{user_id}/mfa/disable")
@@ -493,10 +495,30 @@ EMAIL_NOT_SET_UP = ("Email isn't set up yet, so a password reset link can't be s
                     "use a recovery code on the sign-in page to choose a new password.")
 
 
+NO_ADDRESS = ("This person's email address can't be read right now (their details are sealed to an older admin key "
+              "until they next sign in, or you don't have the admin key), so a link can't be sent.")
+
+
 def send_reset_email(db: Session, admin: AuthUser, target: User, apk: Optional[Apk]) -> None:
-    """Phase H: make a reset token for ``target`` and send the link to the address in ``pii_admin``. Until then
-    this refuses."""
-    raise _problem(409, "email_not_set_up", EMAIL_NOT_SET_UP)
+    """Makes a reset link for ``target`` (the same one the forgot-password form makes: 1 hour, single use) and sends
+    it in the background to the address in their ``pii_admin``. Admins never set anyone's password."""
+    if not mail_queue.enabled():
+        raise _problem(409, "email_not_set_up", EMAIL_NOT_SET_UP)
+    if target.status != "active":
+        raise _problem(409, "disabled", "This account is turned off, so a reset link wouldn't work. Turn it on first.")
+    info = _details_of(target, apk)
+    address = info.get("email") if info else None
+    if not address:
+        raise _problem(409, "details_unavailable", NO_ADDRESS)
+    wait = ratelimit.RESET_ACCOUNT.hit(target.id)
+    if wait is not None:
+        raise AuthProblem(429, "rate_limited", f"A reset link was sent to this person a moment ago. Try again in "
+                                               f"{ratelimit.wait_text(wait)}.",
+                          headers={"Retry-After": ratelimit.retry_after(wait)})
+    if not password_reset.send_for_admin(target.id, address, admin.id):
+        raise _problem(503, "busy", "Too much email is waiting to be sent. Try again in a few minutes.")
+    audit(db, admin, "reset_email_sent", target.id)
+    db.commit()
 
 
 @router.post("/users/{user_id}/reset-email")
@@ -673,6 +695,7 @@ def put_signup(body: SignupSettingsIn, admin: AuthUser = Depends(current_user), 
 class InviteIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: Optional[str] = Field(None, max_length=1000)
+    send: Optional[bool] = None  # email the link: None sends when there is an address and email is set up
 
 
 def _base_url(request: Request) -> str:
@@ -687,7 +710,15 @@ def _invite_status(row: AuthToken, now: datetime) -> str:
 def create_invite(body: InviteIn, request: Request, admin: AuthUser = Depends(current_user),
                   db: Session = Depends(get_db)):
     """An invitation link, good for 7 days and one sign-up. Only the link's hash is stored, so this is the one
-    time it can be shown. ``email`` (optional) pre-fills the sign-up form; it counts as verified if used."""
+    time it can be shown. ``email`` (optional) pre-fills the sign-up form; it counts as verified if used. With an
+    address (and ``send`` not false) the link is also emailed in the background when email is set up
+    (``emailed`` and ``email_status`` say what happened: queued, not_set_up, no_address, busy or off); the link is
+    returned either way, to copy. ``send: true`` while email is off is a 409."""
+    if body.send and not mail_queue.enabled():
+        raise _problem(409, "email_not_set_up", "Email isn't set up yet, so the invitation can't be sent. Copy the link "
+                                                "and send it yourself, or set email up first.")
+    if body.send and not body.email:
+        raise _problem(422, "invalid", "Enter the person's email address to send them the invitation.", "email")
     now = utcnow()
     db.query(AuthToken).filter(AuthToken.kind == signup.INVITE_KIND,  # old ones that expired a month ago
                                AuthToken.expires_at < now - timedelta(days=30)).delete(synchronize_session=False)
@@ -704,10 +735,18 @@ def create_invite(body: InviteIn, request: Request, admin: AuthUser = Depends(cu
             raise _problem(422, "invalid", exc.message, "email") from None
     token, row = tokens.create(db, signup.INVITE_KIND, ttl=signup.INVITE_TTL, created_by=admin.id,
                                payload={"email": email or ""})
-    audit(db, admin, "invite_created", None, {"invite_id": row.id, "email": email})
+    status = "off" if body.send is False else "no_address" if not email else "queued" if mail_queue.enabled() \
+        else "not_set_up"
+    inviter = users.details(db, admin.id).get("name") or None if status == "queued" else None  # the name, never the address
+    audit(db, admin, "invite_created", None, {"invite_id": row.id, "email": email, "email_status": status})
     db.commit()
+    if status == "queued":  # after the commit: the link must work by the time the email arrives
+        template = email_templates.invite(token, inviter=inviter, expires=row.expires_at.replace(tzinfo=timezone.utc))
+        if mail_queue.send(email, template, user_id=admin.id) is None:
+            status = "busy"
     return {"ok": True, "id": row.id, "link": f"{_base_url(request)}/signup.html?invite={token}",
-            "email": email, "expires_at": _iso(row.expires_at)}
+            "email": email, "expires_at": _iso(row.expires_at), "emailed": status == "queued",
+            "email_status": status}
 
 
 @router.get("/invites")

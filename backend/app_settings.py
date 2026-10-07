@@ -131,6 +131,7 @@ ENV_RULES: dict[str, Callable[[str], bool]] = {
     "SMTP_PORT": mailer.valid_port,
     "SMTP_USER": mailer.valid_user,
     "SMTP_PASSWORD": mailer.valid_password,
+    "SMTP_PASSWORD_B64": mailer.valid_password_b64,
     "SMTP_FROM": mailer.valid_from,
     "SMTP_SECURITY": mailer.valid_security,
     "PUBLIC_BASE_URL": mailer.valid_public_base_url,

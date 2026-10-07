@@ -32,8 +32,9 @@ no data key in use: its row holds the DEK wrapped under the cookie secret with i
 /api/auth/login/mfa (which checks the code, then makes a new ``active`` session with a new cookie secret) and
 /api/auth/logout; every other path answers 401 ``mfa_required`` and keeps the cookie, so the sign-in page can go on.
 Flipping ``state`` in the database doesn't turn a pending row into a usable session: the DEK wouldn't unwrap.
-Later phases add their own paths: the unsubscribe link and Stripe's webhook (no session, no CSRF; signed instead),
-sign-up, forgot and reset (PRE_SESSION).
+Later phases add their own paths: the unsubscribe link and Stripe's webhook (no session, no CSRF; signed instead).
+Sign-up, forgot, reset and opening a verification link (Phase H) are PRE_SESSION too: a token in the body proves what
+a session would.
 
 The DB work runs in the thread pool, so a slow write elsewhere never stalls the event loop.
 """
@@ -76,12 +77,17 @@ LOGOUT = "/api/auth/logout"
 LOGIN_MFA = "/api/auth/login/mfa"   # the code step: its session is still pending_mfa
 RECOVER = "/api/auth/recover"       # a forgotten password, reset with a recovery code (the data is kept)
 SIGNUP = "/api/auth/signup"
+FORGOT = "/api/auth/forgot"               # a reset link by email (Phase H)
+RESET_INFO = "/api/auth/reset/info"
+RESET = "/api/auth/reset"
+VERIFY_EMAIL = "/api/auth/verify-email"   # opening a link from a verification email: it may be another browser
 # Answered without a session.
-OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, LOGOUT, SIGNUP})
+OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, LOGOUT, SIGNUP, FORGOT, RESET_INFO, RESET,
+                        VERIFY_EMAIL})
 # Answered before the first account exists.
 SETUP_PATHS = frozenset({HEALTH, STATE, FIRST_RUN})
 # Sign-in endpoints: JSON only and rate-limited per client address; no CSRF token (there may be no session yet).
-PRE_SESSION = frozenset({FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, SIGNUP})
+PRE_SESSION = frozenset({FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, SIGNUP, FORGOT, RESET_INFO, RESET, VERIFY_EMAIL})
 UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 

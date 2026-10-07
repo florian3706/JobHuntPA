@@ -141,7 +141,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_env_example_lists_every_setting(self):
         text = open(os.path.join(os.path.dirname(__file__), "..", ".env.example"), encoding="utf-8").read()
-        for name in SMTP_VARS:
+        for name in SMTP_VARS + ("SMTP_PASSWORD_B64",):
             self.assertRegex(text, rf"(?m)^# {name}=")
 
     def test_config(self):
@@ -264,28 +264,44 @@ class AccountTemplateTests(unittest.TestCase):
 
     def test_password_reset(self):
         subject, text, html, h = self.check_parts(
-            et.password_reset("abc.123.xyz", "in 1 hour", base_url=BASE), "in 1 hour", f"{BASE}/reset-password.html?token=abc.123.xyz")
+            et.password_reset("abc.123.xyz", "in 1 hour", base_url=BASE), "in 1 hour", f"{BASE}/reset-password.html#token=abc.123.xyz")
         self.check_accessible(html)
         self.assertIn("Reset", subject)
 
     def test_token_is_url_encoded_and_html_escaped(self):
         _, text, html, _ = et.password_reset('a&b"<c>', "soon", base_url=BASE)
-        self.assertIn("token=a%26b%22%3Cc%3E", text)
+        self.assertIn("#token=a%26b%22%3Cc%3E", text)
         self.assertNotIn("<c>", html)
 
     def test_invite_and_verify(self):
-        _, _, html, _ = self.check_parts(et.invite("tok_1", inviter="Ana <b>", base_url=BASE), f"{BASE}/accept-invite.html?token=tok_1")
+        _, _, html, _ = self.check_parts(et.invite("tok_1", inviter="Ana <b>", base_url=BASE), f"{BASE}/signup.html?invite=tok_1")
         self.assertNotIn("<b>", html)
         self.check_accessible(html)
-        _, _, html, _ = self.check_parts(et.verify_email("tok_2", expires="tomorrow", base_url=BASE), f"{BASE}/verify-email.html?token=tok_2", "tomorrow")
+        _, _, html, _ = self.check_parts(et.verify_email("tok_2", expires="tomorrow", base_url=BASE), f"{BASE}/verify-email.html#token=tok_2", "tomorrow")
         self.check_accessible(html)
 
     def test_security_notices(self):
-        for event, needle in (("password_changed", "password"), ("mfa_disabled_by_admin", "administrator")):
+        for event, needle in (("password_changed", "password"), ("mfa_disabled_by_admin", "administrator"),
+                              ("email_changed", "email address")):
             _, text, html, _ = self.check_parts(et.security_notice(event, base_url=BASE), needle)
             self.check_accessible(html)
         with self.assertRaises(ValueError):
             et.security_notice("nonsense")
+
+    def test_tokens_that_give_access_are_in_the_fragment_never_the_query(self):
+        for tpl in (et.password_reset("tok-1", "soon", base_url=BASE), et.verify_email("tok-2", base_url=BASE)):
+            for part in (tpl[1], tpl[2]):
+                self.assertNotIn("?token=", part)
+                self.assertRegex(part, r"\.html#token=tok-[12]")
+        text = et.invite("tok-3", base_url=BASE)[1]  # (the sign-up page reads ?invite=: Phase F built it that way)
+        self.assertIn(f"{BASE}/signup.html?invite=tok-3", text)
+
+    def test_the_smtp_test_message(self):
+        subject, text, html, headers = et.smtp_test_message(base_url=BASE)
+        self.assertEqual(subject, "JobHuntPA test email")
+        self.assertIn("test message", text)
+        self.assertIn("test message", html)
+        self.check_accessible(html)
 
     def test_no_base_url(self):
         with clean_env(), self.assertRaises(et.NoBaseUrl):

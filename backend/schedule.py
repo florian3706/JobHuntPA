@@ -252,8 +252,30 @@ def start_scheduler(start_search: Callable[[int], dict]) -> None:
                 tick(start_search)
             except Exception:
                 log.exception("scheduled search check failed")
+            housekeeping()
 
     threading.Thread(target=loop, name="jobhunt-scheduler", daemon=True).start()
+
+
+CLEANUP_EVERY = timedelta(minutes=10)
+_last_cleanup: Optional[datetime] = None
+
+
+def housekeeping(now: Optional[datetime] = None) -> bool:
+    """Every 10 minutes, with the scheduler's loop (so off with JOBHUNT_SCHEDULER=off): delete expired sessions and
+    links that can't be used any more (``auth.cleanup_tick``). True when it ran. Never raises."""
+    global _last_cleanup
+    now = now or datetime.now(timezone.utc)
+    if _last_cleanup is not None and now - _last_cleanup < CLEANUP_EVERY:
+        return False
+    _last_cleanup = now
+    try:
+        from backend import auth  # (auth imports modules that import this one)
+
+        auth.cleanup_tick()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Clean-up of expired sessions and links failed: %s", exc.__class__.__name__)
+    return True
 
 
 def stop_scheduler() -> None:

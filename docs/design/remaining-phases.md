@@ -253,7 +253,7 @@ Uses `backend/mailer.py` and `backend/email_templates.py`, which exist but aren'
   - If MFA is on, a code is required.
   - Without a recovery code, locked data is wiped, with a clear warning first.
   - Users with background access keep their data (Phase G's hook).
-- **Admin buttons:** "send password reset" (from Phase F) and invite emails (`accept-invite.html`).
+- **Admin buttons:** "send password reset" (from Phase F) and invite emails (the link goes to `signup.html?invite=`; there is no accept-invite page).
 - **Security notices:** password changed, MFA turned off by an admin.
 - **Sending:** from one background thread; never block a request; never log addresses or bodies.
 

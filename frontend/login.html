@@ -86,6 +86,8 @@
         <li>Your password manager can fill in both fields, and pasting works too.</li>
         <li>After 5 wrong passwords in a row, JobHuntPA asks you to wait a little before the next try.</li>
         <li>Forgotten your password? <a href="recover.html">I have a recovery code</a>: it lets you set a new password and keep your data. Without one, ask the person who runs this JobHuntPA.</li>
+        <li id="forgot-item" hidden>No recovery code? <button id="forgot-btn" class="btn-link" type="button">Email me a link</button> to the address typed above. If you have two-step sign-in, you will need your app's code.
+          <span id="forgot-status" class="muted" role="status"></span></li>
       </ul>
     </section>
   </main>
@@ -94,5 +96,6 @@
 
   <script src="./common.js"></script>
   <script src="./auth.js"></script>
+  <script src="./forgot.js"></script>
 </body>
 </html>

@@ -157,6 +157,22 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   enter your email, a recovery code and a new password. **Your data is kept**, because the recovery
   code unlocks it; every other browser is signed out. With two-step sign-in on, you also enter the
   app's code or a second recovery code. This works without any email set up.
+- **Forgot your password and have no recovery code?** If an admin has [set up email](#setting-up-email),
+  the sign-in page offers *Email me a link*. Type your address: whether or not an account has it, the
+  page answers the same ("If an account has that address, we've sent a link"), so nobody can use it to
+  find out who has an account. The link works once and lasts 1 hour; only the newest link works. With two-step
+  sign-in on, you also enter the app's code (or a recovery code). What happens to your saved searches
+  depends on **background access** (Settings): **with it on, your data is kept**, because the server can
+  unlock it; **with it off, the data is locked with your old password and can't be unlocked, so the page
+  asks you to tick "I understand my saved data will be deleted"**: your workspaces, jobs, documents and
+  uploads are then deleted and you start again with an empty "My job search" and new recovery codes (your
+  account, membership and sign-in stay). Either way, every other browser is signed out, you are signed
+  in, and you get a "Your password was changed" email. If you have a recovery code, use it instead: it keeps your data.
+- **Your email address** (Settings): once email is set up, a new account gets a link to confirm its address
+  (*Send it again* is on the Settings tab; the link lasts 24 hours). An address an admin invited you at counts as
+  confirmed. **Changing your address** asks for your password, sends a link to the *new* address, and changes
+  nothing until you open it; the old address then gets a notice. You are also emailed when your password is
+  changed and when an admin turns off your two-step sign-in. These emails never contain your address or any of your data.
 - **Password, recovery codes and sessions** (Settings > Password, Recovery codes and Signed-in devices): change your password (your data
   stays readable and other browsers are signed out unless you untick that), make 8 new recovery
   codes (the old ones stop working; with two-step sign-in on you also enter the app's code; you save
@@ -267,21 +283,50 @@ documents or searches. It has five parts:
   an admin replaces the admin key like demoting does), and open their
   membership: **exempt from payment**, the number of free searches used, and **free periods**
   (start, end or number of days, a note only admins see; "End now" keeps the period in the history).
-  *Send reset email* answers that email isn't set up yet; until it is, the person can use a recovery
-  code on the sign-in page to choose a new password.
+  *Send reset email* sends them the same one-hour link as "Email me a link" (they choose the password; an
+  admin never sets one). While email isn't set up it says so, and the person can use a recovery code on the
+  sign-in page instead.
 - **Sign-up and invitations:** choose who can create an account: **only with an invitation link** (the
   default), **anyone** (open sign-up) or **nobody**. An invitation link (`signup.html?invite=…`) is shown
   once when you make it, works for one sign-up and lasts 7 days. Give an email address to fill in the
-  form for them; the address then counts as verified. Send the link yourself for now. New people get
+  form for them; the address then counts as verified, and the link is also emailed to that address when
+  email is set up (you can always copy it instead). New people get
   recovery codes and the setup walkthrough, as on first run. Open sign-up lets anyone who can reach the
   server use the AI service you pay for, so use it only on a private network.
-- **Server:** the AI provider (provider, model, key, reasoning levels, *Test connection*) and the commute
-  keys, which used to be on the Settings tab (changes are logged by name, never the value);
+- **Server:** the AI provider (provider, model, key, reasoning levels, *Test connection*), the commute
+  keys, which used to be on the Settings tab, and [email](#setting-up-email) (changes are logged by name, never the value);
   **Replace the server key**; and the report of
   **unencrypted copies of data** with *Delete these files now* for the backups and old page cache that
   the one-time encryption leaves.
 - **Audit log:** every admin action, newest first: what was done, by whom, to whom, and details such as
   dates or counts (never anyone's content). The details are readable while you hold the current admin key.
+
+### Setting up email
+
+Email is optional and off until an admin sets it up in **Admin > Server > Email**: the mail server
+(*SMTP*), the *From* address, and the **public address** (the web address people use to reach
+JobHuntPA, such as `https://jobs.example.com`; links in emails point to it, and `http` is only
+accepted for `localhost`). While either is missing, everything that needs email is off and says so:
+reset links, address checks, invitations by email and security notices. Nothing else changes.
+
+| Setting | What to enter |
+|---|---|
+| Mail server and port | your provider's SMTP server, e.g. `smtp.gmail.com` and `587` |
+| Encryption | `starttls` (port 587), `ssl` (port 465), or `none`, only for a mail server on this computer |
+| User name and password | the account that sends mail (leave both empty for a local server without a login) |
+| From address | one address, e.g. `jobs@example.com`; the name shown is always "JobHuntPA" |
+| Public address | `https://jobs.example.com`, with no `/` at the end |
+
+*Send a test email* sends a message to your own address and reports how it went.
+
+**The SMTP password.** Gmail shows its app passwords in groups ("abcd efgh ijkl mnop"): paste it as it is,
+because the form removes spaces and tabs, then saves the password in `.env` as `SMTP_PASSWORD_B64` (base64:
+this lets any standard-keyboard character, quotes and `#` included, survive the file). It is never shown
+again, only whether one is set. Changing the mail server asks for the password again, so a saved password
+can't be sent to another server. Saving any of these settings asks for your own password too (if you haven't typed it in the last 15 minutes), because they decide where reset links point. An older hand-written `SMTP_PASSWORD=` line keeps working until you save
+a new password in the form. Email goes out from one background thread, so a slow mail server never slows a page.
+
+To keep messages out of spam, send through your provider's own SMTP server and set up SPF and DKIM for the From address's domain as your provider describes. SPF says which servers may send for your domain, DKIM signs each message, and DMARC tells other mail servers what to do with a message that fails both. Gmail, Outlook and most hosts explain the three DNS records in their help pages. Use *Use this address* next to the public address to fill in the address you are browsing from.
 
 **Roles and the admin details key.** People's emails, names, notes and billing details are encrypted
 so that only admins can open them, with an *admin key* that each admin holds a copy of (sealed to their
@@ -573,6 +618,21 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **Forgotten password:** on the sign-in page choose *Trouble signing in?* and use a recovery code to set
   a new password and keep your data. Without your password or a recovery code, your encrypted data
   can't be read, by you, the admin or anyone else.
+- **"Email isn't set up on this JobHuntPA yet":** an admin sets it up in **Admin > Server > Email**: the mail
+  server, the From address and the public address. Until then, use a recovery code on the sign-in page.
+- **No "Email me a link" on the sign-in page:** it shows only once email is set up (see above).
+- **The test email fails** ("The mail server refused it" and a name such as `SMTPAuthenticationError`): check the
+  server, port and encryption (587 with STARTTLS, or 465 with SSL), the user name and the password. Gmail and
+  many others need an *app password*, not your usual one. Nothing else is shown, so no password or address
+  leaks into a log; the JobHuntPA window names the kind of failure.
+- **The reset or confirmation email never arrives:** look in spam, and check the From address's SPF and DKIM
+  records. Asking again many times in a row is limited (3 an hour per address); the page answers the same either
+  way. A link works once and for 1 hour (confirmation links: 24 hours); only the newest link works.
+- **The reset page says the link has expired or was already used:** ask for a new one on the sign-in page. It
+  can't say which, so nobody can use it to find out who has an account.
+- **The reset page says my data will be deleted:** background access is off for that account, so the saved data
+  is locked with the old password. A recovery code keeps it (*I have a recovery code*); otherwise tick the box
+  to start again with an empty account.
 - **Lost your authenticator app:** sign in with a recovery code instead of the app's code, then turn
   two-step sign-in off and on again in Settings > Two-step sign-in.
 - **The last admin lost their password and every recovery code:** people can still sign in, but
@@ -692,6 +752,15 @@ an account), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`
 `new-admin-key` and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
 (account cards), `background.js`, `export.js`, `admin.js` and `server-settings.js` (the admin panel),
 `dialogs.js` (its dialogs) and `signup.js`.
+
+**Email** (design §9, §16): `backend/mailer.py` (SMTP, never logs an address) and `backend/email_templates.py`
+(HTML and text parts); `backend/mail_queue.py` sends from one background thread and says whether email is on
+(`enabled`: SMTP and the public address are set); `backend/email_settings.py` (the admin's settings and test
+email, `/api/settings/email`), `backend/account_email.py` (address checks, changing the address, security
+notices), `backend/password_reset.py` (forgot, reset). Links that give access carry the token in the URL fragment
+(`reset-password.html#token=…`, `verify-email.html#token=…`). Tests mock SMTP with `mailer.capture()` and wait for the
+thread with `mail_queue.drain()` (`tests/mail_helpers.py`). `backend/schedule.py`'s loop also clears expired
+sessions and links every 10 minutes (`auth.cleanup_tick`; off with `JOBHUNT_SCHEDULER=off`).
 
 **Encrypted columns** (`backend/crypto.py`, `docs/design/accounts.md` §2): personal columns use the
 `Sealed*` types, which encrypt under the key of the request's account (or the background run's). The

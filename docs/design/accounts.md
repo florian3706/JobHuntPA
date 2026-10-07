@@ -248,7 +248,7 @@ Notes:
    - Background runs hold the key for as long as the run lasts, even if the user logs out meanwhile.
    - Background-access keys are unwrapped with the KEK each time they are needed, and never cached.
 2. **Cookie:**
-   - Name `__Host-jh_session` with `Secure` when the request is HTTPS. HTTPS means `request.url.scheme` after uvicorn's proxy headers (`--forwarded-allow-ips 127.0.0.1` is the default, and Tailscale serve connects from loopback), or a Host matching an `https` `JOBHUNT_PUBLIC_URL`.
+   - Name `__Host-jh_session` with `Secure` when the request is HTTPS. HTTPS means `request.url.scheme` after uvicorn's proxy headers (`--forwarded-allow-ips 127.0.0.1` is the default, and Tailscale serve connects from loopback), or a Host matching an `https` `PUBLIC_BASE_URL`.
    - On plain `http://127.0.0.1` (local installs; Safari rejects Secure cookies there) the name is `jh_session`.
    - Always HttpOnly, `SameSite=Lax` (so the "Open" link in a digest email arrives signed in) and `Path=/`.
    - `Max-Age` is set only when "Keep me signed in" is ticked.
@@ -459,8 +459,8 @@ WCAG notes that apply to every auth page:
 **6.5 Forgot password by email, and a reset sent by an admin**
 1. `POST /api/auth/forgot {email}` always answers 202 "If an account exists, we've sent a link".
    - In the background: look up `email_hash` and create a token (32 bytes, 1 hour, single use, `payload_enc` holding the email).
-   - Send `${PUBLIC_URL}/reset.html#token=…`, with the token in the fragment.
-2. `reset.html` calls `POST /api/auth/reset/info {token}`, which returns `{keeps_data, mfa_required}`.
+   - Send `${PUBLIC_URL}/reset-password.html#token=…`, with the token in the fragment.
+2. `reset-password.html` calls `POST /api/auth/reset/info {token}`, which returns `{keeps_data, mfa_required}`.
    - **With background access (`keeps_data`):** "Your data will be kept."
    - **Locked:** the page shows the warning text from "Copy for users" below, a link to the recovery-code path, a required checkbox "I understand my saved data will be deleted" and the new-password field.
 3. `POST /api/auth/reset {token, new_password, code?, accept_wipe}`. If MFA is on, the TOTP code is required, because the secret is under the KEK.
@@ -610,11 +610,11 @@ The panel also shows the cache hit rate (cached tokens ÷ input tokens). Users a
 
   | Variable | Rule |
   |---|---|
-  | `JOBHUNT_PUBLIC_URL` | `https://host[:port][/path]`, or `http` only for localhost; no credentials, query or fragment |
+  | `PUBLIC_BASE_URL` | `https://host[:port][/path]`, or `http` only for localhost; no credentials, query or fragment |
   | `SMTP_HOST` | Must match `HOST_RE` |
   | `SMTP_PORT` | 1–65535 |
   | `SMTP_SECURITY` | `starttls`, `ssl`, or `none` (localhost only) |
-  | `SMTP_USERNAME` | `[A-Za-z0-9._%+@-]{1,254}` |
+  | `SMTP_USER` | `[A-Za-z0-9._%+@-]{1,254}` |
   | `SMTP_PASSWORD_B64` | base64url; the app encodes any printable password, so the `.env` character rules stay strict; only a hint is ever shown |
   | `SMTP_FROM` | A plain email address; the display name is fixed as "JobHuntPA" |
 - **Sending (`backend/mailer.py`):** stdlib `smtplib` and `email.message.EmailMessage`, a 20 s timeout and `ssl.create_default_context()`. Sends run on a separate single-thread executor, so a slow SMTP server can't hold up a request. Logs record user ids only, never addresses.
@@ -688,7 +688,7 @@ The panel also shows the cache hit rate (cached tokens ÷ input tokens). Users a
   ```
   Email uses the standard library. All of these have wheels for Windows, macOS and Linux x86_64/aarch64; on 32-bit Raspberry Pi OS they come from piwheels. The README recommends 64-bit Pi OS.
 - **`.env.example`:** add a commented "Accounts and server (optional; admins set these in the app: Admin > Server)" block with:
-  - `JOBHUNT_PUBLIC_URL` and the SMTP variables from section 9.
+  - `PUBLIC_BASE_URL` and the SMTP variables from section 9.
   - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, plus a note on the lookup keys `jobhunt_monthly` and `jobhunt_yearly`.
   - `JOBHUNT_KDF_PROFILE=default|low`.
   - `JOBHUNT_KEY_FILE`.
@@ -1003,12 +1003,37 @@ A posting missing from one user's query results says nothing about whether it cl
 - **Dependencies.** `requirements.txt` pins older `cryptography` and `argon2-cffi-bindings` on Intel Macs through environment markers, because the newest versions have no x86_64 wheels there. Keep those markers when you bump versions.
 
 ## 16. Notes from the email-core review (they bind Phases H and J)
-- **Link targets differ from §9.** The email templates link to `reset-password.html?token=`, `accept-invite.html?token=`, `verify-email.html?token=` and `/unsubscribe?token=`, where §9 had `/api/email/unsubscribe?t=`.
+- **Names changed in Phase H.** The public address is `PUBLIC_BASE_URL` (§9 and §6.3 say `JOBHUNT_PUBLIC_URL`) and the SMTP login is `SMTP_USER` (§9 said `SMTP_USERNAME`); use the new names.
+- **Link targets differ from §9.** The email templates link to `reset-password.html#token=`, `verify-email.html#token=`,
+  `signup.html?invite=` and `/unsubscribe?token=`, where §9 had `reset.html`, `accept-invite.html` and
+  `/api/email/unsubscribe?t=`.
+  - **Phase H changed the delimiter for the two links that give access.** The token is in the URL *fragment*
+    (`#token=`), not the query: a browser never sends a fragment to a server or in a `Referer` header, so a token
+    can't reach an access log, a proxy or another site. The page reads `location.hash` and posts the token in a JSON body.
+  - **There is no `accept-invite.html`.** An invitation links to the sign-up page itself, which Phase F built to read
+    `?invite=` (and which fills in the invited address). That token stays in the query, as Phase F built it; the
+    sign-up page should send `Referrer-Policy: no-referrer` (Phase L's headers) so it isn't passed on.
   - Build the pages and routes with these names.
   - A GET on `/unsubscribe` shows a confirmation page and changes nothing.
   - A POST unsubscribes. This is the RFC 8058 one-click path, and it needs no session.
-- **The SMTP password allows printable ASCII only,** with no whitespace or quotes, because `config.load_dotenv` strips quotes. Gmail shows its app passwords with spaces. The admin form must strip those spaces, or the password must move to a base64 `SMTP_PASSWORD_B64` as §9 intended. Decide this in Phase H.
-- **Sending is synchronous.** Callers send from a single-thread executor (§9).
+- **The SMTP password (decided in Phase H).** The admin form removes every space and tab from what is pasted (Gmail
+  shows app passwords with spaces, and they work without them), checks that the rest is printable ASCII (smtplib sends
+  it as ASCII), and saves it as `SMTP_PASSWORD_B64`, the unpadded base64url of the password, which lets quotes and `#`
+  through `.env`. A hand-written `SMTP_PASSWORD` keeps working until the form saves a new one; when both exist the
+  B64 one wins. Only "a password is set" is ever shown. Moving to another mail server needs the password typed again.
+- **Phase H's choices in the reset flow (§6.5).**
+  - **The person is signed in after a reset.** They proved the mailbox (and the app's code, with two-step on) and have
+    just chosen the password, the same standing as `/api/auth/recover`; and after a wipe the new recovery codes can only
+    be shown to someone signed in. `onboarding_step` goes back to 1 after a wipe, because the search setup is gone.
+  - **A recovery code typed during a reset only stands in for the app's code** (and is used up). It does not rescue the
+    data: that is the `/api/auth/recover` path, which asks two proofs from an account with two-step sign-in.
+  - **A wipe loses the name** in `pii_self` (only the admin's copy has it); the address is rebuilt from the token.
+  - **An admin who is wiped loses their `admin_key_grants` row** (it was sealed to the old key pair), so the panel shows
+    "Share the admin key again"; the audit log gets `admin_key_lost`.
+  - **Only the newest link of a kind works.** A new reset or verification link deletes the account's older unused one.
+  - **A refused "forgot" (a limit, a turned-off account) still answers 202**, so no answer shows whether an account exists.
+- **Sending is synchronous** in `mailer.send`. Callers go through `backend/mail_queue.py`, whose single-thread
+  executor does the sending (and, for a forgotten-password request, making the link), so a request never waits.
 - **What the digest needs from its caller:**
   - `unsubscribe_id`, made of `[A-Za-z0-9_-]`
   - `every_days`

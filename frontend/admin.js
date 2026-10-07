@@ -261,7 +261,7 @@ async function personAction(act, id, btn) {
   } else if (act === 'mfa-off') {
     if (!(await confirmDialog({ title: `Turn off two-step sign-in for ${l}?`, ok: 'Turn it off', returnTo: back,
       text: 'Do this only when you are sure the request is really from them: it removes a protection from their account. They are signed out and can set it up again. You will be asked for your password.' }))) return;
-    await run('Turning it off', () => reauth(() => post(`/api/admin/users/${id}/mfa/disable`)), () => `Two-step sign-in is off for ${l}, and they are signed out.`);
+    await run('Turning it off', () => reauth(() => post(`/api/admin/users/${id}/mfa/disable`)), (out) => `Two-step sign-in is off for ${l}, and they are signed out.${out?.notice_sent ? ' They were told by email.' : ''}`);
   } else if (act === 'reset') {
     await run('Sending', () => post(`/api/admin/users/${id}/reset-email`), () => `Sent a password reset email to ${l}.`);
   }
@@ -503,6 +503,14 @@ async function loadInvites() {
   }), { empty: 'No invitations yet.' });
 }
 
+const INVITE_NOTE = {
+  queued: 'The link is being emailed to them. Copy it too if you like: it is shown only once.',
+  not_set_up: "Email isn't set up, so nothing was sent. Copy the link now: it is shown only once. Send it to the person yourself.",
+  no_address: 'Nothing was sent, because the invitation has no address. Copy the link now: it is shown only once.',
+  busy: 'Email is busy, so nothing was sent. Copy the link now: it is shown only once. Send it to the person yourself.',
+  off: 'Copy it now: it is shown only once. Send it to the person yourself.',
+};
+
 async function createInvite(e) {
   e.preventDefault();
   const input = $('#invite-email');
@@ -512,8 +520,12 @@ async function createInvite(e) {
   setBusy(btn, true);
   say($('#invite-status'), 'Creating…');
   try {
-    const out = await post('/api/admin/invites', email ? { email } : {});
+    // With email set up the link is emailed to the address, unless the box is unticked.
+    const body = email ? { email } : {};
+    if (email && emailIsOn()) body.send = $('#invite-send').checked;
+    const out = await post('/api/admin/invites', body);
     say($('#invite-status'), '');
+    $('#invite-result-note').textContent = INVITE_NOTE[out.email_status] || INVITE_NOTE.off;
     $('#invite-link').value = out.link;
     $('#invite-result').hidden = false;
     say($('#invite-copy-status'), '');
@@ -692,6 +704,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initLlmSettings();
   initLlmProvider();
   initCommuteKeys();
+  initEmailSettings();
   $('#score-test').addEventListener('click', testScorer);
   await loadUsers();
   loadUsage();
@@ -700,6 +713,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadLlmSettings();
   loadLlmProvider();
   loadCommuteKeys();
+  loadEmailSettings();
   loadPlaintext();
   loadAudit(true);
 });
