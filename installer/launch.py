@@ -37,10 +37,13 @@ RUN_FILE = ROOT / "data" / "running.json"  # lets the uninstaller find a running
 
 
 def first_run_file() -> Path:
-    """Where the app writes the first-run token: beside the database (backend/users.py first_run_path)."""
+    """Where the app writes the first-run token: beside the database (backend/users.py first_run_path), which is in
+    the data folder unless JOBHUNT_DB_PATH moves it (JOBHUNT_DATA_DIR moves the data folder; backend/db.py)."""
     db = os.environ.get("JOBHUNT_DB_PATH", "").strip()
     if not db:
-        return ROOT / "data" / "first-run.txt"
+        data = os.environ.get("JOBHUNT_DATA_DIR", "").strip()
+        folder = Path(data).expanduser() if data else ROOT / "data"
+        return (folder if folder.is_absolute() else ROOT / folder) / "first-run.txt"
     path = Path(db).expanduser()
     return (path if path.is_absolute() else ROOT / path).parent / "first-run.txt"
 

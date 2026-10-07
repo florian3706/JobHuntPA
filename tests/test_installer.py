@@ -222,8 +222,10 @@ class LaunchTest(unittest.TestCase):
             opened.assert_not_called()
         (self.dir / "first-run.txt").write_text("not a token\n")
         self.assertIsNone(launch.first_run_url("http://127.0.0.1:8000"))
-        with mock.patch.dict(os.environ, {"JOBHUNT_DB_PATH": ""}):
+        with mock.patch.dict(os.environ, {"JOBHUNT_DB_PATH": "", "JOBHUNT_DATA_DIR": ""}):
             self.assertEqual(launch.first_run_file(), launch.ROOT / "data" / "first-run.txt")
+        with mock.patch.dict(os.environ, {"JOBHUNT_DB_PATH": "", "JOBHUNT_DATA_DIR": str(self.dir / "elsewhere")}):
+            self.assertEqual(launch.first_run_file(), self.dir / "elsewhere" / "first-run.txt")
 
     def test_the_server_trusts_proxy_headers_from_this_computer_only(self):
         source = Path(launch.__file__).read_text(encoding="utf-8")

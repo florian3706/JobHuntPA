@@ -10,11 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
-import sys
-import tempfile
-import textwrap
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -31,55 +26,33 @@ from backend.db import AuthSession, RecoveryCode, SessionLocal, User, UserKeys, 
 
 ROOT = Path(__file__).resolve().parent.parent
 PASSWORD = "correct horse battery"
-_FOLDERS: list[str] = []
 
 
 def tearDownModule():
-    for folder in _FOLDERS:
-        shutil.rmtree(folder, ignore_errors=True)
+    helpers.remove_scratch_folders()
 
 
-def scratch_folder() -> str:
-    folder = tempfile.mkdtemp(prefix="jobhunt-accounts-")
-    _FOLDERS.append(folder)
-    return folder
-
-
-def scenario(code: str, folder: str | None = None, env: dict | None = None) -> dict:
-    """Run ``code`` in a fresh Python process on a throwaway database, .env and key file in ``folder`` (a new one
-    by default; pass the same folder again to "restart"). ``code`` sets ``out``, which comes back as a dict.
-    The admin variables from tests/__init__.py are left out unless ``env`` sets them."""
-    folder = folder or scratch_folder()
-    run_env = {k: v for k, v in os.environ.items() if not k.startswith("JOBHUNT_ADMIN_")}
-    run_env.update({"JOBHUNT_DB_PATH": os.path.join(folder, "jobhunt.db"), "JOBHUNT_ENV_PATH": os.path.join(folder, ".env"),
-                    "JOBHUNT_KEY_FILE": os.path.join(folder, "server-keys.json"), "JOBHUNT_SCHEDULER": "off",
-                    "JOBHUNT_TESTING": "1", "JOBHUNT_KDF_PROFILE": "test", "PYTHONPATH": str(ROOT)})
-    run_env.pop("DATABASE_URL", None)
-    run_env.update(env or {})
-    program = "import json, os\nout = {}\nFOLDER = %r\n%s\nprint('RESULT ' + json.dumps(out, default=str))\n" % (
-        folder, textwrap.dedent(code))
-    done = subprocess.run([sys.executable, "-c", program], cwd=folder, env=run_env, capture_output=True, text=True,
-                          timeout=120)
-    lines = [line for line in done.stdout.splitlines() if line.startswith("RESULT ")]
-    if done.returncode != 0 or not lines:
-        raise AssertionError(f"scenario failed ({done.returncode}):\n{done.stdout[-3000:]}\n{done.stderr[-3000:]}")
-    result = json.loads(lines[-1][len("RESULT "):])
-    result["_folder"] = folder
-    return result
+scratch_folder = helpers.scratch_folder
+scenario = helpers.scenario
 
 
 FIRST_RUN = '''
 from pathlib import Path
-from backend.db import Job, SessionLocal, Workspace, init_db
+from sqlalchemy import text
+from backend.db import Job, SessionLocal, Workspace, engine, init_db
 
-# An install from before accounts: two workspaces, each with a job.
+# An install from before accounts: two workspaces, each with a job, in plaintext as the old version wrote them.
 init_db()
-db = SessionLocal()
-second = Workspace(name="Contract roles")
-db.add(second); db.commit()
-db.add_all([Job(workspace_id=1, url="https://legacy.example/1", title="Old job one", status="applied"),
-            Job(workspace_id=second.id, url="https://legacy.example/2", title="Old job two", status="to_review")])
-db.commit(); db.close()
+with engine.begin() as conn:
+    conn.execute(text("INSERT INTO workspaces (name, created_at) VALUES ('Contract roles', CURRENT_TIMESTAMP)"))
+    second = conn.execute(text("SELECT MAX(id) FROM workspaces")).scalar()
+    for ws, url, title, status in ((1, "https://legacy.example/1", "Old job one", "applied"),
+                                   (second, "https://legacy.example/2", "Old job two", "to_review")):
+        conn.execute(text("INSERT INTO jobs (workspace_id, url, title, source, status, hidden, detail_status, "
+                          "first_seen, last_seen) VALUES (:w, :u, :t, 'lever:legacy', :s, 0, 'none', "
+                          "'2026-09-01 10:00:00.000000', '2026-10-01 10:00:00.000000')"),
+                     {"w": ws, "u": url, "t": title, "s": status})
+    conn.execute(text("DELETE FROM app_settings WHERE key = 'job_pool_migration'"))  # (from before the pool too)
 
 from fastapi.testclient import TestClient
 from backend import crypto, users
@@ -131,6 +104,9 @@ out["membership"] = db.query(Membership).filter(Membership.user_id == user.id).c
 out["email_prefs"] = db.query(EmailPrefs).filter(EmailPrefs.user_id == user.id).count()
 out["migration"] = db.get(AppSetting, "encryption_migration").value_json
 out["owners"] = sorted({o for (o,) in db.query(Workspace.owner_id)})
+with engine.connect() as conn:  # the old rows are sealed now (the first run encrypted them with the admin's key)
+    out["stored"] = [list(r) for r in conn.execute(text("SELECT typeof(name) FROM workspaces"))] + \
+                    [list(r) for r in conn.execute(text("SELECT typeof(status), typeof(hidden), url FROM jobs"))]
 out["user_id"] = user.id
 # Every recovery code opens the same data key as the password, and so does the admin's grant of the APK.
 dek = users.unlock_with_password(db, user, "correct horse battery")
@@ -184,7 +160,9 @@ class FirstRunTest(unittest.TestCase):
         self.assertEqual(out["user"], {"role": "admin", "created_via": "first_run", "pii_admin": True,
                                        "pii_admin_version": 1, "background": True})
         self.assertEqual((out["grant"], out["membership"], out["email_prefs"]), (1, 1, 1))
-        self.assertEqual(json.loads(out["migration"]), {"state": "pending", "owner": out["user_id"]})
+        migration = json.loads(out["migration"])  # a small database is encrypted within the first-run request
+        self.assertEqual((migration["state"], migration["owner"]), ("done", out["user_id"]))
+        self.assertEqual(out["stored"], [["blob"], ["blob"], ["blob", "blob", None], ["blob", "blob", None]])
         self.assertEqual(out["pii_admin"], {"email": "Owner@Example.com", "name": "Pat Owner"})
         self.assertEqual(out["me"]["user"]["role"], "admin")
         self.assertEqual(out["me"]["user"]["email"], "Owner@Example.com")
@@ -536,10 +514,11 @@ class OwnershipTest(SignInTestCase):
         b.put("/api/profile", json={"titles": ["Bob's secret title"]})
         db = SessionLocal()
         from backend.db import Job
-        job = Job(workspace_id=bob.workspace_id, url="https://bob.example/1", title="Bob's job", status="to_review")
-        db.add(job)
-        db.commit()
-        job_id = job.id
+        with helpers.as_account(bob):
+            job = Job(workspace_id=bob.workspace_id, url="https://bob.example/1", title="Bob's job", status="to_review")
+            db.add(job)
+            db.commit()
+            job_id = job.id
         db.close()
         theirs = {"X-Workspace": str(bob.workspace_id)}
         for method, path, body in (("get", "/api/jobs", None), ("get", "/api/profile", None),
@@ -706,12 +685,13 @@ class StartupAndSchedulerTest(SignInTestCase):
         from backend.db import UserProfile
 
         db = SessionLocal()
-        ws = Workspace(name="Ownerless")
-        db.add(ws)
-        db.commit()
-        db.add(UserProfile(id=ws.id, titles=["Product Manager"], seek_enabled=True))
-        db.commit()
-        ws_id = ws.id
+        with helpers.as_admin():  # (written as the admin; the scheduler finds its owner's key itself)
+            ws = Workspace(name="Ownerless")
+            db.add(ws)
+            db.commit()
+            db.add(UserProfile(id=ws.id, titles=["Product Manager"], seek_enabled=True))
+            db.commit()
+            ws_id = ws.id
         started = []
 
         def tick():
@@ -721,12 +701,12 @@ class StartupAndSchedulerTest(SignInTestCase):
         try:
             self.assertIsNone(tick())
             self.assertEqual(started, [])
-            db.get(Workspace, ws_id).owner_id = helpers.admin_id()
+            db.query(Workspace).filter(Workspace.id == ws_id).update({Workspace.owner_id: helpers.admin_id()})
             db.commit()
             tick()
-            self.assertEqual(started, [ws_id])
+            self.assertEqual(started, [ws_id])  # with the owner's background-access key
         finally:
-            db.delete(db.get(Workspace, ws_id))
+            db.query(Workspace).filter(Workspace.id == ws_id).delete()
             db.commit()
             db.close()
 

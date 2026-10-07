@@ -155,8 +155,44 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   service definition; never in `.env`, which is ignored for these two) and that admin is created
   at start-up. Its recovery codes are shown after its first sign-in.
 
-Your data isn't encrypted yet in this version; a coming version encrypts it with a key only your
-password or a recovery code can open, which is why the codes matter.
+### How your data is protected
+
+Your searches, documents and jobs are **encrypted with a key that only your password or a recovery
+code can unlock**. Someone who copies the database, its backups or the `data/` folder can't read
+them, not even the person who runs this JobHuntPA, unless you allow background access (below).
+
+> **Save your recovery codes.** If you forget your password, a recovery code is the only way to get
+> your data back. Without one, your encrypted data can't be opened again by anyone.
+
+**Encrypted** (under your key):
+- each workspace's name, search setup (titles, keywords, salary, places, commute stations and
+  times), dealbreakers and map pins;
+- your jobs: their status, whether you hid them, why the filters excluded them, distance and
+  place, the office you set or that was found, your call on the location, and anything that is only
+  yours, such as a full ad you uploaded or a job imported from a saved page (its address too);
+- fit scores and their evidence, cover letters, chats, and what each search run found;
+- your documents and notes (title, text and concise version), and **uploaded files**: they are
+  stored encrypted (`data/uploads/*.sealed`), and their text is read in memory, never written out;
+- company careers pages you added, and your commute lookups (cached per account).
+
+Even whether a job is hidden or excluded doesn't show: those fields are always stored encrypted,
+and an excluded job looks the same as one you kept.
+
+**Not encrypted**, because the app needs them without your key or they aren't yours:
+- **job ads themselves**: ads are public, so they're stored once and shared by everyone's
+  searches. Which ads your workspace has is visible (not what you think of them);
+- company research (public, shared by everyone), the place-name cache and AI usage counts;
+- scheduled search times, run times and states, the kind of each document, and your account's
+  sign-in details (your email address and name are encrypted for admins only);
+- sizes and dates: how many jobs or documents you have, how long a document is, when things
+  happened.
+
+**The limits.** The AI provider sees what it scores, chats about or writes. The running app holds
+your data in memory while you use it. Someone who changes the app's code on the server could capture
+your password when you next sign in. With **background access** (scheduled searches keep running
+while you're signed out; the first account has it on), the server keeps a copy of your key in
+`data/server-keys.json`, so whoever runs the server could read your data with that file. On SSDs and
+SD cards, deleted data may linger in storage the disk manages itself.
 
 ## Using it
 
@@ -345,6 +381,25 @@ workspaces, jobs, documents and settings move into it. Until then JobHuntPA show
 scheduled searches wait. It also creates `data/server-keys.json`, the server's key file: it belongs
 with your database, so back them up together.
 
+**Encrypting your existing data (once).** The first time the admin signs in to the version that
+encrypts data (or right away, on the first-run page), JobHuntPA encrypts everything from before with
+the admin's key:
+
+1. It saves a backup first, `data/jobhunt.db.bak-before-encryption` (unencrypted).
+2. It encrypts your uploaded files, then your data, in small steps. A few thousand jobs take seconds
+   on a computer and up to a minute or two on a Raspberry Pi. Meanwhile the dashboard shows the
+   progress and reloads by itself when it's done. If JobHuntPA is stopped halfway, it carries on the
+   next time the admin signs in; nothing is lost or encrypted twice.
+3. It checks that nothing is left unencrypted, then rebuilds the database file so the old
+   unencrypted pages are gone.
+
+Afterwards the dashboard lists the files that still hold your data unencrypted (that backup, older
+`data/jobhunt.db.bak-*` backups and the `data/cache` pages of an earlier version) with **Delete them
+now (recommended)**, until they're gone. Keep the backup only if you might go back to an older
+version: **older versions can't read the encrypted database**. To go back, stop JobHuntPA, install
+the older version, and replace `data/jobhunt.db` with the backup (delete `data/jobhunt.db-wal` and
+`data/jobhunt.db-shm` too); anything you did since the update is lost.
+
 The first start after updating to the version with the shared job pool moves your jobs into it.
 This happens once and takes a few seconds; a backup is saved first as
 `data/jobhunt.db.bak-before-job-pool`. Copies of the same ad in different workspaces become one
@@ -403,8 +458,14 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **The first-run page says the setup code isn't right:** close JobHuntPA and start it again; it
   prints a fresh link, and the code is in `data/first-run.txt`. The code only works until the first
   account exists; after that, sign in instead.
-- **Forgotten password:** ask the admin. Keep your recovery codes: a coming version uses them to set
-  a new password and keep your data.
+- **Forgotten password:** keep your recovery codes: a coming version uses them to set a new password
+  and keep your data. Without your password or a recovery code, your encrypted data can't be read,
+  by you, the admin or anyone else.
+- **"JobHuntPA is waiting for its admin to sign in, to finish encrypting the data":** the one-time
+  encryption after an update needs the first admin's password; it carries on when they sign in.
+- **"Encrypting your data stopped (...)":** JobHuntPA tries again a minute later and whenever the
+  admin signs in. If it keeps stopping, the JobHuntPA window says why; your data is safe meanwhile,
+  and the backup `data/jobhunt.db.bak-before-encryption` was saved before anything changed.
 - **JobHuntPA stops at start-up with "Restore data/server-keys.json from your backup":** the key file
   is missing or isn't the one that belongs to this database. Put back the `data/server-keys.json`
   from the same backup as the database. A new key file is never made while accounts exist.
@@ -485,6 +546,27 @@ database, `.env` and key file, with `JOBHUNT_TESTING=1` and the fast `JOBHUNT_KD
 other accounts (`helpers.make_user()`) and the admin's key scope (`helpers.as_admin()`). Code and the
 design notes: `backend/users.py` (accounts, first run), `backend/sessions.py` (sessions, CSRF, the
 checks on every request), `backend/auth.py` (the endpoints), `docs/design/accounts.md`.
+
+**Encrypted columns** (`backend/crypto.py`, `docs/design/accounts.md` §2): personal columns use the
+`Sealed*` types, which encrypt under the key of the request's account (or the background run's). The
+rules:
+- Never filter, sort, group, `DISTINCT` or run an SQL function on a sealed column: the comparator
+  refuses comparisons when the query is built, and a compile hook refuses the rest
+  (`SealedSqlError`). Decide in Python, or compare a blind index (`jobs.url_index`,
+  `company_sources.careers_url_index`). `SealedAlways` columns (`jobs.hidden`, `excluded_reason`,
+  the office override, a job's own content) can't even be tested for NULL.
+- Check ownership through the plaintext `workspace_id` before loading a row (`workspaces.owned`);
+  a row sealed under another account's key raises `KeyMismatch`, which the API answers with 404.
+- Thread pools start work with `backend.threads.submit` (or `crypto.submit`), which carries the key
+  scope into the worker; a plain `pool.submit` raises `crypto.Locked`.
+- Write migrations of sealed columns with Core `update()`, never raw SQL text: after the one-time
+  encryption (`backend/migrate_encryption.py`) strict mode refuses plaintext in a sealed column.
+- Never log user data.
+
+`JOBHUNT_DATA_DIR` moves the whole data folder (uploads included); tests and tools point it at a
+throwaway folder, so they never touch `data/`. `python3 tools/bench_jobs_list.py` times the job list
+on 5,000 made-up encrypted jobs in such a folder (target: under 1.5 s on a Raspberry Pi 4; run it on
+the Pi to check there).
 
 **README screenshots:** `python3 tools/readme_screenshots.py` (needs `pip install pillow`) builds a
 throwaway database of made-up data with `tools/demo_data.py`, runs the app on it with fake AI

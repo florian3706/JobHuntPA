@@ -1,6 +1,7 @@
 """SQLite storage via SQLAlchemy: every table the app uses lives here.
 
-DB file: <project_root>/data/jobhunt.db (override with JOBHUNT_DB_PATH).
+DB file: <project_root>/data/jobhunt.db (override with JOBHUNT_DB_PATH, or the whole data folder with
+JOBHUNT_DATA_DIR).
 ``init_db()`` creates missing tables and adds missing columns to existing
 ones (SQLite ``ALTER TABLE ADD COLUMN``), so older databases keep working.
 """
@@ -21,6 +22,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -34,12 +36,27 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, validates
 from sqlalchemy.schema import CreateTable
 
+from backend import crypto
+from backend.crypto import (
+    ProcessSealedText,
+    SealedAlways,
+    SealedBool,
+    SealedDateTime,
+    SealedFloat,
+    SealedInt,
+    SealedJSON,
+    SealedText,
+    always_none,
+)
+
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
+# The data folder: data/ in the app folder. JOBHUNT_DATA_DIR moves it (tests and tools point it at a throwaway
+# folder, so they never touch the real uploads); JOBHUNT_DB_PATH moves just the database.
+DATA_DIR = Path(os.getenv("JOBHUNT_DATA_DIR") or PROJECT_ROOT / "data")
 UPLOAD_DIR = DATA_DIR / "uploads"
-DB_PATH = Path(os.getenv("JOBHUNT_DB_PATH", DATA_DIR / "jobhunt.db"))
+DB_PATH = Path(os.getenv("JOBHUNT_DB_PATH") or DATA_DIR / "jobhunt.db")
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
 
 engine = create_engine(
@@ -57,6 +74,8 @@ def _sqlite_pragmas(dbapi_conn, _record) -> None:
     cur.execute("PRAGMA foreign_keys=ON")
     # WAL lets the UI read while a background search/scoring run writes.
     cur.execute("PRAGMA journal_mode=WAL")
+    # Freed pages are zeroed, so a deleted or re-sealed value doesn't linger in the file (accounts design §5).
+    cur.execute("PRAGMA secure_delete=ON")
     cur.close()
 
 
@@ -79,7 +98,7 @@ class Workspace(Base):
     __tablename__ = "workspaces"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
+    name = Column(SealedText(), nullable=False)
     created_at = Column(DateTime, default=utcnow)
     # Who it belongs to: backend.workspaces.current_workspace answers 404 for anyone else's. Deleting an account
     # deletes its workspaces. (Databases from before accounts get this column without the foreign key, which
@@ -88,8 +107,10 @@ class Workspace(Base):
 
 
 def _workspace_fk():
-    return Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False,
-                  default=1, server_default="1", index=True)
+    """A row's workspace. No default: a row written without one is a bug, refused before it reaches the database
+    (``_refuse_rows_without_workspace``). Databases made before accounts still carry DEFAULT '1' in their schema,
+    which SQLite can't drop, and would otherwise put such a row in the first admin's workspace."""
+    return Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
 
 
 DETAIL_RANK = {"none": 0, "summary": 1, "full": 2}
@@ -142,6 +163,33 @@ JOB_CONTENT = ("source", "external_id", "company", "title", "location_text", "co
                "detail_status", "detail_fetched_at", "posted_at", "industry")
 
 
+class _NoSql:
+    """What ``Job.<python-only property>`` is on the class: any use in SQL or a comparison raises. A plain property
+    would compare as a Python object, and ``filter(Job.url == x)`` would silently become ``filter(False)``."""
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def _refuse(self, *_args, **_kwargs):
+        raise TypeError(f"Job.{self.name} is a Python property with no SQL form (it reads the posting's value, or "
+                        "the workspace's own, which is sealed). Decide in Python, or use Job.url_index.")
+
+    __eq__ = __ne__ = __lt__ = __le__ = __gt__ = __ge__ = __clause_element__ = __bool__ = _refuse
+    __hash__ = None
+    in_ = is_ = is_not = like = ilike = desc = asc = _refuse
+
+
+class python_only(property):
+    """A property of ``Job`` without an SQL form (see _NoSql)."""
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return _NoSql(self.fget.__name__)
+        return super().__get__(obj, objtype)
+
+
 def _content(name: str) -> property:
     own = "_" + name
     inherit = "none" if name == "detail_status" else None  # the own value that means "the posting's"
@@ -159,7 +207,8 @@ def _content(name: str) -> property:
             value = inherit  # the same as the shared ad: no override
         setattr(self, own, inherit if value is None else value)
 
-    return property(get, set, doc=f"Effective {name}: this workspace's own value, else the posting's.")
+    get.__name__ = name
+    return python_only(get, set, doc=f"Effective {name}: this workspace's own value, else the posting's.")
 
 
 class Job(Base):
@@ -170,29 +219,37 @@ class Job(Base):
     The content attributes (``title``, ``description``, ... see JOB_CONTENT) are Python properties without an SQL
     form: filter on them in Python. Their own values are the ``_title``... columns (named ``title``... in the
     table, where they were before the pool), NULL meaning "the posting's".
+
+    Sealed (accounts design §2.2 and §14.6): everything personal, under the owner's key. Always sealed, so not even
+    whether they're set shows: hidden, excluded_reason, the verdict, the office override and the own content.
+    Plaintext: the link itself (workspace, posting, origin, source, duplicate_of, first_seen, posting_rev) and
+    ``url_index``, the blind index that finds a job by URL (``backend.pool.job_by_url``).
     """
 
     __tablename__ = "jobs"
-    __table_args__ = (UniqueConstraint("workspace_id", "url", name="uq_jobs_workspace_url"),)
+    __table_args__ = (UniqueConstraint("workspace_id", "url", name="uq_jobs_workspace_url"),
+                      Index("uq_jobs_workspace_url_index", "workspace_id", "url_index", unique=True))
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = _workspace_fk()
-    url = Column(String, nullable=True)             # the link key: the posting's URL, or a private job's own
+    # A private job's own URL (sealed). A pool link has none: its URL is its posting's (``Job.url``).
+    _url = Column("url", SealedText(), nullable=True)
+    url_index = Column(LargeBinary, nullable=True)  # crypto.blind_index("url", job.url), set on every write
     posting_id = Column(Integer, ForeignKey("postings.id", ondelete="SET NULL"), nullable=True, index=True)
     posting = relationship(Posting, lazy="joined")
     origin = Column(String, nullable=True)          # pool | private; NULL: not migrated yet (backend.pool_migration)
     posting_rev = Column(Integer, nullable=True)    # the posting's rev this link was last refreshed against
     source_id = Column(Integer, ForeignKey("company_sources.id", ondelete="SET NULL"), nullable=True)
-    lat = Column(Float, nullable=True)              # placed for this workspace (nearest place to its home)
-    lng = Column(Float, nullable=True)
-    distance_km = Column(Float, nullable=True)
+    lat = Column(SealedFloat(), nullable=True)      # placed for this workspace (nearest place to its home)
+    lng = Column(SealedFloat(), nullable=True)
+    distance_km = Column(SealedFloat(), nullable=True)
     # to_review | shortlisted | applied | interviewing | rejected | not_interested
-    status = Column(String, default="to_review", nullable=False)
-    # Never filter on these two in SQL: Phase D seals them so that even whether they're set doesn't show.
-    excluded_reason = Column(Text, nullable=True)
-    hidden = Column(Boolean, nullable=False, default=False, server_default="0")  # hidden by the user
+    status = Column(SealedText(), default="to_review", nullable=False)
+    # Never filter on these in SQL (the comparator refuses even IS NULL): decide in Python.
+    excluded_reason = Column(SealedAlways(SealedText, pad=256), default=always_none, nullable=True)
+    hidden = Column(SealedAlways(SealedBool), nullable=False, default=False)  # hidden by the user
     first_seen = Column(DateTime, default=utcnow)   # first linked to this workspace
-    last_seen = Column(DateTime, default=utcnow)    # last listed by this workspace's own search
+    last_seen = Column(SealedDateTime(), default=utcnow)  # last listed by this workspace's own search
     # Set on a copy of an ad that is merged into another job (backend.duplicates):
     # the copy keeps its row so later searches recognise its URL, but only the
     # job it points to is listed, scored and researched.
@@ -200,34 +257,45 @@ class Job(Base):
     # Where the office actually is, when the ad's location is only a city
     # (backend.offices). Its coordinates replace the listing's for the
     # location filter and distance.
-    office_text = Column(String, nullable=True)     # address or suburb
-    office_lat = Column(Float, nullable=True)
-    office_lng = Column(Float, nullable=True)
-    office_source = Column(String, nullable=True)   # ad | company | user
-    office_checked_at = Column(DateTime, nullable=True)  # ad read for an office (found or not)
+    office_text = Column(SealedAlways(SealedText, pad=256), default=always_none, nullable=True)  # address or suburb
+    office_lat = Column(SealedAlways(SealedFloat), default=always_none, nullable=True)
+    office_lng = Column(SealedAlways(SealedFloat), default=always_none, nullable=True)
+    office_source = Column(SealedAlways(SealedText), default=always_none, nullable=True)  # ad | company | user
+    # ad read for an office (found or not)
+    office_checked_at = Column(SealedAlways(SealedDateTime), default=always_none, nullable=True)
     # The user's own call on the location: ok (passes the location filter) | too_far
-    location_verdict = Column(String, nullable=True)
+    location_verdict = Column(SealedAlways(SealedText), default=always_none, nullable=True)
 
     # Own content (see JOB_CONTENT): overrides of the posting, or a private job's content.
-    _source = Column("source", String, nullable=True)
-    _external_id = Column("external_id", String, nullable=True)
-    _company = Column("company", String, nullable=True)
-    _title = Column("title", String, nullable=True)
-    _location_text = Column("location_text", String, nullable=True)
-    _country = Column("country", String, nullable=True)
-    _work_mode = Column("work_mode", String, nullable=True)
-    _employment_type = Column("employment_type", String, nullable=True)
-    _office_days = Column("office_days", Integer, nullable=True)
-    _salary_min = Column("salary_min", Integer, nullable=True)
-    _salary_max = Column("salary_max", Integer, nullable=True)
-    _salary_text = Column("salary_text", String, nullable=True)
-    _description = Column("description", Text, nullable=True)
-    _description_hash = Column("description_hash", String, nullable=True, index=True)
-    _detail_status = Column("detail_status", String, nullable=False, default="none", server_default="none")
-    _detail_fetched_at = Column("detail_fetched_at", DateTime, nullable=True)
-    _posted_at = Column("posted_at", String, nullable=True)
-    _industry = Column("industry", String, nullable=True)
-    _closed_at = Column("closed_at", DateTime, nullable=True)  # a private job's; a pool link's is the posting's
+    _source = Column("source", SealedAlways(SealedText), default=always_none, nullable=True)
+    _external_id = Column("external_id", SealedAlways(SealedText), default=always_none, nullable=True)
+    _company = Column("company", SealedAlways(SealedText), default=always_none, nullable=True)
+    _title = Column("title", SealedAlways(SealedText), default=always_none, nullable=True)
+    _location_text = Column("location_text", SealedAlways(SealedText), default=always_none, nullable=True)
+    _country = Column("country", SealedAlways(SealedText), default=always_none, nullable=True)
+    _work_mode = Column("work_mode", SealedAlways(SealedText), default=always_none, nullable=True)
+    _employment_type = Column("employment_type", SealedAlways(SealedText), default=always_none, nullable=True)
+    _office_days = Column("office_days", SealedAlways(SealedInt), default=always_none, nullable=True)
+    _salary_min = Column("salary_min", SealedAlways(SealedInt), default=always_none, nullable=True)
+    _salary_max = Column("salary_max", SealedAlways(SealedInt), default=always_none, nullable=True)
+    _salary_text = Column("salary_text", SealedAlways(SealedText), default=always_none, nullable=True)
+    _description = Column("description", SealedAlways(SealedText), default=always_none, nullable=True)
+    _description_hash = Column("description_hash", SealedAlways(SealedText), default=always_none, nullable=True)
+    _detail_status = Column("detail_status", SealedAlways(SealedText), nullable=False, default="none")
+    _detail_fetched_at = Column("detail_fetched_at", SealedAlways(SealedDateTime), default=always_none, nullable=True)
+    _posted_at = Column("posted_at", SealedAlways(SealedText), default=always_none, nullable=True)
+    _industry = Column("industry", SealedAlways(SealedText), default=always_none, nullable=True)
+    # a private job's; a pool link's is the posting's
+    _closed_at = Column("closed_at", SealedAlways(SealedDateTime), default=always_none, nullable=True)
+
+    @python_only
+    def url(self) -> Optional[str]:
+        """The posting's URL for a pool link, else the private job's own."""
+        return self.posting.url if self.posting is not None else self._url
+
+    @url.setter
+    def url(self, value: Optional[str]) -> None:
+        self._url = value  # read only while the job has no posting (backend.pool keeps it empty on pool links)
 
     source = _content("source")
     external_id = _content("external_id")
@@ -286,23 +354,24 @@ class JobDuplicate(Base):
     job_b = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
     status = Column(String, nullable=False, default="suggested")
     decided_by = Column(String, nullable=True)
-    score = Column(Integer, nullable=True)
-    reasons_json = Column(Text, nullable=False, default="[]")
+    score = Column(Integer, nullable=True)   # a similarity number, plaintext (accounts design §2.2)
+    reasons_json = Column(SealedText(), nullable=False, default="[]")
     created_at = Column(DateTime, default=utcnow)
     decided_at = Column(DateTime, nullable=True)
 
 
 class FitResult(Base):
-    """LLM fit score per job (written by backend.scorer)."""
+    """LLM fit score per job (written by backend.scorer). Score, evidence, status and error are sealed: decide on
+    them in Python."""
 
     __tablename__ = "fit_results"
 
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    status = Column(String, nullable=False, default="ok", server_default="ok")  # ok | error
-    score = Column(Integer, nullable=True)
-    evidence_json = Column(Text, nullable=False, default="{}")
-    error = Column(Text, nullable=True)
+    status = Column(SealedText(), nullable=False, default="ok")  # ok | error
+    score = Column(SealedInt(), nullable=True)
+    evidence_json = Column(SealedText(), nullable=False, default="{}")
+    error = Column(SealedText(), nullable=True)
     profile_hash = Column(String, nullable=True)
     model = Column(String, nullable=True)
     created_at = Column(DateTime, default=utcnow)
@@ -326,17 +395,18 @@ class Document(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = _workspace_fk()
-    filename = Column(String, nullable=False)       # the file's name, or a note's / summary's title
+    filename = Column(SealedText(), nullable=False)  # the file's name, or a note's / summary's title
     filetype = Column(String, nullable=True)        # ".pdf", ".docx", ... | "note" | "summary"
+    # The upload in data/uploads: "<random hex>.sealed", the file sealed under the owner's key (backend.docs).
     stored_name = Column(String, nullable=True)
-    text = Column(Text, nullable=True)              # extracted once from the file, or the note / summary
+    text = Column(SealedText(), nullable=True)      # extracted once from the file, or the note / summary
     kind = Column(String, nullable=True)            # one of DOCUMENT_KINDS
     use_for_scoring = Column(Boolean, nullable=False, default=True, server_default="1")
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, nullable=True)    # a note, summary or concise version last edited
     # A shorter rewrite of ``text`` (LLM-written, then editable). ``use_concise`` picks which of the two
     # the LLM is sent (text_for_llm).
-    concise_text = Column(Text, nullable=True)
+    concise_text = Column(SealedText(), nullable=True)
     use_concise = Column(Boolean, nullable=False, default=False, server_default="0")
     concise_model = Column(String, nullable=True)   # model that wrote the concise version
     concise_at = Column(DateTime, nullable=True)
@@ -350,44 +420,46 @@ class Document(Base):
 
 
 class SearchProfile(Base):
-    """Legacy table (unused by the UI, kept so old DBs stay valid)."""
+    """Legacy table (unused by the UI, kept so old DBs stay valid). It may hold an old CV, so it is sealed under
+    the key of the first admin, who owns all data from before accounts."""
 
     __tablename__ = "search_profile"
 
     id = Column(Integer, primary_key=True, index=True)
-    cv_text = Column(Text, nullable=True)
-    wishes_text = Column(Text, nullable=True)
-    home_location = Column(String, nullable=True)
-    lat = Column(Float, nullable=True)
-    lng = Column(Float, nullable=True)
-    radius_km = Column(Float, nullable=True)
-    work_modes = Column(String, nullable=True)
+    cv_text = Column(SealedText(), nullable=True)
+    wishes_text = Column(SealedText(), nullable=True)
+    home_location = Column(SealedText(), nullable=True)
+    lat = Column(SealedFloat(), nullable=True)
+    lng = Column(SealedFloat(), nullable=True)
+    radius_km = Column(SealedFloat(), nullable=True)
+    work_modes = Column(SealedText(), nullable=True)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class UserProfile(Base):
-    """One row per workspace (id = workspace id): search profile."""
+    """One row per workspace (id = workspace id): search profile. The five work-mode and SEEK switches stay
+    plaintext; the words, places, salary and commute are sealed."""
 
     __tablename__ = "user_profile"
 
     id = Column(Integer, primary_key=True)
-    titles = Column(JSON, default=list, nullable=False)
-    keywords_include = Column(JSON, default=list, nullable=False)
-    keywords_exclude = Column(JSON, default=list, nullable=False)
-    salary_floor = Column(Integer, nullable=True)
+    titles = Column(SealedJSON(), default=list, nullable=False)
+    keywords_include = Column(SealedJSON(), default=list, nullable=False)
+    keywords_exclude = Column(SealedJSON(), default=list, nullable=False)
+    salary_floor = Column(SealedInt(), nullable=True)
     remote_aus_ok = Column(Boolean, default=True, nullable=False)
     remote_global_ok = Column(Boolean, default=False, nullable=False)
     allow_hybrid = Column(Boolean, nullable=False, default=True, server_default="1")
-    max_office_days = Column(Integer, nullable=True)  # hybrid: most office days/week accepted
+    max_office_days = Column(SealedInt(), nullable=True)  # hybrid: most office days/week accepted
     allow_onsite = Column(Boolean, nullable=False, default=True, server_default="1")
     seek_enabled = Column(Boolean, nullable=False, default=True, server_default="1")
-    seek_locations = Column(JSON, nullable=True)
+    seek_locations = Column(SealedJSON(), nullable=True)
     seek_max_pages = Column(Integer, nullable=False, default=1, server_default="1")  # unused (SEEK pagination is off-limits)
     # Commute (backend.commute): public transport starts at these stations
     # (empty = the home pin); peak trips arrive by / leave at these times.
-    commute_from = Column(JSON, nullable=True)
-    commute_arrive_by = Column(String, nullable=False, default="09:00", server_default="09:00")
-    commute_leave_at = Column(String, nullable=False, default="17:00", server_default="17:00")
+    commute_from = Column(SealedJSON(), nullable=True)
+    commute_arrive_by = Column(SealedText(), nullable=False, default="09:00")
+    commute_leave_at = Column(SealedText(), nullable=False, default="17:00")
 
 
 class DealbreakerSet(Base):
@@ -396,22 +468,22 @@ class DealbreakerSet(Base):
     __tablename__ = "dealbreakers"
 
     id = Column(Integer, primary_key=True)
-    industries = Column(JSON, default=list, nullable=False)
-    keywords = Column(JSON, default=list, nullable=False)
+    industries = Column(SealedJSON(), default=list, nullable=False)
+    keywords = Column(SealedJSON(), default=list, nullable=False)
 
 
 class Pin(Base):
-    """Location pins: home base + acceptable hybrid/onsite workplaces."""
+    """Location pins: home base + acceptable hybrid/onsite workplaces. Only the kind is plaintext."""
 
     __tablename__ = "pins"
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = _workspace_fk()
-    label = Column(String, nullable=False)
+    label = Column(SealedText(), nullable=False)
     kind = Column(String, nullable=False)  # home | hybrid | onsite
-    lat = Column(Float, nullable=False)
-    lng = Column(Float, nullable=False)
-    radius_km = Column(Float, default=25.0, nullable=False)
+    lat = Column(SealedFloat(), nullable=False)
+    lng = Column(SealedFloat(), nullable=False)
+    radius_km = Column(SealedFloat(), default=25.0, nullable=False)
 
 
 # ---------------------------------------------------------------------------
@@ -419,30 +491,34 @@ class Pin(Base):
 # ---------------------------------------------------------------------------
 
 class CompanySource(Base):
-    """One company's careers page / job board, added by URL in the UI."""
+    """One company's careers page / job board, added by URL in the UI. Its URL and label are sealed; a source is
+    found by URL through ``careers_url_index``, a blind index (``backend.sources.create_source``)."""
 
     __tablename__ = "company_sources"
-    __table_args__ = (UniqueConstraint("workspace_id", "careers_url", name="uq_sources_workspace_url"),)
+    __table_args__ = (UniqueConstraint("workspace_id", "careers_url", name="uq_sources_workspace_url"),
+                      Index("uq_sources_workspace_url_index", "workspace_id", "careers_url_index", unique=True))
 
     id = Column(Integer, primary_key=True, index=True)
-    label = Column(String, nullable=True, default="")
+    label = Column(SealedText(), nullable=True, default="")
     workspace_id = _workspace_fk()
-    careers_url = Column(String, nullable=True, default="")
+    careers_url = Column(SealedText(), nullable=True, default="")
+    careers_url_index = Column(LargeBinary, nullable=True)  # crypto.blind_index("careers_url", ...), set on write
     source_type = Column(String, nullable=True, default="generic")
-    adapter_key = Column(String, nullable=True, default="")
+    adapter_key = Column(SealedText(), nullable=True, default="")
     enabled = Column(Boolean, nullable=False, default=True)
     last_run = Column(DateTime, nullable=True)
     last_count = Column(Integer, nullable=True, default=0)
-    last_error = Column(Text, nullable=True, default=None)
+    last_error = Column(SealedText(), nullable=True, default=None)
     last_method = Column(Text, nullable=True)
-    # Legacy columns from an earlier schema; unused but kept for old DBs.
-    company = Column(String, nullable=True, default="")
-    url = Column(String, nullable=True, default="")
-    board = Column(String, nullable=True, default="")
-    host = Column(String, nullable=True, default="")
-    tenant = Column(String, nullable=True, default="")
-    site = Column(String, nullable=True, default="")
-    base_url = Column(String, nullable=True, default="")
+    # Legacy columns from an earlier schema; unused but kept for old DBs (some of which made them NOT NULL). The
+    # encryption migration empties them; url is still written (the careers URL again).
+    company = Column(SealedText(), nullable=True, default="")
+    url = Column(SealedText(), nullable=True, default="")
+    board = Column(SealedText(), nullable=True, default="")
+    host = Column(SealedText(), nullable=True, default="")
+    tenant = Column(SealedText(), nullable=True, default="")
+    site = Column(SealedText(), nullable=True, default="")
+    base_url = Column(SealedText(), nullable=True, default="")
 
 
 # ---------------------------------------------------------------------------
@@ -526,8 +602,8 @@ class CoverLetter(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    text = Column(Text, nullable=False, default="")
-    instructions = Column(Text, nullable=True)
+    text = Column(SealedText(), nullable=False, default="")
+    instructions = Column(SealedText(), nullable=True)
     edited = Column(Boolean, nullable=False, default=False, server_default="0")
     model = Column(String, nullable=True)
     reasoning_effort = Column(String, nullable=True)
@@ -543,7 +619,7 @@ class ChatThread(Base):
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = _workspace_fk()
     job_ids_json = Column(Text, nullable=False, default="[]")  # sorted job ids
-    title = Column(String, nullable=True)
+    title = Column(SealedText(), nullable=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow)
 
@@ -554,8 +630,8 @@ class ChatMessage(Base):
     id = Column(Integer, primary_key=True, index=True)
     thread_id = Column(Integer, ForeignKey("chat_threads.id", ondelete="CASCADE"), nullable=False, index=True)
     role = Column(String, nullable=False)  # user | assistant
-    content = Column(Text, nullable=False, default="")
-    sources_json = Column(Text, nullable=True)  # [{title, url}] pages the web search returned
+    content = Column(SealedText(), nullable=False, default="")
+    sources_json = Column(SealedText(), nullable=True)  # [{title, url}] pages the web search returned
     web_search = Column(Boolean, nullable=False, default=False, server_default="0")
     model = Column(String, nullable=True)
     created_at = Column(DateTime, default=utcnow)
@@ -601,7 +677,8 @@ class AppSetting(Base):
 # ---------------------------------------------------------------------------
 
 class SearchRun(Base):
-    """One background search or scoring run, polled by the UI."""
+    """One background search or scoring run, polled by the UI. What it found and how it went (stage, progress,
+    summary, error) is sealed; its kind, state and times are not, so the queue works without anyone's key."""
 
     __tablename__ = "search_runs"
 
@@ -610,27 +687,37 @@ class SearchRun(Base):
     kind = Column(String, nullable=False, default="search")  # search | score
     scheduled = Column(Boolean, nullable=False, default=False, server_default="0")  # started by backend.schedule
     state = Column(String, nullable=False, default="queued")  # queued | running | done | failed
-    stage = Column(String, nullable=True)
-    progress_json = Column(Text, nullable=False, default="{}")
-    summary_json = Column(Text, nullable=True)
-    error = Column(Text, nullable=True)
+    stage = Column(SealedText(), nullable=True)
+    progress_json = Column(SealedText(), nullable=False, default="{}")
+    summary_json = Column(SealedText(), nullable=True)
+    error = Column(SealedText(), nullable=True)
     error_code = Column(String, nullable=True)  # a short code written without any key, e.g. "interrupted"
     started_at = Column(DateTime, default=utcnow)
     finished_at = Column(DateTime, nullable=True)
 
-    def to_dict(self) -> dict:
+    # What an error code means, for a run whose error was written without a key.
+    ERROR_TEXT = {"interrupted": "interrupted by server restart",
+                  "failed": "failed (the details couldn't be saved)"}
+
+    def plain_dict(self) -> dict:
+        """The plaintext fields only: needs no key (the run queue, the scheduler)."""
         return {
             "id": self.id,
             "workspace_id": self.workspace_id,
             "kind": self.kind,
             "scheduled": bool(self.scheduled),
             "state": self.state,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+        }
+
+    def to_dict(self) -> dict:
+        return {
+            **self.plain_dict(),
             "stage": self.stage,
             "progress": json.loads(self.progress_json or "{}"),
             "summary": json.loads(self.summary_json) if self.summary_json else None,
-            "error": self.error,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "error": self.error or self.ERROR_TEXT.get(self.error_code or ""),
         }
 
 
@@ -650,23 +737,28 @@ class SearchSchedule(Base):
 
 
 class HttpCache(Base):
-    """Short-lived cache of listing pages / API responses / robots.txt."""
+    """Short-lived cache of listing pages / API responses / robots.txt (shared by everyone). Listing URLs carry
+    search terms, so the key is ``crypto.process_index("http", url)`` and the body is sealed with the process key:
+    neither can be read after a restart, and startup deletes every row (``purge_http_cache``)."""
 
     __tablename__ = "http_cache"
 
     url = Column(String, primary_key=True)
     status_code = Column(Integer, nullable=False)
-    body = Column(Text, nullable=False, default="")
+    body = Column(ProcessSealedText("http_cache.body"), nullable=False, default="")
     fetched_at = Column(DateTime, nullable=False, default=utcnow)
 
 
 class CommuteCache(Base):
-    """Journey planner / routing answers (backend.commute), refreshed weekly."""
+    """Journey planner / routing answers (backend.commute), refreshed weekly. Per user: the origins are their home
+    and stations, so ``key`` is ``crypto.blind_index("commute", ...)`` (hex) under the user's key and the answer
+    is sealed."""
 
     __tablename__ = "commute_cache"
 
     key = Column(String, primary_key=True)
-    result_json = Column(Text, nullable=False, default="null")
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    result_json = Column(SealedText(), nullable=False, default="null")
     fetched_at = Column(DateTime, nullable=False, default=utcnow)
 
 
@@ -865,6 +957,37 @@ def get_db():
         db.close()
 
 
+# Rows that belong to a workspace must say which: no default, and none in the schema of new databases.
+_WORKSPACE_ROWS = (Job, JobDuplicate, Document, Pin, CompanySource, ChatThread, SearchRun)
+
+
+def _refuse_rows_without_workspace(_mapper, _connection, target) -> None:
+    if target.workspace_id is None:
+        raise ValueError(f"A {type(target).__name__} row needs its workspace_id: rows without one are refused, "
+                         "never put in a default workspace")
+
+
+for _model in _WORKSPACE_ROWS:
+    event.listen(_model, "before_insert", _refuse_rows_without_workspace)
+
+
+# Blind indexes, recomputed on every write under the owner's key (a slip that wrote one under another key would
+# only make the row unfindable, never visible): jobs by URL, company sources by careers URL.
+def _job_url_index(_mapper, _connection, job: Job) -> None:
+    url = job.url
+    job.url_index = crypto.blind_index("url", url) if url else None
+
+
+def _source_url_index(_mapper, _connection, source: CompanySource) -> None:
+    url = source.careers_url
+    source.careers_url_index = crypto.blind_index("careers_url", url) if url else None
+
+
+for _when in ("before_insert", "before_update"):
+    event.listen(Job, _when, _job_url_index)
+    event.listen(CompanySource, _when, _source_url_index)
+
+
 def _add_missing_columns() -> None:
     """ALTER TABLE ADD COLUMN for model columns missing from an older DB."""
     insp = inspect(engine)
@@ -954,17 +1077,27 @@ def _rebuild_for_workspaces(table_name: str) -> None:
     log.info("migrated %s to per-workspace uniqueness", table_name)
 
 
+def encryption_done(conn) -> bool:
+    """Whether the encryption migration (backend.migrate_encryption) has finished on this database."""
+    raw = conn.execute(text("SELECT value_json FROM app_settings WHERE key = 'encryption_migration'")).scalar()
+    try:
+        return bool(raw) and json.loads(raw).get("state") == "done"
+    except (ValueError, AttributeError):
+        return False
+
+
 def _fix_legacy_data() -> None:
     """One-off data repairs for databases written by the previous code."""
     with engine.begin() as conn:
         conn.execute(text("UPDATE documents SET kind='resume' WHERE kind IS NULL OR kind='cv'"))
-        conn.execute(text("UPDATE jobs SET excluded_reason = NULL WHERE excluded_reason = ''"))
-        # Jobs from the old generic scraper were not linked to their source.
-        conn.execute(text(
-            "UPDATE jobs SET source_id = (SELECT id FROM company_sources cs "
-            "WHERE 'generic:' || cs.label = jobs.source) "
-            "WHERE source_id IS NULL AND source LIKE 'generic:%'"
-        ))
+        if not encryption_done(conn):  # these read job columns that are sealed from then on
+            conn.execute(text("UPDATE jobs SET excluded_reason = NULL WHERE excluded_reason = ''"))
+            # Jobs from the old generic scraper were not linked to their source.
+            conn.execute(text(
+                "UPDATE jobs SET source_id = (SELECT id FROM company_sources cs "
+                "WHERE 'generic:' || cs.label = jobs.source) "
+                "WHERE source_id IS NULL AND source LIKE 'generic:%'"
+            ))
         # One research used to cover the whole profile: its sections date from it (accounts design §14.7).
         conn.execute(text("UPDATE company_profiles SET news_researched_at = researched_at "
                           "WHERE news_researched_at IS NULL AND status = 'done' AND researched_at IS NOT NULL"))
@@ -978,6 +1111,18 @@ def _ensure_indexes() -> None:
     with engine.begin() as conn:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_posting_id ON jobs (posting_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_workspaces_owner_id ON workspaces (owner_id)"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_workspace_url_index "
+                          "ON jobs (workspace_id, url_index)"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_sources_workspace_url_index "
+                          "ON company_sources (workspace_id, careers_url_index)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_commute_cache_owner_id ON commute_cache (owner_id)"))
+
+
+def purge_http_cache() -> None:
+    """Delete every http_cache row: they are sealed with the key of the process that wrote them, which is gone
+    after a restart (and rows from before encryption hold plaintext URLs)."""
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM http_cache"))
 
 
 def init_db() -> None:
@@ -1003,4 +1148,7 @@ def init_db() -> None:
     _add_missing_columns()
     _ensure_indexes()
     _fix_legacy_data()
+    purge_http_cache()
     pool_migration.migrate()  # per-workspace job copies -> the shared posting pool (once; resumable)
+    # Then the encryption migration (backend.migrate_encryption), which needs the first admin's key: it runs when
+    # they sign in.

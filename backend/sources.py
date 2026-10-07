@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend import crypto
 from backend.adapters.base import SourceError
 from backend.adapters.generic import source_adapter
 from backend.db import CompanySource, get_db
@@ -81,7 +82,9 @@ def list_sources(db: Session = Depends(get_db), ws: int = Depends(current_worksp
 @router.post("", status_code=201)
 def create_source(payload: SourceCreate, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     url = normalize_url(payload.url)
-    if db.query(CompanySource).filter(CompanySource.workspace_id == ws, CompanySource.careers_url == url).first():
+    # Found by its blind index: the URL itself is sealed (accounts design §2.3).
+    if db.query(CompanySource.id).filter(CompanySource.workspace_id == ws, CompanySource.careers_url_index
+                                         == crypto.blind_index("careers_url", url)).first():
         raise HTTPException(status_code=409, detail="That URL is already a source")
     src = CompanySource(workspace_id=ws, careers_url=url, url=url, label=(payload.label or "").strip() or default_label(url),
                         source_type="auto", enabled=True)

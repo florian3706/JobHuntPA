@@ -22,8 +22,8 @@ level (both write from the documents), and must keep every fact: the scorer quot
 """
 from __future__ import annotations
 
+import io
 import re
-import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from backend import crypto
 from backend.db import DOCUMENT_KINDS, NOTE_FILETYPE, SUMMARY_FILETYPE, UPLOAD_DIR, Document, get_db
 from backend.workspaces import current_workspace, owned
 
@@ -44,16 +45,16 @@ TEXT_MAX = 300_000  # characters; the largest bundles seen are about 230k for al
 EDITABLE_FILETYPES = (NOTE_FILETYPE, SUMMARY_FILETYPE)
 
 
-def _extract_pdf_text(path: Path) -> str:
+def _extract_pdf_text(data: bytes) -> str:
     from pypdf import PdfReader
 
-    return "\n".join((page.extract_text() or "") for page in PdfReader(str(path)).pages).strip()
+    return "\n".join((page.extract_text() or "") for page in PdfReader(io.BytesIO(data)).pages).strip()
 
 
-def _extract_docx_text(path: Path) -> str:
+def _extract_docx_text(data: bytes) -> str:
     import docx
 
-    doc = docx.Document(str(path))
+    doc = docx.Document(io.BytesIO(data))
     parts = [p.text for p in doc.paragraphs]
     for table in doc.tables:
         for row in table.rows:
@@ -61,26 +62,61 @@ def _extract_docx_text(path: Path) -> str:
     return "\n".join(parts).strip()
 
 
-def _extract_odf_text(path: Path) -> str:
+def _extract_odf_text(data: bytes) -> str:
     from odf import teletype
     from odf import text as odf_text
     from odf.opendocument import load
 
-    doc = load(str(path))
+    doc = load(io.BytesIO(data))
     return "\n".join(teletype.extractText(p) for p in doc.getElementsByType(odf_text.P)).strip()
 
 
-def extract_text(path: Path, suffix: str) -> str:
+def extract_text(data: bytes, suffix: str) -> str:
+    """The text of an uploaded file, read from memory: the plaintext file never touches the disk."""
     suffix = suffix.lower()
     if suffix == ".pdf":
-        return _extract_pdf_text(path)
+        return _extract_pdf_text(data)
     if suffix == ".docx":
-        return _extract_docx_text(path)
+        return _extract_docx_text(data)
     if suffix in {".odt", ".ods", ".odp"}:
-        return _extract_odf_text(path)
+        return _extract_odf_text(data)
     if suffix in {".txt", ".md"}:
-        return path.read_text(encoding="utf-8", errors="replace").strip()
+        return data.decode("utf-8", errors="replace").strip()
     raise ValueError(f"Unsupported file type: {suffix}")
+
+
+# --------------------------------------------------------------------------
+# Uploads: sealed under the owner's key in data/uploads as "<random hex>.sealed" (accounts design §2.2)
+# --------------------------------------------------------------------------
+
+SEALED_SUFFIX = ".sealed"
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # held in memory (never spooled to disk in plaintext): app.py sizes the spool
+
+
+def file_label(stored_name: str) -> str:
+    """The AAD label of an upload: the file opens only under its own name."""
+    return f"file|{stored_name}"
+
+
+def new_stored_name() -> str:
+    return f"{uuid.uuid4().hex}{SEALED_SUFFIX}"
+
+
+def save_upload(data: bytes) -> str:
+    """Seal ``data`` under the current user's key into a new upload file. Returns its stored name."""
+    stored = new_stored_name()
+    crypto.seal_file(data, UPLOAD_DIR / stored, file_label(stored))
+    return stored
+
+
+def read_upload(stored_name: str) -> bytes:
+    """An upload's plaintext, in memory (KeyMismatch / Corrupt if it isn't this user's, or was moved)."""
+    return crypto.open_file(UPLOAD_DIR / stored_name, file_label(stored_name))
+
+
+def delete_upload(stored_name: Optional[str]) -> None:
+    if stored_name:
+        (UPLOAD_DIR / stored_name).unlink(missing_ok=True)
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -150,21 +186,24 @@ def upload_document(file: UploadFile = File(...), kind: str = Form("resume"), db
     suffix = Path(original).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file type {suffix!r}. Allowed: {sorted(ALLOWED_EXTENSIONS)}")
-    stored = f"{uuid.uuid4().hex}{suffix}"
-    dest = UPLOAD_DIR / stored
-    with dest.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"That file is over {MAX_UPLOAD_BYTES // (1024 * 1024)} MB. "
+                                                    "Upload a smaller copy (for example, without images).")
     try:
-        text = extract_text(dest, suffix)
+        text = extract_text(data, suffix)
     except Exception as exc:
-        dest.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Could not extract text: {exc}")
     if not text:
-        dest.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="No text found in the file (scanned PDF?)")
+    stored = save_upload(data)
     doc = Document(workspace_id=ws, filename=original, filetype=suffix, stored_name=stored, text=text, kind=kind)
     db.add(doc)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        delete_upload(stored)
+        raise
     return doc_to_dict(doc)
 
 
@@ -227,10 +266,10 @@ def document_text(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(
 @router.delete("/{doc_id}")
 def delete_document(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     doc = owned(db, Document, doc_id, ws, "Document")
-    if doc.stored_name:  # notes and summaries have no file
-        (UPLOAD_DIR / doc.stored_name).unlink(missing_ok=True)
+    stored = doc.stored_name  # notes and summaries have no file
     db.delete(doc)
     db.commit()
+    delete_upload(stored)
     return {"ok": True, "id": doc_id}
 
 

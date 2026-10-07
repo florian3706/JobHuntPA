@@ -23,6 +23,9 @@ signed in". Lifetimes: 24 hours idle and 7 days in all, or 30 days idle and 90 i
      (403 ``csrf``); /api/auth/me hands the page its token.
   6. The request runs inside ``crypto.as_user(user, DEK)``, so sealed values open with this user's key (sync
      endpoints run in a copy of this context, and so does a background run started from one).
+  7. Until the one-time encryption of the data from before accounts has run (backend.migrate_encryption), every
+     API but health, /api/auth/* and /api/encryption/* answers 423 ``encrypting`` with its progress; a request
+     from the admin whose key it needs starts or resumes it.
 Later phases add their own paths: the unsubscribe link and Stripe's webhook (no session, no CSRF; signed instead),
 sign-up, forgot, reset and recover (PRE_SESSION), and the MFA step (a ``pending_mfa`` session).
 
@@ -304,7 +307,38 @@ class AuthMiddleware:
             return response
         if unsafe and path not in PRE_SESSION and not crypto.check_csrf(secret, headers.get("x-csrf-token")):
             return _deny(403, "csrf", "This page's security token is out of date. Reload the page and try again.")
+        if not encryption_open(path):
+            blocked = await _while_encrypting(*found)
+            if blocked is not None:
+                return blocked
         return found
+
+
+def encryption_open(path: str) -> bool:
+    """Answered while the data is being encrypted: health, signing in and out, and the encryption's progress."""
+    return path == HEALTH or path.startswith("/api/auth/") or path.startswith("/api/encryption/")
+
+
+async def _while_encrypting(auth: AuthUser, dek: bytes) -> Optional[JSONResponse]:
+    """Step 7: until the encryption migration has run (backend.migrate_encryption), data APIs answer 423 with its
+    progress. A request from the admin whose key it needs starts (or resumes) it; a small database is done within
+    that request, which then goes ahead."""
+    from backend import migrate_encryption
+
+    if migrate_encryption.known_done():
+        return None
+    if await run_in_threadpool(migrate_encryption.ensure_started, auth.id, dek):
+        return None
+    info = await run_in_threadpool(migrate_encryption.progress)
+    if info.get("state") == "failed":
+        detail = (f"Encrypting your data stopped ({info.get('error')}). JobHuntPA tries again in a minute, or when "
+                  "its admin signs in again.")
+    elif await run_in_threadpool(migrate_encryption.is_owner, auth.id):
+        detail = "JobHuntPA is encrypting your data. This page reloads by itself when it has finished."
+    else:
+        detail = "JobHuntPA is waiting for its admin to sign in, to finish encrypting the data. Try again later."
+    return JSONResponse({"detail": detail, "code": "encrypting", "state": info.get("state"), "done": info["done"],
+                         "total": info["total"]}, status_code=423)
 
 
 # ---------------------------------------------------------------------------

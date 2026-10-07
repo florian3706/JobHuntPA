@@ -15,7 +15,13 @@ Safety:
 - Never reads ``.env``: ``backend.config`` is replaced by a stub before the app code loads.
 - Never touches the network: coordinates are written directly, and the geocoder cache is
   pre-filled for the few addresses the job page would otherwise look up.
-- Documents are text-only rows (``stored_name`` is empty), so ``data/uploads`` is not used.
+- Documents are text-only rows (``stored_name`` is empty), so no upload is written.
+
+Accounts and encryption: the new database gets a demo admin (``DEMO_EMAIL`` / ``DEMO_PASSWORD``),
+made from the environment as a headless install makes its first admin, and a server key file
+(``server-keys.json``) beside the database; the data folder is the database's folder too
+(``JOBHUNT_DATA_DIR``). Every personal value is written sealed under the demo admin's key, as the
+app writes it, so the database looks like a real encrypted install.
 
 The database is built with the app's own models and helpers (``backend.db``,
 ``backend.filters``, ``backend.scorer.build_profile``, ``backend.duplicates.scan``), so fit
@@ -35,6 +41,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 WORKSPACE_NAME = "Dummy workspace"
+# The demo database's admin (tools/readme_screenshots.py signs in with these). Made the way a headless install makes
+# its first admin, from the environment, which also encrypts the empty database; everything below is then written
+# under this admin's key, as the app writes it.
+DEMO_EMAIL, DEMO_PASSWORD = "demo@example.invalid", "demo-password-not-real"
 
 
 # --------------------------------------------------------------------------
@@ -61,10 +71,15 @@ def target_path(arg: str, overwrite: bool) -> Path:
 
 
 def isolate(db_path: Path) -> None:
-    """Point the app at ``db_path`` and keep the real .env out of this process."""
+    """Point the app at ``db_path`` and keep the real .env out of this process. The data folder (uploads, stays
+    empty), the server key file and the demo admin's account live beside the new database."""
     os.environ["JOBHUNT_DB_PATH"] = str(db_path)
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
+    os.environ["JOBHUNT_DATA_DIR"] = str(db_path.parent)
+    os.environ["JOBHUNT_KEY_FILE"] = str(db_path.parent / "server-keys.json")
     os.environ["JOBHUNT_SCHEDULER"] = "off"
+    os.environ["JOBHUNT_ADMIN_EMAIL"], os.environ["JOBHUNT_ADMIN_PASSWORD"] = DEMO_EMAIL, DEMO_PASSWORD
+    os.environ.setdefault("JOBHUNT_KDF_PROFILE", "low")
     sys.path.insert(0, str(ROOT))
     import backend  # noqa: F401  (the package only; backend.config is replaced below)
 
@@ -72,6 +87,8 @@ def isolate(db_path: Path) -> None:
     stub.PROJECT_ROOT = ROOT
     stub.ENV_PATH = db_path.parent / "demo.env"  # never the real .env, in case a Settings endpoint were called
     stub.load_dotenv = lambda *args, **kwargs: None
+    stub.FROM_DOTENV = set()
+    stub.process_env = lambda name: os.environ.get(name, "")
     stub.USER_AGENT = "JobHuntPA demo seeding (offline)"
     stub.ROBOTS_AGENT = "jobhuntpa"
     sys.modules["backend.config"] = stub
@@ -772,6 +789,23 @@ COMPANIES = [
 def build(db_path: Path) -> None:
     isolate(db_path)
 
+    from backend import crypto, users
+    from backend.db import SessionLocal, init_db
+
+    # The schema, the key file and the demo admin (from the environment isolate() set), who claims workspace 1.
+    init_db()
+    users.startup()
+    db = SessionLocal()
+    try:
+        admin = users.find_by_email(db, DEMO_EMAIL)
+        key = users.unlock_with_password(db, admin, DEMO_PASSWORD)
+    finally:
+        db.close()
+    with crypto.as_user(admin.id, key):  # sealed columns are written under the demo admin's key
+        _build()
+
+
+def _build() -> None:
     from backend.db import (AppSetting, ChatMessage, ChatThread, CompanyProfile, CompanySource, CoverLetter,
                             DealbreakerSet, Document, FitResult, GeocodeCache, Job, JobDuplicate, Pin, Posting,
                             SearchRun, SessionLocal, UserProfile, Workspace, company_key, init_db)
@@ -783,7 +817,6 @@ def build(db_path: Path) -> None:
     from backend.scorer import build_profile
     from backend.scraping.text import description_hash
 
-    init_db()
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     def ago(days: int = 0, hours: int = 0, minutes: int = 0) -> datetime:
@@ -875,7 +908,7 @@ def build(db_path: Path) -> None:
                 rev=1,
             )
             job = Job(
-                workspace_id=ws_id, url=spec["url"], origin="pool", posting=posting, posting_rev=1,
+                workspace_id=ws_id, origin="pool", posting=posting, posting_rev=1,  # (the URL is the posting's)
                 source_id=source_rows[spec["src"]].id if spec.get("src") else None,
                 lat=lat, lng=lng, distance_km=home_distance(lat, lng, pins), status=spec["status"],
                 first_seen=first_seen, last_seen=run_start + timedelta(seconds=30),
@@ -1011,10 +1044,11 @@ def build(db_path: Path) -> None:
         stale = db.query(FitResult).filter(FitResult.profile_hash != phash).count()
         if stale:
             raise SystemExit(f"{stale} fit results would show as stale")
-        listed = db.query(Job).filter(Job.workspace_id == ws_id, Job.duplicate_of.is_(None)).count()
-        shown = db.query(Job).filter(Job.workspace_id == ws_id, Job.duplicate_of.is_(None),
-                                     Job.excluded_reason.is_(None)).count()
-        print(f"Demo database ready: {db_path}")
+        # (Counted in Python: whether a job is excluded is sealed so that not even that shows.)
+        reasons_now = [r for (r,) in db.query(Job.excluded_reason)
+                       .filter(Job.workspace_id == ws_id, Job.duplicate_of.is_(None))]
+        listed, shown = len(reasons_now), sum(1 for r in reasons_now if not r)
+        print(f"Demo database ready: {os.environ['JOBHUNT_DB_PATH']} (admin {DEMO_EMAIL}, data sealed under their key)")
         print(f"  workspace {WORKSPACE_NAME!r}: {listed} jobs listed ({shown} pass the filters, {listed - shown} excluded), "
               f"1 merged copy, {db.query(FitResult).count()} fit scores")
         print(f"  latest scheduled search: {run_start:%Y-%m-%d %H:%M} UTC; duplicate scan {result}")

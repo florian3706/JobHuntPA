@@ -9,8 +9,11 @@
   raise :class:`FetchError` so the page isn't mistaken for an empty one.
 - Optional DB cache (``http_cache`` table) with a caller-chosen TTL, used
   for listing pages / API listings so repeated runs within the TTL cost
-  nothing. Job detail pages are not cached here: the ``jobs`` table is
-  their cache (see ``backend.pipeline``).
+  nothing. Job detail pages are not cached here: the ``postings`` table is
+  their cache (see ``backend.pool``). Listing URLs carry search terms, so
+  rows are keyed and sealed with a key that lives only in this process
+  (``crypto.process_index``, ``crypto.ProcessSealedText``); startup
+  deletes them.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from backend import crypto
 from backend.config import ROBOTS_AGENT, USER_AGENT
 from backend.db import HttpCache, SessionLocal
 from backend.scraping.robots import RobotsRules
@@ -233,13 +237,22 @@ class PoliteClient:
         return Response(url=final_url, status=status, text=html)
 
 
+def _cache_key(key: str) -> str:
+    """The row key: HMAC of the URL under the process-only key (listing URLs carry search terms)."""
+    return crypto.process_index("http", key)
+
+
 def _cache_get(key: str, ttl: timedelta) -> Optional[Response]:
     db = SessionLocal()
     try:
-        row = db.get(HttpCache, key)
-        if row is None or datetime.utcnow() - row.fetched_at > ttl:
+        try:
+            row = db.get(HttpCache, _cache_key(key))
+            if row is None or datetime.utcnow() - row.fetched_at > ttl:
+                return None
+            body = row.body
+        except crypto.CryptoError:  # written by another process (its key is gone): a miss
             return None
-        return Response(url=key.split("#", 1)[0], status=row.status_code, text=row.body, from_cache=True)
+        return Response(url=key.split("#", 1)[0], status=row.status_code, text=body, from_cache=True)
     finally:
         db.close()
 
@@ -247,13 +260,10 @@ def _cache_get(key: str, ttl: timedelta) -> Optional[Response]:
 def _cache_put(key: str, status: int, body: str) -> None:
     db = SessionLocal()
     try:
-        row = db.get(HttpCache, key)
-        if row is None:
-            row = HttpCache(url=key)
-            db.add(row)
-        row.status_code = status
-        row.body = body
-        row.fetched_at = datetime.utcnow()
+        row_key = _cache_key(key)
+        # Replaced without being read first: a row another process wrote can't be opened with this one's key.
+        db.query(HttpCache).filter(HttpCache.url == row_key).delete(synchronize_session=False)
+        db.add(HttpCache(url=row_key, status_code=status, body=body, fetched_at=datetime.utcnow()))
         db.commit()
     finally:
         db.close()

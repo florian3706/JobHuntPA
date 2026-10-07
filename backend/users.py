@@ -17,8 +17,9 @@ start-up, and the first run. Design: docs/design/accounts.md, sections 1, 4 and 
     ``/first-run.html#token=…``; installer/launch.py opens that address. The token is in the fragment, so it never
     reaches a server log.
 ``create_first_admin`` then makes the account, the APK and the admin's grant of it, and claims every workspace
-that has no owner (all the data of an install from before accounts), in one transaction. Nothing is encrypted yet
-(Phase D); ``app_settings["encryption_migration"]`` records whose key that run will use.
+that has no owner (all the data of an install from before accounts), in one transaction, and records in
+``app_settings["encryption_migration"]`` that this admin's key encrypts that data (backend.migrate_encryption: at
+once for the first run and the environment admin, otherwise at their next sign-in).
 """
 from __future__ import annotations
 
@@ -277,12 +278,18 @@ def startup() -> None:
     email, password = config.process_env(ADMIN_EMAIL_ENV).strip(), config.process_env(ADMIN_PASSWORD_ENV)
     if email and password:
         try:
-            create_first_admin(email, password, created_via="bootstrap", background=True)
-            return
+            account = create_first_admin(email, password, created_via="bootstrap", background=True)
         except AccountError as exc:
             log.error("%s/%s can't be used (%s); open the first-run page instead.", ADMIN_EMAIL_ENV,
                       ADMIN_PASSWORD_ENV, exc.message)
         except AlreadySetUp:
+            return
+        else:
+            from backend import migrate_encryption
+
+            # The admin's key is at hand now (and not again until they sign in): encrypt the existing data during
+            # start-up. On a new install there is next to nothing to do.
+            migrate_encryption.run(account.user_id, account.dek)
             return
     elif email or password:
         log.error("Set both %s and %s (in the process environment, not .env) to create the admin at start-up.",
@@ -360,15 +367,20 @@ def create_user(email: str, password: str, *, name: str = "", role: str = "user"
                 background: bool = False) -> NewAccount:
     """A new account with its own "My job search" workspace (what sign-up does, Phase K; tests use it now).
     Making someone an admin also needs the admin details key shared with them (Phase F)."""
+    from backend import migrate_encryption
+
     email, password, name = clean_email(email), check_password(password), clean_name(name)
     if role not in ("user", "admin"):
         raise ValueError("role must be user or admin")
+    if not migrate_encryption.is_done():  # sign-ups wait for the one-time encryption (accounts design §5.4)
+        raise AccountError("email", "JobHuntPA is encrypting its data. Try again in a few minutes.")
     db = SessionLocal()
     try:
         account = _create_user(db, email=email, password=password, name=name, role=role, created_via=created_via,
                                background=background)
-        db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=account.user_id))
-        db.commit()
+        with crypto.as_user(account.user_id, account.dek):  # the workspace's name is sealed under the new key
+            db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=account.user_id))
+            db.commit()
         log.info("Account created: user %s (%s)", account.user_id, created_via)
         return account
     finally:
@@ -401,8 +413,11 @@ def create_first_admin(email: str, password: str, *, name: str = "", created_via
                                  sealed_priv=crypto.seal_to(own_pub, apk_priv, f"grant|{uid}|{apk_version}")))
             claimed = db.execute(update(Workspace).where(Workspace.owner_id.is_(None)).values(owner_id=uid)).rowcount
             if not db.query(Workspace.id).filter(Workspace.owner_id == uid).first():
-                db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=uid))
-            # Phase D encrypts the existing data with this admin's key, at their next sign-in.
+                with crypto.as_user(uid, account.dek):
+                    db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=uid))
+                    db.flush()
+            # The existing data is encrypted with this admin's key (backend.migrate_encryption): right away at the
+            # first run, or at their next sign-in.
             _put_setting(db, "encryption_migration", {"state": "pending", "owner": uid})
             db.commit()
         except BaseException:
@@ -472,6 +487,20 @@ def details(db: Session, user_id: int) -> dict:
     if user is None or user.pii_self is None:
         return {"email": "", "name": ""}
     return json.loads(crypto.unseal(user.pii_self, f"users.pii_self|{user_id}"))
+
+
+def background_key(db: Session, user_id: int) -> Optional[bytes]:
+    """The user's DEK through the server KEK, when they allowed background access (scheduled searches run with it);
+    else None. Unwrapped on each call, never cached (design §3.1)."""
+    row = db.get(UserKeys, user_id)
+    user = db.get(User, user_id)
+    if row is None or row.server_wrapped_dek is None or user is None or user.status != "active":
+        return None
+    try:
+        return server_keys().kek_unwrap(row.server_wrapped_dek, f"srv|{user_id}")
+    except crypto.CryptoError:
+        log.warning("user %s: the background-access key doesn't open with the key file", user_id)
+        return None
 
 
 def workspace_ids(db: Session, user_id: int) -> list[int]:

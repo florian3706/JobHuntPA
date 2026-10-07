@@ -5,14 +5,15 @@
 
 What it does:
 1. Builds a NEW temporary database with tools/demo_data.py (a "Dummy workspace" full of made-up
-   jobs; nothing from your real data/jobhunt.db).
-2. Starts the app on a free local port against that database, with fake LLM settings, no commute
-   API keys, a throwaway .env path (JOBHUNT_ENV_PATH, so the real .env is neither read nor written,
-   even by the Settings tab), a throwaway server key file (JOBHUNT_KEY_FILE) and the scheduler off,
-   so nothing can reach an LLM or scrape a site. A demo admin account is created from the environment
-   (JOBHUNT_ADMIN_EMAIL / JOBHUNT_ADMIN_PASSWORD) and claims the demo workspace.
-3. Opens it in headless Chromium (Playwright), signed in as that admin, and saves the screenshots.
-4. Stops the server and deletes the temporary database.
+   jobs; nothing from your real data/jobhunt.db). It belongs to a demo admin account, made with
+   the database, and is sealed under that account's key like a real install, with its server key
+   file (server-keys.json) beside it.
+2. Starts the app on a free local port against that database and key file, with the temporary
+   folder as its data folder (JOBHUNT_DATA_DIR), fake LLM settings, no commute API keys, a throwaway
+   .env path (JOBHUNT_ENV_PATH, so the real .env is neither read nor written, even by the Settings
+   tab) and the scheduler off, so nothing can reach an LLM or scrape a site.
+3. Opens it in headless Chromium (Playwright), signed in as the demo admin, and saves the screenshots.
+4. Stops the server and deletes the temporary folder.
 
 Needs the app's requirements plus Playwright's Chromium (setup installs both) and Pillow
 (``pip install pillow``; a developer tool only, so it is not in requirements.txt). The browser
@@ -56,7 +57,7 @@ SIZE_LIMIT = 400_000                      # bytes; bigger PNGs are reduced to a 
 # Kept out of the repo: set JOBHUNT_SCREENSHOT_FORBIDDEN="suburb|street" when you run this.
 FORBIDDEN = os.getenv("JOBHUNT_SCREENSHOT_FORBIDDEN", "").strip()
 ALLOWED_HOSTS = ("unpkg.com", "tile.openstreetmap.org", "fonts.googleapis.com", "fonts.gstatic.com")
-# The demo server's admin, made from the environment at its start (backend/users.py).
+# The demo database's admin, made by tools/demo_data.py (the same values: its DEMO_EMAIL / DEMO_PASSWORD).
 DEMO_EMAIL, DEMO_PASSWORD = "demo@example.invalid", "demo-password-not-real"
 
 # theme id -> shown in themes.png, in this order
@@ -83,6 +84,7 @@ def server_env(db: Path, env_file: Path) -> dict:
     env = dict(os.environ)
     env.update({
         "JOBHUNT_DB_PATH": str(db), "DATABASE_URL": f"sqlite:///{db}", "JOBHUNT_SCHEDULER": "off",
+        "JOBHUNT_DATA_DIR": str(db.parent),  # uploads and backups in the temporary folder, never data/
         "JOBHUNT_ENV_PATH": str(env_file), "JOBHUNT_KEY_FILE": str(db.parent / "server-keys.json"),
         "JOBHUNT_ADMIN_EMAIL": DEMO_EMAIL, "JOBHUNT_ADMIN_PASSWORD": DEMO_PASSWORD, "JOBHUNT_KDF_PROFILE": "low",
         "LLM_API_KEY": "demo-key-not-real-1234", "LLM_BASE_URL": "https://llm.example.com/v1", "LLM_MODEL": "example-model",

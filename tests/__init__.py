@@ -11,6 +11,9 @@ import os
 import tempfile
 
 _TMP = tempfile.mkdtemp(prefix="jobhunt-tests-")
+# The whole data folder (uploads, backups, leftovers the encryption report lists) is throwaway: no test touches
+# the app's real data/ folder.
+os.environ["JOBHUNT_DATA_DIR"] = _TMP
 os.environ["JOBHUNT_DB_PATH"] = os.path.join(_TMP, "test.db")
 os.environ.pop("DATABASE_URL", None)  # would override JOBHUNT_DB_PATH
 os.environ["JOBHUNT_ENV_PATH"] = os.path.join(_TMP, "test.env")  # never read or write the real .env

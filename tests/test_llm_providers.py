@@ -101,6 +101,14 @@ def api_error(cls, message="boom"):
     return cls(message, response=response, body=None)
 
 
+def setUpModule():
+    helpers.enter_admin_scope()  # these tests write rows directly and call background code as the admin
+
+
+def tearDownModule():
+    helpers.exit_admin_scope()
+
+
 class FakeStream:
     """What ``client.messages.stream(...)`` returns: a context manager with the final message."""
 

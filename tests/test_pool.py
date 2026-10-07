@@ -27,6 +27,7 @@ os.environ["JOBHUNT_ENV_PATH"] = os.path.join(_TMP, "test.env")
 from tests import helpers  # noqa: E402  (signed-in clients; sets the test environment)
 from sqlalchemy import text  # noqa: E402
 
+from backend import crypto, pool  # noqa: E402
 from backend.adapters.base import Adapter, Posting as Scraped  # noqa: E402
 from backend.db import (AppSetting, ChatThread, CompanyProfile, CoverLetter, Document, FitResult, Job, Posting,  # noqa: E402
                         SessionLocal, company_key, engine, init_db)
@@ -38,6 +39,14 @@ LLM_ENV = {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://api.openai.com/v1", "LLM
 FULL_AD = ("About the role. You will run the delivery program for our enterprise customers, coordinate engineering "
            "and product teams, and report to the executive team. We offer hybrid working with 3 days in the office. ")
 TEASER = "Short teaser: lead delivery."
+
+
+def setUpModule():
+    helpers.enter_admin_scope()  # these tests write rows directly and call background code as the admin
+
+
+def tearDownModule():
+    helpers.exit_admin_scope()
 
 
 class FakeAdapter(Adapter):
@@ -142,7 +151,8 @@ class SharedPoolTest(PoolTestCase):
 
         db = SessionLocal()
         self.assertEqual(db.query(Posting).filter(Posting.url == url).count(), 1)
-        links = db.query(Job).filter(Job.url == url, Job.workspace_id.in_([a, b])).all()
+        links = [pool.job_by_url(db, ws, url) for ws in (a, b)]  # (found by the blind index of the URL)
+        links = [j for j in links if j is not None]
         self.assertEqual(len(links), 2)
         self.assertEqual(len({j.posting_id for j in links}), 1)
         self.assertEqual({j.origin for j in links}, {"pool"})
@@ -320,8 +330,12 @@ class PrivateUploadTest(PoolTestCase):
         self.assertIn("https://private.example/imported/1", self.jobs(a))
         db = SessionLocal()
         self.assertEqual(db.query(Posting).filter(Posting.url == "https://private.example/imported/1").count(), 0)
-        job = db.query(Job).filter(Job.workspace_id == a, Job.url == "https://private.example/imported/1").one()
+        job = pool.job_by_url(db, a, "https://private.example/imported/1")
         self.assertEqual((job.origin, job.posting_id, job.company), ("private", None, "Secretco"))
+        with engine.connect() as conn:  # a private job's URL is sealed, a pool link's isn't stored on the link
+            stored = conn.execute(text("SELECT url FROM jobs WHERE id = :i"), {"i": job.id}).scalar()
+        self.assertTrue(crypto.is_sealed(stored))
+        self.assertNotIn(b"private.example", stored)
         db.close()
         search(b)  # pool matching never sees it
         self.assertNotIn("https://private.example/imported/1", self.jobs(b, "excluded,hidden"))
@@ -439,8 +453,21 @@ class MigrationTest(unittest.TestCase):
         return conn.execute(text("SELECT last_insert_rowid()")).scalar()
 
     def setUp(self):
+        from backend import crypto, pool_migration
+
+        # These rows are from before the pool, and so from before encryption: plaintext, written with raw SQL. The
+        # test database is encrypted already, so play the earlier state: plaintext is read (no strict mode) and
+        # the pool migration runs as it does before the encryption migration.
+        patches = (mock.patch.object(crypto, "_strict", False),
+                   mock.patch.object(pool_migration, "encryption_done", lambda conn: False))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.addCleanup(self.remove_legacy_rows)
         owner = helpers.admin_id()
         with engine.begin() as conn:
+            # Jobs other tests wrote directly, without an origin: not legacy rows for this test.
+            conn.execute(text("UPDATE jobs SET origin = 'private' WHERE origin IS NULL"))
             for name in ("Legacy A", "Legacy B"):
                 conn.execute(text("INSERT INTO workspaces (name, owner_id, created_at) VALUES (:n, :o, CURRENT_TIMESTAMP)"),
                              {"n": name, "o": owner})
@@ -488,6 +515,15 @@ class MigrationTest(unittest.TestCase):
             conn.execute(text("INSERT INTO chat_threads (workspace_id, job_ids_json, title) VALUES (:w, :j, 'Chat')"),
                          {"w": a, "j": json.dumps([ids["shared_a"], ids["seek_a"]])})
             conn.execute(text("DELETE FROM app_settings WHERE key = 'job_pool_migration'"))
+
+    def remove_legacy_rows(self):
+        """The plaintext rows go, whatever happened (strict mode would refuse them in later tests)."""
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM workspaces WHERE id IN (:a, :b)"),
+                         {"a": getattr(self, "a", -1), "b": getattr(self, "b", -1)})
+            conn.execute(text("UPDATE jobs SET origin = 'private' WHERE origin IS NULL"))
+            conn.execute(text("INSERT INTO app_settings (key, value_json) VALUES ('job_pool_migration', "
+                              "'{\"state\": \"done\"}') ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json"))
 
     def snapshot(self):
         with engine.connect() as conn:

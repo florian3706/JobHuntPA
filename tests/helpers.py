@@ -13,6 +13,11 @@ from the environment when it starts.
         ...
     with helpers.as_admin():                 # the admin's key scope, to write rows directly
         ...
+    helpers.use_admin_scope(self)            # ... or for the rest of a test (setUp or the test itself)
+
+Columns are sealed under their owner's key (backend/crypto.py, docs/design/accounts.md §2.2): reading or writing
+them outside a key scope raises ``crypto.Locked``. The encryption migration ran when the admin was created, so
+strict mode is on: plaintext planted in a sealed column with raw SQL is refused when read.
 
 A client also works without ``with``: call ``c.__enter__()`` and ``addCleanup(c.__exit__, None, None, None)``.
 """
@@ -20,8 +25,15 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import json
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator, Optional
 
 ADMIN_EMAIL = os.environ.setdefault("JOBHUNT_ADMIN_EMAIL", "admin@example.invalid")
@@ -90,6 +102,7 @@ def make_user(email: Optional[str] = None, password: str = USER_PASSWORD, *, rol
     email = email or f"user{next(_numbers)}-{os.getpid()}@example.invalid"
     account = users.create_user(email, password, name=name, role=role, created_via="open")
     _passwords[email] = password
+    _keys[email] = (account.user_id, account.dek)
     db = SessionLocal()
     try:
         ws = db.query(Workspace.id).filter(Workspace.owner_id == account.user_id).scalar()
@@ -119,12 +132,55 @@ def admin_id() -> int:
         db.close()
 
 
+_keys: dict[str, tuple[int, bytes]] = {}
+
+
+def key_of(email: str = ADMIN_EMAIL) -> tuple[int, bytes]:
+    """(user id, data key) of an account, unlocked once per test run."""
+    if email not in _keys:
+        _keys[email] = unlock(email)
+    return _keys[email]
+
+
 @contextlib.contextmanager
 def as_admin() -> Iterator[crypto.Scope]:
-    """The admin's key scope, for writing rows (sealed ones, from Phase D) directly in a test."""
-    uid, dek = unlock()
+    """The admin's key scope, for writing and reading rows (sealed columns) directly in a test."""
+    uid, dek = key_of()
     with crypto.as_user(uid, dek) as scope:
         yield scope
+
+
+@contextlib.contextmanager
+def as_account(account: "Account") -> Iterator[crypto.Scope]:
+    """``account``'s key scope."""
+    uid, dek = key_of(account.email)
+    with crypto.as_user(uid, dek) as scope:
+        yield scope
+
+
+_module_scopes: list = []
+
+
+def enter_admin_scope() -> None:
+    """The admin's key scope for a whole test module (``setUpModule``): its tests write and read rows directly and
+    call background code (searches, scoring, research) as the admin's own runs would. Requests made with a test
+    client still run in the scope of whoever signed in (backend/sessions.py)."""
+    scope = as_admin()
+    scope.__enter__()
+    _module_scopes.append(scope)
+
+
+def exit_admin_scope() -> None:
+    """``tearDownModule``'s half of enter_admin_scope."""
+    _module_scopes.pop().__exit__(None, None, None)
+
+
+def use_admin_scope(test) -> None:
+    """The admin's key scope for the rest of ``test`` (call it in setUp or the test): code the test calls
+    directly, as a background run or the scheduler would, then acts as the admin."""
+    scope = as_admin()
+    scope.__enter__()
+    test.addCleanup(scope.__exit__, None, None, None)
 
 
 def new_workspace(name: str, owner: Optional[int] = None) -> int:
@@ -132,9 +188,57 @@ def new_workspace(name: str, owner: Optional[int] = None) -> int:
     owner = admin_id() if owner is None else owner
     db = SessionLocal()
     try:
-        ws = Workspace(name=name, owner_id=owner)
-        db.add(ws)
-        db.commit()
-        return ws.id
+        email = ADMIN_EMAIL if owner == admin_id() else next(e for e, (uid, _) in _keys.items() if uid == owner)
+        uid, dek = key_of(email)
+        with crypto.as_user(uid, dek):
+            ws = Workspace(name=name, owner_id=owner)
+            db.add(ws)
+            db.commit()
+            return ws.id
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Fresh processes (first run, restarts, the encryption migration): a throwaway data folder of their own
+# ---------------------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parent.parent
+_FOLDERS: list[str] = []
+
+
+def scratch_folder() -> str:
+    folder = tempfile.mkdtemp(prefix="jobhunt-scenario-")
+    _FOLDERS.append(folder)
+    return folder
+
+
+def remove_scratch_folders() -> None:
+    while _FOLDERS:
+        shutil.rmtree(_FOLDERS.pop(), ignore_errors=True)
+
+
+def scenario(code: str, folder: Optional[str] = None, env: Optional[dict] = None, *,
+             returncode: Optional[int] = 0) -> dict:
+    """Run ``code`` in a fresh Python process on a throwaway data folder, database, .env and key file in
+    ``folder`` (a new one by default; pass the same folder again to "restart"). ``code`` sets ``out``, which comes
+    back as a dict. The admin variables from tests/__init__.py are left out unless ``env`` sets them.
+    ``returncode``: the exit status expected (None: any, for a process that is made to crash)."""
+    folder = folder or scratch_folder()
+    run_env = {k: v for k, v in os.environ.items() if not k.startswith("JOBHUNT_ADMIN_")}
+    run_env.update({"JOBHUNT_DATA_DIR": folder, "JOBHUNT_DB_PATH": os.path.join(folder, "jobhunt.db"),
+                    "JOBHUNT_ENV_PATH": os.path.join(folder, ".env"),
+                    "JOBHUNT_KEY_FILE": os.path.join(folder, "server-keys.json"), "JOBHUNT_SCHEDULER": "off",
+                    "JOBHUNT_TESTING": "1", "JOBHUNT_KDF_PROFILE": "test", "PYTHONPATH": str(ROOT)})
+    run_env.pop("DATABASE_URL", None)
+    run_env.update(env or {})
+    program = "import json, os\nout = {}\nFOLDER = %r\n%s\nprint('RESULT ' + json.dumps(out, default=str))\n" % (
+        folder, textwrap.dedent(code))
+    done = subprocess.run([sys.executable, "-c", program], cwd=folder, env=run_env, capture_output=True, text=True,
+                          timeout=180)
+    lines = [line for line in done.stdout.splitlines() if line.startswith("RESULT ")]
+    if returncode is not None and (done.returncode != returncode or (returncode == 0 and not lines)):
+        raise AssertionError(f"scenario failed ({done.returncode}):\n{done.stdout[-3000:]}\n{done.stderr[-3000:]}")
+    result = json.loads(lines[-1][len("RESULT "):]) if lines else {}
+    result.update(_folder=folder, _returncode=done.returncode, _stderr=done.stderr[-3000:])
+    return result

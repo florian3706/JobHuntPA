@@ -16,8 +16,6 @@ workspace answers 404, the same as one that doesn't exist.
 """
 from __future__ import annotations
 
-import shutil
-import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -132,12 +130,14 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
         db.add(CompanySource(workspace_id=dst, label=s.label, careers_url=s.careers_url, url=s.careers_url,
                              source_type=s.source_type, enabled=s.enabled))
     if documents:
+        from backend.docs import read_upload, save_upload
+
         copies: dict[int, Document] = {}
         for d in db.query(Document).filter(Document.workspace_id == src).order_by(Document.id):
             stored = None
             if d.stored_name and (UPLOAD_DIR / d.stored_name).is_file():
-                stored = f"{uuid.uuid4().hex}{d.filetype or ''}"
-                shutil.copyfile(UPLOAD_DIR / d.stored_name, UPLOAD_DIR / stored)
+                # Sealed again under the copy's own name: a sealed file opens only under the name it was sealed for.
+                stored = save_upload(read_upload(d.stored_name))
             copies[d.id] = Document(
                 workspace_id=dst, filename=d.filename, filetype=d.filetype, stored_name=stored, text=d.text,
                 kind=d.kind, use_for_scoring=d.use_for_scoring, created_at=d.created_at, updated_at=d.updated_at,
@@ -164,9 +164,9 @@ def delete_workspace(ws_id: int, user: AuthUser = Depends(current_user), db: Ses
     ws = owned_workspace(db, ws_id, user)
     if db.query(Workspace).filter(Workspace.owner_id == user.id).count() <= 1:
         raise HTTPException(status_code=409, detail="You can't delete the only workspace")
-    for d in db.query(Document).filter(Document.workspace_id == ws_id):
-        if d.stored_name:
-            (UPLOAD_DIR / d.stored_name).unlink(missing_ok=True)
+    for (stored,) in db.query(Document.stored_name).filter(Document.workspace_id == ws_id):
+        if stored:
+            (UPLOAD_DIR / stored).unlink(missing_ok=True)
     for model in (UserProfile, DealbreakerSet):
         row = db.get(model, ws_id)
         if row is not None:

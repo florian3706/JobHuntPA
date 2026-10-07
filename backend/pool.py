@@ -23,6 +23,7 @@ from typing import Optional
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, contains_eager, defer, joinedload
 
+from backend import crypto
 from backend.adapters.base import Posting as Scraped
 from backend.db import DETAIL_RANK, Job, Posting
 
@@ -176,12 +177,21 @@ def sweep(db: Session, now: datetime) -> list[int]:
 # Workspace links
 # --------------------------------------------------------------------------
 
-def jobs_query(db: Session, *, descriptions: bool = False):
+# Sealed job columns the job list's cards never read: left out of its query, as each costs a decryption per job.
+CARD_UNUSED = (Job._external_id, Job._description_hash, Job._detail_fetched_at, Job._industry, Job.office_checked_at,
+               Job.office_lng)
+
+
+def jobs_query(db: Session, *, descriptions: bool = False, card: bool = False):
     """``db.query(Job)`` with each job's posting loaded alongside (one query), the descriptions left out unless
-    asked for (the job list doesn't show them)."""
+    asked for (the job list doesn't show them). ``card``: only what a job card shows (``CARD_UNUSED`` is left
+    out: reading one of those then costs a query per job)."""
     if descriptions:
         return db.query(Job)
-    return db.query(Job).options(defer(Job._description), joinedload(Job.posting).defer(Posting.description))
+    options = [defer(Job._description), joinedload(Job.posting).defer(Posting.description)]
+    if card:
+        options += [defer(column) for column in CARD_UNUSED]
+    return db.query(Job).options(*options)
 
 
 def job_states(db: Session, ws: int) -> list[tuple]:
@@ -203,9 +213,11 @@ def job_states(db: Session, ws: int) -> list[tuple]:
 
 
 def job_by_url(db: Session, ws: int, url: Optional[str]) -> Optional[Job]:
-    """The workspace's job with this URL, if any. The only SQL comparison on ``jobs.url``: Phase D swaps it for
-    the ``url_index`` blind index (a private job's URL is sealed)."""
-    return db.query(Job).filter(Job.workspace_id == ws, Job.url == url).first()
+    """The workspace's job with this URL, if any: found by ``url_index``, the blind index of its URL under the
+    owner's key (a private job's URL is sealed; a pool link's is its posting's)."""
+    if not url:
+        return None
+    return db.query(Job).filter(Job.workspace_id == ws, Job.url_index == crypto.blind_index("url", url)).first()
 
 
 def attach(job: Job, posting: Posting) -> None:
@@ -215,6 +227,7 @@ def attach(job: Job, posting: Posting) -> None:
 
     own = {name: getattr(job, "_" + name) for name in JOB_CONTENT}
     job.posting, job.origin, job.posting_rev = posting, "pool", None
+    job._url = None  # the posting's URL now (the same one)
     job._closed_at = None
     if DETAIL_RANK.get(own["detail_status"] or "none", 0) <= DETAIL_RANK.get(posting.detail_status, 0):
         for name in ("description", "description_hash", "detail_status", "detail_fetched_at", "office_days"):
@@ -230,8 +243,7 @@ def link(db: Session, ws: int, posting: Posting, now: datetime,
     job = job_by_url(db, ws, posting.url)
     is_new = job is None
     if is_new:
-        job = Job(workspace_id=ws, url=posting.url, origin="pool", status="to_review", first_seen=now,
-                  last_seen=now)
+        job = Job(workspace_id=ws, origin="pool", status="to_review", first_seen=now, last_seen=now)
         job.posting = posting
         db.add(job)
     elif job.posting_id != posting.id or job.posting is None:
@@ -305,16 +317,19 @@ def match_pool(db: Session, ws: int, crit, now: datetime, limit: int = MAX_POOL_
     if not (crit.titles or crit.keywords_include):
         return 0
     linked_ids = {i for (i,) in db.query(Job.posting_id).filter(Job.workspace_id == ws, Job.posting_id.isnot(None))}
-    linked_urls = {u for (u,) in db.query(Job.url).filter(Job.workspace_id == ws)}
+    # The workspace's URLs, as blind indexes (a private job's URL is sealed).
+    linked_urls = {i for (i,) in db.query(Job.url_index).filter(Job.workspace_id == ws, Job.url_index.isnot(None))}
     candidates = (db.query(Posting).filter(Posting.closed_at.is_(None), Posting.not_a_job.is_(False))
                   .order_by(Posting.last_listed_at.desc(), Posting.id.desc()).all())
     matched = 0
     for posting in candidates:
-        if posting.id in linked_ids or posting.url in linked_urls or posting.closed_at is not None:
+        if posting.id in linked_ids or posting.closed_at is not None:
             continue
         if not target_match(posting.title or "", posting.description or "", crit):
             continue
-        job = Job(workspace_id=ws, url=posting.url, origin="pool", status="to_review", first_seen=now,
+        if crypto.blind_index("url", posting.url) in linked_urls:
+            continue
+        job = Job(workspace_id=ws, origin="pool", status="to_review", first_seen=now,
                   last_seen=posting.last_listed_at, posting_rev=posting.rev)
         job.posting = posting  # still transient: only added if it passes
         take_ad_office(job)

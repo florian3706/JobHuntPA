@@ -14,7 +14,7 @@ which knows no traffic (the page says so). Starts at the home pin.
 Both keys are entered in the dashboard's Settings tab (backend/app_settings.py)
 or in .env, and are read on every call, so a new key works at once.
 
-Answers are cached for a week in ``commute_cache``.
+Answers are cached for a week in ``commute_cache``, per user and sealed (``_cached``).
 
     GET /api/jobs/{id}/commute
 """
@@ -31,6 +31,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from backend import crypto
 from backend.config import USER_AGENT
 from backend.db import CommuteCache, Job, Pin, SessionLocal, get_db
 from backend.workspaces import current_workspace, owned
@@ -75,13 +76,18 @@ def _at(day: date, hhmm: str) -> datetime:
 # --------------------------------------------------------------------------
 
 def _cached(key: str, max_age: timedelta, fetch) -> Any:
+    """Per user (accounts design §2.2): the key's origins are the user's home and stations, so the row is found
+    by a blind index under their key and the answer is sealed."""
+    scope = crypto.current()
+    index = crypto.blind_index("commute", key).hex()
     db = SessionLocal()
     try:
-        row = db.get(CommuteCache, key)
+        row = db.get(CommuteCache, index)
         if row is not None and row.fetched_at > datetime.utcnow() - max_age:
             return json.loads(row.result_json)
         value = fetch()
-        db.merge(CommuteCache(key=key, result_json=json.dumps(value), fetched_at=datetime.utcnow()))
+        db.merge(CommuteCache(key=index, owner_id=scope.user_id, result_json=json.dumps(value),
+                              fetched_at=datetime.utcnow()))
         db.commit()
         return value
     finally:

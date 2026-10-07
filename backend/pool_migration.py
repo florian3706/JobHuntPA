@@ -26,7 +26,7 @@ from typing import Optional
 
 from sqlalchemy import text
 
-from backend.db import DB_PATH, DETAIL_RANK, JOB_CONTENT, engine
+from backend.db import DB_PATH, DETAIL_RANK, JOB_CONTENT, encryption_done, engine
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +95,8 @@ def load_sources(conn) -> Sources:
 
     out = {}
     for i, url, label in conn.execute(text("SELECT id, careers_url, label FROM company_sources")):
+        if not isinstance(url or "", str) or not isinstance(label or "", str):
+            continue  # sealed already (a source added since): not one of the legacy rows' sources
         fallback = default_label(url or "")
         typed = (label or "").strip()
         out[i] = (url or "", typed if typed and typed != fallback else None, fallback)
@@ -214,6 +216,13 @@ def migrate(batch_urls: int = BATCH_URLS) -> dict:
         if not left:
             _set_state(conn, "done", rows=0)
             return {"state": "done", "rows": 0}
+        if encryption_done(conn):
+            # The encryption migration runs this one first, so this can't happen; if it did, those rows' content is
+            # sealed and can't be read here: they stay the workspace's own (private) jobs.
+            n = conn.execute(text("UPDATE jobs SET origin = 'private' WHERE origin IS NULL")).rowcount
+            _set_state(conn, "done", rows=n)
+            log.warning("job pool migration: %d jobs left after encryption were kept as private jobs", n)
+            return {"state": "done", "rows": n}
     if state != "running":
         path = _backup()
         log.info("job pool migration: %d jobs; backup %s", left, "made" if path else "skipped")
