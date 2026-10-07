@@ -200,7 +200,40 @@ function signedOut(code) {
   return new Promise(() => {});
 }
 
-/* Who is signed in: { user: {id, email, name, role}, csrf, recovery_codes_pending, workspaces, features }. */
+/* Where a signed-in person with an unfinished sign-up walkthrough (docs/design/accounts.md 6.1, Phase K) goes
+   instead of the page they asked for: their recovery codes first if they haven't saved them (first-run.html shows
+   them, then comes back here), then welcome.html, which resumes where they left off. null when the page may load. */
+function walkthroughPage(me) {
+  if (!me.onboarding_step) return null;
+  if (document.body?.dataset.page === 'welcome') return null;
+  return me.recovery_codes_pending ? 'first-run.html' : 'welcome.html';
+}
+
+/* Like signedOut(): leaves for another page and never settles, so callers stop quietly. */
+function leaveFor(page) {
+  leavingPage = true;
+  location.replace(page);
+  return new Promise(() => {});
+}
+
+/* The theme saved for the account (sealed on the server) wins when this browser has none of its own or a
+   different one: a new device or browser picks up the choice. localStorage stays the fast path for first paint. */
+function adoptAccountTheme(me) {
+  const theme = me.prefs?.theme;
+  if (theme && THEMES.some((t) => t.id === theme)) {
+    let stored = null;
+    try { stored = localStorage.getItem(THEME_KEY); } catch { /* private mode */ }
+    if (stored !== theme) setTheme(theme);
+  }
+}
+
+/* Saves the chosen theme to the account (best effort: the browser already has it). */
+function saveAccountTheme(theme) {
+  return api('/api/account/prefs', { method: 'PUT', body: JSON.stringify({ theme }) }).catch(() => {});
+}
+
+/* Who is signed in: { user: {id, email, name, role}, csrf, recovery_codes_pending, workspaces, features,
+   onboarding_step, prefs: {theme} }. */
 function loadSession(force = false) {
   if (!SESSION.loading || force) {
     SESSION.loading = (async () => {
@@ -210,6 +243,9 @@ function loadSession(force = false) {
       if (res.status === 401) return signedOut(data?.code);
       if (!res.ok) throw new Error(data?.detail || `Could not check who is signed in (error ${res.status})`);
       SESSION.me = data;
+      adoptAccountTheme(data);
+      const away = walkthroughPage(data);
+      if (away) return leaveFor(away);
       return data;
     })();
   }

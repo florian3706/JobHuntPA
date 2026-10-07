@@ -2774,7 +2774,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initChat();
   initModal();
   initTheme();
-  $('#theme-picker-slot').replaceWith(createThemePicker({ legend: 'Theme' }));
+  $('#theme-picker-slot').replaceWith(createThemePicker({ legend: 'Theme', onChange: saveAccountTheme }));
   // Map markers are drawn in script, so they take the new theme's colours here.
   document.addEventListener('themechange', () => { if (state.map) { drawPins(); drawJobMarkers(); } });
   $('#source-form').addEventListener('submit', addSource);

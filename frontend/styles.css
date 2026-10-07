@@ -879,6 +879,35 @@ summary { cursor: pointer; min-height: 24px; }
 }
 .codes-list code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; letter-spacing: 0.06em; }
 .codes-actions { align-items: center; }
+/* Sign-up walkthrough (welcome.html): one step at a time. Progress is words plus numbered marks (a tick when done),
+   so it never rests on colour; controls are 44 px tall and fields use 16 px text; one column from 320 px. */
+.wiz-main { max-width: 52rem; }
+.wiz-progress { display: flex; flex-direction: column; gap: 8px; }
+.wiz-count { margin: 0; font-weight: 700; font-size: 15px; }
+.wiz-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.wiz-mark span:first-child {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 4px;
+  border-radius: 999px; border: 2px solid var(--border-strong); font-size: 13px; font-weight: 600; color: var(--muted);
+}
+.wiz-mark.is-done span:first-child { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.wiz-mark.is-current span:first-child { border-color: var(--accent); border-width: 3px; color: var(--text); font-weight: 800; }
+.wiz-form { display: flex; flex-direction: column; gap: 18px; }
+.wiz-fieldset { border: none; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.wiz-fieldset > legend { padding: 0; float: left; width: 100%; margin-bottom: 14px; }
+.wiz-fieldset > legend + * { clear: both; }
+.wiz-fieldset > legend h2 { margin: 0; font-size: 20px; }
+.wiz-intro { margin: 0; }
+.wiz-form input[type="text"], .wiz-form input[type="number"], .wiz-form select { width: 100%; font-size: 16px; min-height: 44px; }
+.wiz-form .tag-input input { min-height: 36px; }
+.wiz-form .form-group > label, .wiz-group > legend { font-size: 15px; }
+.wiz-group { gap: 4px 18px; }
+.wiz-group .check { min-height: 32px; font-size: 15px; }
+.wiz-summary { margin: 0; display: grid; gap: 10px; }
+.wiz-summary dt { font-weight: 600; font-size: 14px; }
+.wiz-summary dd { margin: 0; overflow-wrap: anywhere; }
+.wiz-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.wiz-actions .btn { min-height: 44px; padding: 10px 20px; font-size: 15px; }
+.wiz-actions #wiz-next { margin-left: auto; font-weight: 600; }
 @media print { /* "Print" on the recovery codes: just the codes and what they are for */
   .auth-page .skip-link, .auth-page .app-header, .auth-help, .codes-actions, .codes-step .auth-field, #codes-continue,
   .toasts, #auth-status { display: none !important; }

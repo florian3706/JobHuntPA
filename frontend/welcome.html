@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Set up your search · JobHuntPA</title>
+  <script>
+    // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
+    (function () {
+      var t = "dark";
+      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <link rel="stylesheet" href="./themes.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="auth-page" data-page="welcome">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="app-header auth-header">
+    <div class="header-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span class="brand-text"><span class="brand-name">JobHuntPA</span><span class="subtitle">Personal job-hunt dashboard</span></span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="main auth-main wiz-main" tabindex="-1">
+    <section class="card auth-card wiz-card" aria-labelledby="page-title">
+      <h1 id="page-title">Welcome to JobHuntPA</h1>
+      <p id="auth-status" class="muted" role="status">Loading your setup…</p>
+
+      <nav id="wiz-progress" class="wiz-progress" aria-label="Setup progress" hidden>
+        <p id="wiz-count" class="wiz-count"></p>
+        <ol id="wiz-steps" class="wiz-steps"></ol>
+      </nav>
+
+      <div id="error-summary" class="error-summary" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
+        <h2 id="error-summary-title">There is a problem</h2>
+        <ul id="error-summary-list"></ul>
+      </div>
+
+      <form id="wiz-form" class="wiz-form" novalidate hidden>
+        <div id="wiz-body"></div>
+        <div class="wiz-actions">
+          <button id="wiz-back" class="btn" type="button">Back</button>
+          <button id="wiz-skip" class="btn" type="button">Skip for now</button>
+          <button id="wiz-next" class="btn btn-primary" type="submit">Next</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="auth-help" aria-labelledby="help-title">
+      <h2 id="help-title">Want to do this later?</h2>
+      <p>Everything here lives on the dashboard's Search setup tab and can be changed at any time.
+        <button id="wiz-leave" class="link" type="button">Skip the walkthrough and open the dashboard</button></p>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
+
+  <script src="./common.js"></script>
+  <script src="./welcome.js"></script>
+</body>
+</html>

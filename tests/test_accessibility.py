@@ -21,7 +21,7 @@ FRONTEND = ROOT / "frontend"
 sys.path.insert(0, str(ROOT / "tools"))
 import theme_contrast  # noqa: E402
 
-PAGES = ("index.html", "job.html", "login.html", "first-run.html")
+PAGES = ("index.html", "job.html", "login.html", "first-run.html", "welcome.html")
 AUTH_PAGES = ("login.html", "first-run.html")
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 FOCUSABLE = {"a", "button", "input", "select", "textarea", "summary"}
@@ -226,7 +226,7 @@ class GeneratedMarkupTest(unittest.TestCase):
 
     def test_templates_label_their_controls(self):
         problems = []
-        for name in ("app.js", "job.js", "common.js", "auth.js"):
+        for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
 
@@ -304,6 +304,84 @@ class AuthPagesTest(unittest.TestCase):
                 self.assertEqual(btn["attrs"].get("aria-expanded"), "false")
                 self.assertEqual(btn["attrs"].get("aria-controls"), "account-panel")
                 self.assertTrue(any(n["attrs"].get("id") == "account-signout" for n in page.nodes))
+
+
+class WelcomePageTest(unittest.TestCase):
+    """The sign-up walkthrough (welcome.html + welcome.js): static checks that need no browser. The steps are
+    written by script, so the checks read the templates in welcome.js."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = parse("welcome.html")
+        cls.js = (FRONTEND / "welcome.js").read_text(encoding="utf-8")
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+
+    def by_id(self, ident):
+        return next(n for n in self.html.nodes if n["attrs"].get("id") == ident)
+
+    def test_early_theme_script_and_shared_scripts(self):
+        src = (FRONTEND / "welcome.html").read_text(encoding="utf-8")
+        self.assertIn('localStorage.getItem("jobhunt.theme")', src)
+        self.assertLess(src.index("jobhunt.theme"), src.index("themes.css"), "the theme is applied before the CSS loads")
+        self.assertLess(src.index("common.js"), src.index("welcome.js"))
+
+    def test_progress_is_a_labelled_list_with_a_text_count(self):
+        nav = self.by_id("wiz-progress")
+        self.assertEqual(nav["tag"], "nav")
+        self.assertTrue(nav["attrs"].get("aria-label"))
+        self.assertEqual(self.by_id("wiz-steps")["tag"], "ol")
+        self.assertIn("Step ${wiz.idx + 1} of ${total}", self.js, "the count is written as words")
+        self.assertIn('aria-current="step"', self.js, "the current mark is exposed")
+        self.assertIn("✓", self.js, "a finished step shows a tick, not only a colour")
+
+    def test_every_step_is_a_fieldset_with_a_legend_and_a_focusable_heading(self):
+        shell = re.search(r"\$\('#wiz-body'\)\.innerHTML = `(.*?)`;", self.js, re.S)
+        self.assertIsNotNone(shell, "every step is drawn by one template")
+        self.assertIn("<fieldset", shell.group(1))
+        self.assertIn("<legend>", shell.group(1))
+        self.assertIn('<h2 id="step-title" tabindex="-1">', shell.group(1))
+        self.assertIn("$('#step-title').focus()", self.js, "focus moves to each step's heading")
+        self.assertIn("Step ${wiz.idx + 1} of ${total}: </span>", self.js, "the heading says which step it is")
+        steps = re.findall(r"^  (\w+): \{\n    title: ", self.js, re.M)
+        self.assertGreaterEqual(len(steps), 5, steps)
+        self.assertEqual(self.js.count("    intro:"), len(steps), "every step explains itself")
+        for group in re.findall(r'<fieldset class="form-group wiz-group">\s*(<\w+>)', self.js):
+            self.assertEqual(group, "<legend>", "a group of checkboxes is named by its legend")
+
+    def test_buttons_form_and_error_summary(self):
+        for ident, label, kind in (("wiz-back", "Back", "button"), ("wiz-skip", "Skip", "button"), ("wiz-next", "Next", "submit")):
+            node = self.by_id(ident)
+            self.assertEqual((node["tag"], node["attrs"].get("type")), ("button", kind))
+            self.assertIn(label, node["text"])
+        summary = self.by_id("error-summary")
+        self.assertEqual(summary["attrs"].get("tabindex"), "-1", "the summary takes focus")
+        self.assertEqual(summary["attrs"].get("role"), "alert")
+        self.assertIn("summary.focus()", self.js)
+        self.assertIn("aria-invalid", self.js)
+        self.assertIn("aria-describedby", self.js)
+        self.assertIn("novalidate", self.by_id("wiz-form")["attrs"], "our own messages, not the browser's")
+
+    def test_a_way_out_and_no_blocked_paste(self):
+        self.assertIn("Skip the walkthrough", self.by_id("wiz-leave")["text"])
+        self.assertNotRegex(self.js, r"addEventListener\(\s*['\"](paste|copy|cut|drop)['\"]")
+
+    def test_targets_and_text_size(self):
+        field = re.search(r"\.wiz-form input\[type=\"text\"\][^{]*\{([^}]*)\}", self.css).group(1)
+        self.assertIn("min-height: 44px", field)
+        self.assertIn("font-size: 16px", field)
+        self.assertIn("min-height: 44px", re.search(r"\.wiz-actions \.btn \{([^}]*)\}", self.css).group(1))
+        mark = re.search(r"\.wiz-mark span:first-child \{([^}]*)\}", self.css).group(1)
+        self.assertRegex(mark, r"min-width: (2[4-9]|[3-9]\d)px")
+        self.assertRegex(mark, r"[^-]height: (2[4-9]|[3-9]\d)px")
+
+    def test_unbuilt_features_are_hidden_behind_a_feature_check(self):
+        self.assertIn("me.features.digests", self.js)
+        steps = re.search(r"function buildSteps\(\) \{(.*?)\n\}", self.js, re.S).group(1)
+        self.assertIn("if (wiz.features.scheduled_searches) steps.push('auto')", steps)
+
+    def test_the_resume_step_explains_why_and_points_to_documents(self):
+        self.assertRegex(self.js, r"fit scores?")
+        self.assertIn("Documents tab", self.js)
 
 
 if __name__ == "__main__":

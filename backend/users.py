@@ -322,8 +322,9 @@ def _create_user(db: Session, *, email: str, password: str, name: str, role: str
     salt = crypto.new_salt()
     derived = crypto.derive_password(password, salt, params)
     dek = crypto.new_key()
+    # onboarding_step 1: the sign-up walkthrough (frontend/welcome.html) is next; NULL (older accounts) means done.
     user = User(email_hash=email_hash, role=role, status="active", created_via=created_via, kdf_salt=salt,
-                kdf_params=params.to_json(), pw_verifier=derived.auth)
+                kdf_params=params.to_json(), pw_verifier=derived.auth, onboarding_step=1)
     db.add(user)
     db.flush()
     uid = user.id

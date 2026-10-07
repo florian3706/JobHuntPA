@@ -131,6 +131,17 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
 - **Recovery codes:** the first-run page then shows 8 recovery codes. Copy, download or print them
   and keep them somewhere safe: if you forget your password, they are how you get back in and keep
   your data. A reminder stays at the top of the dashboard until you confirm you've saved them.
+- **The setup walkthrough:** once your recovery codes are saved, a new account opens a short
+  walkthrough (`welcome.html`) instead of the dashboard. It starts with **choosing a theme**, which
+  changes the page as you pick it, then sets up your search a step at a time: job titles; places,
+  remote/hybrid/onsite work, days in the office and your home suburb; a salary floor and words or
+  industries to include or avoid; and an optional résumé (on the Documents tab, where it powers the
+  fit scores). Every step has Back, Next and Skip for now, saves as you go, and the walkthrough
+  picks up where you left off if you close the page. "Skip the walkthrough" at the bottom goes
+  straight to the dashboard; everything is on the Search setup tab later. On an existing install the
+  first admin gets a short version: choose a theme, then keep the search settings that moved into
+  the account or review them step by step. Your theme is saved with your account (encrypted with
+  your key), so a new browser or device shows it too.
 - **Signing in:** after that, JobHuntPA opens the sign-in page whenever you aren't signed in. Tick
   *Keep me signed in* on your own device to stay signed in for up to 30 days of not using it
   (otherwise 24 hours). **Account > Sign out** at the top right signs this browser out. After 5

@@ -19,7 +19,9 @@ from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env first)
 from backend import schedule, tasks, users
+from backend.account import router as account_router
 from backend.app_settings import router as app_settings_router
+from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
 from backend.auth import router as auth_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
@@ -106,6 +108,8 @@ app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=5)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(NoStoreApi)
 app.include_router(auth_router)
+app.include_router(account_router)
+app.include_router(geo_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)
 app.include_router(profile_router)

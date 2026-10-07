@@ -323,7 +323,7 @@ class LoginTest(SignInTestCase):
         self.assertEqual(me["user"], {"id": alice.id, "email": alice.email, "name": "Alice Example", "role": "user"})
         self.assertEqual(me["csrf"], csrf)
         self.assertEqual(me["workspaces"], [alice.workspace_id])
-        self.assertEqual(me["features"], {"admin_panel": False})
+        self.assertFalse(me["features"]["admin_panel"])
         self.assertTrue(c.get("/api/auth/state").json()["signed_in"])
         out = c.post("/api/auth/logout", headers={"X-CSRF-Token": csrf})
         self.assertEqual(out.headers["clear-site-data"], '"cache"')

@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from backend import crypto, ratelimit, sessions, users
+from backend import account, crypto, ratelimit, sessions, users
 from backend.db import SessionLocal, User, get_db, utcnow
 from backend.sessions import AuthUser, current_user
 
@@ -176,7 +176,11 @@ def me(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
         "recovery_codes_pending": users.pending_recovery_codes(db, user.id) is not None,
         "workspaces": users.workspace_ids(db, user.id),
         # What this version offers; the account menu shows "Admin" once the admin panel exists (Phase F).
-        "features": {"admin_panel": False},
+        "features": account.features(),
+        # The sign-up walkthrough (Phase K): the step to show next, NULL once finished; and the theme saved for the
+        # account, which pages apply when this browser has none of its own.
+        "onboarding_step": db.get(User, user.id).onboarding_step,
+        "prefs": account.public_prefs(db, user.id),
     }
 
 
