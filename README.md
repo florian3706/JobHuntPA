@@ -248,6 +248,11 @@ and an excluded job looks the same as one you kept.
 - sizes and dates: how many jobs or documents you have, how long a document is, when things
   happened.
 
+**Logs.** The messages JobHuntPA prints in its window never hold your email address, names, job
+text, documents, chats or any password, token or key: they name the kind of failure and an account
+number. `tests/test_log_leaks.py` runs a whole account through the app with everything planted in it
+and checks this at the most detailed logging level.
+
 **The limits.** The AI provider sees what it scores, chats about or writes. The running app holds
 your data in memory while you use it. Someone who changes the app's code on the server could capture
 your password when you next sign in. With **[background access](#background-access)** on, whoever
@@ -304,6 +309,26 @@ documents or searches. It has five parts:
   the one-time encryption leaves.
 - **Audit log:** every admin action, newest first: what was done, by whom, to whom, and details such as
   dates or counts (never anyone's content). The details are readable while you hold the current admin key.
+
+### Reaching JobHuntPA from other devices and addresses
+
+JobHuntPA only answers requests for an address it knows, so a web page on another site can't make your
+browser talk to it under a name of its own (a "DNS rebinding" attack). It answers these:
+
+- **any IP address**: `http://127.0.0.1:8000`, a home-network address such as `http://192.168.1.20:8000`,
+  or a Tailscale address (`100.x.y.z`);
+- **`localhost`** and names ending in `.localhost`;
+- **this computer's own names**: its host name, with or without `.local` (`http://raspberrypi:8000`);
+- **the public address** set in Admin > Server > Email (`PUBLIC_BASE_URL`);
+- **any other names you list** in `.env`, separated by commas: `JOBHUNT_ALLOWED_HOSTS=jobs.example.com,pi.tail1234.ts.net`.
+  Use names only (no `http://`, port or path); restart JobHuntPA after editing `.env`.
+
+The port never matters. Anything else gets "This address isn't allowed" (HTTP 400) and nothing else runs.
+**With `tailscale serve`** (or any proxy that passes the name people typed on), set the public address to
+the address it gives you, such as `https://pi.tail1234.ts.net`: that is enough, and it also makes the
+sign-in cookie secure. Without a public address, list the name in `JOBHUNT_ALLOWED_HOSTS` instead.
+Start JobHuntPA through `start.sh` or the launcher, which already trust the proxy on the same computer
+(`--proxy-headers --forwarded-allow-ips 127.0.0.1`).
 
 ### Setting up email
 
@@ -688,6 +713,11 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **Forgotten password:** on the sign-in page choose *Trouble signing in?* and use a recovery code to set
   a new password and keep your data. Without your password or a recovery code, your encrypted data
   can't be read, by you, the admin or anyone else.
+- **The page says "This address isn't allowed":** JobHuntPA was reached by a name it doesn't know. Open it
+  by its IP address or `localhost` (the address it printed when it started), or add the name you use to
+  `JOBHUNT_ALLOWED_HOSTS` in `.env` (or set the public address in Admin > Server > Email), then restart
+  JobHuntPA. The message names the address that was refused, and the JobHuntPA window logs it once. See
+  [Reaching JobHuntPA from other devices and addresses](#reaching-jobhuntpa-from-other-devices-and-addresses).
 - **"Email isn't set up on this JobHuntPA yet":** an admin sets it up in **Admin > Server > Email**: the mail
   server, the From address and the public address. Until then, use a recovery code on the sign-in page.
 - **No "Email me a link" on the sign-in page:** it shows only once email is set up (see above).
@@ -840,6 +870,17 @@ an account), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`
 `export.js`, `admin.js`, `server-settings.js` and `stripe-settings.js` (the admin panel), `dialogs.js` (its
 dialogs), `signup.js`, `forgot.js`, `reset-password.js` and `verify-email.js` (the link pages), `billing.js`
 (`billing.html`, Account > Membership) and `free-searches.js` (the Jobs tab's free-search note).
+
+**Hardening** (design §2.5, Phase L): `backend/hosts.py` (the Host allowlist: 400 before anything else runs) and
+`backend/security_headers.py` (the Content-Security-Policy, built at start-up from the pages, with a hash for each
+inline script; `nosniff`, `Referrer-Policy: same-origin`, `Permissions-Policy`, and HSTS over HTTPS) wrap the whole
+app (`install_security_headers` in `backend/app.py`). The policy allows no inline styles or event handlers, so
+**don't write `style="..."`, `onclick="..."` or `<style>` in a page or in markup a script builds**: use a class
+(`.hue-*` in `styles.css` set a colour slot), `addEventListener`, or `element.style.x = ...`. A new script or
+stylesheet from another site, or a second inline script, must be added to `backend/security_headers.py`;
+`tests/test_security_headers.py` fails until it is. `QUIET_LOGGERS` and `SqlAtWarning` in `backend/app.py` keep
+libraries that log a person's data (httpx, the Claude SDK, pypdf, SQLAlchemy's rows) out of the logs at any level;
+`tests/test_log_leaks.py` is the end-to-end check, so add a step to it when a feature handles personal text.
 
 **Email** (design §9, §16): `backend/mailer.py` (SMTP, never logs an address) and `backend/email_templates.py`
 (HTML and text parts); `backend/mail_queue.py` sends from one background thread and says whether email is on

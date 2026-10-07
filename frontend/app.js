@@ -2207,7 +2207,7 @@ function renderMapLegend() {
   $('#map-legend').innerHTML = `<span class="visually-hidden">Key: </span>
     <span class="dot" aria-hidden="true"></span> job you'd consider (filled)
     <span class="dot hollow" aria-hidden="true"></span> excluded (hollow, dashed)
-    ${PIN_KINDS.map((k) => `<span class="ring ring-${k}" style="--c:var(--${PIN_HUE[k]})" aria-hidden="true"></span> ${k} pin (${{ home: 'solid', hybrid: 'dashed', onsite: 'dotted' }[k]} ring)`).join(' ')}
+    ${PIN_KINDS.map((k) => `<span class="ring ring-${k} hue-${PIN_HUE[k]}" aria-hidden="true"></span> ${k} pin (${{ home: 'solid', hybrid: 'dashed', onsite: 'dotted' }[k]} ring)`).join(' ')}
     · ${onMap} of ${all} filtered job${all === 1 ? '' : 's'} on the map${all > onMap ? ` (${all - onMap} remote or without a location)` : ''}`;
 }
 
@@ -2359,7 +2359,7 @@ function renderPinsList() {
     const name = esc(p.label);
     const huge = p.radius_km >= 1000 ? '<span class="err-text" title="Ignored by the location filter: a radius this large covers everywhere. Remote roles are handled by the Remote toggles in Search setup."><span aria-hidden="true">⚠ </span>ignored by location filter (radius ≥ 1000 km)</span>' : '';
     row.innerHTML = `
-      <span class="pin-kind pin-kind-${esc(p.kind)}" style="--c:var(--${PIN_HUE[p.kind] || 'border'})">${esc(p.kind)}</span>
+      <span class="pin-kind pin-kind-${esc(p.kind)} hue-${PIN_HUE[p.kind] || 'border'}">${esc(p.kind)}</span>
       <strong id="${id}-name">${name}</strong>
       <span class="muted"><span class="visually-hidden">at </span>${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>
       <span class="pin-radius"><label for="${id}-radius">Radius</label> <input id="${id}-radius" type="number" min="0.1" step="0.5" inputmode="decimal" value="${p.radius_km}" aria-describedby="${id}-name" /> <span aria-hidden="true">km</span><span class="visually-hidden">kilometres</span></span>

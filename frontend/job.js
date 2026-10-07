@@ -154,7 +154,7 @@ async function saveOffice(body) {
 function journeyHtml(j, label) {
   if (!j) return `<div class="trip"><strong>${label}</strong> <span class="muted">no journey found</span></div>`;
   const to = '<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>';
-  const legs = j.legs.map((l) => `<li><span class="leg-mode" style="--c:var(--${modeHue(l.mode)})">${esc(l.mode)}${l.line ? ` ${esc(l.line)}` : ''}</span>
+  const legs = j.legs.map((l) => `<li><span class="leg-mode hue-${modeHue(l.mode)}">${esc(l.mode)}${l.line ? ` ${esc(l.line)}` : ''}</span>
     ${esc(l.depart)} ${esc(l.from)}${to}${esc(l.arrive)} ${esc(l.to)} <span class="muted">(${minutes(l.minutes)}${l.towards && l.mode !== 'Walk' ? `, towards ${esc(l.towards)}` : ''})</span></li>`).join('');
   return `<details class="trip"><summary><strong>${label}</strong> ${esc(j.depart)}${to}${esc(j.arrive)} · <strong>${minutes(j.minutes)}</strong>
       · ${esc(j.summary)}${j.changes ? ` · ${j.changes} change${j.changes > 1 ? 's' : ''}` : ''}</summary><ol class="legs" aria-label="Steps">${legs}</ol></details>`;

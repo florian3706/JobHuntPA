@@ -334,6 +334,15 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 .pin-kind-hybrid { border-style: dashed; }
 .pin-kind-onsite { border-style: dotted; }
+/* A theme slot as --c, for the pin kinds, the map key and the commute legs (a class, because the page's policy
+   refuses style attributes in markup: backend/security_headers.py). */
+.hue-accent { --c: var(--accent); }
+.hue-border { --c: var(--border); }
+.hue-info { --c: var(--info); }
+.hue-ok { --c: var(--ok); }
+.hue-quiet { --c: var(--quiet); }
+.hue-special { --c: var(--special); }
+.hue-warn { --c: var(--warn); }
 .pin-radius { display: inline-flex; align-items: center; gap: 6px; }
 .pin-radius input { width: 6.5em; }
 .pin-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }

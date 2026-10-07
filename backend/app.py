@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import access, crypto, ghost, llm_providers, membership, migrate_encryption, schedule, tasks, users
+from backend import access, crypto, ghost, hosts, llm_providers, membership, migrate_encryption, schedule, tasks, users
 from backend.account import router as account_router
 from backend.account_email import router as account_email_router
 from backend.admin import router as admin_router
@@ -30,6 +31,7 @@ from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
 from backend.auth import router as auth_router
 from backend.security import router as security_router
+from backend.security_headers import install as install_security_headers
 from backend.background import router as background_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
@@ -55,10 +57,30 @@ from backend.workspaces import router as workspaces_router
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
 
-# Log hygiene: URLs and queries can hold search terms, place names and (later) tokens.
-for _name in ("httpx", "httpcore", "httpx2", "httpcore2"):  # they log every request URL at INFO (the anthropic SDK's
-    # client is httpx2)
-    logging.getLogger(_name).setLevel(logging.WARNING)
+# Log hygiene: URLs, queries and file contents can hold search terms, place names, tokens and a person's documents.
+# Libraries that log them are held at a level that keeps them out, whatever the root logger is set to.
+QUIET_LOGGERS = {
+    # httpx logs every request URL at INFO (the anthropic SDK's client is httpx2)
+    "httpx": logging.WARNING, "httpcore": logging.WARNING, "httpx2": logging.WARNING, "httpcore2": logging.WARNING,
+    # the Claude SDK logs each request's options, the whole prompt included, at DEBUG
+    "anthropic": logging.WARNING,
+    # pypdf warns with a piece of the file it can't read ("invalid pdf header: b'...'"), at WARNING
+    "pypdf": logging.CRITICAL,
+}
+for _name, _level in QUIET_LOGGERS.items():
+    logging.getLogger(_name).setLevel(_level)
+
+
+class SqlAtWarning(logging.Filter):
+    """Nothing below WARNING from SQLAlchemy's engine, whatever level the logger is given. At INFO and DEBUG it logs
+    every statement and every row it reads (plaintext tables such as job ads and settings, and the key material of
+    the sessions, users and keys tables), which hide_parameters doesn't cover."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.WARNING
+
+
+logging.getLogger("sqlalchemy.engine.Engine").addFilter(SqlAtWarning())
 
 
 class StripQueryString(logging.Filter):
@@ -106,6 +128,7 @@ Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejecte
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    threading.Thread(target=hosts.machine_names, daemon=True).start()  # this computer's names (it may ask the network)
     # The server key file, then the first admin from the environment or the first-run token (backend.users).
     # A missing or wrong key file stops start-up here, with what to do.
     users.startup()
@@ -117,13 +140,17 @@ async def lifespan(app: FastAPI):
     schedule.stop_scheduler()
 
 
-app = FastAPI(title="JobHuntPA", lifespan=lifespan)
+# No /docs, /redoc or /openapi.json: they list every route to anyone who can reach the server, and Swagger's page
+# needs scripts from another site, which the Content-Security-Policy refuses.
+app = FastAPI(title="JobHuntPA", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 # The job list is several MB of JSON; compressed it is about a seventh of that (slow links, the Pi).
 app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=5)
 # Sign-in, CSRF, same-site checks and the request's key scope (backend/sessions.py); inside NoStoreApi, so its
 # refusals aren't cached either.
 app.add_middleware(AuthMiddleware)
 app.add_middleware(NoStoreApi)
+# The Host allowlist and the security headers go around all of it (backend/hosts.py, backend/security_headers.py).
+install_security_headers(app, FRONTEND_DIR)
 app.include_router(auth_router)
 app.include_router(security_router)
 app.include_router(password_reset_router)
