@@ -431,7 +431,7 @@ class DigestTests(unittest.TestCase):
         _, (_, text, html, _) = self.digest(every_days=1)
         for part in (text, html):
             self.assertIn("every day", part)
-            self.assertIn("email settings", part)
+            self.assertRegex(part, r"Settings (>|&gt;) Job digest emails")
 
     def test_accessibility_of_whole_digest(self):
         _, (subject, _, html, _) = self.digest([JOB, dict(JOB, id=2, title="Second Role")], name="Flo")

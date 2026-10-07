@@ -351,6 +351,23 @@ the old one; if something can't be moved, the old key is kept and nothing is los
 it isn't, delete `data/running.json`). A running JobHuntPA also won't overwrite a key file that something
 else changed: it stops with "The key file was changed by something else", and a restart picks up the new file.
 
+### Job digest emails
+
+A digest is one email with the new jobs your scheduled searches found, best fit first. Each job shows its
+title, company, pay, where and how it is worked, a short summary, your fit score and a link to the
+original posting. Up to 60 jobs are shown; the email says how many more there are.
+
+- **When:** around 07:00 in your search schedule's time zone (New South Wales if you have none), every
+  1 to 7 days as you choose. Nothing is sent when there are no new jobs.
+- **What it needs:** email set up by an admin, a confirmed address, Background access on (the server
+  has to open your jobs without you), and, when memberships are on, a membership for scheduled searches.
+  Settings > **Job digest emails** lists what is missing and links to where you fix it.
+- **Turning it on or off:** use the switch in Settings, or tick it in the setup walkthrough's *Automatic
+  searches* step. Every digest ends with an **Unsubscribe** link that opens a page with one button; it
+  needs no sign-in and changes nothing until you press it. Right after you unsubscribe, the page offers
+  *Subscribe again* for an hour; later, turn it back on in Settings. Mail programs that offer an
+  "Unsubscribe" button work too.
+
 ### Memberships and payments (optional)
 
 By default everyone who signs in has full access. To charge for it, an admin connects Stripe:
@@ -672,6 +689,11 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
   way. A link works once and for 1 hour (confirmation links: 24 hours); only the newest link works.
 - **The reset page says the link has expired or was already used:** ask for a new one on the sign-in page. It
   can't say which, so nobody can use it to find out who has an account.
+- **No job digest arrives:** open Settings > **Job digest emails**. If something is missing it is listed there
+  (email not set up, address not confirmed, Background access off, no membership). Otherwise check that the
+  switch is on, that scheduled searches have run since you turned it on (only jobs found after that are
+  sent), that it is past 07:00 on a day it is due, and the spam folder. If the mail server fails, JobHuntPA
+  tries again a few minutes later.
 - **The reset page says my data will be deleted:** background access is off for that account, so the saved data
   is locked with the old password. A recovery code keeps it (*I have a recovery code*); otherwise tick the box
   to start again with an empty account.

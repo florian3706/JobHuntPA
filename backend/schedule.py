@@ -278,6 +278,7 @@ def start_scheduler(start_search: Callable[[int], dict]) -> None:
             except Exception:
                 log.exception("scheduled search check failed")
             housekeeping()
+            digest_tick()
             try:
                 billing_sync_tick()
             except Exception:
@@ -305,6 +306,28 @@ def housekeeping(now: Optional[datetime] = None) -> bool:
     except Exception as exc:  # noqa: BLE001
         log.warning("Clean-up of expired sessions and links failed: %s", exc.__class__.__name__)
     return True
+
+
+DIGEST_EVERY = timedelta(minutes=10)
+_last_digest: Optional[datetime] = None
+
+
+def digest_tick(now: Optional[datetime] = None) -> Optional[int]:
+    """Every 10 minutes, with the scheduler's loop (so off with JOBHUNT_SCHEDULER=off): send the job digests that
+    are due (``digest.tick``; nothing unless email is on). Returns how many went, or None when it wasn't due or
+    failed. Never raises."""
+    global _last_digest
+    now = now or datetime.now(timezone.utc)
+    if _last_digest is not None and now - _last_digest < DIGEST_EVERY:
+        return None
+    _last_digest = now
+    try:
+        from backend import digest  # (digest imports this module)
+
+        return digest.tick(now)
+    except Exception as exc:  # noqa: BLE001  (the message may hold a job's text)
+        log.warning("Digest check failed: %s", exc.__class__.__name__)
+        return None
 
 
 def stop_scheduler() -> None:

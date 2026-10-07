@@ -274,6 +274,10 @@ class Job(Base):
     # the copy keeps its row so later searches recognise its URL, but only the
     # job it points to is listed, scored and researched.
     duplicate_of = Column(Integer, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    # The search run during which this workspace first got the job (NULL for a link made outside a run, or before
+    # this column): "new since the last digest" (backend.digest). Plain, not a foreign key: a run is never deleted
+    # alone, only with its workspace.
+    first_run_id = Column(Integer, nullable=True)
     # Where the office actually is, when the ad's location is only a city
     # (backend.offices). Its coordinates replace the listing's for the
     # location filter and distance.

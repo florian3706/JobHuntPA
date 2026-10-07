@@ -44,9 +44,11 @@ class WizardApiTest(unittest.TestCase):
         self.assertEqual(me["prefs"], {"theme": None})
         info = self.c.get("/api/account/onboarding").json()
         self.assertEqual((info["step"], info["path"]), (1, "full"))
-        # Scheduled searches (background access, Phase G) are offered; digests wait for Phase J.
+        # Scheduled searches (background access, Phase G) are offered, and digests (Phase J) with email.
         self.assertTrue(info["features"]["scheduled_searches"])
-        self.assertFalse(info["features"]["digests"])
+        self.assertFalse(info["features"]["digests"], "digests are offered only when the server can send email")
+        with mock.patch.object(account.mail_queue, "enabled", return_value=True):
+            self.assertTrue(self.c.get("/api/account/onboarding").json()["features"]["digests"])
 
     def test_each_step_saves_through_the_search_endpoints_and_progress_resumes(self):
         c = self.c

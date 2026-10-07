@@ -1039,3 +1039,11 @@ A posting missing from one user's query results says nothing about whether it cl
   - `every_days`
   - card dicts with `fit_summary` taken from `evidence_json.summary` and the gap count counted the way the frontend counts gaps
   - `email_templates.digest_card()` is public so the wiring can reuse it
+
+## 17. Notes from Phase J (job digests)
+- **Where the code is:** `backend/digest.py` (settings, due dates, selection, the tick, the unsubscribe routes); `jobs.first_run_id` is set by `pool.link` and `pool.match_pool` from `tasks.current_run_id`, which `tasks._execute` sets for the run and its threads.
+- **Settings:** `GET/PUT /api/account/digest` (not under `/api/email`), answering also `can_send` and `problems`.
+- **Unsubscribe routes are outside `/api`:** `GET/HEAD /unsubscribe?token=` (a page, changes nothing), `POST /unsubscribe?token=` (RFC 8058 one-click and the page's button) and `POST /unsubscribe/resubscribe?token=`. `sessions.AuthMiddleware` guards `/api` only, so these need no exemption there; everything under `/api` still needs a session. The server renders the page itself (no JavaScript, strict CSP). A bad token, an unknown account and a signing key retired for over 30 days all give the same 410 page. POSTs are limited to 30 a minute per address; a body over 4 KB is refused.
+- **The cutoff is the later of `last_sent_at` and `opted_in_at`** (not `last_sent_at or opted_in_at`), so opting in again after a pause doesn't send what turned up during it. The due date counts from the same time.
+- **A failed send records nothing**, so the next tick (10 minutes later) tries again; a tick stops after 3 failed sends (the mail server is probably down). A check also waits while a scheduled run of the user's is queued or running, so a late run's jobs aren't skipped by the next cutoff.
+- **Cards:** a card shows the workspace's name when the email holds jobs of several workspaces, and the original-posting link names the source ("... on SEEK", `email_templates.source_label`, the same rule as `sourceLabel` in `common.js`).

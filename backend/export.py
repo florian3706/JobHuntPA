@@ -335,7 +335,8 @@ def _account_md(db: Session, user: User, workspaces: list[Workspace]) -> str:
     ]))
     mail = db.get(EmailPrefs, user.id)
     if mail is not None:
-        out.append(facts([("Job digest emails", f"on, every {mail.digest_every_days} day(s)" if mail.digest_enabled else "off"),
+        every = "every day" if mail.digest_every_days == 1 else f"every {mail.digest_every_days} days"
+        out.append(facts([("Job digest emails", f"on, {every}" if mail.digest_enabled else "off"),
                           ("Agreed to digest emails", when(mail.opted_in_at)), ("Last digest sent", when(mail.last_sent_at))]))
     out.append("\n## Membership\n\n")
     if member is None:

@@ -5,6 +5,7 @@ The UI starts a run, gets its id back immediately, and polls
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
@@ -25,6 +26,10 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jobhunt-run")
 _start_lock = threading.Lock()
 
 Progress = Callable[[str, dict], None]
+
+# The run this thread (and the threads it starts through backend.threads.submit) is working for, or None outside a
+# run. backend.pool stamps it on the links it creates (``jobs.first_run_id``), which is how a digest knows what is new.
+current_run_id: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("current_run_id", default=None)
 
 
 def _update(run_id: int, refund: bool = False, **fields) -> None:
@@ -122,6 +127,14 @@ def start(kind: str, job: Callable[[Progress], dict], ws: int, scheduled: bool =
 
 
 def _execute(run_id: int, job: Callable[[Progress], dict]) -> None:
+    token = current_run_id.set(run_id)
+    try:
+        _run(run_id, job)
+    finally:
+        current_run_id.reset(token)
+
+
+def _run(run_id: int, job: Callable[[Progress], dict]) -> None:
     _update(run_id, state="running")
     last = [0.0]
 

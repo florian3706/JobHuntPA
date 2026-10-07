@@ -232,7 +232,7 @@ class GeneratedMarkupTest(unittest.TestCase):
         problems = []
         for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js", "account.js", "admin.js", "dialogs.js",
                      "signup.js", "server-settings.js", "export.js", "billing.js", "stripe-settings.js",
-                     "free-searches.js"):
+                     "free-searches.js", "digest.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
 
@@ -1242,6 +1242,113 @@ class EmailPagesTest(unittest.TestCase):
             self.assertIn(status, admin_js)
         self.assertIn("initEmailSettings();", admin_js)
         self.assertIn("loadEmailSettings();", admin_js)
+
+
+
+class DigestPagesTest(unittest.TestCase):
+    """Phase J: the unsubscribe page (rendered by the server, no script, no sign-in), the Settings card
+    (digest.js) and the wizard's digest option."""
+
+    @classmethod
+    def setUpClass(cls):
+        from backend import digest
+        cls.js = (FRONTEND / "digest.js").read_text(encoding="utf-8")
+        cls.welcome = (FRONTEND / "welcome.js").read_text(encoding="utf-8")
+        cls.index_src = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        cls.digest = digest
+
+    def page(self, title, body):
+        resp = self.digest._page(title, body)
+        page = _Page()
+        page.feed(resp.body.decode())
+        return resp, page
+
+    def test_the_unsubscribe_page_is_a_real_page_with_one_heading_and_one_button(self):
+        for title, action, button in (("Unsubscribe from job digests?", "", "Unsubscribe"),
+                                      ("You are unsubscribed", "/resubscribe", "Subscribe again")):
+            resp, page = self.page(title, "<p>Text.</p>" + self.digest._form(action, "tok", button))
+            self.assertEqual(page.html_lang, "en")
+            self.assertIn(title, page.title)
+            tags = [n["tag"] for n in page.nodes]
+            self.assertEqual(tags.count("main"), 1)
+            self.assertEqual(tags.count("h1"), 1, "the result is the page's heading, read out on arrival")
+            meta = [n["attrs"].get("content", "") for n in page.nodes if n["attrs"].get("name") == "viewport"]
+            self.assertTrue(meta and "user-scalable" not in meta[0] and "maximum-scale" not in meta[0])
+            (form,) = [n for n in page.nodes if n["tag"] == "form"]
+            self.assertEqual(form["attrs"]["method"], "post", "a link must never unsubscribe")
+            (btn,) = [n for n in page.nodes if n["tag"] == "button"]
+            self.assertEqual(btn["text"], button)
+            self.assertNotIn(b"<script", resp.body)
+
+    def test_the_unsubscribe_page_is_big_enough_and_follows_the_theme(self):
+        style = self.digest._STYLE
+        self.assertIn("min-height:44px", style)
+        self.assertIn("prefers-color-scheme:dark", style)
+        self.assertIn("focus-visible", style)
+        self.assertIn("font:16px", style)
+        for token in ("--text", "--bg"):
+            self.assertIn(token, style)
+
+    def test_the_unsubscribe_page_says_which_emails_and_confirms_in_words(self):
+        src = (ROOT / "backend" / "digest.py").read_text(encoding="utf-8")
+        self.assertIn("Unsubscribe from job digests?", src)
+        self.assertIn("You are unsubscribed", src)
+        self.assertIn("Subscribe again", src)
+
+    def test_the_card_fills_its_slot_and_loads_after_common_js(self):
+        ids = {n["attrs"].get("id") for n in parse("index.html").nodes}
+        self.assertIn("account-email-slot", ids)
+        self.assertLess(self.index_src.index("common.js"), self.index_src.index("digest.js"))
+        self.assertIn("getElementById('account-email-slot')", self.js)
+
+    def test_the_card_is_a_headed_section_with_a_switch_a_labelled_select_and_a_status_region(self):
+        self.assertIn('<h3 id="digest-heading" tabindex="-1">Job digest emails', self.js)
+        self.assertRegex(self.js, r'<input type="checkbox" id="digest-switch" role="switch"[^>]*/> Email me a digest')
+        self.assertIn('<label for="digest-days">How often</label>', self.js)
+        self.assertIn("Every day", self.js)
+        self.assertIn("`Every ${n} days`", self.js)
+        self.assertIn('role="status"', self.js)
+        self.assertNotIn("announce(", self.js.split("(function")[1], "one live region: announce() as well reads it twice")
+        self.assertIn("aria-describedby=\"digest-when\"", self.js)
+
+    def test_the_card_saves_through_the_endpoint_and_puts_focus_back(self):
+        self.assertIn("'/api/account/digest', { method: 'PUT'", self.js)
+        self.assertIn("document.getElementById(id).focus()", self.js)
+        self.assertIn("That didn't save", self.js)
+
+    def test_problems_are_listed_as_text_with_a_link_to_the_fix(self):
+        self.assertIn("info.problems.map", self.js)
+        for code in ("email_unconfirmed", "background_off", "membership_required"):
+            self.assertIn(code, self.js)
+        self.assertIn("billing.html", self.js)
+        for card in ("acct-addr-heading", "background-title"):
+            self.assertIn(card, self.js)
+            self.assertIn(f'id="{card}"', self.index_src + (FRONTEND / "account-email.js").read_text(encoding="utf-8"))
+            self.assertRegex(self.index_src + (FRONTEND / "account-email.js").read_text(encoding="utf-8"),
+                             rf'id="{card}"[^>]*tabindex="-1"', "focus() needs a focusable target")
+        self.assertIn("info.send_time", self.js)
+        self.assertIn("info.time_zone", self.js)
+        self.assertNotIn("email_off", self.js.split("FIXES")[1].split("};")[0], "the admin fixes that: no link")
+
+    def test_card_text_is_written_through_esc(self):
+        for field in ("p.text", "info.send_time", "info.time_zone"):
+            self.assertIn(f"esc({field})", self.js)
+
+    def test_the_wizard_option_is_only_there_when_the_feature_is_on(self):
+        self.assertIn("!wiz.features.digests ? ''", self.welcome)
+        self.assertIn('<label class="check"><input type="checkbox" id="wz-digest" aria-describedby="wz-digest-hint"', self.welcome)
+        self.assertIn('<label for="wz-digest-days">How often</label>', self.welcome)
+        self.assertIn('id="wz-digest-hint" class="hint"', self.welcome)
+        save = self.welcome[self.welcome.index("if (wiz.features.digests) {\n        wiz.digest"):]
+        self.assertIn("'/api/account/digest'", save[:300])
+        self.assertIn("method: 'PUT'", save[:300])
+        self.assertIn("if (wiz.features.digests) wiz.digest = await api('/api/account/digest')", self.welcome)
+
+    def test_every_dom_id_the_scripts_write_is_unique(self):
+        for src in (self.js, self.welcome):
+            ids = re.findall(r'\bid="((?:digest|wz-digest)[a-z-]*)"', src)
+            self.assertEqual(len(ids), len(set(ids)), ids)
 
 
 if __name__ == "__main__":

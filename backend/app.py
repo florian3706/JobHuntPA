@@ -33,6 +33,8 @@ from backend.security import router as security_router
 from backend.background import router as background_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
+from backend.digest import public_router as unsubscribe_router
+from backend.digest import router as digest_router
 from backend.docs import router as docs_router
 from backend.export import router as export_router
 from backend.commute import router as commute_router
@@ -127,6 +129,8 @@ app.include_router(security_router)
 app.include_router(password_reset_router)
 app.include_router(account_email_router)
 app.include_router(account_router)
+app.include_router(digest_router)
+app.include_router(unsubscribe_router)  # /unsubscribe: outside /api, so no session (the signed token is the proof)
 app.include_router(export_router)
 app.include_router(membership.router)
 app.include_router(admin_router)

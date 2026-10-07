@@ -261,6 +261,25 @@ def _plural(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
 
+def source_label(source: Any) -> Optional[str]:
+    """Where an ad was listed, in words ("SEEK"): the same rule as ``sourceLabel`` in frontend/common.js."""
+    s = str(source or "").strip()
+    if not s:
+        return None
+    if s == "seek":
+        return "SEEK"
+    if s == "import":
+        return "imported page"
+    kind, sep, rest = s.partition(":")
+    if not sep:
+        return _clean(s, 80)
+    if kind == "apsjobs":
+        return "APSJobs"
+    if kind in ("site", "generic"):
+        return _clean(rest, 80)
+    return _clean(f"{rest.split('/')[0]} ({kind[:1].upper()}{kind[1:]})", 80)
+
+
 def digest_card(job: dict, base: str) -> dict:
     """The displayable facts of one job: a dict of ready text (a field that is missing is None), and the links."""
     mode = str(job.get("work_mode") or "").strip().lower()
@@ -286,6 +305,8 @@ def digest_card(job: dict, base: str) -> dict:
         "gaps": None if gaps is None else _plural(gaps, "gap", "gaps"),
         "open_url": link,
         "original_url": _http_url(job.get("url")),
+        "source": source_label(job.get("source")),
+        "workspace": _clean(job.get("workspace_name"), 100),
     }
 
 
@@ -312,7 +333,7 @@ def job_digest(jobs: list[dict], *, keys: ServerKeys, unsubscribe_id: str, every
         "is the job JobHuntPA found since your last digest." if n == 1
         else "are the jobs JobHuntPA found since your last digest, best fit first.")
     freq = (f"You get this digest {_frequency(every_days)}. Change how often, or turn it off, in JobHuntPA under "
-            "your account's email settings.")
+            "Settings > Job digest emails.")
 
     text = [heading, "", intro]
     html = [_h1(heading), _p(intro)]
@@ -337,7 +358,7 @@ def job_digest(jobs: list[dict], *, keys: ServerKeys, unsubscribe_id: str, every
 
 def _card_parts(c: dict) -> tuple[list[str], str]:
     """(text lines, html) for one job card."""
-    meta = [("Company", c["company"]), ("Salary", c["salary"]), ("Location", c["location"]),
+    meta = [("Workspace", c["workspace"]), ("Company", c["company"]), ("Salary", c["salary"]), ("Location", c["location"]),
             ("Office days", c["office_days"]), ("Work type", c["work_mode"]), ("Employment", c["employment"]),
             ("Fit score", None if c["score"] is None else f"{c['score']} out of 100"), ("Gaps", c["gaps"])]
     meta = [(k, v) for k, v in meta if v]
@@ -347,7 +368,8 @@ def _card_parts(c: dict) -> tuple[list[str], str]:
     if c["open_url"]:
         lines += ["", f"Open in JobHuntPA: {c['open_url']}"]
     if c["original_url"]:
-        lines += [f"Original posting: {c['original_url']}"]
+        where = f" on {c['source']}" if c["source"] else ""
+        lines += [f"Original posting{where}: {c['original_url']}"]
 
     rows = "".join(
         f'<tr><th scope="row" align="left" style="padding:2px 12px 2px 0;font-weight:bold;color:{MUTED};'
@@ -357,7 +379,8 @@ def _card_parts(c: dict) -> tuple[list[str], str]:
     if c["open_url"]:
         links.append(f'<strong>{_link(c["open_url"], "Open " + c["title"] + " in JobHuntPA")}</strong>')
     if c["original_url"]:
-        links.append(_link(c["original_url"], "View the original posting for " + c["title"]))
+        where = f" on {c['source']}" if c["source"] else ""
+        links.append(_link(c["original_url"], f"View the original posting for {c['title']}{where}"))
     html = (
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
         f'style="margin:0 0 16px 0;background-color:{CARD};border:1px solid {BORDER};">'

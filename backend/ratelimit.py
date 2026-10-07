@@ -118,11 +118,13 @@ RESET_ACCOUNT = Limiter([(3, 60 * 60), (6, 24 * 60 * 60)])
 VERIFY_RESEND = Limiter([(3, 60 * 60), (10, 24 * 60 * 60)])   # per signed-in user
 EMAIL_CHANGE = Limiter([(5, 60 * 60)])                         # per signed-in user
 EMAIL_TEST = Limiter([(5, 10 * 60)])                           # per admin
+# The unsubscribe link's POSTs (Phase J, no session): per client address.
+UNSUBSCRIBE = Limiter([(30, 60)])
 
 
 def reset_all() -> None:
     """Forget every count (tests)."""
     AUTH.reset()
     unknown_emails.reset()
-    for limiter in (FORGOT_ADDRESS, RESET_ACCOUNT, VERIFY_RESEND, EMAIL_CHANGE, EMAIL_TEST):
+    for limiter in (FORGOT_ADDRESS, RESET_ACCOUNT, VERIFY_RESEND, EMAIL_CHANGE, EMAIL_TEST, UNSUBSCRIBE):
         limiter.reset()

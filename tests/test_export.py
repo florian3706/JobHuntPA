@@ -448,7 +448,7 @@ class ExportTest(unittest.TestCase):
         root = z.namelist()[0].split("/")[0]
         account = z.read(f"{root}/Account.md").decode()
         for expected in ("(background access): on", "since: 2026-03-04", "Free searches used: 3", "Plan: monthly",
-                         "Paid until: 2027-01-02", "| free_period | 2026-01-01 | 2026-02-01 |", "every 3 day(s)"):
+                         "Paid until: 2027-01-02", "| free_period | 2026-01-01 | 2026-02-01 |", "every 3 days"):
             self.assertIn(expected, account)
         blob = b"".join(z.read(n) for n in z.namelist())
         for secret in (b"MARK-totp-secret-bytes", b"MARK-wrapped-secret", ref.encode(), b"MARK-unsub-id"):

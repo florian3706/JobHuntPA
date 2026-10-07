@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend import admin_key, crypto, sessions, users
+from backend import admin_key, crypto, mail_queue, sessions, users
 from backend.db import User, UserProfile, Workspace, get_db
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
@@ -51,11 +51,11 @@ SHORT_PATH_LAST_STEP = 2  # on the short path: 1 theme, 2 "keep your current set
 
 def features(admin: bool = False) -> dict[str, bool]:
     """What this version offers the walkthrough and the account menu. The wizard shows the scheduled-search and
-    digest options only when these are true: background access came in Phase G, digests arrive in Phase J (each
-    phase sets its flag to True when its code ships). ``admin_panel`` is true only for an admin (``/api/auth/me``
+    digest options only when these are true: background access came in Phase G, digests in Phase J, and the digest option
+    only when the server can send email. ``admin_panel`` is true only for an admin (``/api/auth/me``
     passes the signed-in person's role): the account menu's "Admin" link needs it, and the panel's endpoints check
     the role again on the server."""
-    return {"admin_panel": bool(admin), "scheduled_searches": True, "digests": False}
+    return {"admin_panel": bool(admin), "scheduled_searches": True, "digests": mail_queue.enabled()}
 
 
 def _label(uid: int) -> str:
