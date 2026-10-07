@@ -257,7 +257,7 @@ async function personAction(act, id, btn) {
   } else if (act === 'delete') {
     if (!(await confirmDialog({ title: `Delete the account of ${l}?`, ok: 'Delete the account', returnTo: back,
       text: `This removes the account and everything in it: their workspaces, jobs, documents and uploaded files. It can't be undone.${u.role === 'admin' ? ' They are an admin, so the admin key is replaced.' : ''} Their search must not be running. You will be asked for your password.` }))) return;
-    await run('Deleting', () => reauth(() => del(`/api/admin/users/${id}`)), () => `The account of ${l} was deleted.`);
+    await run('Deleting', () => reauth(() => del(`/api/admin/users/${id}`)), (r) => `The account of ${l} was deleted.${r?.subscription === 'failed' ? ' Their subscription may still be active: cancel it in the Stripe dashboard.' : ''}`);
   } else if (act === 'mfa-off') {
     if (!(await confirmDialog({ title: `Turn off two-step sign-in for ${l}?`, ok: 'Turn it off', returnTo: back,
       text: 'Do this only when you are sure the request is really from them: it removes a protection from their account. They are signed out and can set it up again. You will be asked for your password.' }))) return;
@@ -322,6 +322,22 @@ function resetGrantForm() {
   ['grant-start', 'grant-end', 'grant-days', 'grant-note'].forEach((id) => setFieldError(document.getElementById(id), '', { focus: false }));
 }
 
+const LIVE_SUB = ['active', 'trialing', 'past_due'];
+const BILLING_EVERY = { month: 'month', year: 'year', week: 'week', day: 'day' };
+
+/* How someone pays, for the membership dialog: the subscription's state, then (from the admin-only billing details)
+   card brand and last 4, plan and price. Stripe's own ids never reach this page. */
+function subscriptionHtml(m, b) {
+  if (!m.stripe_status) return '';
+  const bits = [`Subscription: ${m.stripe_status.replace('_', ' ')}`];
+  const plan = b?.plan || m.plan;
+  if (plan) bits.push(`plan ${plan}${b?.amount != null ? ` (${(b.amount / 100).toFixed(2)} ${String(b.currency || '').toUpperCase()} per ${BILLING_EVERY[b.interval] || b.interval || 'period'})` : ''}`);
+  if (b?.card_last4) bits.push(`${b.card_brand ? `${b.card_brand} card` : 'card'} ending ${b.card_last4}`);
+  if (m.current_period_end) bits.push(m.cancel_at_period_end ? `ends ${fmtDay(m.current_period_end)}` : `next payment ${fmtDay(m.current_period_end)}`);
+  if (m.stripe_status === 'past_due' && m.grace_until) bits.push(`keeps access until ${fmtDay(m.grace_until)}`);
+  return `<p class="muted">${esc(bits.join(', '))}.</p>`;
+}
+
 function openMembership(id, opener) {
   const u = findUser(id);
   memberId = id;
@@ -336,12 +352,14 @@ function openMembership(id, opener) {
         <label class="field-label" for="mem-free">Free searches used</label>
         <input id="mem-free" type="number" min="0" max="100000" step="1" inputmode="numeric" value="${esc(m.free_searches_used)}" />
       </div>
-      ${m.stripe_status ? `<p class="muted">Subscription: ${esc(m.stripe_status)}${m.plan ? `, plan ${esc(m.plan)}` : ''}${m.current_period_end ? `, paid until ${esc(fmtDay(m.current_period_end))}` : ''}${m.cancel_at_period_end ? ', ends then' : ''}.</p>` : ''}
+      ${subscriptionHtml(m, u.billing)}
+      <label id="mem-cancel-row" class="check" hidden><input id="mem-cancel" type="checkbox" aria-describedby="mem-cancel-hint" /> Cancel their subscription at the period end</label>
+      <p id="mem-cancel-hint" class="hint" hidden>They keep what they paid for until ${esc(fmtDay(m.current_period_end))}, then are not charged again. Stripe is told first: if it can't be reached, nothing is saved.</p>
       <div class="toolbar-row"><button id="mem-save" class="btn btn-primary" type="submit">Save payment settings</button><span id="mem-status" class="muted" role="status"></span></div>
       <p id="mem-error" class="error" role="alert" hidden></p>
     </form>
     <h3>Free periods and extensions</h3>
-    <p class="hint">Dates are in UTC. A free period begins at the start of its first day and "Or ends on" includes that whole day. It gives full access until it ends; "End now" keeps it in the history.</p>
+    <p class="hint">Dates are in UTC. A free period begins at the start of its first day and "Or ends on" includes that whole day. It gives full access until it ends; "End now" keeps it in the history.${LIVE_SUB.includes(m.stripe_status) ? ' This person pays, so a free period also moves their next payment to when it ends.' : ''}</p>
     <p id="grants-count" class="muted" role="status"></p>
     <p id="grants-error" class="error" role="alert" hidden></p>
     <div id="grants-table"></div>
@@ -363,6 +381,15 @@ function openMembership(id, opener) {
     </form>`;
   renderGrants();
   $('#mem-form').addEventListener('submit', saveMembership);
+  // Exempting someone who pays offers to end their subscription when the period they paid for is over.
+  const syncCancel = () => {
+    const offer = $('#mem-exempt').checked && LIVE_SUB.includes(m.stripe_status) && !m.cancel_at_period_end;
+    $('#mem-cancel-row').hidden = !offer;
+    $('#mem-cancel-hint').hidden = !offer;
+    if (!offer) $('#mem-cancel').checked = false;
+  };
+  $('#mem-exempt').addEventListener('change', syncCancel);
+  syncCancel();
   $('#grant-form').addEventListener('submit', saveGrant);
   $('#grant-cancel').addEventListener('click', () => { resetGrantForm(); $('#grant-kind').focus(); });
   $('#grants-table').addEventListener('click', onGrantClick);
@@ -387,8 +414,10 @@ async function saveMembership(e) {
   setBusy(btn, true);
   say($('#mem-status'), 'Saving…');
   try {
-    await api(`/api/admin/users/${memberId}/membership`, { method: 'PUT', body: JSON.stringify({ exempt: $('#mem-exempt').checked, free_searches_used: n }) });
-    say($('#mem-status'), 'Saved.');
+    const body = { exempt: $('#mem-exempt').checked, free_searches_used: n };
+    if (body.exempt && $('#mem-cancel').checked) body.cancel_subscription_at_period_end = true;
+    const r = await api(`/api/admin/users/${memberId}/membership`, { method: 'PUT', body: JSON.stringify(body) });
+    say($('#mem-status'), r.subscription_ending ? 'Saved. Their subscription ends when the period they paid for is over.' : 'Saved.');
     await loadUsers();
   } catch (err) { say($('#mem-status'), ''); dialogError('mem-error', failure(err)); }
   setBusy(btn, false);
@@ -415,13 +444,16 @@ async function saveGrant(e) {
   setBusy(btn, true);
   say($('#grant-status'), 'Saving…');
   try {
-    if (editingGrant) await api(`/api/admin/users/${memberId}/grants/${editingGrant}`, { method: 'PATCH', body: JSON.stringify(body) });
-    else await post(`/api/admin/users/${memberId}/grants`, { kind: $('#grant-kind').value, ...body });
-    say($('#grant-status'), editingGrant ? 'Changed.' : 'Added.');
-    announce(editingGrant ? 'Free period changed.' : 'Free period added.');
+    const r = editingGrant ? await api(`/api/admin/users/${memberId}/grants/${editingGrant}`, { method: 'PATCH', body: JSON.stringify(body) })
+      : await post(`/api/admin/users/${memberId}/grants`, { kind: $('#grant-kind').value, ...body });
+    const moved = r?.stripe?.extended ? (r.stripe.trial_end ? ` Their next payment moves to ${fmtDay(r.stripe.trial_end)}.` : ' They are charged again now.') : '';
+    say($('#grant-status'), `${editingGrant ? 'Changed.' : 'Added.'}${moved}`);
+    announce(`${editingGrant ? 'Free period changed.' : 'Free period added.'}${moved}`);
     resetGrantForm();
     await loadUsers();
     renderGrants();
+    // The free period stands even when Stripe couldn't be told: say so, so it can be fixed in Stripe.
+    if (r?.stripe?.problem) dialogError('grant-error', `The free period is saved, but their next payment was not changed: ${r.stripe.problem}`);
   } catch (err) { say($('#grant-status'), ''); grantProblem(err); }
   setBusy(btn, false);
 }
@@ -449,11 +481,14 @@ async function onGrantClick(e) {
     setBusy(endBtn, true);
     clearDialogError('grants-error');
     try {
-      await api(`/api/admin/users/${memberId}/grants/${endBtn.dataset.grantEnd}`, { method: 'DELETE' });
-      announce('Free period ended.');
+      const r = await api(`/api/admin/users/${memberId}/grants/${endBtn.dataset.grantEnd}`, { method: 'DELETE' });
+      const billed = r?.stripe?.extended ? (r.stripe.trial_end ? ` Their next payment moves to ${fmtDay(r.stripe.trial_end)}.` : ' They are charged again now.') : '';
+      announce(`Free period ended.${billed}`);
       await loadUsers();
       renderGrants();
       ($('#grants-table button') || $('#grant-kind')).focus();
+      // The free period is over either way: say so when Stripe still has it, so it can be fixed there.
+      if (r?.stripe?.problem) dialogError('grants-error', `The free period is ended, but Stripe still has it as free: ${r.stripe.problem}`);
     } catch (err) { dialogError('grants-error', failure(err)); setBusy(endBtn, false); }
   }
 }
@@ -705,6 +740,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initLlmProvider();
   initCommuteKeys();
   initEmailSettings();
+  initStripeSettings();
   $('#score-test').addEventListener('click', testScorer);
   await loadUsers();
   loadUsage();
@@ -714,6 +750,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadLlmProvider();
   loadCommuteKeys();
   loadEmailSettings();
+  loadStripeSettings();
   loadPlaintext();
   loadAudit(true);
 });

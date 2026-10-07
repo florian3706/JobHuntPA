@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import theme_contrast  # noqa: E402
 
 PAGES = ("index.html", "job.html", "login.html", "first-run.html", "recover.html", "welcome.html", "admin.html",
-         "signup.html", "reset-password.html", "verify-email.html")
+         "signup.html", "reset-password.html", "verify-email.html", "billing.html")
 AUTH_PAGES = ("login.html", "first-run.html", "recover.html", "signup.html", "reset-password.html", "verify-email.html")
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 FOCUSABLE = {"a", "button", "input", "select", "textarea", "summary"}
@@ -231,7 +231,8 @@ class GeneratedMarkupTest(unittest.TestCase):
     def test_templates_label_their_controls(self):
         problems = []
         for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js", "account.js", "admin.js", "dialogs.js",
-                     "signup.js", "server-settings.js", "export.js"):
+                     "signup.js", "server-settings.js", "export.js", "billing.js", "stripe-settings.js",
+                     "free-searches.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
 
@@ -308,7 +309,7 @@ class AuthPagesTest(unittest.TestCase):
         self.assertIn("min-height: 44px", rule.group(1))
 
     def test_the_dashboard_pages_have_the_account_menu(self):
-        for name in ("index.html", "job.html", "admin.html"):
+        for name in ("index.html", "job.html", "admin.html", "billing.html"):
             page = parse(name)
             btn = next(n for n in page.nodes if n["attrs"].get("id") == "account-btn")
             with self.subTest(page=name):
@@ -515,6 +516,9 @@ class AccountCardsTest(unittest.TestCase):
         for what in ("workspaces", "documents", "uploaded", "keys"):
             self.assertIn(what, self.js)
         self.assertIn("showError(form.querySelector('.acct-error')", self.js, "an admin's refusal is shown as the server wrote it")
+        start = self.js.index("subscription === 'failed'")
+        self.assertIn("link.href = 'login.html'", self.js[start:start + 900], "the failed-cancel message ends in a link")
+        self.assertIn("link.focus()", self.js[start:start + 900])
         self.assertIn("e.message", self.js)
 
     def test_controls_are_big_enough_and_use_16px_text(self):
@@ -757,10 +761,160 @@ class AdminPageTest(unittest.TestCase):
             self.assertIn("reauth(", line, call)
         self.assertIn("withRecentAuth(fn)", self.js)
 
+    def test_the_cancel_checkbox_is_described_by_its_hint(self):
+        self.assertIn('id="mem-cancel" type="checkbox" aria-describedby="mem-cancel-hint"', self.js)
+        self.assertIn('id="mem-cancel-hint"', self.js)
+
+    def test_ending_a_free_period_reports_what_stripe_said(self):
+        start = self.js.index("else if (endBtn)")
+        self.assertIn("r?.stripe?.problem", self.js[start:start + 1500])
+
     def test_warnings_for_one_admin_and_a_missing_key(self):
         self.assertIn("only_one_admin", self.js)
         self.assertIn("admin_key_available", self.js)
         self.assertIn("You are the only admin", self.js)
+
+
+class BillingPageTest(unittest.TestCase):
+    """billing.html + billing.js (Phase I): the membership page."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = parse("billing.html")
+        cls.src = (FRONTEND / "billing.html").read_text(encoding="utf-8")
+        cls.js = (FRONTEND / "billing.js").read_text(encoding="utf-8")
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        cls.ids = {n["attrs"]["id"]: n for n in cls.html.nodes if "id" in n["attrs"]}
+
+    def test_scripts_theme_and_account_menu(self):
+        self.assertLess(self.src.index("common.js"), self.src.index("billing.js"))
+        self.assertIn("jobhunt.theme", self.src, "the theme is set before first paint")
+        self.assertIn("initAccountMenu(me)", self.js)
+        for name in ("index.html", "job.html", "admin.html"):
+            self.assertIn('href="billing.html"', (FRONTEND / name).read_text(encoding="utf-8"), f"{name}'s account menu")
+
+    def test_every_section_is_headed_and_results_are_live(self):
+        for ident in ("me-card", "plans-card", "off-card", "without-card"):
+            card = self.ids[ident]
+            self.assertEqual(card["tag"], "section")
+            self.assertIn(card["attrs"]["aria-labelledby"], self.ids)
+        self.assertEqual(self.ids["billing-error"]["attrs"].get("role"), "alert")
+        self.assertEqual(self.ids["billing-result"]["attrs"].get("role"), "status")
+        self.assertEqual(self.ids["portal-status"]["attrs"].get("role"), "status")
+        self.assertEqual(self.ids["plans-status"]["attrs"].get("role"), "status")
+        self.assertIn("announce(", self.js, "the check after Checkout is announced")
+
+    def test_the_test_mode_badge_is_text_not_colour(self):
+        self.assertIn("Test mode", self.ids["test-badge"]["text"])
+        self.assertIn("hidden", self.ids["test-badge"]["attrs"])
+        self.assertIn("st.billing.test_mode", self.js)
+
+    def test_checkout_return_portal_and_what_waits(self):
+        self.assertIn("/api/billing/checkout", self.js)
+        self.assertIn("/api/billing/verify", self.js)
+        self.assertIn("/api/billing/portal", self.js)
+        self.assertIn("session_id", self.js)
+        self.assertIn("cancelled", self.js)
+        self.assertIn("Nothing was charged", self.js)
+        self.assertIn("location.assign(r.url)", self.js)
+        self.assertIn("replaceState", self.js, "a reload must not check the same payment twice")
+        self.assertIn("Manage payment and plan", self.ids["portal-btn"]["text"])
+        self.assertIn("doesn't charge", self.ids["off-title"]["text"])
+        text = self.ids["without-card"]["text"]
+        for word in ("stays", "searches", "chat", "cover letters", "research"):
+            self.assertIn(word, text)
+
+    def test_plan_buttons_name_their_plan_and_start_with_their_visible_text(self):
+        self.assertIn('aria-label="Become a member: ', self.js)
+        self.assertIn(">Become a member</button>", self.js)
+        self.assertIn("setBusy(btn, true)", self.js, "a working button keeps keyboard focus")
+        self.assertEqual(GeneratedMarkupTest().check_file("billing.js"), [])
+
+    def test_focus_moves_on_when_the_plans_disappear_and_a_past_due_member_is_sent_to_the_card(self):
+        start = self.js.index("if (e.code === 'already_subscribed')")
+        branch = self.js[start:self.js.index("return;", start)]
+        self.assertIn(".focus()", branch, "the clicked plan button is gone after the page is redrawn")
+        self.assertIn("'#portal-btn'", branch)
+        self.assertIn("Update your payment method", self.js)
+        self.assertIn("no_session", self.js)
+
+    def test_everything_from_the_server_is_escaped_and_targets_are_big_enough(self):
+        self.assertIn("esc(p.plan)", self.js)
+        self.assertIn("esc(k)", self.js)
+        self.assertRegex(self.css, r"\.billing-card \.btn \{[^}]*min-height: 44px")
+        self.assertRegex(self.css, r"@media \(max-width: 480px\) \{ \.billing-facts \{ grid-template-columns: 1fr")  # 320 px
+
+
+class FreeSearchNoteTest(unittest.TestCase):
+    """The note beside "Run search" (index.html + free-searches.js)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = parse("index.html")
+        cls.js = (FRONTEND / "free-searches.js").read_text(encoding="utf-8")
+        cls.ids = {n["attrs"]["id"]: n for n in cls.html.nodes if "id" in n["attrs"]}
+
+    def test_the_note_describes_the_button_and_loads_after_app_js(self):
+        self.assertEqual(self.ids["search-run"]["attrs"].get("aria-describedby"), "free-search-note")
+        self.assertIn("hidden", self.ids["free-search-note"]["attrs"])
+        self.assertEqual(self.ids["free-search-note"]["attrs"].get("role"), "status", "a changed count is announced")
+        src = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        self.assertLess(src.index("./app.js"), src.index("./free-searches.js"))
+
+    def test_it_says_what_a_search_uses_and_links_to_the_membership_page(self):
+        self.assertIn("Running a search uses 1 of your", self.js)
+        self.assertIn('href="billing.html"', self.js)
+        app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        self.assertGreaterEqual(app.count("refreshFreeSearchNote"), 3, "after queueing, after a failed start, after a run ends")
+
+
+class StripeCardTest(unittest.TestCase):
+    """The admin panel's "Payments (Stripe)" card (admin.html + stripe-settings.js) and the membership dialog."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = parse("admin.html")
+        cls.src = (FRONTEND / "admin.html").read_text(encoding="utf-8")
+        cls.js = (FRONTEND / "stripe-settings.js").read_text(encoding="utf-8")
+        cls.admin = (FRONTEND / "admin.js").read_text(encoding="utf-8")
+        cls.ids = {n["attrs"]["id"]: n for n in cls.html.nodes if "id" in n["attrs"]}
+
+    def test_the_card_is_in_the_server_section_under_a_heading(self):
+        card = self.ids["stripe-card"]
+        self.assertTrue(any(a["attrs"].get("id") == "server" for a in self.html.ancestors(card)))
+        self.assertEqual(self.ids["stripe-title"]["tag"], "h3")
+        self.assertIn("Payments (Stripe)", self.ids["stripe-title"]["text"])
+        self.assertEqual(self.ids["stripe-status"]["attrs"].get("role"), "status")
+        self.assertEqual(self.ids["stripe-summary"]["attrs"].get("role"), "status")
+        self.assertIn("Sync now", self.ids["stripe-sync"]["text"])
+
+    def test_keys_are_password_fields_that_password_managers_leave_alone(self):
+        for ident in ("stripe-secret-key", "stripe-webhook-secret"):
+            field = self.ids[ident]
+            self.assertEqual(field["attrs"].get("type"), "password")
+            self.assertEqual(field["attrs"].get("autocomplete"), "new-password")
+        self.assertIn("readonly", self.ids["stripe-webhook-url"]["attrs"])
+
+    def test_scripts_load_in_order_and_saving_asks_for_the_password(self):
+        self.assertLess(self.src.index("server-settings.js"), self.src.index("stripe-settings.js"))
+        self.assertLess(self.src.index("stripe-settings.js"), self.src.index("admin.js"))
+        self.assertIn("initStripeSettings()", self.admin)
+        self.assertIn("loadStripeSettings()", self.admin)
+        self.assertRegex(self.js, r"withRecentAuth\(\(\) => api\('/api/admin/stripe', \{ method: 'PUT'")
+        self.assertIn("setFieldError(input, e.message)", self.js, "a refused value is said under its field")
+        self.assertIn("confirmDialog(", self.js, "removing the key asks first: it switches memberships off")
+        self.assertEqual(GeneratedMarkupTest().check_file("stripe-settings.js"), [])
+
+    def test_test_mode_is_said_in_words(self):
+        self.assertIn("'Test mode'", self.js)
+
+    def test_the_membership_dialog_shows_billing_and_offers_the_cancel_option(self):
+        self.assertIn("Cancel their subscription at the period end", self.admin)
+        self.assertIn("cancel_subscription_at_period_end", self.admin)
+        self.assertIn("card_last4", self.admin)
+        self.assertIn("also moves their next payment", self.admin)
+        self.assertIn("r.stripe.problem", self.admin, "a free period that Stripe wasn't told about says so")
+        self.assertRegex(self.admin, r'<label id="mem-cancel-row" class="check" hidden><input id="mem-cancel"')
 
 
 class ExportCardTest(unittest.TestCase):
@@ -924,6 +1078,17 @@ class BackgroundAccessCardTest(unittest.TestCase):
         app = (FRONTEND / "app.js").read_text(encoding="utf-8")
         self.assertRegex(app, r'<button class="link" type="button" data-focus-background>\$\{again \? \'Turn it off and on again\' : \'Turn on background access\'\}</button>')
         self.assertIn("data-focus-background", self.js)
+
+    def test_the_schedule_card_says_a_membership_is_needed_and_links_to_the_page(self):
+        app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        start = app.index("function renderScheduleStatus")
+        body = app[start:app.index("async function loadSchedule", start)]
+        self.assertIn("sch.membership_required", body)
+        self.assertIn('<a href="billing.html">See membership options</a>', body)
+        self.assertLess(body.index("sch.membership_required"), body.index("data-focus-background"),
+                        "a skip for a membership isn't answered with the background-access button")
+        self.assertIn("!sch.membership_required", body, "no 'next search' note while it can't run")
+        self.assertEqual(GeneratedMarkupTest().check_file("app.js"), [])
 
     def test_targets_are_big_enough_and_the_page_scripts_load_in_order(self):
         self.assertRegex(self.css, r"\.check input[^{]*\{[^}]*width: 18px")  # 24 px high row, 44 px on small screens

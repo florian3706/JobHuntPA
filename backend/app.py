@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import crypto, llm_providers, migrate_encryption, schedule, tasks, users
+from backend import access, crypto, llm_providers, membership, migrate_encryption, schedule, tasks, users
 from backend.account import router as account_router
 from backend.account_email import router as account_email_router
 from backend.admin import router as admin_router
@@ -127,6 +127,7 @@ app.include_router(password_reset_router)
 app.include_router(account_email_router)
 app.include_router(account_router)
 app.include_router(export_router)
+app.include_router(membership.router)
 app.include_router(admin_router)
 app.include_router(background_router)
 app.include_router(geo_router)
@@ -151,6 +152,13 @@ app.include_router(migrate_encryption.router)
 @app.exception_handler(AuthProblem)
 def auth_problem(_request: Request, exc: AuthProblem):
     return exc.response()
+
+
+@app.exception_handler(access.MembershipRequired)
+def membership_required(_request: Request, exc: access.MembershipRequired):
+    """The free searches ran out between the gate's check and the run being queued (backend.membership.charge_search)."""
+    return JSONResponse({"detail": str(exc), "code": "membership_required", "reason": "free_searches_used"},
+                        status_code=402)
 
 
 @app.exception_handler(crypto.KeyMismatch)
@@ -403,11 +411,11 @@ def start_search_run(ws: int, scheduled: bool = False) -> dict:
         summary["scoring"] = {"skipped": config_problem()} if config_problem() else _score(ws, "pending", progress)
         return summary
 
-    return tasks.start("search", job, ws, scheduled=scheduled)
+    return tasks.start("search", job, ws, scheduled=scheduled, charge=membership.charge_search)
 
 
 @app.post("/api/search/run")
-def start_search(ws: int = Depends(current_workspace)):
+def start_search(ws: int = Depends(current_workspace), _gate=Depends(membership.gate(access.SEARCH))):
     return start_search_run(ws)
 
 
@@ -417,7 +425,8 @@ class ScoreRunRequest(BaseModel):
 
 
 @app.post("/api/score/run")
-def start_scoring(payload: ScoreRunRequest, ws: int = Depends(current_workspace)):
+def start_scoring(payload: ScoreRunRequest, ws: int = Depends(current_workspace),
+                  _gate=Depends(membership.gate(access.RESCORE))):
     from backend.scorer import config_problem
 
     if config_problem():
@@ -481,7 +490,7 @@ def scorer_status(office_slack: int = OfficeSlack, db: Session = Depends(get_db)
 
 @app.post("/api/score/{job_id}")
 def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(get_db),
-                 ws: int = Depends(current_workspace)):
+                 ws: int = Depends(current_workspace), _gate=Depends(membership.gate(access.RESCORE))):
     from backend.scorer import ScorerError, build_profile, config_problem, get_config, score_one
 
     cfg = {**get_config("scoring"), "workspace_id": ws}
@@ -521,7 +530,8 @@ class ResearchRequest(BaseModel):
 
 
 @app.post("/api/companies/research")
-def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace)):
+def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace),
+                   _gate=Depends(membership.gate(access.RESEARCH))):
     from backend.research import companies_to_research, job_context, research_companies
     from backend.scorer import ScorerError, config_problem
 

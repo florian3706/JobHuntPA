@@ -81,6 +81,7 @@ FORGOT = "/api/auth/forgot"               # a reset link by email (Phase H)
 RESET_INFO = "/api/auth/reset/info"
 RESET = "/api/auth/reset"
 VERIFY_EMAIL = "/api/auth/verify-email"   # opening a link from a verification email: it may be another browser
+STRIPE_WEBHOOK = "/api/billing/webhook"  # Stripe's events: signed by Stripe (backend.membership), never a session or CSRF
 # Answered without a session.
 OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, LOGOUT, SIGNUP, FORGOT, RESET_INFO, RESET,
                         VERIFY_EMAIL})
@@ -391,6 +392,8 @@ class AuthMiddleware:
             return _deny(403, "bad_origin", "This request came from another website, so it was refused.")
         if not (users.known_to_exist() or await run_in_threadpool(users.users_exist)) and path not in SETUP_PATHS:
             return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create the admin account first.")
+        if path == STRIPE_WEBHOOK:
+            return None  # no session is loaded, so it runs with nobody's key and needs no CSRF token
         if path in PRE_SESSION and unsafe:
             if headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
                 return _deny(415, "json_required", "Send this as JSON.")

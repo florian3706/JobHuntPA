@@ -44,6 +44,7 @@
             <div id="account-panel" class="account-panel" hidden>
               <p class="account-who">Signed in as <strong id="account-email"></strong> <span id="account-role" class="scope-tag" hidden></span></p>
               <ul class="account-links">
+                <li><a href="billing.html">Membership</a></li>
                 <li id="account-admin" hidden><a href="admin.html">Admin</a></li>
                 <li><button id="account-signout" class="btn btn-sm" type="button">Sign out</button></li>
               </ul>
@@ -67,12 +68,13 @@
       <h2 class="visually-hidden">Jobs</h2>
       <div class="card run-card">
         <div class="toolbar-row">
-          <button id="search-run" class="btn btn-primary" type="button">Run search</button>
+          <button id="search-run" class="btn btn-primary" type="button" aria-describedby="free-search-note">Run search</button>
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
           <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
           <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
           <span id="run-status" class="muted" role="status"></span>
         </div>
+        <p id="free-search-note" class="hint" role="status" hidden></p>
         <div id="next-scheduled" class="muted" hidden></div>
         <div id="run-progress" class="progress" role="progressbar" aria-label="Progress of the run" aria-valuemin="0" aria-valuemax="100" hidden><div class="progress-bar"></div></div>
         <details id="run-report" class="run-report" hidden>
@@ -528,5 +530,6 @@
   <script src="./export.js"></script>
   <script src="./background.js"></script>
   <script src="./account-email.js"></script>
+  <script src="./free-searches.js"></script>
 </body>
 </html>

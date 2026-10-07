@@ -564,7 +564,8 @@ async function startRun(url, body) {
     const run = await api(url, { method: 'POST', body: JSON.stringify(body) });
     if (run.already_running) toast('A run is already in progress; showing its progress.');
     watchRun(run.id);
-  } catch (e) { toast(e.message, 'err', 9000); }
+    window.refreshFreeSearchNote?.(); // a free search was used when the run was queued
+  } catch (e) { toast(e.message, 'err', 9000); window.refreshFreeSearchNote?.(); }
 }
 
 function watchRun(id) {
@@ -613,6 +614,7 @@ function finishRun(run) {
   loadScorerStatus();
   loadSources();
   loadSchedule({ controls: false });
+  window.refreshFreeSearchNote?.(); // a failed run gives its free search back
 }
 
 function runSummaryText(run) {
@@ -1426,6 +1428,9 @@ function scheduledRunLine(run) {
 function renderScheduleStatus(sch) {
   const lines = [];
   if (!sch.enabled) lines.push('<p class="muted">Automatic searches are off.</p>');
+  else if (sch.background !== false && (sch.membership_required || sch.skipped?.reason === 'membership_required')) {
+    lines.push('<p class="sched-warn">Scheduled searches need a membership, so they are skipped. <a href="billing.html">See membership options</a></p>');
+  }
   else if (sch.background === false || sch.skipped) { // no usable key: every slot is passed over (backend/schedule.py), so say so (Phase G)
     const when = sch.skipped?.slot ? ` (${fmtScheduleTime(sch.skipped.slot, sch.timezone)})` : '';
     const again = sch.skipped?.reason === 'key_unusable'; // the server holds a key it can't open: off and on fixes it
@@ -1442,7 +1447,7 @@ function renderScheduleStatus(sch) {
   $('#sched-status').innerHTML = lines.join('');
 
   const note = $('#next-scheduled');
-  const show = sch.enabled && sch.next_run && !sch.nothing_to_search && sch.background !== false && !sch.skipped;
+  const show = sch.enabled && sch.next_run && !sch.nothing_to_search && sch.background !== false && !sch.skipped && !sch.membership_required;
   note.hidden = !show;
   if (show) {
     const away = Intl.DateTimeFormat().resolvedOptions().timeZone !== sch.timezone; // name the zone only when it isn't this browser's

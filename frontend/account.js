@@ -382,9 +382,19 @@
     if (!password.value) { setFieldError(password, 'Enter your password to delete your account.'); return; }
     say('acct-del-status', '');
     await guarded(form, $('#acct-del-submit'), { password }, async () => {
-      await recentWith(password.value, () => post('/api/account/delete', { password: password.value }));
-      say('acct-del-status', 'Your account was deleted. Taking you to the sign-in page…');
+      const gone = await recentWith(password.value, () => post('/api/account/delete', { password: password.value }));
       try { localStorage.removeItem('jobhunt.ws'); } catch { /* private mode */ }
+      if (gone?.subscription === 'failed') {
+        // Stay long enough to be read: leaving would hide that the payments may go on.
+        say('acct-del-status', 'Your account was deleted, but your subscription may still be active. Please contact the person who runs this JobHuntPA so it can be cancelled. Then go to the sign-in page. ');
+        const link = document.createElement('a');
+        link.href = 'login.html';
+        link.textContent = 'Go to the sign-in page';
+        $('#acct-del-status').append(link);
+        link.focus();
+        return;
+      }
+      say('acct-del-status', 'Your account was deleted. Taking you to the sign-in page…');
       leavingPage = true;
       location.replace('login.html');
     });

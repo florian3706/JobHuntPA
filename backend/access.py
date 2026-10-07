@@ -96,9 +96,9 @@ def subscription_reason(state: AccessState, now: datetime) -> Optional[str]:
 
 
 def needs_sync(state: AccessState, now: datetime) -> bool:
-    """True when an active or past-due subscription's period has passed: ask Stripe (at most hourly)."""
+    """True when an active, trialing or past-due subscription's period has passed: ask Stripe (at most hourly)."""
     end = _utc(state.current_period_end)
-    return (state.stripe_status or "").lower() in ("active", "past_due") and end is not None and _utc(now) >= end
+    return (state.stripe_status or "").lower() in ("active", "trialing", "past_due") and end is not None and _utc(now) >= end
 
 
 def member_reason(state: AccessState, now: datetime) -> Optional[str]:

@@ -711,6 +711,8 @@ class SearchRun(Base):
     summary_json = Column(SealedText(), nullable=True)
     error = Column(SealedText(), nullable=True)
     error_code = Column(String, nullable=True)  # a short code written without any key, e.g. "interrupted"
+    # Queueing this run used one of its owner's free searches (backend.membership gives it back if the run fails).
+    free_search = Column(Boolean, nullable=False, default=False, server_default="0")
     started_at = Column(DateTime, default=utcnow)
     finished_at = Column(DateTime, nullable=True)
 
@@ -725,6 +727,7 @@ class SearchRun(Base):
             "workspace_id": self.workspace_id,
             "kind": self.kind,
             "scheduled": bool(self.scheduled),
+            "free_search": bool(self.free_search),
             "state": self.state,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
@@ -936,6 +939,7 @@ class Membership(Base):
     plan = Column(String, nullable=True)
     current_period_end = Column(DateTime, nullable=True)
     cancel_at_period_end = Column(Boolean, nullable=False, default=False, server_default="0")
+    grace_until = Column(DateTime, nullable=True)  # while past_due: access continues until then (access.GRACE)
     stripe_synced_at = Column(DateTime, nullable=True)
     billing_admin = Column(LargeBinary, nullable=True)  # admin details key
     billing_self = Column(LargeBinary, nullable=True)   # the user's DEK

@@ -164,7 +164,7 @@ def delete_my_account(body: DeleteAccountIn, request: Request, user: AuthUser = 
         raise _last_admin()
     confirm_password(request, db, user, body.password)
     try:
-        users.delete_account(db, user.id)
+        result = users.delete_account(db, user.id)
     except users.AccountBusy:
         raise AuthProblem(409, "run_active", "A search is still running. Wait for it to finish, then try again.") from None
     except users.AccountProtected:
@@ -173,7 +173,10 @@ def delete_my_account(body: DeleteAccountIn, request: Request, user: AuthUser = 
         raise AuthProblem(409, "admin_key_missing", "You don't have the admin key, so you can't delete your account "
                                                     "yourself. Ask another admin to delete it, or to share the key "
                                                     "with you again.") from None
-    response = JSONResponse({"ok": True})
+    body = {"ok": True}
+    if "subscription" in result:  # "cancelled", or "failed": their Stripe subscription couldn't be cancelled; say so
+        body["subscription"] = result["subscription"]
+    response = JSONResponse(body)
     sessions.clear_cookie(response, request.scope)
     response.headers["Clear-Site-Data"] = '"cache"'
     return response

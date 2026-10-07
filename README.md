@@ -347,6 +347,44 @@ the old one; if something can't be moved, the old key is kept and nothing is los
 it isn't, delete `data/running.json`). A running JobHuntPA also won't overwrite a key file that something
 else changed: it stops with "The key file was changed by something else", and a restart picks up the new file.
 
+### Memberships and payments (optional)
+
+By default everyone who signs in has full access. To charge for it, an admin connects Stripe:
+
+1. In the Stripe dashboard (**Developers > API keys**), copy the secret key: `sk_test_...` for test mode
+   (no real money) or `sk_live_...` for real payments.
+2. Create a product with a monthly price and give the price the **lookup key** `jobhunt_monthly` (an
+   optional yearly price uses `jobhunt_yearly`). Prices are found by these keys, so moving from test to
+   live needs no other change.
+3. Paste the key into the **Payments (Stripe)** card in the admin panel's Server section (it asks for your
+   password). The card shows whether the key and webhook secret are set, test or live, and the prices it
+   found; **Sync now** asks Stripe again. Memberships switch on as soon as the price is found; with no key, or no price, nobody is limited. A *Test mode* badge shows while a test key is in use.
+4. Optional: once Stripe can reach this server, add a webhook endpoint for
+   `https://your-address/api/billing/webhook` and paste its signing secret. Without it, JobHuntPA checks
+   Stripe when people come back from checkout, when they open the membership page, and every 6 hours.
+   To try webhooks on your own computer with the [Stripe CLI](https://docs.stripe.com/stripe-cli), run
+   `stripe listen --forward-to http://127.0.0.1:8000/api/billing/webhook`: it prints a `whsec_...` secret to
+   paste in the card. Until a secret is saved, the webhook address answers 404.
+
+What people get: admins need no membership. Everyone else has **3 free searches** (change the number in
+the Sign-up section), then jobs they already found stay visible but new searches, rescoring, chat, cover
+letters, research, "Fill missing info", concise versions, summaries and title suggestions wait for a
+membership. **Scheduled searches** need a membership and background access (free searches are for
+*Run search* only). A free search is used when a search is queued and given back if the run fails or is
+interrupted. A membership comes from a Stripe subscription, a **free period** an admin adds, or an admin
+exempting the person. A free period for someone who already pays also moves their next payment to its end;
+ending or shortening it bills them again from then.
+Exempting someone who pays can also end their subscription when the period they paid for is over
+(only if you choose it). Card numbers never reach JobHuntPA: admins see the card brand and last four digits,
+the plan and the price. Deleting an account cancels the person's subscription first.
+
+**For members and people on free searches:** open **Account > Membership**. The page shows whether you are
+a member and why, how many free searches are left, your plan, and when it renews or ends. **Become a member**
+takes you to Stripe's payment page and brings you back with a clear message that the payment worked (or that
+nothing was charged if you cancelled). **Manage payment and plan** opens Stripe's page to change your card or
+plan, see invoices, or cancel at the end of the period. The Jobs tab says when **Run search** uses one of your
+free searches. Without a membership your jobs, notes, documents and settings stay available.
+
 ## Using it
 
 The dashboard opens at http://127.0.0.1:8000 (sign in first). Start in **Search setup** (job titles, keywords,

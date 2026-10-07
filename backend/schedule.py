@@ -13,6 +13,9 @@ search, or when the workspace's owner hasn't allowed background access
 (the server then has no key to their data). Workspaces due at the same
 time run one after another.
 
+A slot is also passed over when the owner has no membership (backend.membership; admins, exempt accounts, free
+periods and subscribers have one; so has everyone while billing is off).
+
 A slot passed over because the owner hasn't allowed background access (or the account is turned off) is recorded
 with a reason the person sees under their schedule (``skipped``, from SKIP_TEXT); it goes away when they turn
 background access on, or when a later slot runs.
@@ -65,6 +68,7 @@ SKIP_TEXT = {
     "account_off": "Scheduled search skipped: this account is turned off",
     "key_unusable": "Scheduled search skipped: the server can't open your background key. Turn background access "
                     "off and on again",
+    "membership_required": "Scheduled search skipped: scheduled searches need a membership",
 }
 
 
@@ -188,7 +192,7 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
     A workspace's data is sealed under its owner's key, which the server holds only for an owner who allowed
     background access (``users.background_key``): the search runs inside that key's scope, and a slot of an owner
     who didn't is passed over."""
-    from backend import migrate_encryption, users
+    from backend import membership, migrate_encryption, users
 
     now = now or datetime.now(timezone.utc)
     if not migrate_encryption.is_done():
@@ -205,8 +209,11 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
             if slot is None:
                 continue
             reason, run, skipped = None, None, None
-            key = users.background_key(db, owner)
-            if key is None:
+            skipped = membership.scheduled_block(db, owner, now)  # scheduled searches need a membership (design §8)
+            key = None if skipped else users.background_key(db, owner)
+            if skipped:
+                reason = f"no membership ({skipped})"
+            elif key is None:
                 skipped = users.background_block(db, owner)
                 reason = f"no background key ({skipped})"
             else:
@@ -235,12 +242,30 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
         db.close()
 
 
+BILLING_SYNC_EVERY = timedelta(hours=6)
+_billing_synced: list = [None]  # when the Stripe sync last ran (this process; it also runs at start-up)
+
+
+def billing_sync_tick(now: Optional[datetime] = None) -> Optional[int]:
+    """Every 6 hours (and once soon after start-up), refresh every member's subscription from Stripe
+    (``membership.sync_tick``): the safety net behind the webhook. Does nothing without a Stripe key. Returns how
+    many members were updated, or None when it wasn't due."""
+    from backend import membership
+
+    now = now or datetime.now(timezone.utc)
+    last = _billing_synced[0]
+    if last is not None and now - last < BILLING_SYNC_EVERY:
+        return None
+    _billing_synced[0] = now
+    return membership.sync_tick(now)
+
+
 _stop = threading.Event()
 
 
 def start_scheduler(start_search: Callable[[int], dict]) -> None:
     """Check for due searches every TICK_SECONDS on a daemon thread.
-    ``JOBHUNT_SCHEDULER=off`` (e.g. in .env) turns scheduled searches off."""
+    ``JOBHUNT_SCHEDULER=off`` (e.g. in .env) turns scheduled searches off, and the 6-hourly Stripe sync with them."""
     if os.getenv("JOBHUNT_SCHEDULER", "on").strip().lower() in ("0", "off", "false", "no"):
         log.info("scheduled searches are off (JOBHUNT_SCHEDULER)")
         return
@@ -253,6 +278,10 @@ def start_scheduler(start_search: Callable[[int], dict]) -> None:
             except Exception:
                 log.exception("scheduled search check failed")
             housekeeping()
+            try:
+                billing_sync_tick()
+            except Exception:
+                log.exception("membership sync failed")
 
     threading.Thread(target=loop, name="jobhunt-scheduler", daemon=True).start()
 
@@ -297,7 +326,7 @@ def skipped_info(db: Session, ws: int) -> Optional[dict[str, Any]]:
 
 
 def schedule_info(db: Session, ws: int, now: Optional[datetime] = None) -> dict[str, Any]:
-    from backend import users
+    from backend import membership, users
 
     now = now or datetime.now(timezone.utc)
     sched = get_schedule(db, ws)
@@ -314,6 +343,7 @@ def schedule_info(db: Session, ws: int, now: Optional[datetime] = None) -> dict[
         "last_run": last.to_dict() if last else None,
         "nothing_to_search": nothing_to_search(db, ws),
         "background": owner is not None and users.background_enabled(db, owner),
+        "membership_required": owner is not None and bool(membership.scheduled_block(db, owner, now)),
         "skipped": skipped_info(db, ws),
     }
 

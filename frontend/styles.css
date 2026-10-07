@@ -1035,3 +1035,20 @@ dialog.admin-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
   dialog.admin-dialog-small .admin-dialog-box { height: auto; }
 }
 .admin-table td[data-label="Role"], .admin-table td[data-label="State"] { overflow-wrap: normal; }
+
+/* Membership page (billing.html) */
+.billing-main { max-width: 760px; }
+.billing-title { margin: 4px 0; font-size: 24px; line-height: 1.25; }
+.billing-card { margin-top: 14px; }
+.billing-card h2 { margin-top: 0; }
+.billing-summary { margin: 0 0 10px; font-size: 16px; }
+.billing-facts { margin: 0 0 12px; display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
+.billing-facts dt { color: var(--muted); }
+.billing-facts dd { margin: 0; overflow-wrap: anywhere; }
+.plan-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.plan-item { display: flex; justify-content: space-between; align-items: center; gap: 10px 16px; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.plan-price { font-weight: 600; }
+.billing-card .btn { min-height: 44px; }
+.billing-main #billing-result[hidden], .billing-main #billing-error[hidden] { display: none; }
+@media (max-width: 480px) { .billing-facts { grid-template-columns: 1fr; } .billing-facts dd { margin-bottom: 6px; } }
+.check[hidden] { display: none; }

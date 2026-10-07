@@ -246,6 +246,18 @@ class TrialExtension(Configured):
         self.assertEqual(billing.trial_end_for_grant(None, (NOW + timedelta(days=5)).replace(tzinfo=None), NOW),
                          TS + 5 * DAY)
 
+    def test_a_trial_that_is_already_set_can_be_lowered(self):
+        trial = NOW + timedelta(days=300)
+        end = NOW + timedelta(days=40)
+        self.assertEqual(billing.trial_end_for_grant(None, end, NOW, trial_end=trial), TS + 40 * DAY)
+        self.assertIsNone(billing.trial_end_for_grant(None, trial, NOW, trial_end=trial))   # already what it should be
+        self.assertIsNone(billing.trial_end_for_grant(None, NOW, NOW, trial_end=trial))     # over: end_trial's job
+
+    def test_end_trial_bills_now_without_proration(self):
+        billing.end_trial("sub_123")
+        self.client.v1.subscriptions.update.assert_called_once_with(
+            "sub_123", params={"trial_end": "now", "proration_behavior": "none"})
+
     def test_extend_trial_updates_without_proration(self):
         billing.extend_trial("sub_123", TS + 40 * DAY)
         self.client.v1.subscriptions.update.assert_called_once_with(

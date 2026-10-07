@@ -36,6 +36,7 @@
             <p class="account-who">Signed in as <strong id="account-email"></strong> <span id="account-role" class="scope-tag" hidden></span></p>
             <ul class="account-links">
               <li><a href="./">Back to the dashboard</a></li>
+              <li><a href="billing.html">Membership</a></li>
               <li><button id="account-signout" class="btn btn-sm" type="button">Sign out</button></li>
             </ul>
           </div>
@@ -278,6 +279,56 @@
         </div>
       </div>
 
+      <div class="card form-card" id="stripe-card">
+        <h3 id="stripe-title">Payments (Stripe) <span id="stripe-mode" class="scope-tag" hidden></span></h3>
+        <p id="stripe-summary" class="muted" role="status" tabindex="-1">Checking…</p>
+        <div id="stripe-setup" class="callout" hidden>
+          <p><strong>To switch memberships on</strong></p>
+          <ol id="stripe-steps"></ol>
+        </div>
+        <div id="stripe-fields">
+          <form class="form-group key-field" data-stripe="secret_key" autocomplete="off" novalidate>
+            <label for="stripe-secret-key">Stripe secret key</label>
+            <div class="key-state"></div>
+            <div class="key-row">
+              <input id="stripe-secret-key" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="sk_test_… or sk_live_…" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> Stripe secret key</span></button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> Stripe secret key</span></button>
+            </div>
+            <small class="hint">From the Stripe dashboard, Developers, API keys. A key starting with sk_test_ is test mode: no real money moves.</small>
+          </form>
+          <form class="form-group key-field" data-stripe="webhook_secret" autocomplete="off" novalidate>
+            <label for="stripe-webhook-secret">Webhook signing secret (optional)</label>
+            <div class="key-state"></div>
+            <div class="key-row">
+              <input id="stripe-webhook-secret" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="whsec_…" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> webhook signing secret</span></button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> webhook signing secret</span></button>
+            </div>
+            <small class="hint">Lets Stripe tell JobHuntPA about payments straight away. Without it, memberships still update when people come back from checkout and every 6 hours.</small>
+          </form>
+          <div class="form-group">
+            <label for="stripe-webhook-url">Webhook address (add it in Stripe, Developers, Webhooks)</label>
+            <input id="stripe-webhook-url" type="text" readonly />
+          </div>
+          <form class="form-group key-field" data-stripe="price_lookup_key" autocomplete="off" novalidate>
+            <label for="stripe-lookup-key">Price lookup key</label>
+            <div class="key-row">
+              <input id="stripe-lookup-key" class="key-input" type="text" autocomplete="off" spellcheck="false" autocapitalize="none" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> price lookup key</span></button>
+            </div>
+            <small class="hint">The monthly price in Stripe has this lookup key (default jobhunt_monthly). An optional yearly price uses jobhunt_yearly.</small>
+          </form>
+        </div>
+        <div id="stripe-prices"></div>
+        <div class="toolbar-row">
+          <button id="stripe-sync" class="btn btn-sm" type="button" title="Asks Stripe for the prices again">Sync now</button>
+          <span id="stripe-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
       <div class="card form-card" id="rotate-card">
         <h3>Server key</h3>
         <p>The server key protects the keys JobHuntPA keeps for background searches and two-step sign-in. Replacing it
@@ -342,6 +393,7 @@
   <script src="./dialogs.js"></script>
   <script src="./server-settings.js"></script>
   <script src="./email-settings.js"></script>
+  <script src="./stripe-settings.js"></script>
   <script src="./admin.js"></script>
 </body>
 </html>

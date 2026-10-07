@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import llm_providers
+from backend import access, llm_providers, membership
 from backend.db import CompanyProfile, CoverLetter, Document, FitResult, Job, company_key, get_db
 from backend.workspaces import current_workspace, owned
 
@@ -134,7 +134,7 @@ def get_cover_letter(job_id: int, db: Session = Depends(get_db), ws: int = Depen
 
 @router.post("/{job_id}/cover-letter")
 def draft_cover_letter(job_id: int, payload: DraftRequest, db: Session = Depends(get_db),
-                       ws: int = Depends(current_workspace)):
+                       ws: int = Depends(current_workspace), _gate=Depends(membership.gate(access.COVER_LETTER))):
     from backend.scorer import ScorerError, call_model, config_problem, get_config
 
     job = owned(db, Job, job_id, ws, "Job")

@@ -981,6 +981,15 @@ def _refuse_active_runs(db: Session, ws_ids: list[int]) -> None:
         raise AccountBusy("A search is still running")
 
 
+def _check_deletable(db: Session, user_id: int) -> None:
+    """The cheap refusals of ``delete_account`` (AccountProtected, AccountBusy), asked before it takes any lock. It asks
+    again under the lock, which is what counts."""
+    if is_last_admin(db, user_id):
+        raise AccountProtected("This is the last admin")
+    ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
+    _refuse_active_runs(db, ws_ids)
+
+
 def _remove_workspace_data(db: Session, user_id: int, ws_ids: list[int]) -> list[str]:
     """Everything the account saved in its workspaces, in ``db``'s transaction (not committed): jobs with their
     scores, cover letters and merge decisions, documents, chats, profile, dealbreakers, pins, sources, schedules, runs,
@@ -1041,12 +1050,18 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
 
     Needs no key of the user's: it never opens a sealed value. Refuses (AccountBusy) while one of the account's runs
     is active and (AccountProtected) for the last active admin; ApkUnavailable when the admin key can't be opened.
-    Cancelling a Stripe subscription is the caller's job (Phase I), before this. Explicit deletes, not cascades: a
-    database from before accounts has workspace tables without foreign keys."""
-    from backend import admin_key, sessions, tasks
+    The person's Stripe subscription is cancelled (``membership.cancel_for_deletion``; design §6.8 step 2) under the
+    lock, after every refusal above (the last one is the admin key) and before the first delete: best effort, so a
+    Stripe that can't be reached never keeps an account from being deleted (the result's ``subscription`` says
+    ``cancelled``, ``none`` or ``failed``, and a failure is written to the audit log). A refused deletion never
+    cancels anything. Explicit deletes, not cascades: a database from before accounts has workspace tables
+    without foreign keys."""
+    from backend import admin_key, membership, sessions, tasks
 
     if db.get(User, user_id) is None:
         raise LookupError("No such account")
+    _check_deletable(db, user_id)
+    subscription = "none"
     with tasks.start_lock():  # no run can be queued for these workspaces while their rows are removed
         try:
             _write_lock(db)
@@ -1059,6 +1074,7 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
             ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
             _refuse_active_runs(db, ws_ids)
             apk = admin_key.open_apk(db, user_id if actor_id is None else actor_id) if was_admin else None
+            subscription = membership.cancel_for_deletion(db, user_id, actor_id)  # the last step that can't be undone
             files = _remove_workspace_data(db, user_id, ws_ids)
             db.execute(update(LlmUsage).where(LlmUsage.user_id == user_id).values(user_id=None))
             db.execute(update(AdminAudit).where(AdminAudit.admin_id == user_id).values(admin_id=None))
@@ -1082,7 +1098,9 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
                 detail.update(apk_version=rotation.apk.version, resealed=rotation.resealed, stale=rotation.stale,
                               dropped=rotation.dropped)
                 public = rotation.apk.public
-            if was_admin or actor_id is not None:
+            if subscription != "none":
+                detail["subscription"] = subscription
+            if was_admin or actor_id is not None or subscription == "failed":
                 admin_key.audit(db, actor_id, "user_deleted", None, detail, public=public)
             db.commit()
         except BaseException:
@@ -1092,4 +1110,7 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
     scrub_wal()  # the deleted account's key copies and secrets must not linger in the write-ahead log
     sessions._active_on.pop(user_id, None)  # SQLite may give this id to the next account
     log.info("Account deleted: user %s (%d workspace(s), %d file(s))", user_id, len(ws_ids), removed)
-    return {"workspaces": len(ws_ids), "files": removed, "apk_rotated": was_admin}
+    out = {"workspaces": len(ws_ids), "files": removed, "apk_rotated": was_admin}
+    if subscription != "none":  # only said when Stripe was involved: "cancelled" or "failed"
+        out["subscription"] = subscription
+    return out

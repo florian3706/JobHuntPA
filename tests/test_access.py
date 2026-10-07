@@ -181,6 +181,8 @@ class FreeSearchAccounting(unittest.TestCase):
 
     def test_needs_sync_helper(self):
         self.assertTrue(access.needs_sync(AccessState(stripe_status="past_due", current_period_end=NOW - S), NOW))
+        self.assertTrue(access.needs_sync(AccessState(stripe_status="trialing", current_period_end=NOW - S), NOW))
+        self.assertFalse(access.needs_sync(AccessState(stripe_status="trialing", current_period_end=NOW + S), NOW))
         self.assertFalse(access.needs_sync(AccessState(stripe_status="canceled", current_period_end=NOW - S), NOW))
         self.assertFalse(access.needs_sync(AccessState(stripe_status="active", current_period_end=NOW + S), NOW))
 

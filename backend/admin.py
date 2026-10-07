@@ -8,11 +8,14 @@
     DELETE /api/admin/users/{id}                          removes the account and all its data (recent password)
     POST   /api/admin/users/{id}/mfa/disable              clears two-step sign-in, signs them out (recent password)
     POST   /api/admin/users/{id}/reset-email              emails them a reset link (409 email_not_set_up while mail is off)
-    PUT    /api/admin/users/{id}/membership               {exempt?, free_searches_used?}
-    POST   /api/admin/users/{id}/grants                   {kind, starts_at?, ends_at | days, note?}
-    PATCH  /api/admin/users/{id}/grants/{gid}             {starts_at?, ends_at? | days?, note?}
+    PUT    /api/admin/users/{id}/membership               {exempt?, free_searches_used?,
+                                                          cancel_subscription_at_period_end?}
+    POST   /api/admin/users/{id}/grants                   {kind, starts_at?, ends_at | days, note?}; for someone who
+                                                          pays it also moves their next payment (answer: ``stripe``)
+    PATCH  /api/admin/users/{id}/grants/{gid}             {starts_at?, ends_at? | days?, note?} (same)
     DELETE /api/admin/users/{id}/grants/{gid}             ends the grant now (it stays in the history)
     GET    /api/admin/signup   PUT /api/admin/signup      {mode: invite|open|closed, free_searches}
+    GET    /api/admin/stripe   PUT /api/admin/stripe      Stripe settings (never a key); PUT needs a recent password
     POST   /api/admin/invites {email?, send?}             -> {link, emailed, ...}; GET /api/admin/invites; DELETE .../{id}
     GET    /api/admin/audit?limit=&before_id=             what admins did
     GET    /api/admin/plaintext-audit                     plaintext left from before encryption
@@ -30,7 +33,6 @@ Details say what was done (role, dates, counts), never anyone's content.
 from __future__ import annotations
 
 import logging
-import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
@@ -40,8 +42,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
-from backend import account_email, admin_key, email_templates, key_rotation, keys, mail_queue, mailer, migrate_encryption
-from backend import password_reset, ratelimit, signup, tokens, users
+from backend import account_email, admin_key, app_settings, billing, email_templates, key_rotation, keys, mail_queue
+from backend import mailer, membership, migrate_encryption, password_reset, ratelimit, signup, tokens, users
 from backend.admin_key import Apk, ApkUnavailable
 from backend.db import (
     AdminAudit,
@@ -233,7 +235,9 @@ def _summaries(db: Session, apk: Optional[Apk], only: Optional[list[int]] = None
                 "plan": m.plan if m else None,
                 "current_period_end": _iso(m.current_period_end) if m else None,
                 "cancel_at_period_end": bool(m.cancel_at_period_end) if m else False,
+                "grace_until": _iso(m.grace_until) if m and m.stripe_status == "past_due" else None,
                 "stripe_synced_at": _iso(m.stripe_synced_at) if m else None,
+                "billing": membership.billing_summary(m, apk),  # card brand and last 4, plan, price (admin key)
                 "grants": [_grant_dict(g, apk, now) for g in mine[:GRANTS_SHOWN]],
                 "active_grants": sum(1 for g in mine if g.revoked_at is None and g.starts_at <= now < g.ends_at),
             },
@@ -454,7 +458,10 @@ def delete_user(user_id: int, admin: AuthUser = Depends(current_user), db: Sessi
         raise _problem(409, "busy", "A search of theirs is still running. Try again when it has finished.") from None
     except ApkUnavailable:
         raise _key_missing() from None
-    return {"ok": True, "apk_rotated": result["apk_rotated"]}
+    out = {"ok": True, "apk_rotated": result["apk_rotated"]}
+    if "subscription" in result:  # "cancelled" or "failed" (cancel it in Stripe): only said when Stripe was involved
+        out["subscription"] = result["subscription"]
+    return out
 
 
 def notify_mfa_disabled(db: Session, admin: AuthUser, target: User, apk: Optional[Apk]) -> bool:
@@ -536,32 +543,49 @@ class MembershipIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     exempt: Optional[bool] = None
     free_searches_used: Optional[int] = Field(None, ge=0, le=100000)
+    # Only with exempt (in this request or already): end their Stripe subscription when the paid period is over.
+    # An explicit choice, never done by itself.
+    cancel_subscription_at_period_end: Optional[bool] = None
 
 
 def _membership(db: Session, user_id: int) -> Membership:
-    row = db.get(Membership, user_id)
-    if row is None:
-        row = Membership(user_id=user_id, stripe_ref=secrets.token_urlsafe(16))
-        db.add(row)
-    return row
+    return membership.membership_row(db, user_id)
 
 
 @router.put("/users/{user_id}/membership")
 def put_membership(user_id: int, body: MembershipIn, admin: AuthUser = Depends(current_user),
                    db: Session = Depends(get_db)):
-    """Exempt someone from payment, or set how many free searches they have used."""
+    """Exempt someone from payment, or set how many free searches they have used. Exempting someone who pays can
+    also end their subscription when the period they paid for is over (``cancel_subscription_at_period_end``, only
+    when asked; Stripe is changed first, so a Stripe failure changes nothing: 502). ``subscription_ending`` in the
+    answer says whether a subscription was set to end."""
     target = _target(db, user_id)
-    if body.exempt is None and body.free_searches_used is None:
-        raise _problem(422, "invalid", "Send exempt or free_searches_used.")
+    if body.exempt is None and body.free_searches_used is None and body.cancel_subscription_at_period_end is None:
+        raise _problem(422, "invalid", "Send exempt, free_searches_used or cancel_subscription_at_period_end.")
+    current = db.get(Membership, target.id)
+    ending = False
+    if body.cancel_subscription_at_period_end:
+        if not (body.exempt or (body.exempt is None and current is not None and current.exempt)):
+            raise _problem(422, "invalid", "Exempt them from payment to end their subscription.",
+                           "cancel_subscription_at_period_end")
+        if current is not None and billing.status()["configured"]:
+            try:
+                ending = membership.cancel_at_period_end_for(current, _open_apk(db, admin)) > 0
+            except billing.BillingError as exc:
+                db.rollback()
+                raise _problem(502, "stripe_failed", str(exc)) from None
     row = _membership(db, target.id)
-    detail = {}
+    detail: dict[str, Any] = {}
     if body.exempt is not None:
         row.exempt = detail["exempt"] = body.exempt
     if body.free_searches_used is not None:
         row.free_searches_used = detail["free_searches_used"] = body.free_searches_used
+    if body.cancel_subscription_at_period_end:
+        detail["subscription_ends_at_period_end"] = ending
     audit(db, admin, "membership_updated", target.id, detail)
     db.commit()
-    return {"ok": True, "user": _summaries(db, _open_apk(db, admin), [target.id])[0]}
+    return {"ok": True, "subscription_ending": ending,
+            "user": _summaries(db, _open_apk(db, admin), [target.id])[0]}
 
 
 class GrantIn(BaseModel):
@@ -609,7 +633,11 @@ def add_grant(user_id: int, body: GrantIn, admin: AuthUser = Depends(current_use
     audit(db, admin, "grant_added", target.id, {"grant_id": row.id, "kind": body.kind, "starts_at": _iso(start),
                                                 "ends_at": _iso(end)})
     db.commit()
-    return {"ok": True, "grant": _grant_dict(row, _open_apk(db, admin), now)}
+    apk = _open_apk(db, admin)
+    # For someone who pays, their next payment moves to the end of the free period (after the commit: the grant
+    # stands whatever Stripe says, and ``stripe.problem`` tells the admin when it couldn't be moved).
+    stripe = membership.extend_for_grant(db, target.id, start, end, apk)
+    return {"ok": True, "grant": _grant_dict(row, apk, now), "stripe": stripe}
 
 
 @router.patch("/users/{user_id}/grants/{grant_id}")
@@ -625,6 +653,7 @@ def change_grant(user_id: int, grant_id: int, body: GrantPatch, admin: AuthUser 
     if body.starts_at is None and body.ends_at is None and body.days is None and body.note is None:
         raise _problem(422, "invalid", "Send what to change.")
     detail: dict[str, Any] = {"grant_id": row.id}
+    old_end = row.ends_at
     if body.starts_at is not None or body.ends_at is not None or body.days is not None:
         start = _parse_time(body.starts_at, "starts_at") or row.starts_at
         if body.ends_at is None and body.days is None:  # only the start moves: the end stays
@@ -640,7 +669,12 @@ def change_grant(user_id: int, grant_id: int, body: GrantPatch, admin: AuthUser 
         detail["note_changed"] = True
     audit(db, admin, "grant_changed", user_id, detail)
     db.commit()
-    return {"ok": True, "grant": _grant_dict(row, _open_apk(db, admin), utcnow())}
+    apk = _open_apk(db, admin)
+    if row.ends_at < old_end:  # shortened: a trial set for the old end must come back (it can't be extended)
+        stripe = membership.shrink_for_grant(db, user_id, old_end, apk)
+    else:
+        stripe = membership.extend_for_grant(db, user_id, row.starts_at, row.ends_at, apk)  # see add_grant
+    return {"ok": True, "grant": _grant_dict(row, apk, utcnow()), "stripe": stripe}
 
 
 @router.delete("/users/{user_id}/grants/{grant_id}")
@@ -648,11 +682,104 @@ def end_grant(user_id: int, grant_id: int, admin: AuthUser = Depends(current_use
     """End a free period now. It stays in the person's history (``revoked_at``) and no longer counts."""
     _target(db, user_id)
     row = _grant(db, user_id, grant_id)
+    stripe = {"extended": False, "trial_end": None, "problem": None}
+    apk = _open_apk(db, admin)
     if row.revoked_at is None:
         row.revoked_at = utcnow()
         audit(db, admin, "grant_ended", user_id, {"grant_id": row.id})
         db.commit()
-    return {"ok": True, "grant": _grant_dict(row, _open_apk(db, admin), utcnow())}
+        # A subscriber's payment was moved to the end of this free period: it is billed from now instead (or from
+        # the end of the latest free period that remains). ``stripe.problem`` tells the admin when Stripe says no.
+        stripe = membership.shrink_for_grant(db, user_id, row.ends_at, apk)
+    return {"ok": True, "grant": _grant_dict(row, apk, utcnow()), "stripe": stripe}
+
+
+# ---------------------------------------------------------------------------
+# Stripe settings (backend/billing.py; the key is only ever written, never read back)
+# ---------------------------------------------------------------------------
+
+STRIPE_SETUP = [
+    "In the Stripe dashboard, open Developers > API keys and copy the secret key. It starts with sk_test_ for test "
+    "mode (no real money) or sk_live_ for real payments.",
+    "Create a product with a monthly price. On the price, set its lookup key to jobhunt_monthly. An optional yearly "
+    "price uses the lookup key jobhunt_yearly.",
+    "Paste the secret key below and save. Memberships switch on as soon as the price is found.",
+    "Optional: once Stripe can reach this server, add a webhook endpoint at the address below for "
+    "checkout.session.completed, customer.subscription.created, customer.subscription.updated, "
+    "customer.subscription.deleted, invoice.paid and invoice.payment_failed, and paste its signing secret "
+    "(whsec_...) below. Without it, JobHuntPA checks Stripe when people come back from checkout and every 6 hours.",
+]
+STRIPE_VARS = {"secret_key": "STRIPE_SECRET_KEY", "webhook_secret": "STRIPE_WEBHOOK_SECRET",
+               "price_lookup_key": "STRIPE_PRICE_LOOKUP_KEY"}
+STRIPE_HELP = {
+    "secret_key": "That isn't a Stripe secret key. It starts with sk_test_ or sk_live_, then letters and digits only.",
+    "webhook_secret": "That isn't a Stripe webhook signing secret. It starts with whsec_.",
+    "price_lookup_key": "A lookup key is letters, digits and the characters _ . - only (up to 200).",
+}
+
+
+class StripeSettingsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    secret_key: Optional[str] = Field(None, max_length=400)
+    webhook_secret: Optional[str] = Field(None, max_length=400)
+    price_lookup_key: Optional[str] = Field(None, max_length=400)
+
+
+def _stripe_state(request: Request, refresh: bool = False) -> dict:
+    """The Stripe settings as the panel shows them. Never a key: whether each is set, and test or live."""
+    status = billing.status()
+    prices: list[dict] = []
+    problem = None
+    if status["configured"]:
+        try:
+            found = {p["lookup_key"]: p for p in billing.list_prices(refresh=refresh)}
+        except billing.BillingError as exc:
+            found, problem = {}, str(exc)
+        prices = [{"plan": key, "found": key in found, "interval": (found.get(key) or {}).get("interval"),
+                   "amount": (found.get(key) or {}).get("amount"), "currency": (found.get(key) or {}).get("currency")}
+                  for key in billing.plan_keys()]
+        if problem is None and not found:
+            problem = ("Stripe has no active price with the lookup key " + " or ".join(billing.plan_keys()) +
+                       ". Memberships stay off until it does.")
+    on = billing.enabled() if status["configured"] else False
+    return {"configured": status["configured"], "mode": status["mode"], "test_mode": status["test_mode"],
+            "secret_key": {"set": status["configured"], "mode": status["mode"]},
+            "webhook": {"enabled": status["webhook_enabled"], "secret_set": status["webhook_enabled"],
+                        "url": f"{membership.base_url(request)}/api/billing/webhook"},
+            "price_lookup_key": status["price_lookup_key"], "prices": prices, "enabled": on, "problem": problem,
+            "setup": [] if on else STRIPE_SETUP}
+
+
+@router.get("/stripe")
+def get_stripe(request: Request, refresh: bool = Query(False)):
+    """Whether Stripe is set up: test or live mode, the prices found for the lookup keys, whether the webhook is on,
+    the webhook address, and setup steps while memberships are off. Never a key. ``refresh`` asks Stripe again
+    instead of using the 10-minute cache."""
+    return _stripe_state(request, refresh)
+
+
+@router.put("/stripe")
+def put_stripe(body: StripeSettingsIn, request: Request, admin: AuthUser = Depends(current_user),
+               db: Session = Depends(get_db)):
+    """Save the Stripe key, webhook signing secret or price lookup key (an empty value clears it). A payment setting
+    is something an attacker would change, so it needs the password entered in the last 15 minutes. Written through
+    ``app_settings`` (validated, to .env); the audit log records which settings changed, never a value."""
+    require_recent_auth(admin)
+    updates: dict[str, str] = {}
+    for name, var in STRIPE_VARS.items():
+        value = getattr(body, name)
+        if value is None:
+            continue
+        if value and not app_settings.ENV_RULES[var](value):  # no echo of the value
+            raise _problem(422, "invalid", STRIPE_HELP[name], name)
+        updates[var] = value
+    if not updates:
+        raise _problem(422, "invalid", "Send the key, the webhook secret or the lookup key.")
+    app_settings._save(updates)
+    billing.clear_price_cache()
+    admin_key.audit_settings(db, admin.id, {f"stripe_{name}": bool(updates[var])
+                                            for name, var in STRIPE_VARS.items() if var in updates})
+    return _stripe_state(request, refresh=True)
 
 
 # ---------------------------------------------------------------------------

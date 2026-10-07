@@ -15,7 +15,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from backend import llm_providers
+from backend import access, llm_providers, membership
 from backend.db import Document, get_db
 from backend.profile import get_profile
 from backend.workspaces import current_workspace
@@ -60,7 +60,8 @@ def _parse(raw: str) -> list[dict]:
 
 
 @router.post("/suggest-titles")
-def suggest_titles(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def suggest_titles(db: Session = Depends(get_db), ws: int = Depends(current_workspace),
+                   _gate=Depends(membership.gate(access.CONCISE_OR_SUMMARY))):
     from backend.scorer import ScorerError, build_profile, call_model, config_problem, get_config
 
     cfg = {**get_config("scoring"), "purpose": "title_suggestions", "workspace_id": ws}
