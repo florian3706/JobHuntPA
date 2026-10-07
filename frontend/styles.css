@@ -820,8 +820,11 @@ summary { cursor: pointer; min-height: 24px; }
   color: var(--text);
 }
 .page-notice p { margin: 0; }
+.page-notice p + p { margin-top: 8px; }
 .page-notice a { color: var(--accent-text); }
 .page-notice .progress { margin-top: 8px; }
+.page-notice .encrypt-count { margin-top: 4px; font-size: 13px; }
+.page-notice .leftover-files { margin: 6px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
 
 /* The account menu in the header: a disclosure button and its panel. */
 .account-menu { position: relative; }

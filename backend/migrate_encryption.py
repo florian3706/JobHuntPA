@@ -259,7 +259,8 @@ def _run(owner: int) -> dict:
     from backend import pool_migration
 
     pool_migration.migrate()  # it reads job rows as plaintext, so it must be done first (a no-op once done)
-    backup = backup_database()
+    # A new install has nothing worth a backup (and a backup would be a leftover plaintext file to delete).
+    backup = backup_database() if has_user_data() else None
     files = _documents_with_plaintext_files(owner)
     _progress["done"], _progress["total"] = 0, len(files) + count_pending_rows(owner)
     log.info("Encrypting the data: %d rows and files to seal", _progress["total"])
@@ -290,6 +291,16 @@ def _run(owner: int) -> dict:
 
 def backup_path() -> Path:
     return DB_PATH.parent / f"{DB_PATH.name}.bak-before-encryption"
+
+
+# Tables that hold what a user made (a new install's first workspace aside).
+USER_DATA = ("jobs", "documents", "company_sources", "pins", "user_profile", "dealbreakers", "chat_threads",
+             "search_runs", "cover_letters", "search_profile")
+
+
+def has_user_data() -> bool:
+    with engine.connect() as conn:
+        return any(conn.execute(text(f"SELECT 1 FROM {name} LIMIT 1")).first() for name in USER_DATA)
 
 
 def backup_database() -> Optional[Path]:

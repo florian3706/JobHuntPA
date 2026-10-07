@@ -2677,6 +2677,7 @@ function applyAccount(me) {
   $$('[data-user-only]').forEach((el) => { el.hidden = admin; });
   initAccountMenu(me);
   remindRecoveryCodes(me);
+  remindLeftovers(me);
 }
 
 function loadAll() {

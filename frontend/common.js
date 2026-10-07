@@ -242,7 +242,9 @@ async function apiResponse(url, opts = {}, retried = false) {
       return apiResponse(url, opts, true);
     }
     if (res.status === 402) showAccessNotice('membership', data);
-    if (res.status === 423) showAccessNotice('encrypting', data);
+    // The data is being encrypted: the notice shows the progress and reloads the page when it's done, so callers
+    // stop quietly (no "could not load" errors on the way), as for a 401.
+    if (res.status === 423) { showAccessNotice('encrypting', data); return new Promise(() => {}); }
     const detail = data && typeof data === 'object' && data.detail ? data.detail : text;
     throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
   }
@@ -271,15 +273,89 @@ function showAccessNotice(kind, data) {
   if (kind === 'membership') {
     pageNotice('membership', `<p>${esc(data?.detail || 'This needs a membership.')} <a href="billing.html">See membership options</a></p>`);
   } else if (kind === 'encrypting') {
-    const done = Number(data?.done) || 0;
-    const total = Number(data?.total) || 0;
-    const pct = total ? Math.floor((100 * done) / total) : 0;
-    pageNotice('encrypting', `<p>JobHuntPA is encrypting your data${total ? `: ${done.toLocaleString()} of ${total.toLocaleString()} done` : ''}.
-        This page reloads by itself when it has finished.</p>
-      ${total ? `<div class="progress" role="progressbar" aria-label="Encrypting your data" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div class="progress-bar" style="width:${pct}%"></div></div>` : ''}`);
-    clearTimeout(showAccessNotice.reload);
-    showAccessNotice.reload = setTimeout(() => location.reload(), 10000);
+    showEncrypting(data);
   }
+}
+
+/* The one-time encryption of the data from before accounts (backend/migrate_encryption.py). The notice says what
+   is happening once (role="status"); the progress bar follows the run, polled every 2 seconds, without being
+   announced each time (it isn't a live region: its value is there when someone moves to it). The page reloads
+   when the run has finished. */
+function showEncrypting(data) {
+  const failed = data?.state === 'failed';
+  const message = failed
+    ? (data?.error ? `Encrypting your data stopped (${data.error}). JobHuntPA tries again in a minute.` : data?.detail)
+    : (data?.detail || 'JobHuntPA is encrypting your data. This page reloads by itself when it has finished.');
+  let el = document.getElementById('notice-encrypting');
+  if (!el || el.dataset.message !== message) {
+    el = pageNotice('encrypting', `<p>${esc(message)}</p>
+      <div class="progress" role="progressbar" aria-label="Encrypting your data" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="progress-bar"></div></div>
+      <p class="muted encrypt-count" aria-hidden="true"></p>`);
+    if (!el) return;
+    el.dataset.message = message;
+  }
+  const done = Number(data?.done) || 0;
+  const total = Number(data?.total) || 0;
+  const pct = total ? Math.min(100, Math.floor((100 * done) / total)) : 0;
+  const bar = el.querySelector('.progress');
+  const count = total ? `${done.toLocaleString()} of ${total.toLocaleString()} rows and files done` : 'Starting…';
+  bar.setAttribute('aria-valuenow', String(pct));
+  bar.setAttribute('aria-valuetext', count);
+  bar.querySelector('.progress-bar').style.width = `${pct}%`;
+  setText(el.querySelector('.encrypt-count'), count);
+  if (!showEncrypting.polling) {
+    showEncrypting.polling = true;
+    const poll = async () => {
+      let status = null;
+      try {
+        const res = await fetch('/api/encryption/status', { headers: { Accept: 'application/json' } });
+        if (res.ok) status = await res.json();
+      } catch { /* the server may be restarting: try again */ }
+      if (status?.state === 'done') { location.reload(); return; }
+      if (status) showEncrypting({ ...status, detail: data?.detail });
+      setTimeout(poll, 2000);
+    };
+    setTimeout(poll, 2000);
+  }
+}
+
+function fmtBytes(n) {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} bytes`;
+}
+
+/* After the encryption: the copies of the data that still hold it unencrypted (the backup it made first, older
+   backups, an old page cache) are listed for an admin, with "Delete them now", until they are gone (accounts design
+   §5.5). Nothing is deleted without that click. */
+async function remindLeftovers(me) {
+  if (me?.user?.role !== 'admin') return;
+  let status;
+  try { status = await api('/api/encryption/status'); } catch { return; }
+  const files = status?.leftovers || [];
+  if (status?.state !== 'done' || !files.length) return;
+  const el = pageNotice('leftovers', `<p><strong>Your data is encrypted now.</strong> These files from before still hold it
+      unencrypted. You only need the backup to go back to an older version of JobHuntPA.</p>
+    <ul class="leftover-files">${files.map((f) => `<li><code>${esc(f.path)}</code> (${fmtBytes(f.bytes)})</li>`).join('')}</ul>
+    <p><button type="button" class="btn btn-primary btn-sm" id="leftovers-delete">Delete them now (recommended)</button></p>`);
+  el?.querySelector('#leftovers-delete').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true);
+    try {
+      const out = await api('/api/encryption/leftovers/delete', { method: 'POST' });
+      if (out.leftovers?.length) {
+        toast(`${out.leftovers.length} file(s) could not be deleted. Check the data folder's permissions.`, 'err', 10000);
+      } else {
+        pageNotice('leftovers', '<p>Deleted. No unencrypted copy of your data is left in the data folder.</p>');
+        announce('Deleted the unencrypted copies of your data.');
+      }
+    } catch (err) {
+      toast(err.message, 'err', 10000);
+    } finally {
+      setBusy(btn, false);
+    }
+  });
 }
 
 /* ---------- the account menu in the header ----------
