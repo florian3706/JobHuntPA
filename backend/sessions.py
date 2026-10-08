@@ -5,8 +5,12 @@ SHA-256 and the row keeps the user's data key (DEK) wrapped under a key derived 
 memory between requests, restarting the server signs nobody out, and the database alone can't unwrap anything.
 
 **The cookie** is ``__Host-jh_session`` (Secure) over HTTPS, and ``jh_session`` on plain http://127.0.0.1 (local
-installs; Safari refuses Secure cookies there). HTTPS means the request's scheme after uvicorn's proxy headers, or a
-Host that matches an https PUBLIC_BASE_URL. Always HttpOnly, SameSite=Lax, Path=/; Max-Age only with "Keep me
+installs; Safari refuses Secure cookies there). When the address has a port, the port is part of the name
+(``jh_session_8001``, ``__Host-jh_session_8443``): browsers keep cookies per host name and ignore the port, so two
+copies of JobHuntPA on one computer (a test instance next to the live app) would otherwise sign each other out.
+HTTPS means the request's scheme after uvicorn's proxy headers, or a Host that matches an https PUBLIC_BASE_URL.
+(A port does not isolate other apps on the same host name: they still receive the cookie. JobHuntPA should have a
+host name of its own.) Always HttpOnly, SameSite=Lax, Path=/; Max-Age only with "Keep me
 signed in". Lifetimes: 24 hours idle and 7 days in all, or 30 days idle and 90 in all when kept signed in.
 
 **AuthMiddleware**, in order, for every /api request:
@@ -61,7 +65,6 @@ from backend.db import AuthSession, SessionLocal, User, utcnow
 log = logging.getLogger(__name__)
 
 COOKIE = "jh_session"
-SECURE_COOKIE = "__Host-jh_session"
 IDLE = {False: timedelta(hours=24), True: timedelta(days=30)}
 ABSOLUTE = {False: timedelta(days=7), True: timedelta(days=90)}
 TOUCH_EVERY = timedelta(minutes=5)   # last_seen_at (and the idle expiry) is written at most this often
@@ -81,14 +84,16 @@ FORGOT = "/api/auth/forgot"               # a reset link by email (Phase H)
 RESET_INFO = "/api/auth/reset/info"
 RESET = "/api/auth/reset"
 VERIFY_EMAIL = "/api/auth/verify-email"   # opening a link from a verification email: it may be another browser
+VERIFY_EMAIL_INFO = "/api/auth/verify-email/info"  # what the link is for, shown before "Confirm" sends the above
 STRIPE_WEBHOOK = "/api/billing/webhook"  # Stripe's events: signed by Stripe (backend.membership), never a session or CSRF
 # Answered without a session.
 OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, LOGOUT, SIGNUP, FORGOT, RESET_INFO, RESET,
-                        VERIFY_EMAIL})
+                        VERIFY_EMAIL, VERIFY_EMAIL_INFO})
 # Answered before the first account exists.
 SETUP_PATHS = frozenset({HEALTH, STATE, FIRST_RUN})
 # Sign-in endpoints: JSON only and rate-limited per client address; no CSRF token (there may be no session yet).
-PRE_SESSION = frozenset({FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, SIGNUP, FORGOT, RESET_INFO, RESET, VERIFY_EMAIL})
+PRE_SESSION = frozenset({FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, SIGNUP, FORGOT, RESET_INFO, RESET, VERIFY_EMAIL,
+                         VERIFY_EMAIL_INFO})
 UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
@@ -130,8 +135,24 @@ def is_secure(scope) -> bool:
     return False
 
 
+def _port(scope) -> str:
+    """The port in the request's Host header ("" when it has none, or it isn't plain digits)."""
+    host = _host(scope)
+    if host.startswith("["):  # [::1]:8040
+        host = host[host.find("]") + 1:]
+    port = host.rpartition(":")[2] if ":" in host else ""
+    return port if port.isdigit() and len(port) <= 5 else ""
+
+
+def named_cookie(scope, plain: str) -> str:
+    """A cookie's name for this request: ``__Host-`` over HTTPS, and ``_<port>`` after it when the Host has a port,
+    so instances on different ports of one host name keep their own cookies."""
+    port = _port(scope)
+    return ("__Host-" if is_secure(scope) else "") + plain + (f"_{port}" if port else "")
+
+
 def cookie_name(scope) -> str:
-    return SECURE_COOKIE if is_secure(scope) else COOKIE
+    return named_cookie(scope, COOKIE)
 
 
 def read_secret(scope) -> Optional[bytes]:

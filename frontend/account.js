@@ -322,8 +322,10 @@
     $('#acct-rc-body').innerHTML = `<p>${pending
       ? '<strong>You haven\'t saved your new codes yet.</strong> <a href="first-run.html">Show my recovery codes</a>'
       : `You have <strong>${left} of 8</strong> recovery codes left.`}</p>
-      <p class="hint">Making new codes replaces all eight at once, including any you haven't used. You then see them once, to copy, download or print.${mfa ? ' Because they can stand in for the app, you also enter a code from your app.' : ''}</p>
+      <p class="hint">Making new codes replaces all eight at once, including any you haven't used. You then see them once, to copy, download or print. Because a code can set a new password, you enter your password${mfa ? ' and, because they can also stand in for the app, a code from your app' : ''}. We email you to say new codes were made.</p>
       <form id="acct-rc-form" class="account-form" novalidate>
+        ${usernameField()}
+        ${pwField('acct-rc-password', 'Your password', 'current-password')}
         ${mfa ? `<div class="auth-field">
           <label for="acct-rc-code">Code from your app, or a recovery code</label>
           <input id="acct-rc-code" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required />
@@ -335,11 +337,13 @@
       e.preventDefault();
       const form = e.currentTarget;
       const code = $('#acct-rc-code');
+      const password = $('#acct-rc-password');
       clearForm(form);
+      if (!password.value) { setFieldError(password, 'Enter your password.'); return; }
       if (code && !code.value.trim()) { setFieldError(code, 'Enter a code from your app, or a recovery code.'); return; }
-      const body = code ? codeBody(code.value.trim()) : {};
-      await guarded(form, $('#acct-rc-new'), { code, recovery_code: code }, async () => {
-        await withRecentAuth(() => post('/api/auth/recovery-codes', body));
+      const body = { password: password.value, ...(code ? codeBody(code.value.trim()) : {}) };
+      await guarded(form, $('#acct-rc-new'), { password, code, recovery_code: code }, async () => {
+        await recentWith(password.value, () => post('/api/auth/recovery-codes', body));
         location.assign('first-run.html'); // shows the new codes once and asks to confirm they're saved
       });
     });

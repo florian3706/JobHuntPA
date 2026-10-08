@@ -18,7 +18,7 @@ from tests.mail_helpers import BASE, MailTestCase, html_of, text_of, token_in  #
 
 from sqlalchemy import text  # noqa: E402
 
-from backend import crypto, docs, mailer, tokens, totp, users  # noqa: E402
+from backend import crypto, docs, mail_queue, mailer, tokens, totp, users  # noqa: E402
 from backend.db import (  # noqa: E402
     AdminKeyGrant,
     AuthSession,
@@ -241,6 +241,114 @@ class ForgotTest(ResetCase):
                          422)
 
 
+class ForgotLimitsTest(ResetCase):
+    """Anonymous requests share limits with nobody who is trying to help, and can't leave the owner without a link."""
+
+    def burst(self, address: str, n: int = 8) -> None:
+        for _ in range(n):
+            helpers.ratelimit.AUTH.reset()  # (the per-client limit is not what is under test)
+            self.assertEqual(self.ask(address).status_code, 202)
+
+    def test_anonymous_requests_cannot_use_up_the_admins_reset_button(self):
+        bob = self.user()
+        self.burst(bob.email)
+        self.assertEqual(len(self.to(bob.email)), 3)  # (3 an hour; the rest were dropped, still with a 202)
+        with helpers.client() as admin:
+            r = admin.post(f"/api/admin/users/{bob.id}/reset-email")
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(len(self.to(bob.email)), 4)
+            # the button has its own limit, per person: 3 an hour
+            codes = [admin.post(f"/api/admin/users/{bob.id}/reset-email").status_code for _ in range(3)]
+        self.assertEqual(codes, [200, 200, 429])
+
+    def test_the_admins_button_does_not_use_up_what_the_person_may_ask_for_themselves(self):
+        bob = self.user()
+        with helpers.client() as admin:
+            for _ in range(3):
+                self.assertEqual(admin.post(f"/api/admin/users/{bob.id}/reset-email").status_code, 200)
+        self.assertEqual(self.ask(bob.email).status_code, 202)
+        self.assertEqual(len(self.to(bob.email)), 4)
+
+    def test_an_owner_with_no_usable_link_can_always_get_one(self):
+        """Six requests used up the day's allowance; the last link expires an hour later. The owner's own request,
+        then, must still go out, or whoever keeps the limits used up denies them reset by email for a day."""
+        bob = self.user()
+        self.burst(bob.email)
+        self.assertEqual(len(self.to(bob.email)), 3)
+        helpers.ratelimit.AUTH.reset()
+        self.assertEqual(self.ask(bob.email).status_code, 202)  # a link is still live: held back
+        self.assertEqual(len(self.to(bob.email)), 3)
+        with engine.begin() as conn:  # an hour passes: every link has expired
+            conn.execute(text("UPDATE auth_tokens SET expires_at = :t WHERE user_id = :i AND kind = 'reset'"),
+                         {"t": utcnow() - timedelta(minutes=1), "i": bob.id})
+        helpers.ratelimit.AUTH.reset()
+        self.assertEqual(self.ask(bob.email).status_code, 202)
+        self.assertEqual(len(self.to(bob.email)), 4)
+        token = token_in(self.last_to(bob.email), "reset-password.html")
+        self.assertEqual(self.anonymous().post("/api/auth/reset/info", json={"token": token}).status_code, 200)
+        # ... but only one such extra email while that link is live
+        helpers.ratelimit.AUTH.reset()
+        self.ask(bob.email)
+        self.assertEqual(len(self.to(bob.email)), 4)
+
+    def test_held_back_requests_are_logged_by_account_id_only(self):
+        bob = self.user()
+        self.burst(bob.email, 3)
+        with self.assertLogs("backend.password_reset", "INFO") as logs:
+            helpers.ratelimit.AUTH.reset()
+            self.ask(bob.email)
+        text_ = "\n".join(logs.output)
+        self.assertIn(f"user {bob.id}", text_)
+        self.assertNotIn(bob.email, text_)
+
+
+class ForgotTimingTest(ResetCase):
+    """The mail thread is shared: a real account puts a send on it, so an address with no account must put a pause as
+    long as a send, or the delay of the next email shows which addresses have accounts."""
+
+    def test_every_answer_queues_one_job_and_an_address_with_no_account_queues_a_decoy(self):
+        bob = self.user()
+        jobs = []
+        real = mail_queue.submit
+
+        def spy(fn, *args, **kwargs):
+            jobs.append(fn.__name__)
+            return real(fn, *args, **kwargs)
+
+        with mock.patch.object(mail_queue, "submit", spy):
+            self.ask(bob.email)
+            self.ask("nobody-here@example.invalid")
+            for _ in range(3):  # the 2nd and 3rd go out; the 4th is held back by the limit: a decoy, like an unknown one
+                helpers.ratelimit.AUTH.reset()
+                self.ask(bob.email)
+        self.assertEqual(jobs, ["_forgot_job", "decoy", "_forgot_job", "_forgot_job", "decoy"])
+
+    def test_the_decoy_lasts_as_long_as_a_typical_send(self):
+        with mail_queue._lock:
+            mail_queue._send_times.clear()
+        self.assertEqual(mail_queue.typical_send_seconds(), mail_queue.DEFAULT_SEND_S)
+        with mail_queue._lock:
+            mail_queue._send_times.extend([0.2, 0.4, 0.3])
+        self.addCleanup(lambda: mail_queue._send_times.clear())
+        self.assertAlmostEqual(mail_queue.typical_send_seconds(), 0.3)
+        with mock.patch.object(mail_queue.time, "sleep") as sleep:
+            mail_queue.decoy()
+        sleep.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args.args[0], 0.3)
+        with mail_queue._lock:
+            mail_queue._send_times.append(500.0)
+        self.assertLessEqual(mail_queue.typical_send_seconds(), mail_queue.MAX_DECOY_S)
+
+    def test_real_sends_are_timed(self):
+        bob = self.user()
+        with mail_queue._lock:
+            mail_queue._send_times.clear()
+        self.assertEqual(self.ask(bob.email).status_code, 202)
+        self.flush()
+        with mail_queue._lock:
+            self.assertEqual(len(mail_queue._send_times), 1)
+
+
 class ForgotWithoutEmailTest(ResetCase):
     email_on = False
 
@@ -390,7 +498,7 @@ class KeepDataTest(ResetCase):
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertEqual((body["kept_data"], body["wiped"], body["admin_key_lost"]), (True, False, False))
-        self.assertNotIn("recovery_codes", body)
+        self.assertEqual(len(body["recovery_codes"]), 8)  # new ones: the old ones were replaced (below)
         self.assertEqual(body["user"], {"id": bob.id, "role": "user"})
         c.headers["X-CSRF-Token"] = body["csrf"]
         self.assertEqual(c.get("/api/auth/me").status_code, 200)  # signed in
@@ -407,14 +515,44 @@ class KeepDataTest(ResetCase):
         self.assertEqual((r.status_code, r.json()["kept_data"]), (200, True))
         self.assertEqual(self.pin_labels(self.login(bob)[0]), ["Kept marker"])
 
-    def test_recovery_codes_keep_working(self):
-        bob = self.user(background=True)
-        codes = self.signed_in(bob).get("/api/auth/recovery-codes")
-        self.assertEqual(codes.status_code, 200)
-        self.assertEqual(self.reset(self.link(bob)).status_code, 200)
-        r = self.anonymous().post("/api/auth/recover", json={"email": bob.email, "recovery_code": codes.json()["codes"][0],
-                                                          "new_password": "yet another password"})
+    def test_the_old_recovery_codes_stop_working_and_the_new_ones_are_shown(self):
+        """Each recovery code opens the data key. Whoever held the account before (someone who signed up with this
+        address first, turned background access on and kept the codes) must not be able to use one afterwards."""
+        bob = self.user(background=True, pin="Kept marker")
+        old = self.signed_in(bob).get("/api/auth/recovery-codes").json()["codes"]
+        self.assertEqual(len(old), 8)
+        r = self.reset(self.link(bob))
         self.assertEqual(r.status_code, 200, r.text)
+        new = r.json()["recovery_codes"]
+        self.assertEqual(len(new), 8)
+        self.assertFalse(set(old) & set(new))
+        for code in old[:3]:
+            helpers.ratelimit.reset_all()
+            gone = self.anonymous().post("/api/auth/recover", json={"email": bob.email, "recovery_code": code,
+                                                                    "new_password": "attacker's new password"})
+            self.assertEqual((gone.status_code, gone.json()["code"]), (401, "wrong_recovery"))
+        self.assertEqual(self.login(bob)[1].status_code, 200)  # the password the owner chose still stands
+        # Nothing in the database wraps the key for an old code, and the new ones are kept sealed until saved.
+        rows_now = rows(lambda s: s.query(RecoveryCode).filter(RecoveryCode.user_id == bob.id).all())
+        self.assertEqual(len(rows_now), 8)
+        self.assertTrue(all(rc.used_at is None and rc.wrapped_dek is not None for rc in rows_now))
+        c = self.anonymous()
+        c.post("/api/auth/login", json={"email": bob.email, "password": NEW_PASSWORD})
+        self.assertEqual(c.get("/api/auth/me").json()["recovery_codes_pending"], True)
+        helpers.ratelimit.reset_all()
+        mine = self.anonymous().post("/api/auth/recover", json={"email": bob.email, "recovery_code": new[0],
+                                                               "new_password": "yet another password"})
+        self.assertEqual(mine.status_code, 200, mine.text)
+
+    def test_a_pending_authenticator_setup_of_the_previous_holder_is_dropped(self):
+        bob = self.user(background=True)
+        c = self.signed_in(bob)
+        self.assertEqual(c.post("/api/auth/mfa/setup").status_code, 200)  # started, never finished
+        self.assertIsNotNone(rows(lambda s: s.get(User, bob.id)).totp_pending_enc)
+        self.assertEqual(self.reset(self.link(bob)).status_code, 200)
+        row = rows(lambda s: s.get(User, bob.id))
+        self.assertIsNone(row.totp_pending_enc)
+        self.assertFalse(row.mfa_enabled)
 
     def test_a_notice_goes_to_the_address_and_names_no_address(self):
         bob = self.user(background=True)
@@ -427,13 +565,11 @@ class KeepDataTest(ResetCase):
 
     def test_the_old_password_copy_of_the_key_is_gone_and_the_lockout_cleared(self):
         bob = self.user(background=True)
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE users SET failed_logins = 7, locked_until = :t WHERE id = :i"),
-                         {"t": utcnow() + timedelta(minutes=10), "i": bob.id})
+        helpers.lock_out(bob.id)
+        self.assertGreater(helpers.ratelimit.guesses.waiting(bob.id), 0)
         self.assertEqual(self.reset(self.link(bob)).status_code, 200)  # no lockout check without two-step sign-in
-        row = rows(lambda s: s.get(User, bob.id))
-        self.assertEqual((row.failed_logins, row.locked_until), (0, None))
-        self.assertTrue(row.email_verified)  # the mailbox answered
+        self.assertEqual((helpers.ratelimit.guesses.waiting(bob.id), helpers.wrong_tries(bob.id)), (0, 0))
+        self.assertTrue(rows(lambda s: s.get(User, bob.id)).email_verified)  # the mailbox answered
 
     def test_it_works_for_someone_else_signed_in_in_the_same_browser(self):
         bob, carol = self.user(background=True), self.user()
@@ -644,7 +780,7 @@ class WipeTest(ResetCase):
         bob = self.user()
         c = self.signed_in(bob)
         with mock.patch("backend.users.replace_recovery_codes", side_effect=crypto.KeyMismatch("x")):
-            r = c.post("/api/auth/recovery-codes")
+            r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD})
         self.assertEqual((r.status_code, r.json()["code"]), (401, "signed_out"))
 
     def _audit(self) -> list[dict]:
@@ -670,7 +806,7 @@ class MfaResetTest(ResetCase):
             self.assertEqual(r.status_code, 422)  # one or the other, not both
             r = self.reset(token, accept_wipe=True, code="000000")
             self.assertEqual((r.status_code, r.json()["code"]), (422, "wrong_code"))
-            self.assertEqual(rows(lambda s: s.get(User, bob.id)).failed_logins, 1)
+            self.assertEqual(helpers.wrong_tries(bob.id), 1)
             self.assertEqual(self.anonymous().post("/api/auth/reset/info", json={"token": token}).status_code, 200)
 
     def test_the_right_code_resets_and_cannot_be_replayed(self):
@@ -682,7 +818,7 @@ class MfaResetTest(ResetCase):
         self.assertEqual(r.status_code, 200, r.text)
         c.headers["X-CSRF-Token"] = r.json()["csrf"]
         self.assertEqual(self.pin_labels(c), ["Mfa marker"])
-        self.assertEqual(rows(lambda s: s.get(User, bob.id)).failed_logins, 0)
+        self.assertEqual(helpers.wrong_tries(bob.id), 0)
         again = self.link(bob)
         r = self.reset(again, code=code, new_password="a different new password")  # the same step: replay
         self.assertEqual((r.status_code, r.json()["code"]), (422, "wrong_code"))
@@ -702,10 +838,11 @@ class MfaResetTest(ResetCase):
         token = self.link(bob)
         r = self.reset(token, recovery_code=codes[0])
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(rows(lambda s: users.recovery_codes_left(s, bob.id)), 7)
+        # (all eight are replaced by the reset, the one used up with the rest)
+        self.assertEqual(rows(lambda s: users.recovery_codes_left(s, bob.id)), 8)
         again = self.link(bob)
         r = self.reset(again, recovery_code=codes[0], new_password="a different new password")
-        self.assertEqual((r.status_code, r.json()["code"]), (422, "wrong_code"))  # used up
+        self.assertEqual((r.status_code, r.json()["code"]), (422, "wrong_code"))  # gone
 
     def test_five_wrong_codes_make_the_account_wait(self):
         bob, secret = self.user(background=True, mfa=True)
@@ -715,6 +852,18 @@ class MfaResetTest(ResetCase):
         r = self.reset(token, code=totp.code_at(secret, self.step()))
         self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
         self.assertIn("Retry-After", r.headers)
+
+    def test_wrong_codes_from_an_outsider_do_not_keep_the_owner_out(self):
+        """The owner has the link (the mailbox) and the app; a stranger who guesses codes against the account waits
+        alone, from their own address."""
+        bob, secret = self.user(background=True, mfa=True)
+        token = self.link(bob)
+        stranger = self.anonymous(client=("203.0.113.9", 4000))
+        statuses = [self.reset(token, anon=stranger, code="000000").status_code for _ in range(6)]
+        self.assertEqual(statuses, [422] * 5 + [429])
+        owner = self.anonymous(client=("198.51.100.7", 5000))
+        r = self.reset(token, anon=owner, code=totp.code_at(secret, self.step()))
+        self.assertEqual(r.status_code, 200, r.text)
 
     def test_a_wiping_reset_also_needs_the_code_before_anything_is_deleted(self):
         bob, secret = self.user(mfa=True, pin="Mfa marker")
@@ -741,7 +890,7 @@ class StaleLinkTest(ResetCase):
         token = self.link(bob)  # sent to the old address
         c = self.signed_in(bob)
         new = f"moved-{bob.id}@example.invalid"
-        self.assertEqual(c.post("/api/auth/email/change", json={"new_email": new}).status_code, 200)
+        self.assertEqual(c.post("/api/auth/email/change", json={"new_email": new, "password": PASSWORD}).status_code, 200)
         confirm = token_in(self.last_to(new), "verify-email.html")
         self.assertEqual(self.anonymous().post("/api/auth/verify-email", json={"token": confirm}).status_code, 200)
         for r in (self.info(token), self.reset(token)):
@@ -788,8 +937,8 @@ class StaleLinkTest(ResetCase):
     def other_links(self, acct) -> None:
         """An address-change link and a second reset link for ``acct`` that a reset must not leave usable."""
         c = self.signed_in(acct)
-        self.assertEqual(c.post("/api/auth/email/change", json={"new_email": f"later-{acct.id}@example.invalid"}
-                                ).status_code, 200)
+        self.assertEqual(c.post("/api/auth/email/change", json={"new_email": f"later-{acct.id}@example.invalid",
+                                                                        "password": PASSWORD}).status_code, 200)
         db = SessionLocal()
         try:
             tokens.create(db, "reset", ttl=timedelta(hours=1), user_id=acct.id, payload={"email": acct.email})
@@ -848,7 +997,7 @@ class AfterResetTest(ResetCase):
         code = totp.code_at(secret, self.step())
         r = self.reset(token, anon=c, accept_wipe=True, code=code)
         self.assertEqual((r.status_code, r.json()["code"]), (409, "run_active"))
-        self.assertEqual(rows(lambda s: s.get(User, bob.id)).failed_logins, 0)
+        self.assertEqual(helpers.wrong_tries(bob.id), 0)
         with engine.begin() as conn:
             conn.execute(text("UPDATE search_runs SET state = 'done' WHERE workspace_id = :w"), {"w": bob.workspace_id})
         r = self.reset(token, accept_wipe=True, code=code)  # the same code: it was not used up

@@ -226,6 +226,10 @@ Notes:
 - The email provider sees digest contents (job titles, companies and fit summaries).
 - Stripe sees the email address and payment details.
 
+**Sign-in timing and the mail thread.** Refused sign-ins are held to a floor (§3.6), so an unknown address and a wrong password take the same time to within a few milliseconds. "Forgot password" answers 202 either way and queues the same kind of job on the mail thread, a decoy as long as a typical send for an address with no account, so the delay of the next email shows nothing either. What remains: the delay is an average, so a very long or very short real send can still show, and sign-up answers "already exists" for an existing address anyway, so this is hardening of an already-open door.
+
+**Wrong tries are forgotten on restart and spread over many addresses.** They are counted in memory (§3.6). Restarting the server (or a power cut) gives every source its five tries back. A guesser with many network addresses gets 5 tries per address up to the account-wide ceiling of 100 an hour; IPv6 addresses count one by one, so a whole /64 can rotate through the ceiling. The owner's usual browsers are exempt from the ceiling, a brand-new device is not.
+
 **Logs must never contain plaintext.** Today they do in three places:
 - httpx logs every request URL at INFO, which includes SEEK search terms, Nominatim queries and station names. Set the `httpx` and `httpcore` loggers to WARNING.
 - `pipeline` logs source labels and `geo` logs geocode queries. Replace these with ids and exception class names.
@@ -248,8 +252,9 @@ Notes:
    - Background runs hold the key for as long as the run lasts, even if the user logs out meanwhile.
    - Background-access keys are unwrapped with the KEK each time they are needed, and never cached.
 2. **Cookie:**
-   - Name `__Host-jh_session` with `Secure` when the request is HTTPS. HTTPS means `request.url.scheme` after uvicorn's proxy headers (`--forwarded-allow-ips 127.0.0.1` is the default, and Tailscale serve connects from loopback), or a Host matching an `https` `PUBLIC_BASE_URL`.
-   - On plain `http://127.0.0.1` (local installs; Safari rejects Secure cookies there) the name is `jh_session`.
+   - Name `__Host-jh_session` with `Secure` when the request is HTTPS, and with `_<port>` after it when the Host has a port (`__Host-jh_session_8443`). Browsers keep cookies per host name and ignore the port, so a test instance on `:8001` next to the live app on `:8040` would otherwise overwrite each other's cookie and sign each other out. A port in the name stops that; it does not stop another app on the same host name from receiving the cookie, so JobHuntPA should have a host name of its own. HTTPS means `request.url.scheme` after uvicorn's proxy headers (`--forwarded-allow-ips 127.0.0.1` is the default, and Tailscale serve connects from loopback), or a Host matching an `https` `PUBLIC_BASE_URL`.
+   - On plain `http://127.0.0.1` (local installs; Safari rejects Secure cookies there) the name is `jh_session` (`jh_session_8040` with the port). Existing sessions end once when this changes, and people sign in again.
+   - A second cookie, `jh_device`, marks a browser that has signed in to an account (item 6). Same naming rules; `SameSite=Strict`, one year.
    - Always HttpOnly, `SameSite=Lax` (so the "Open" link in a digest email arrives signed in) and `Path=/`.
    - `Max-Age` is set only when "Keep me signed in" is ticked.
 3. **CSRF:**
@@ -272,13 +277,18 @@ Notes:
    - Deletes the row, expires the cookie and sends `Clear-Site-Data: "cache"`. The JS clears `jobhunt.ws`.
    - "Sign out everywhere" deletes all of the user's sessions.
    - Password change, a reset, disabling the account and deleting it also delete every session.
-6. **Rate limiting and lockout** (`backend/ratelimit.py`, in memory; the app is a single uvicorn process):
-   - **Per IP** (the client address from X-Forwarded-For on loopback): auth endpoints allow 10 requests per 5 minutes and 60 per hour. Unsubscribe allows 30 per minute.
-   - **Per account:**
-     - After 5 failures in a row, wait 30 s, doubling up to 15 minutes (`users.locked_until`). There is no permanent lockout, which would be a denial-of-service vector. Admins can unlock.
-     - 5 wrong MFA codes drop the pending session.
+6. **Rate limiting and lockout** (`backend/ratelimit.py`, `backend/lockout.py`; in memory, the app is a single uvicorn process):
+   - **Per IP** (the client address from X-Forwarded-For on loopback): auth endpoints allow 10 requests per 5 minutes and 60 per hour. Unsubscribe allows 30 per minute. This is only as good as the proxy's header: `tailscale serve` and other proxies on this computer **append** the real client address, which uvicorn then reads; a proxy that passed a client's own `X-Forwarded-For` through unchanged would let anyone pick their address. Behind the Host allowlist (§18) a web page on another site can't reach the server to forge one, so only programs on this computer can.
+   - **Wrong passwords and codes** are counted per account **and per source**, never for the account as a whole:
+     - A source is the client address, or, for a browser that has signed in to the account before, that browser (the signed `jh_device` cookie, bound to the account and to its password salt, so a password change or reset makes every copy useless).
+     - After 5 failures in a row from one source, that source waits 30 s, doubling with each further failure up to 15 minutes. There is no permanent lockout. Failures are forgotten after a day without a try or at the next right password from that source.
+     - The try is **counted before the slow password check** (one step under a lock) and given back if the password was right, so tries sent at the same moment can't all slip past the 5: of 10 parallel wrong passwords, 5 get "wrong password" and 5 get "wait". A right password at the password step of an account with two-step sign-in gives its try back; wrong codes at the next step are counted on their own.
+     - Why per source: a lock for the whole account lets anyone who knows an address keep its owner out (4 requests an hour was enough, and the way out, recovery and reset, was locked too). Now an outsider locks only their own address.
+     - **Account-wide ceiling:** 100 wrong tries an hour from any source slows a guesser who rotates addresses. It holds up browsers new to the account, with a plain message; it never holds up a browser that has signed in to the account (so someone with a botnet can keep strangers' *first* sign-in on a new device waiting, but not the owner's usual browsers). It does not apply at the steps that need a proof only the owner has: the code after the password, a recovery code, the code during a reset by email (the link is the proof of the mailbox).
+     - Wrong tries are no longer written to the database (`users.failed_logins` and `locked_until` are unused; a restart forgets them). That also removes the extra database write only real accounts made on a wrong password, which showed in the timing.
+     - An admin's "unlock" forgets all of an account's counts; a password change or reset does too. The admin list shows "waiting after wrong passwords" while any source of an account waits.
    - Responses are 429 with `Retry-After` and a plain message.
-   - Unknown emails still run a dummy argon2 derivation, so responses can't be used to tell which accounts exist.
+   - Email addresses with no account are counted the same way (a separate store, so made-up addresses can't push real accounts out), so answers can't tell the two apart. Unknown emails still run a dummy argon2 derivation, and **every refused sign-in or recovery waits for a floor**: the slowest of three password derivations measured at start-up for the KDF settings in use, plus 50 ms. A real account's work (stored KDF settings that differ from the profile, a lookup that rewrites the email hash) can't then be told from an unknown address by its time.
    - No CAPTCHA (WCAG 3.3.8).
    - TOTP secrets are encrypted under the server KEK, not the DEK. This is deliberate: the TOTP code can then be checked during an email reset, so someone who controls a user's mailbox cannot wipe an MFA user's locked data.
 7. **argon2id settings:**
@@ -416,7 +426,7 @@ WCAG notes that apply to every auth page:
 2. `POST /api/auth/signup`:
    - Applies rate limits and checks the mode or invite. An existing address gets "An account with this email already exists. Sign in or reset your password."
    - Creates the user, DEK and wraps, key pair, 8 recovery codes in `pending_codes_enc`, membership (3 free searches when payments are on), email_prefs (off), the workspace and a session.
-   - If the invite was emailed to this same address, the email counts as verified. Otherwise a verification email is sent when SMTP is set up; digests require a verified address.
+   - If the invite was **actually emailed** to this same address (the mail server took it; the mail job records `emailed` in the invitation's sealed payload), the email counts as verified. An invitation the admin copied, one made while email was off or the queue was full, and one the mail server refused, prove nothing about the mailbox, so those sign-ups get a verification email when SMTP is set up. Digests require a verified address.
 3. `welcome.html`: each step has an `<h2 tabindex=-1>` that receives focus, "Step n of 6" as text, Back/Next and, where it makes sense, "Skip for now". Each step saves through the existing APIs (`/api/profile`, `/api/pins`, `/api/schedule`, `/api/documents`, `/api/documents/suggest-titles`), and `onboarding_step` records progress.
    1. **Theme.** A radio group in a fieldset. Each card previews its theme by carrying `data-theme` on the card itself, which works because themes.css uses attribute selectors. Choosing applies the theme to the page at once and saves it with `PUT /api/account/prefs`.
    2. **Job titles,** with an optional resume upload and "Suggest titles".
@@ -454,17 +464,19 @@ WCAG notes that apply to every auth page:
   - `POST /api/auth/recover {email, recovery_code, new_password, code | second_recovery_code}`. The code unwraps the DEK. With MFA on, the person also needs the TOTP code or a second recovery code.
   - The DEK is re-wrapped under the new password, the code is used up, other sessions are signed out and the person is logged in.
   - This path needs no SMTP, so it works on local installs.
-- **Regenerate:** re-authenticate, then `POST /api/auth/recovery-codes` replaces all eight wraps and shows the new codes once.
+- **Regenerate:** `POST /api/auth/recovery-codes {password, code?}` replaces all eight wraps and shows the new codes once. The request carries the password itself (and a code from the app or a recovery code with MFA on), not just a recent sign-in: every code opens the data key and can set a new password, so a cookie taken from a browser a few minutes after sign-in must not be able to mint them. The account's address gets a "new recovery codes were made" notice. Reading codes not yet confirmed as saved (`GET`) still needs only a recent sign-in: they are the codes the person is looking at.
 
 **6.5 Forgot password by email, and a reset sent by an admin**
 1. `POST /api/auth/forgot {email}` always answers 202 "If an account exists, we've sent a link".
    - In the background: look up `email_hash` and create a token (32 bytes, 1 hour, single use, `payload_enc` holding the email).
+   - Limits: 3 an hour and 6 a day per address and per account, for anonymous requests only (the admin's button has its own, so strangers can't use up an admin's). A request over the limits still goes out when the account has no link that can be used, so whoever keeps the limits used up can't leave the owner without one (at most one extra email an hour). Held-back requests are logged by account id.
+   - Every request puts one job on the single mail thread: the real send, or for an address with no account (or one the limits hold back) a pause as long as a typical send (average of the last 20), so timing the next email can't show which addresses have accounts.
    - Send `${PUBLIC_URL}/reset-password.html#token=…`, with the token in the fragment.
 2. `reset-password.html` calls `POST /api/auth/reset/info {token}`, which returns `{keeps_data, mfa_required}`.
    - **With background access (`keeps_data`):** "Your data will be kept."
    - **Locked:** the page shows the warning text from "Copy for users" below, a link to the recovery-code path, a required checkbox "I understand my saved data will be deleted" and the new-password field.
 3. `POST /api/auth/reset {token, new_password, code?, accept_wipe}`. If MFA is on, the TOTP code is required, because the secret is under the KEK.
-   - **With background access:** unwrap the DEK with the KEK and re-wrap it under the new password. The data is kept.
+   - **With background access:** unwrap the DEK with the KEK and re-wrap it under the new password. The data is kept. **The recovery codes are replaced** (each opens the same DEK, and whoever held the account before, for example someone who signed up with this address first and kept the codes, could set a password of their own with one) and shown on the next page like after a wipe; a never-finished authenticator setup is dropped. A reset by email leaves nothing the previous holder could use: no recovery codes, no sessions, no pending address-change or reset links, and the device cookies are bound to the old password salt.
    - **Locked:**
      - Delete the user's workspaces (cascade), sealed files, recovery codes and `billing_self`.
      - Create a new DEK, a new key pair and new recovery codes (shown on the next page), plus a fresh workspace.
@@ -487,7 +499,7 @@ WCAG notes that apply to every auth page:
 4. Set `llm_usage.user_id` to NULL.
 5. If the user was an admin, rotate the APK. The last admin can't delete their account.
 
-**6.9 Change of email address.** A verification link goes to the new address. Confirming updates `email_hash`, `pii_self` and `pii_admin` (sealed to the APK public key).
+**6.9 Change of email address.** Asking needs a recent sign-in **and the password in the request** (with MFA on, a code too): otherwise a session cookie taken in the 15 minutes after sign-in could move the account to another mailbox, and "forgot password" there would hand it over. The old address gets a notice when the change starts (a password change or reset ends a pending change). A verification link goes to the new address and says what it is for. Opening it only shows the address and a button (`POST /api/auth/verify-email/info`, which uses nothing up); the button sends the confirmation. A page that confirmed on load would let a mail scanner that runs scripts, or one stray click, put one account on another person's address. Confirming updates `email_hash`, `pii_self` and `pii_admin` (sealed to the APK public key).
 
 **Copy for users (keep it short):**
 - **Sign-up and first run:** "Your searches, documents and jobs are encrypted with a key that only your password or a recovery code can unlock. Not even the person who runs this server can read them from the database. Save your recovery codes: if you forget your password, a recovery code is the only way to keep your data. Resetting your password by email without one gives you a fresh, empty account."
@@ -1056,3 +1068,5 @@ A posting missing from one user's query results says nothing about whether it cl
 - **Host allowlist:** any IP address, `localhost`/`*.localhost`, the machine's own names, the host of `PUBLIC_BASE_URL`, `JOBHUNT_ALLOWED_HOSTS` (`.env` only: it is a security boundary, so the app's Settings don't edit it), and `testserver` while `JOBHUNT_TESTING=1`. Names only, ports ignored. A site that reaches the app through `tailscale serve` needs its name in the public address or in `JOBHUNT_ALLOWED_HOSTS` after this phase.
 - **`/docs`, `/redoc` and `/openapi.json` are off:** they listed every route to anyone who could reach the server, and Swagger's page needs scripts the policy refuses.
 - **Leaks the log test found and fixed:** (1) SQLAlchemy at DEBUG logs each row it reads *after* the sealed types have opened it (a search profile, in plaintext), plus the sessions and users rows; `SqlAtWarning` in `backend/app.py` drops everything below WARNING from its engine logger whatever the level. (2) pypdf warned with the first bytes of a file it couldn't read. (3) The Claude SDK logs whole request bodies at DEBUG. (2) and (3) join httpx in `QUIET_LOGGERS`. Everything the app itself logs was already free of personal data. Not covered: uvicorn's traceback for an unhandled exception (a bug, and the message could hold data), and the first-run token, which is printed on purpose.
+- **Sign-in, sessions, resets and email (the Phase L review):** the lockout is per account and source with an account-wide ceiling and a `jh_device` cookie (§3.6); wrong tries are counted before the slow check; refusals wait for a floor; the session cookie carries the port; an email reset that keeps the data replaces the recovery codes; new recovery codes and an address change need the password in the request; the confirmation page asks first; anonymous "forgot" requests have their own limits and put a decoy on the mail thread; an invitation counts the address as verified only if it was emailed to it. `nextPage()` in `frontend/auth.js` refuses a path that starts with `//` or `/\` once resolved (`/.//evil.example` keeps the origin and still means another site). The Host allowlist closes the DNS-rebinding route to the sign-in endpoints, where forged `X-Forwarded-For` values had given every request its own rate-limit bucket; `tests/test_security_headers.py` replays that attack.
+- **Behind a proxy:** `launch.py` trusts `X-Forwarded-For` from 127.0.0.1. The proxy must append the real client address (`tailscale serve` and the usual proxies do), not pass a client's own header through.

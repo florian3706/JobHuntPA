@@ -372,6 +372,22 @@ class Guard(unittest.TestCase):
         r = good.post("/api/auth/login", json={"email": helpers.ADMIN_EMAIL, "password": helpers.ADMIN_PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
 
+    def test_a_rebinding_page_cannot_use_the_sign_in_endpoints_with_forged_client_addresses(self):
+        """DNS rebinding: the page's Origin and Host are both its own name, so the Origin rule passes. X-Forwarded-For
+        is not a forbidden header for fetch, and the launcher trusts it from this computer, so every request could
+        name a fresh client address and never meet the per-address limit. The Host check refuses all of it first."""
+        c = self.client("http://evil.example:8123")
+        body = {"email": helpers.ADMIN_EMAIL, "password": "x" * 12}
+        for i in range(14):
+            headers = {"Origin": "http://evil.example:8123", "X-Forwarded-For": f"203.0.113.{i}"}
+            for path, payload in (("/api/auth/login", body), ("/api/auth/recover", {**body, "recovery_code": "x"}),
+                                  ("/api/auth/signup", body), ("/api/auth/forgot", {"email": body["email"]}),
+                                  ("/api/auth/reset", {"token": "x", "new_password": "x" * 12}),
+                                  ("/api/auth/first-run", {"token": "x", **body})):
+                r = c.post(path, json=payload, headers=headers)
+                self.assertEqual(r.status_code, 400, (path, i, r.text))
+        self.assertEqual(ratelimit.AUTH.hit("testclient"), None)  # nothing was counted for anyone
+
     def test_a_refused_host_is_logged_once_by_name(self):
         c = self.client("http://testserver")
         with self.assertLogs("backend.hosts", "WARNING") as logs:

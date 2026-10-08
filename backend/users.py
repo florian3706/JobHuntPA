@@ -32,6 +32,7 @@ import os
 import re
 import secrets
 import threading
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -615,12 +616,18 @@ def _clear_skipped(db: Session, user_id: int) -> None:
                                                                               skipped_slot=None))
 
 
-def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) -> bool:
+def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) -> Optional[list[str]]:
     """The "keep data" half of a password reset by email (accounts design 6.5, 13 item 1). For an account with
     background access the server unwraps the data key with its KEK and wraps it again under ``new_password`` (new
-    salt, KDF settings and verifier), clears the lockout, and ends every session, in one transaction: True. For an
-    account without it, or whose server key can't be opened, nothing changes: False (the caller then offers the
-    reset that deletes the data). Recovery codes keep working: the data key doesn't change.
+    salt, KDF settings and verifier), forgets the wrong tries, ends every session, and **replaces the recovery
+    codes**, in one transaction. Returns the eight new codes (kept sealed until the person confirms saving them, and
+    shown by the caller once). For an account without background access, or whose server key can't be opened,
+    nothing changes: None (the caller then offers the reset that deletes the data).
+
+    The old codes must go: each one opens the same data key. Whoever held the account before the person who just
+    proved the mailbox (someone who signed up with this address first, who turned background access on and kept the
+    codes) could otherwise use one to set a password of their own and read the data. The two-step secret needs no
+    such care: the reset asked for a code from it, and a setup that was never finished is dropped here.
 
     The caller (password_reset.py) has already checked the reset token and, with two-step sign-in on, the code, and decides
     what to do about a disabled account (this works for one too: it can't sign in afterwards). AccountError for a
@@ -628,26 +635,30 @@ def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) ->
     row = db.get(UserKeys, user_id)
     user = db.get(User, user_id)
     if row is None or user is None or row.server_wrapped_dek is None:
-        return False
+        return None
     new_password = check_password(new_password)
     dek = _server_dek(row, user_id)
     if dek is None:
-        return False
+        return None
     params = crypto.kdf_profile()
     salt = crypto.new_salt()
     derived = crypto.derive_password(new_password, salt, params)
     try:
         user.kdf_salt, user.kdf_params, user.pw_verifier = salt, params.to_json(), derived.auth
         row.pw_wrapped_dek = crypto.wrap(derived.kek, dek, f"pw|{user_id}")
-        user.failed_logins, user.locked_until = 0, None
+        user.totp_pending_enc = None
         db.query(AuthSession).filter(AuthSession.user_id == user_id).delete(synchronize_session=False)
+        with crypto.as_user(user_id, dek):
+            codes = replace_recovery_codes(db, user_id, dek)
         db.commit()
     except BaseException:
         db.rollback()
         raise
-    scrub_wal()  # the old password's copy of the data key
-    log.info("user %s: password reset by email; the data was kept (background access)", user_id)
-    return True
+    ratelimit.guesses.clear(user_id)
+    scrub_wal()  # the old password's and the old recovery codes' copies of the data key
+    log.info("user %s: password reset by email; the data was kept (background access) and the recovery codes "
+             "replaced", user_id)
+    return codes
 
 
 @dataclass(frozen=True, repr=False)
@@ -693,7 +704,7 @@ def reset_password_wiping_data(db: Session, user_id: int, new_password: Any, ema
             _refuse_active_runs(db, ws_ids)
             files = _remove_workspace_data(db, user_id, ws_ids)
             user.kdf_salt, user.kdf_params, user.pw_verifier = new.salt, new.params.to_json(), new.derived.auth
-            user.failed_logins, user.locked_until = 0, None
+            user.totp_pending_enc = None  # (an authenticator setup the previous holder started, never finished)
             user.prefs_enc = None  # sealed under the old key
             user.onboarding_step = 1  # the search setup is gone: the sign-up walkthrough runs again
             row.dek_kid, row.pw_wrapped_dek = crypto.key_id(dek), crypto.wrap(new.derived.kek, dek, f"pw|{user_id}")
@@ -715,6 +726,7 @@ def reset_password_wiping_data(db: Session, user_id: int, new_password: Any, ema
             db.rollback()
             raise
     removed = _remove_uploads(user_id, files)
+    ratelimit.guesses.clear(user_id)
     scrub_wal()  # the old password's, the old recovery codes' and the old key's copies of the data key
     log.info("user %s: password reset by email without a key; the saved data was deleted (%d workspace(s), %d "
              "file(s))", user_id, len(ws_ids), removed)
@@ -725,63 +737,38 @@ def workspace_ids(db: Session, user_id: int) -> list[int]:
     return [ws for (ws,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id).order_by(Workspace.id)]
 
 
-def is_locked(user: User, now: Optional[datetime] = None) -> float:
-    """Seconds until this account may try a password again (0 when it may now)."""
-    now = now or utcnow()
-    return max(0.0, (user.locked_until - now).total_seconds()) if user.locked_until else 0.0
-
-
 # ---------------------------------------------------------------------------
-# Checking a signed-in user's password (Phase E): the same failure counts and waits as signing in
+# Wrong passwords: counted per source in memory (backend/lockout.py, backend/ratelimit.py), not in the database
 # ---------------------------------------------------------------------------
 
-class AccountLocked(Exception):
-    """Too many wrong passwords or codes in a row: ``wait`` seconds until the next try."""
-
-    def __init__(self, wait: float):
-        super().__init__("locked")
-        self.wait = wait
+PAD_MARGIN_S = 0.05
+_floors: dict[str, float] = {}
+_floors_lock = threading.Lock()
 
 
-class WrongPassword(Exception):
-    """The password given isn't the account's."""
+def derivation_floor() -> float:
+    """How long a refused sign-in takes at least: the slowest of three password derivations at the current settings,
+    plus a margin. Measured once per setting (``startup`` does it in the background). Padding every refusal to this
+    keeps the answer for an address with no account as slow as for a real one (accounts design §3.6)."""
+    key = crypto.kdf_profile().to_json()
+    with _floors_lock:
+        floor = _floors.get(key)
+    if floor is None:
+        times = []
+        for _ in range(3):
+            began = time.monotonic()
+            dummy_derivation("")
+            times.append(time.monotonic() - began)
+        floor = max(times) + PAD_MARGIN_S
+        with _floors_lock:
+            _floors[key] = floor
+    return floor
 
 
-def record_failed_attempt(db: Session, user: User) -> None:
-    """One more wrong password or code in a row; after 5, the next try must wait (backend.ratelimit.lockout_seconds).
-    Committed at once, so a failed request can't undo it."""
-    db.execute(update(User).where(User.id == user.id).values(failed_logins=User.failed_logins + 1))
-    db.refresh(user)
-    seconds = ratelimit.lockout_seconds(user.failed_logins)
-    if seconds:
-        user.locked_until = utcnow() + timedelta(seconds=seconds)
-    db.commit()
-
-
-def check_signed_in_password(db: Session, user: User, password: Any, *, reset: bool = True) -> bytes:
-    """The user's DEK if ``password`` is theirs. For sensitive actions by someone who is signed in (confirming the
-    password, changing it, turning two-step off, deleting the account): a wrong one counts like a wrong password at
-    sign-in (AccountLocked after 5 in a row, WrongPassword before), so a stolen session can't be used to guess it.
-    A right one clears the count, unless ``reset`` is False: a caller that checks a code as well keeps the count while
-    the code is guessed, and clears it itself once the code is right (``clear_failed_attempts``)."""
-    wait = is_locked(user)
-    if wait:
-        raise AccountLocked(wait)
-    dek = unlock_with_password(db, user, password)
-    if dek is None:
-        record_failed_attempt(db, user)
-        log.info("Password check failed for user %s (%d in a row)", user.id, user.failed_logins)
-        raise WrongPassword()
-    if reset:
-        clear_failed_attempts(db, user)
-    return dek
-
-
-def clear_failed_attempts(db: Session, user: User) -> None:
-    """Back to no wrong tries in a row (committed, when there was anything to clear)."""
-    if user.failed_logins or user.locked_until:
-        user.failed_logins, user.locked_until = 0, None
-        db.commit()
+def pad_failure(began: float) -> None:
+    """Waits until ``derivation_floor()`` seconds have passed since ``began`` (a ``time.monotonic()``): called on
+    every refused sign-in or recovery before the answer goes out."""
+    time.sleep(max(0.0, began + derivation_floor() - time.monotonic()))
 
 
 @dataclass(frozen=True, repr=False)
@@ -808,7 +795,7 @@ def apply_new_password(db: Session, user: User, dek: bytes, new: NewPassword) ->
         raise crypto.KeyMismatch("That isn't this account's data key")
     user.kdf_salt, user.kdf_params, user.pw_verifier = new.salt, new.params.to_json(), new.derived.auth
     row.pw_wrapped_dek = crypto.wrap(new.derived.kek, dek, f"pw|{user.id}")
-    user.failed_logins, user.locked_until = 0, None
+    ratelimit.guesses.clear(user.id)  # the account starts again with no wrong tries
 
 
 # ---------------------------------------------------------------------------

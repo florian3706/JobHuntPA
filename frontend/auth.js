@@ -32,13 +32,15 @@ async function authCall(path, { method = 'GET', body = null, csrf = null } = {})
 
 /* Where to go after signing in: the page that sent people here (?next=), if it is a path on this site. The value is
    resolved the way the browser will (which drops tabs and newlines, so "/<tab>/evil.example" means "//evil.example")
-   and must stay on this origin. */
+   and must stay on this origin. A path can stay on the origin and still start with two slashes once the dots are
+   resolved ("/.//evil.example" has the path "//evil.example"), which the browser reads as another site. */
 function nextPage() {
   const next = new URLSearchParams(location.search).get('next') || '';
   if (!next.startsWith('/')) return './';
   let url;
   try { url = new URL(next, location.origin); } catch { return './'; }
   if (url.origin !== location.origin || /^\/(login|first-run|recover|signup)\.html/.test(url.pathname)) return './';
+  if (/^\/[\/\\]/.test(url.pathname)) return './'; // "//host" or "/\host" is a link to another site
   return url.pathname + url.search + url.hash;
 }
 

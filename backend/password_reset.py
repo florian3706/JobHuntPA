@@ -11,10 +11,16 @@ The page is ``reset-password.html``; the link in the email carries the token in 
 
 **Forgot.** Always 202, whether or not an account has the address, with the same body and about the same work: the
 request looks the address up, counts it against a per-address limit, and queues a job on the mail thread
-(``mail_queue``); for an address with no account the job is empty and a token is made and thrown away so the request
-does the same hashing either way. The job (a real account only) makes the token and sends the link. Refused by a limit
-or because the account is turned off: still 202, nothing sent. Only "email isn't set up" is told (409), which says
-nothing about any account.
+(``mail_queue``); for an address with no account the request makes a token and throws it away so it does the same
+hashing either way, and the job is a pause as long as a typical send (``mail_queue.decoy``), so the mail thread is
+as busy afterwards and the wait for the next email can't show which addresses have accounts. The job of a real
+account makes the token and sends the link. Refused by a limit or because the account is turned off: still 202,
+nothing sent. Only "email isn't set up" is told (409), which says nothing about any account.
+The limits (3 an hour and 6 a day per address and per account, ``ratelimit``) are for anonymous requests only; the
+admin's "send a reset email" has its own (``RESET_BY_ADMIN``). A request that the limits would refuse still goes out
+when the account has no link that can be used (every earlier one was used or has expired), so someone who keeps the
+limits used up can't leave the owner without a working link; at most one such extra email goes out per hour.
+Requests held back are logged by account id.
 
 **The token** is an ``auth_tokens`` row of kind ``reset``: 32 random bytes, 1 hour, single use, only its hash stored,
 and a payload (sealed under a key made from the token) with the address it went to. A new link replaces any older
@@ -24,17 +30,19 @@ wipe rebuilds ``pii_self`` from, and where the "password changed" notice goes.
 
 **Reset.**
   * With two-step sign-in on, the app's code (or a recovery code, which is used up) is required: the secret is under
-    the server key, so it can be checked here (§3 item 6). Wrong codes count like wrong passwords (5 in a row make the
-    account wait).
+    the server key, so it can be checked here (§3 item 6). Wrong codes count like wrong passwords (5 in a row from
+    one place make that place wait: ``lockout``).
   * With background access the server opens the data key, wraps it under the new password and keeps everything
-    (``users.reset_password_keeping_data``).
+    (``users.reset_password_keeping_data``) **except the recovery codes**: all eight are replaced, because each opens
+    the same data key and the person who held the account before (someone who signed up with this address first)
+    may have kept them. The answer carries the new codes (``recovery_codes``), shown once like after a wipe.
   * Without it the data is locked with the old password: refused (409 ``wipe_not_accepted``) unless ``accept_wipe``,
     then everything saved is deleted and the account starts again (``users.reset_password_wiping_data``). The
     response carries the new recovery codes, shown once; ``admin_key_lost`` says an admin lost their share of the
     admin details key.
   * Either way every session ends, a "password changed" notice is sent, and **the person is signed in**: they proved
     the mailbox (and the code, with two-step on) and just chose the password, the same as ``/api/auth/recover``; and
-    after a wipe the new recovery codes can only be shown to someone signed in.
+    the new recovery codes (after a wipe or a reset that keeps the data) can only be shown to someone signed in.
 The token is used up before anything changes, and given back if the change fails.
 """
 from __future__ import annotations
@@ -49,9 +57,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from backend import account_email, email_templates, mail_queue, ratelimit, sessions, tokens, users
-from backend.auth import _after_sign_in, _signed_in, _too_many
-from backend.db import AuthToken, SessionLocal, User, get_db
+from backend import account_email, email_templates, lockout, mail_queue, ratelimit, sessions, tokens, users
+from backend.auth import _after_sign_in, _signed_in
+from backend.db import AuthToken, SessionLocal, User, get_db, utcnow
 from backend.keys import normalise_email
 from backend.security import SecondFactorIn, check_second_factor
 from backend.sessions import AuthProblem
@@ -102,6 +110,13 @@ def send_for_admin(user_id: int, address: str, admin_id: int) -> bool:
     return mail_queue.send(address, make_reset_email(user_id, address, created_by=admin_id), user_id=user_id) is not None
 
 
+def _has_live_link(db: Session, user_id: int) -> bool:
+    """Whether the account has a reset link that can still be used (sent, not used, not expired)."""
+    return db.query(AuthToken.id).filter(AuthToken.user_id == user_id, AuthToken.kind == RESET_KIND,
+                                         AuthToken.used_at.is_(None), AuthToken.expires_at > utcnow()
+                                         ).first() is not None
+
+
 class ForgotIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: str = Field("", max_length=1000)
@@ -121,13 +136,23 @@ def forgot(body: ForgotIn, db: Session = Depends(get_db)):
     server = users.server_keys()
     user = users.find_by_email(db, address)
     allowed = ratelimit.FORGOT_ADDRESS.hit(server.email_hash(address)) is None
-    if user is not None and user.status == "active" and allowed and ratelimit.RESET_ACCOUNT.hit(user.id) is None:
+    send = False
+    if user is not None and user.status == "active":
+        if allowed and ratelimit.RESET_ACCOUNT.hit(user.id) is None:
+            send = True
+        elif not _has_live_link(db, user.id):
+            send = True  # the limits are used up, but every link has run out: the owner can always get one
+        else:
+            log.info("Reset link requests for user %s are being held back by the limits", user.id)
+    if send:
         mail_queue.submit(_forgot_job, user.id, address)
     else:
-        # The same hashing and sealing a real link takes, so the answer isn't quicker for an address with no account.
+        # The same hashing and sealing a real link takes, so the answer isn't quicker for an address with no account,
+        # and the same time on the mail thread, so the next email isn't later for one that has an account.
         fake = tokens.new_token()
         tokens.hash_token(fake)
         tokens.seal_payload(fake, RESET_KIND, {"email": address})
+        mail_queue.submit(mail_queue.decoy)
     return JSONResponse({"ok": True, "message": SENT}, status_code=202)
 
 
@@ -192,21 +217,21 @@ def reset(body: ResetIn, request: Request, db: Session = Depends(get_db)):
     if not keeps and users.has_active_runs(db, user.id):  # before a code is spent on a reset that can't go ahead
         raise _run_active()
     if user.mfa_enabled:
-        wait = users.is_locked(user)
-        if wait:
-            raise _too_many(wait, "codes")
         if bool((body.code or "").strip()) == bool((body.recovery_code or "").strip()):
             raise AuthProblem(422, "second_factor_required", "This account uses two-step sign-in. Enter the code from "
                               "your authenticator app, or a recovery code.", field="code")
-        check_second_factor(db, user, SecondFactorIn(code=body.code, recovery_code=body.recovery_code))
+        # Counted per place before the code is looked at (the link is the proof of the mailbox, so no account-wide
+        # ceiling: whoever can read the mailbox can't be shut out by others guessing).
+        check_second_factor(db, user, SecondFactorIn(code=body.code, recovery_code=body.recovery_code), request.scope)
     used = tokens.consume(db, RESET_KIND, body.token)  # one request wins when two use the same link
     if used is None:
         raise AuthProblem(410, "link_invalid", LINK_INVALID)
     wiped: Optional[users.WipedReset] = None
+    kept_codes: Optional[list] = None
     try:  # the link is given back if the change itself fails
         if keeps:
-            dek = None
-            if users.reset_password_keeping_data(db, user.id, body.new_password):
+            dek, kept_codes = None, users.reset_password_keeping_data(db, user.id, body.new_password)
+            if kept_codes:
                 dek = users.background_key(db, user.id)
             if dek is None:  # background access was turned off or its key stopped opening just now
                 raise AuthProblem(409, "try_again", "Something changed while you were resetting. Open the link again "
@@ -231,6 +256,5 @@ def reset(body: ResetIn, request: Request, db: Session = Depends(get_db)):
     _after_sign_in(user.id, dek)  # a pending encryption migration waits for its owner's key
     out = {"ok": True, "user": {"id": user.id, "role": user.role}, "kept_data": keeps, "wiped": not keeps,
            "admin_key_lost": bool(wiped and wiped.admin_key_lost)}
-    if wiped is not None:
-        out["recovery_codes"] = wiped.recovery_codes
-    return _signed_in(request, secret, body.remember, out)
+    out["recovery_codes"] = wiped.recovery_codes if wiped is not None else kept_codes  # (never the old ones)
+    return _signed_in(request, secret, body.remember, out, user_id=user.id)

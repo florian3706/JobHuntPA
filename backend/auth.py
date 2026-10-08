@@ -16,18 +16,24 @@
                                           reset with a recovery code, and the data kept
     POST /api/auth/logout                 ends this session (pending or active); Clear-Site-Data: "cache"
     GET  /api/auth/me                     {user: {id, email, name, role}, csrf, recovery_codes_pending, features}
-    GET  /api/auth/recovery-codes         (recent sign-in) {codes}: the codes not yet confirmed as saved (404 when none)
+    GET  /api/auth/recovery-codes         (recent sign-in) {codes}: the codes not yet confirmed as saved (404 when none);
+                                          new ones are made with POST /api/auth/recovery-codes, which needs the password
     POST /api/auth/recovery-codes/ack     "I've saved my recovery codes": the copy kept to show them is deleted
 
 Errors are ``{"detail": "<plain words>", "code": "...", "field"?: "email" | "password" | ...}``. A wrong password and
-an unknown email address get the same answer, after the same amount of work. Login, the code step, recover and first
-run go through the checks in backend/sessions.py first (same site, JSON only, rate limit per address).
+an unknown email address get the same answer, after the same amount of work and the same time (every refusal waits
+for ``users.derivation_floor()``). Login, the code step, recover and first run go through the checks in
+backend/sessions.py first (same site, JSON only, rate limit per address). Wrong passwords and codes are counted per
+account and per source before the slow check (backend/lockout.py): five in a row from one network address or one
+browser that has signed in before make that source wait, never the whole account. Every sign-in sets the browser's
+``jh_device`` cookie.
 
 Changing the password, two-step sign-in, new recovery codes and signing out elsewhere are in backend/security.py.
 """
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -37,7 +43,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend import account, account_email, crypto, mail_queue, migrate_encryption, ratelimit, sessions, signup, users
+from backend import (account, account_email, crypto, lockout, mail_queue, migrate_encryption, sessions, signup,
+                     users)
 from backend.db import AuthSession, AuthToken, SessionLocal, User, get_db, scrub_wal, utcnow
 from backend.sessions import REAUTH_REQUIRED, AuthProblem, AuthUser, current_user, require_recent_auth  # noqa: F401
 
@@ -48,9 +55,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 WRONG = "That email address and password don't match an account. Check both and try again."
 
 
-def _too_many(seconds: float, what: str = "passwords") -> AuthProblem:
-    return AuthProblem(429, "locked", f"Too many wrong {what}. Wait {ratelimit.wait_text(seconds)}, then try "
-                                      "again.", headers={"Retry-After": ratelimit.retry_after(seconds)})
+_too_many = lockout.too_many  # (password_reset.py uses it)
+SLOW_REFUSALS = frozenset({"wrong_password", "wrong_recovery", "locked"})  # padded to the same time: users.pad_failure
 
 
 class FirstRunIn(BaseModel):
@@ -89,10 +95,12 @@ class SignupIn(BaseModel):
     invite: Optional[str] = Field(None, max_length=200)
 
 
-def _signed_in(request: Request, secret: bytes, remember: bool, body: dict, status: int = 200) -> JSONResponse:
+def _signed_in(request: Request, secret: bytes, remember: bool, body: dict, status: int = 200, *,
+               user_id: int) -> JSONResponse:
     _end_browser_session(request)
     response = JSONResponse({**body, "csrf": crypto.csrf_token(secret)}, status_code=status)
     sessions.set_cookie(response, request.scope, secret, remember)
+    lockout.remember_device(response, request.scope, user_id)  # (wrong tries by others never hold this browser up)
     return response
 
 
@@ -132,7 +140,8 @@ def first_run(body: FirstRunIn, request: Request):
     # Encrypt the data from before accounts with the new admin's key (a new install: next to nothing, done here;
     # a big database carries on in the background while the app shows the progress).
     migrate_encryption.ensure_started(account.user_id, account.dek, wait_s=5)
-    return _signed_in(request, secret, body.remember, {"ok": True, "recovery_codes": account.recovery_codes}, 201)
+    return _signed_in(request, secret, body.remember, {"ok": True, "recovery_codes": account.recovery_codes}, 201,
+                      user_id=account.user_id)
 
 
 @router.post("/signup", status_code=201)
@@ -149,37 +158,43 @@ def sign_up(body: SignupIn, request: Request):
         db.commit()
     finally:
         db.close()
-    return _signed_in(request, secret, body.remember, {"ok": True, "recovery_codes": account.recovery_codes}, 201)
+    return _signed_in(request, secret, body.remember, {"ok": True, "recovery_codes": account.recovery_codes}, 201,
+                      user_id=account.user_id)
 
 
 @router.post("/login")
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
+    began = time.monotonic()
+    try:
+        return _login(body, request, db)
+    except AuthProblem as problem:
+        if problem.code in SLOW_REFUSALS:
+            users.pad_failure(began)  # an address with no account is refused as slowly as a wrong password
+        raise
+
+
+def _login(body: LoginIn, request: Request, db: Session):
     server = users.server_keys()
     user = users.find_by_email(db, body.email)
+    # The try is counted before the slow password check, so tries sent at the same moment can't all get past the
+    # limit; a right password gives it back. The count is for this source (this browser or network address), never
+    # the whole account, so an outsider can't keep the person out (backend/lockout.py).
+    ticket = lockout.begin(request.scope, user, server.email_hash(body.email))
     if user is None:
-        key = server.email_hash(body.email)
-        wait = ratelimit.unknown_emails.locked_for(key)
-        if wait:
-            raise _too_many(wait)
         users.dummy_derivation(body.password)
-        ratelimit.unknown_emails.fail(key)
         raise AuthProblem(401, "wrong_password", WRONG)
-    wait = users.is_locked(user)
-    if wait:
-        raise _too_many(wait)
     dek = users.unlock_with_password(db, user, body.password)
     if dek is None:
-        users.record_failed_attempt(db, user)
-        log.info("Sign-in failed for user %s (%d in a row)", user.id, user.failed_logins)
+        log.info("Sign-in failed for user %s (%d in a row)", user.id, ticket.failures)
         raise AuthProblem(401, "wrong_password", WRONG)
     if user.status != "active":
-        user.failed_logins, user.locked_until = 0, None
-        db.commit()
+        ticket.succeed()
         raise AuthProblem(403, "disabled", "This account is turned off. Ask the person who runs this JobHuntPA.")
     if user.mfa_enabled:
         # Right password, but the data stays closed until the code is checked: a pending session holds the key
-        # under its own label (backend/sessions.py). The failure count is kept, so wrong codes across several
-        # sign-ins still add up to a wait; it is cleared when a code is right.
+        # under its own label (backend/sessions.py). The try is given back; wrong codes at the next step are counted
+        # on their own, so wrong codes across several sign-ins still add up to a wait.
+        ticket.refund()
         secret = sessions.create_pending(db, user, dek, persistent=body.remember)
         db.commit()
         log.info("Password accepted for user %s; waiting for the two-step code", user.id)
@@ -187,13 +202,14 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
         response = JSONResponse({"ok": True, "mfa_required": True})  # no CSRF token: nothing can be changed yet
         sessions.set_cookie(response, request.scope, secret, False)
         return response
-    user.failed_logins, user.locked_until = 0, None
+    ticket.succeed()
     secret = sessions.create(db, user, dek, persistent=body.remember)
     db.commit()
     log.info("Signed in: user %s", user.id)
     if not migrate_encryption.known_done():  # their key may be the one the encryption run is waiting for
         migrate_encryption.ensure_started(user.id, dek, wait_s=0)
-    return _signed_in(request, secret, body.remember, {"ok": True, "user": {"id": user.id, "role": user.role}})
+    return _signed_in(request, secret, body.remember, {"ok": True, "user": {"id": user.id, "role": user.role}},
+                      user_id=user.id)
 
 
 class MfaLoginIn(BaseModel):
@@ -228,12 +244,12 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
     if user is None or user.status != "active" or not user.mfa_enabled:
         sessions.end(db, sid)
         raise _mfa_expired()
-    wait = users.is_locked(user)
-    if wait:
-        raise _too_many(wait, "codes")
-    # This try is counted before the code is looked at, so parallel guesses can't get past the limit of 5.
-    attempts = sessions.count_mfa_attempt(db, sid)
+    # Counted before the code is looked at (a try at the code of an account whose password is known: the ceiling over
+    # all sources isn't applied, but this browser or address waits after 5 wrong ones in a row).
+    ticket = lockout.begin(request.scope, user, ceiling=False, what="codes")
+    attempts = sessions.count_mfa_attempt(db, sid)  # (and per sign-in: the 5th wrong code drops the pending session)
     if attempts > sessions.MFA_ATTEMPTS:
+        ticket.refund()
         sessions.end(db, sid)
         raise _mfa_expired("Too many wrong codes. Enter your email and password again.")
     recovery_id: Optional[int] = None
@@ -244,7 +260,6 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
         recovery_id = opened[0] if opened else None
         good = opened is not None
     if not good:
-        users.record_failed_attempt(db, user)
         log.info("Two-step code refused for user %s (try %d)", user.id, attempts)
         if attempts >= sessions.MFA_ATTEMPTS:
             sessions.end(db, sid)  # the 5th wrong code drops the pending session: the password has to be entered again
@@ -257,7 +272,7 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
         db.rollback()  # the same code was used by another request at the same moment
         raise AuthProblem(422, "wrong_recovery_code", "That recovery code isn't right. Check it and try again.",
                           field="recovery_code")
-    user.failed_logins, user.locked_until = 0, None
+    ticket.succeed()
     new_secret = sessions.create(db, user, dek, persistent=remember)
     db.delete(pending)
     db.commit()
@@ -266,7 +281,7 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
     out: dict = {"ok": True, "user": {"id": user.id, "role": user.role}}
     if recovery_id is not None:
         out["recovery_codes_left"] = users.recovery_codes_left(db, user.id)
-    return _signed_in(request, new_secret, remember, out)
+    return _signed_in(request, new_secret, remember, out, user_id=user.id)
 
 
 class RecoverIn(BaseModel):
@@ -288,6 +303,16 @@ def recover(body: RecoverIn, request: Request, db: Session = Depends(get_db)):
     it is wrapped again under the new password, so the data is kept. With two-step sign-in on, a second proof is needed
     too: the app's code, or a second recovery code. The codes are used up only when everything has checked out; then
     every session of the account ends and the person is signed in."""
+    began = time.monotonic()
+    try:
+        return _recover(body, request, db)
+    except AuthProblem as problem:
+        if problem.code in SLOW_REFUSALS:
+            users.pad_failure(began)
+        raise
+
+
+def _recover(body: RecoverIn, request: Request, db: Session):
     try:
         new_password = users.check_password(body.new_password)
     except users.AccountError as exc:
@@ -299,25 +324,21 @@ def recover(body: RecoverIn, request: Request, db: Session = Depends(get_db)):
     fresh = users.new_password_keys(new_password)
     server = users.server_keys()
     user = users.find_by_email(db, body.email)
+    # Counted before the code is looked at, per source like a sign-in. No ceiling over the whole account: a code has
+    # 80 random bits and can't be guessed, so this is no way in, and it must stay open for the person who lost their
+    # password while someone else is guessing (backend/lockout.py).
+    ticket = lockout.begin(request.scope, user, server.email_hash(body.email), ceiling=False)
     if user is None:
-        key = server.email_hash(body.email)
-        wait = ratelimit.unknown_emails.locked_for(key)
-        if wait:
-            raise _too_many(wait)
-        ratelimit.unknown_emails.fail(key)
         raise AuthProblem(401, "wrong_recovery", RECOVER_FAILED)
-    wait = users.is_locked(user)
-    if wait:
-        raise _too_many(wait)
     first = users.open_recovery_code(db, user.id, body.recovery_code)
     if first is None:
-        users.record_failed_attempt(db, user)
-        log.info("Recovery code refused for user %s (%d in a row)", user.id, user.failed_logins)
+        log.info("Recovery code refused for user %s (%d in a row)", user.id, ticket.failures)
         raise AuthProblem(401, "wrong_recovery", RECOVER_FAILED)
     spend = [first[0]]
     if user.mfa_enabled:
         typed_code, typed_second = (body.code or "").strip(), (body.second_recovery_code or "").strip()
         if bool(typed_code) == bool(typed_second):
+            ticket.refund()  # (the code was right; the page now asks for the second proof)
             raise AuthProblem(422, "second_factor_required", "This account uses two-step sign-in. Enter the code "
                               "from your authenticator app, or a second recovery code.", field="code")
         if typed_code:
@@ -328,11 +349,11 @@ def recover(body: RecoverIn, request: Request, db: Session = Depends(get_db)):
             if good:
                 spend.append(second[0])
         if not good:
-            users.record_failed_attempt(db, user)
-            log.info("Two-step proof refused in a recovery for user %s (%d in a row)", user.id, user.failed_logins)
+            log.info("Two-step proof refused in a recovery for user %s (%d in a row)", user.id, ticket.failures)
             raise AuthProblem(422, "wrong_code", "That code isn't right. Check it and try again.",
                               field="code" if typed_code else "second_recovery_code")
     if user.status != "active":
+        ticket.refund()
         raise AuthProblem(403, "disabled", "This account is turned off. Ask the person who runs this JobHuntPA.")
     dek = first[1]
     try:
@@ -352,7 +373,8 @@ def recover(body: RecoverIn, request: Request, db: Session = Depends(get_db)):
     account_email.notify_with_key(db, user.id, dek, "password_changed")
     _after_sign_in(user.id, dek)
     return _signed_in(request, secret, body.remember, {"ok": True, "user": {"id": user.id, "role": user.role},
-                                                       "recovery_codes_left": users.recovery_codes_left(db, user.id)})
+                                                       "recovery_codes_left": users.recovery_codes_left(db, user.id)},
+                      user_id=user.id)
 
 
 @router.post("/logout")

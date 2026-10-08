@@ -31,10 +31,16 @@
   <main id="main" class="main auth-main" tabindex="-1">
     <section class="card auth-card" aria-labelledby="page-title">
       <h1 id="page-title" tabindex="-1">Confirm your email address</h1>
-      <p id="auth-status" class="muted" role="status">Confirming your address…</p>
+      <p id="auth-status" class="muted" role="status">Checking your link…</p>
       <div id="error-summary" class="error-summary" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
         <h2 id="error-summary-title">There is a problem</h2>
         <ul id="error-summary-list"></ul>
+      </div>
+      <div id="verify-ask" class="auth-step" hidden>
+        <p id="verify-question"></p>
+        <p id="verify-address" class="verify-address"></p>
+        <p id="verify-note" class="hint"></p>
+        <button id="verify-confirm" class="btn btn-primary auth-submit" type="button">Confirm</button>
       </div>
       <div id="verify-result" class="auth-step" hidden>
         <p id="verify-text"></p>

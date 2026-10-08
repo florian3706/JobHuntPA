@@ -549,10 +549,11 @@ class SignInPagesBehaviourTest(unittest.TestCase):
                   " out[next] = nextPage(); }\nconsole.log(JSON.stringify(out));")
         cases = ["/\t/evil.example/x", "/\n/evil.example", "//evil.example", "/\\evil.example",
                  "https://evil.example", "javascript:alert(1)", "/login.html", "/recover.html?x=1", "/first-run.html",
-                 "/job.html?id=3#notes", "/", "", "/signup.html?invite=x"]
+                 "/job.html?id=3#notes", "/", "", "/signup.html?invite=x",
+                 "/.//evil.example/phish", "/..//evil.example", "/a/..//evil.example", "/./\\evil.example"]
         done = subprocess.run(["node", "-e", script, json.dumps(cases)], capture_output=True, text=True, check=True)
         out = json.loads(done.stdout)
-        for bad in cases[:8] + [""]:
+        for bad in cases[:8] + [""] + cases[13:]:
             self.assertEqual(out[bad], "./", repr(bad))
         self.assertEqual(out["/job.html?id=3#notes"], "/job.html?id=3#notes")
         self.assertEqual(out["/"], "/")
@@ -623,7 +624,8 @@ class SignInPagesBehaviourTest(unittest.TestCase):
         card = self.account[self.account.index("function renderCodes"):self.account.index("/* ---------- sign out")]
         self.assertIn('id="acct-rc-code"', card)
         self.assertIn("codeBody(code.value.trim())", card)
-        self.assertIn("withRecentAuth(() => post('/api/auth/recovery-codes', body))", card)
+        self.assertIn("recentWith(password.value, () => post('/api/auth/recovery-codes', body))", card)
+        self.assertIn("pwField('acct-rc-password', 'Your password', 'current-password')", card)
 
 
 class SignupPageTest(unittest.TestCase):
@@ -1209,6 +1211,25 @@ class EmailPagesTest(unittest.TestCase):
         self.assertIn("link_invalid", self.verify_js)
         self.assertIn("email_taken", self.verify_js)
 
+    def test_the_verify_page_asks_before_it_confirms(self):
+        """A page that confirmed on load would let a mail scanner or a stray click put an account on someone's
+        address. It reads what the link is for, shows the address, and waits for the button."""
+        ask = self.by_id(self.verify, "verify-ask")
+        self.assertIn("hidden", ask["attrs"])
+        button = self.by_id(self.verify, "verify-confirm")
+        self.assertEqual((button["tag"], button["attrs"].get("type")), ("button", "button"))
+        self.by_id(self.verify, "verify-address")
+        self.by_id(self.verify, "verify-note")
+        start = self.verify_js.index("async function initVerify")
+        self.assertIn("'/api/auth/verify-email/info'", self.verify_js[start:])
+        self.assertNotIn("'/api/auth/verify-email'", self.verify_js[start:])
+        confirm = self.verify_js[self.verify_js.index("async function confirmAddress"):start]
+        self.assertIn("'/api/auth/verify-email'", confirm)
+        self.assertIn("setBusy(btn, true)", confirm)
+        self.assertIn("announce(", self.verify_js)
+        self.assertIn("$('#page-title').focus()", self.verify_js)
+        self.assertIn("Press the button only if that was you", self.verify_js)
+
     def test_email_me_a_link_is_offered_only_when_email_is_on_and_reuses_the_typed_address(self):
         for src in (self.login_src, self.recover_src):
             self.assertIn('<li id="forgot-item" hidden>', src)
@@ -1227,13 +1248,16 @@ class EmailPagesTest(unittest.TestCase):
         self.assertIn("getElementById('account-address-slot')", self.card_js)
         self.assertIn('<h3 id="acct-addr-heading" tabindex="-1">Your email address', self.card_js)
         self.assertIn('role="status"', self.card_js)
-        self.assertIn("withRecentAuth(() => post('/api/auth/email/change'", self.card_js)
+        self.assertIn("recentWith(password.value, () => post('/api/auth/email/change', body))", self.card_js)
+        self.assertIn('<label for="acct-addr-password">Your password</label>', self.card_js)
+        self.assertIn('autocomplete="current-password"', self.card_js)
+        self.assertIn('aria-controls="acct-addr-password" aria-pressed="false">Show password', self.card_js)
         self.assertIn("Send the confirmation again", self.card_js)
         self.assertIn("Change email address", self.card_js)
         self.assertIn('<label for="acct-addr-new">New email address</label>', self.card_js)
         self.assertIn('autocomplete="email"', self.card_js)
         self.assertIn('aria-expanded', self.card_js)
-        self.assertIn("setFieldError(input, e.message)", self.card_js)
+        self.assertIn("setFieldError(field, e.message)", self.card_js)
 
     def test_the_admin_email_card_has_labelled_fields_and_its_buttons(self):
         for ident, label in (("email-host", "Mail server"), ("email-port", "Port"), ("email-security", "Encryption"),

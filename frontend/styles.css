@@ -860,6 +860,7 @@ summary { cursor: pointer; min-height: 24px; }
 .auth-card #auth-status:empty { display: none; }
 .auth-form { display: flex; flex-direction: column; gap: 18px; }
 .auth-step { display: flex; flex-direction: column; gap: 18px; }
+.verify-address { font-size: 18px; overflow-wrap: anywhere; }
 .auth-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .auth-field > label:not(.check) { font-weight: 600; font-size: 15px; }
 .auth-field .hint { margin: 0; font-size: 13.5px; }

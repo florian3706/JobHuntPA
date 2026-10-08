@@ -849,7 +849,8 @@ class User(Base):
     totp_secret_enc = Column(LargeBinary, nullable=True)
     totp_pending_enc = Column(LargeBinary, nullable=True)
     totp_last_step = Column(Integer, nullable=True)
-    # Lockout: after 5 failures in a row, wait 30 s, doubling up to 15 minutes (backend.ratelimit).
+    # Not used since Phase L: wrong passwords are counted in memory, per account and per source (backend/ratelimit.py,
+    # backend/lockout.py). The columns stay so older databases keep working.
     failed_logins = Column(Integer, nullable=False, default=0, server_default="0")
     locked_until = Column(DateTime, nullable=True)
     # {email, name}: sealed to the admin details key (pii_admin), and under the user's own DEK (pii_self).

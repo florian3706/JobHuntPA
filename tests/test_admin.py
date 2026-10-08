@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 import threading
+import types
 import unittest
 from datetime import date, datetime, timedelta
 from unittest import mock
@@ -714,13 +715,16 @@ class SignupTest(AdminTestCase):
         # The admin sees the new person with their details.
         self.assertEqual(self.user_row(admin_client, me["user"]["id"])["email"], email)
 
-    def test_an_invitation_for_this_address_counts_as_verified(self):
+    def test_an_invitation_that_was_not_emailed_does_not_make_the_address_verified(self):
+        """Email is off here, so the admin copied the link and sent it some other way (a mistyped address would be
+        "verified" just the same): the mailbox has proved nothing. Emailed invitations: tests/test_email_accounts.py."""
         c = self.signed_in()
         email = self.new_email()
-        token = c.post("/api/admin/invites", json={"email": email}).json()["link"].split("invite=")[1]
-        r = self.sign_up(self.anonymous(), email=email.upper(), invite=token)
+        invite = c.post("/api/admin/invites", json={"email": email}).json()
+        self.assertEqual((invite["emailed"], invite["email_status"]), (False, "not_set_up"))
+        r = self.sign_up(self.anonymous(), email=email.upper(), invite=invite["link"].split("invite=")[1])
         self.assertEqual(r.status_code, 201, r.text)
-        self.assertTrue(db_rows(lambda s: users.find_by_email(s, email).email_verified))
+        self.assertFalse(db_rows(lambda s: users.find_by_email(s, email).email_verified))
 
     def test_expired_and_cancelled_invitations_are_refused_and_a_failed_signup_keeps_the_invite(self):
         c = self.signed_in()
@@ -1352,19 +1356,17 @@ class UnlockTest(AdminTestCase):
         c = self.signed_in()
         bob = helpers.make_user()
         self.assertFalse(self.user_row(c, bob.id)["locked"])
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE users SET failed_logins = 7, locked_until = :t WHERE id = :i"),
-                         {"t": utcnow() + timedelta(minutes=10), "i": bob.id})
+        helpers.lock_out(bob.id)  # five wrong passwords in a row from one place: that place waits
         self.assertTrue(self.user_row(c, bob.id)["locked"])
         r = c.post(f"/api/admin/users/{bob.id}/enable")
         self.assertEqual((r.status_code, r.json()["changed"], r.json()["user"]["locked"]), (200, False, False))
-        row = db_rows(lambda s: s.get(User, bob.id))
-        self.assertEqual((row.failed_logins, row.locked_until, row.status), (0, None, "active"))
+        self.assertEqual((helpers.wrong_tries(bob.id), db_rows(lambda s: s.get(User, bob.id).status)), (0, "active"))
         self.assertIn("user_unlocked", [e["action"] for e in c.get("/api/admin/audit").json()["entries"]])
         # an expired wait is not "locked"
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE users SET locked_until = :t WHERE id = :i"), {"t": utcnow() - timedelta(minutes=1), "i": bob.id})
-        self.assertFalse(self.user_row(c, bob.id)["locked"])
+        helpers.lock_out(bob.id)
+        later = ratelimit.time.monotonic() + 3600
+        with mock.patch.object(ratelimit, "time", types.SimpleNamespace(monotonic=lambda: later)):  # (only ratelimit's)
+            self.assertFalse(self.user_row(c, bob.id)["locked"])
 
 
 class ServerSettingsAuditTest(AdminTestCase):

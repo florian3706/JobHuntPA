@@ -94,7 +94,7 @@ class AccountTestCase(unittest.TestCase):
         return c
 
     def login(self, account: helpers.Account, password: str | None = None, **extra) -> tuple[TestClient, object]:
-        ratelimit.reset_all()
+        ratelimit.AUTH.reset()  # (the wrong tries of an account are not forgotten: only the per-address request count)
         c = self.anonymous()
         r = c.post("/api/auth/login", json={"email": account.email, "password": password or account.password, **extra})
         if r.status_code == 200 and "csrf" in r.json():
@@ -110,7 +110,7 @@ class AccountTestCase(unittest.TestCase):
         return c
 
     def second_step(self, c: TestClient, **body):
-        ratelimit.reset_all()
+        ratelimit.AUTH.reset()
         r = c.post("/api/auth/login/mfa", json=body)
         if r.status_code == 200:
             c.headers["X-CSRF-Token"] = r.json()["csrf"]
@@ -148,7 +148,8 @@ class AccountTestCase(unittest.TestCase):
         try:
             u = db.get(User, account.id)
             return {"mfa": u.mfa_enabled, "secret": u.totp_secret_enc, "pending": u.totp_pending_enc,
-                    "last_step": u.totp_last_step, "failed": u.failed_logins, "locked": u.locked_until}
+                    "last_step": u.totp_last_step, "failed": helpers.wrong_tries(account.id),
+                    "locked": ratelimit.guesses.waiting(account.id) or None}
         finally:
             db.close()
 
@@ -204,8 +205,9 @@ class RecentSignInTest(AccountTestCase):
         r = c.post("/api/auth/reauth", json={"password": PASSWORD})  # even the right one waits
         self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
         self.assertIn("Retry-After", r.headers)
-        _, login = self.login(alice)  # and so does signing in
-        self.assertEqual((login.status_code, login.json()["code"]), (429, "locked"))
+        # The wait is for the browser that kept guessing: the owner, signing in from somewhere else, isn't held up.
+        _, login = self.login(alice)
+        self.assertEqual(login.status_code, 200)
 
     def test_every_sensitive_action_asks_for_recent_sign_in(self):
         alice, secret = self.with_mfa()
@@ -671,10 +673,10 @@ class RecoveryCodesTest(AccountTestCase):
         alice = helpers.make_user(password=PASSWORD)
         c = self.anonymous()
         for _ in range(5):
-            ratelimit.reset_all()
+            ratelimit.AUTH.reset()
             c.post("/api/auth/recover", json={"email": alice.email, "recovery_code": "AAAA-BBBB-CCCC-DDDD",
                                               "new_password": NEW_PASSWORD})
-        ratelimit.reset_all()
+        ratelimit.AUTH.reset()
         r = c.post("/api/auth/recover", json={"email": alice.email, "recovery_code": "AAAA-BBBB-CCCC-DDDD",
                                               "new_password": NEW_PASSWORD})
         self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
@@ -749,7 +751,7 @@ class RecoveryCodesTest(AccountTestCase):
         c.post("/api/auth/recovery-codes/ack")
         self.assertEqual(c.get("/api/auth/recovery-codes").status_code, 404)
         self.assertFalse(c.get("/api/auth/security").json()["recovery_codes_pending"])
-        r = c.post("/api/auth/recovery-codes")
+        r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD})
         self.assertEqual((r.status_code, r.json()), (200, {"ok": True, "recovery_codes_left": 8,
                                                            "recovery_codes_pending": True}))
         self.assertTrue(c.get("/api/auth/me").json()["recovery_codes_pending"])
@@ -782,7 +784,7 @@ class RecoveryCodesTest(AccountTestCase):
         c.__enter__()
         self.addCleanup(c.__exit__, None, None, None)
         self.assertEqual(c.get("/api/auth/security").json()["recovery_codes_left"], 7)
-        c.post("/api/auth/recovery-codes")
+        c.post("/api/auth/recovery-codes", json={"password": NEW_PASSWORD})
         self.assertEqual(c.get("/api/auth/security").json()["recovery_codes_left"], 8)
 
 
@@ -1347,15 +1349,15 @@ class StolenSessionTest(AccountTestCase):
         before = c.get("/api/auth/recovery-codes").json()["codes"]
         self.make_stale(c)
         self.assertEqual(c.post("/api/auth/reauth", json={"password": PASSWORD}).status_code, 200)
-        r = c.post("/api/auth/recovery-codes")
+        r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD})
         self.assertEqual((r.status_code, r.json()["code"]), (422, "invalid"))
-        r = c.post("/api/auth/recovery-codes", json={"code": self.code(secret, 5)})
+        r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD, "code": self.code(secret, 5)})
         self.assertEqual((r.status_code, r.json()["code"]), (422, "wrong_code"))
-        r = c.post("/api/auth/recovery-codes", json={"recovery_code": "AAAA-BBBB-CCCC-DDDD"})
+        r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD, "recovery_code": "AAAA-BBBB-CCCC-DDDD"})
         self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "wrong_code", "recovery_code"))
         self.assertEqual(c.get("/api/auth/recovery-codes").json()["codes"], before)  # nothing was replaced
         self.assertTrue(self.row(alice)["mfa"])
-        r = c.post("/api/auth/recovery-codes", json={"code": self.code(secret)})
+        r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD, "code": self.code(secret)})
         self.assertEqual((r.status_code, r.json()["recovery_codes_left"]), (200, 8))
         self.assertEqual(self.row(alice)["failed"], 0)  # a right code clears the wrong tries
         new = c.get("/api/auth/recovery-codes").json()["codes"]
@@ -1365,15 +1367,15 @@ class StolenSessionTest(AccountTestCase):
         alice, secret = self.with_mfa()
         c = self.mfa_client(alice, secret)
         old = c.get("/api/auth/recovery-codes").json()["codes"]
-        r = c.post("/api/auth/recovery-codes", json={"recovery_code": old[0]})
+        r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD, "recovery_code": old[0]})
         self.assertEqual(r.status_code, 200, r.text)
         new = c.get("/api/auth/recovery-codes").json()["codes"]
         self.assertFalse(set(old) & set(new))
         for n in range(1, 6):
-            r = c.post("/api/auth/recovery-codes", json={"code": self.code(secret, 5 + n)})
+            r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD, "code": self.code(secret, 5 + n)})
             self.assertEqual(r.status_code, 422)
             self.assertEqual(self.row(alice)["failed"], n)
-        r = c.post("/api/auth/recovery-codes", json={"code": self.code(secret)})  # even a right one waits now
+        r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD, "code": self.code(secret)})  # even a right one waits now
         self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
         self.assertIn("Retry-After", r.headers)
         self.assertIn("codes", r.json()["detail"])
@@ -1382,8 +1384,25 @@ class StolenSessionTest(AccountTestCase):
     def test_without_two_step_new_codes_need_no_code(self):
         alice = helpers.make_user(password=PASSWORD)
         c = self.signed_in(alice)
-        self.assertEqual(c.post("/api/auth/recovery-codes").status_code, 200)
-        self.assertEqual(c.post("/api/auth/recovery-codes", json={}).status_code, 200)
+        self.assertEqual(c.post("/api/auth/recovery-codes", json={"password": PASSWORD}).status_code, 200)
+        self.assertEqual(c.post("/api/auth/recovery-codes", json={"password": PASSWORD, "recovery_code": ""}).status_code,
+                         200)
+
+    def test_a_session_alone_cannot_make_codes_even_right_after_sign_in(self):
+        """A cookie taken in the 15 minutes after sign-in is a recent sign-in. New codes open the data key and can set a
+        new password, so the request must carry the password itself (and a code with two-step sign-in on)."""
+        alice = helpers.make_user(password=PASSWORD)
+        c = self.signed_in(alice)
+        before = c.get("/api/auth/recovery-codes").json()["codes"]
+        self.assertTrue(c.get("/api/auth/security").json()["recent_auth"])
+        for body in (None, {}, {"password": ""}):
+            r = c.post("/api/auth/recovery-codes", **({"json": body} if body is not None else {}))
+            self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "invalid", "password"), body)
+        r = c.post("/api/auth/recovery-codes", json={"password": "not the password"})
+        self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "wrong_password", "password"))
+        self.assertEqual(c.get("/api/auth/recovery-codes").json()["codes"], before)  # nothing was replaced
+        self.assertEqual(c.post("/api/auth/recovery-codes", json={"password": PASSWORD}).status_code, 200)
+        self.assertFalse(set(before) & set(c.get("/api/auth/recovery-codes").json()["codes"]))
 
     def test_wrong_codes_when_turning_two_step_off_add_up_to_the_wait(self):
         alice, secret = self.with_mfa()
@@ -1420,13 +1439,7 @@ class StolenSessionTest(AccountTestCase):
     def test_the_wait_at_the_code_step_talks_about_codes_not_passwords(self):
         alice, secret = self.with_mfa()
         c, _ = self.login(alice)
-        db = SessionLocal()
-        try:
-            row = db.get(User, alice.id)
-            row.failed_logins, row.locked_until = 5, utcnow() + timedelta(minutes=5)
-            db.commit()
-        finally:
-            db.close()
+        helpers.lock_out(alice.id)  # (this client has no cookie from the account yet: it is its network address)
         r = self.second_step(c, code=self.code(secret))
         self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
         self.assertIn("wrong codes", r.json()["detail"])

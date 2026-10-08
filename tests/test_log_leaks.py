@@ -247,6 +247,7 @@ class FullRun(MailTestCase):
         self.assertEqual(r.status_code, 201, r.text)
         c.headers["X-CSRF-Token"] = r.json()["csrf"]
         self.secrets.update(password=PASSWORD, csrf=r.json()["csrf"], session=c.cookies.get("jh_session") or "",
+                            device=c.cookies.get("jh_device") or "",
                             **{f"recovery_code_{i}": code for i, code in enumerate(r.json()["recovery_codes"])})
         helpers._passwords[email] = PASSWORD
         self.email = email
@@ -457,7 +458,7 @@ class FullRun(MailTestCase):
         self.assertIn(b"ZQX", text, "the export should hold the planted data")
         self.assertIn(b"zqxowner", text.lower())
 
-        r = c.post("/api/auth/email/change", json={"new_email": NEW_EMAIL})
+        r = c.post("/api/auth/email/change", json={"new_email": NEW_EMAIL, "password": PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
         token = token_in(self.last_to(NEW_EMAIL), "verify-email.html")
         self.secrets["change_link_token"] = token

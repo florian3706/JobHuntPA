@@ -2,8 +2,10 @@
    It shows the address, whether it is confirmed, and offers "Send the confirmation again" and "Change email address".
    Both need email to be set up on the server (an admin does that); while it isn't, the card says so and offers nothing.
 
-   - Changing the address needs a recent sign-in, so it goes through withRecentAuth() (common.js). The link goes to the
-     NEW address and nothing changes until it is opened, in any browser.
+   - Changing the address asks for the password in the form itself (and a code from the app with two-step sign-in on), on
+     top of a recent sign-in: a session alone must not be able to move the account to another mailbox. The password
+     typed there also starts the recent sign-in, so nobody types it twice (WCAG 3.3.7). The link goes to the NEW
+     address and nothing changes until it is opened and confirmed, in any browser.
    - WCAG 2.2: labelled field, the problem written under it (setFieldError), results said in a status region and
      through announce(); one column from 320 px. */
 (function () {
@@ -32,9 +34,21 @@
         <form id="acct-addr-form" class="account-form" novalidate${changing ? '' : ' hidden'}>
           <div class="auth-field">
             <label for="acct-addr-new">New email address</label>
-            <p id="acct-addr-new-hint" class="hint">We send a link to the new address. Nothing changes until you open it. You may be asked for your password.</p>
+            <p id="acct-addr-new-hint" class="hint">We send a link to the new address. Nothing changes until you open it and confirm.</p>
             <input id="acct-addr-new" type="email" autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" aria-describedby="acct-addr-new-hint" required />
           </div>
+          <input class="visually-hidden" type="text" autocomplete="username" tabindex="-1" readonly aria-hidden="true" aria-label="Email address" value="${esc(info.email || '')}" />
+          <div class="auth-field">
+            <label for="acct-addr-password">Your password</label>
+            <div class="pw-row">
+              <input id="acct-addr-password" type="password" autocomplete="current-password" spellcheck="false" required />
+              <button id="acct-addr-toggle" class="btn pw-toggle" type="button" aria-controls="acct-addr-password" aria-pressed="false">Show password</button>
+            </div>
+          </div>
+          ${info.mfa_enabled ? `<div class="auth-field">
+            <label for="acct-addr-code">Code from your app, or a recovery code</label>
+            <input id="acct-addr-code" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required />
+          </div>` : ''}
           <div class="acct-error error" role="alert" hidden></div>
           <div class="toolbar-row">
             <button id="acct-addr-send" class="btn btn-primary" type="submit">Send a link to the new address</button>
@@ -50,6 +64,12 @@
     document.getElementById('acct-addr-change').addEventListener('click', () => toggleChange(!changing));
     document.getElementById('acct-addr-cancel').addEventListener('click', () => toggleChange(false, true));
     document.getElementById('acct-addr-form').addEventListener('submit', changeAddress);
+    document.getElementById('acct-addr-toggle').addEventListener('click', (e) => {
+      const input = document.getElementById('acct-addr-password');
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      e.currentTarget.setAttribute('aria-pressed', String(show));
+    });
     const resend = document.getElementById('acct-addr-resend');
     if (resend) resend.addEventListener('click', resendLink);
   }
@@ -87,30 +107,54 @@
     setBusy(btn, false);
   }
 
+  /* A code from the app is 6 digits; a recovery code is 16 letters and digits. */
+  const codeBody = (value) => (/^\d{6}$/.test(value.replace(/[\s-]/g, '')) ? { code: value } : { recovery_code: value });
+
+  /* The password is in the request. If the session's recent sign-in has run out, the same password starts a new one
+     first (and the request is sent again), so the "Confirm your password" dialog isn't needed as well. */
+  async function recentWith(password, fn) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e?.code !== 'reauth_required') throw e;
+      await post('/api/auth/reauth', { password });
+      return fn();
+    }
+  }
+
   async function changeAddress(ev) {
     ev.preventDefault();
+    const form = ev.currentTarget;
     const input = document.getElementById('acct-addr-new');
-    const box = ev.currentTarget.querySelector('.acct-error');
+    const password = document.getElementById('acct-addr-password');
+    const code = document.getElementById('acct-addr-code');
+    const box = form.querySelector('.acct-error');
     const btn = document.getElementById('acct-addr-send');
     box.hidden = true;
-    setFieldError(input, '');
+    for (const el of [input, password, code]) if (el) setFieldError(el, '', { focus: false });
     const value = input.value.trim();
     if (!value) { setFieldError(input, 'Enter the new email address.'); return; }
+    if (!password.value) { setFieldError(password, 'Enter your password.'); return; }
+    if (code && !code.value.trim()) { setFieldError(code, 'Enter a code from your app, or a recovery code.'); return; }
     setBusy(btn, true);
     say('Sending…');
     try {
-      await withRecentAuth(() => post('/api/auth/email/change', { new_email: value }));
+      const body = { new_email: value, password: password.value, ...(code ? codeBody(code.value.trim()) : {}) };
+      await recentWith(password.value, () => post('/api/auth/email/change', body));
       await load();  // (a failed reload keeps the last card, which render() rebuilds without the busy button)
       changing = false;
       render();
-      say('Sent. Open the link we emailed to the new address to finish. Your address stays the same until you do.');
+      say('Sent. Open the link we emailed to the new address and confirm. Your address stays the same until you do.');
       document.getElementById('acct-addr-heading').focus();
       return;
     } catch (e) {
       say('');
-      if (e.field === 'new_email') setFieldError(input, e.message);
-      else showError(box, e.code === 'reauth_required' ? 'Your password was not confirmed, so nothing was changed.' : e.message);
+      const field = { new_email: input, password, code, recovery_code: code }[e.field];
+      if (field) setFieldError(field, e.message);
+      else showError(box, e.message);
     }
+    password.type = 'password';
+    document.getElementById('acct-addr-toggle').setAttribute('aria-pressed', 'false');
     setBusy(btn, false);
   }
 

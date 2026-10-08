@@ -486,3 +486,8 @@ CLAUDE.md's workspace and `duplicate_of` rules.
 - **Before releasing accounts,** test on the Pi's test instance (port 8001) first. Back up its database with SQLite's
   backup API, sign up as the first admin, check that the existing data was claimed and encrypted, and only then touch
   the live app on 8040.
+- **Pi test instance and the sign-in cookie:** browsers keep cookies per host name and ignore the port, so the live app
+  (8040) and the test instance (8001) on one host name would have shared one cookie name and signed each other out. The
+  cookie names now carry the port (`jh_session_8001`, `jh_session_8040`), so they coexist. Other apps on the same host
+  name still receive the cookie, so give JobHuntPA a host name of its own (its own Tailscale name, for example) rather than
+  the Pi's shared one.

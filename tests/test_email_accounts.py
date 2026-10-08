@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 import unittest
 from datetime import timedelta
 from unittest import mock
@@ -101,6 +102,46 @@ class VerifyTest(AccountMailCase):
         status = c.get("/api/auth/email").json()
         self.assertEqual((status["verified"], status["email"], status["enabled"], status["pending_change"]),
                          (True, email, True, False))
+
+    def test_opening_the_link_only_says_what_it_is_for_and_confirms_nothing(self):
+        """The page asks first. A mail scanner that runs scripts, or one stray click, must not put an account on an
+        address: only the POST that the "Confirm" button sends does that."""
+        self.open_signup()
+        _c, _r, email = self.sign_up()
+        token = token_in(self.last_to(email), "verify-email.html")
+        uid = self.user_id_of(email)
+        for _ in range(3):  # (and it doesn't use the link up)
+            r = self.anonymous().post("/api/auth/verify-email/info", json={"token": token})
+            self.assertEqual((r.status_code, r.json()), (200, {"kind": "verify", "email": email}))
+        self.assertFalse(self.verified(uid))
+        self.assertEqual(self.confirm(token).status_code, 200)
+        self.assertTrue(self.verified(uid))
+        r = self.anonymous().post("/api/auth/verify-email/info", json={"token": token})
+        self.assertEqual((r.status_code, r.json()["code"]), (410, "link_invalid"))
+        for bad in ("nonsense", "", "x" * 600):
+            self.assertEqual(self.anonymous().post("/api/auth/verify-email/info", json={"token": bad}).status_code, 410)
+
+    def test_a_change_of_address_names_the_address_and_waits_for_the_button(self):
+        """Signed-in A asks to move to victim@...: the victim's mailbox gets the link. Opening it (even by a scanner)
+        changes nothing; the page shows the address and a button."""
+        mallory = helpers.make_user(password=PASSWORD)
+        c = self.signed_in(mallory)
+        victim = self.new_email("victim")
+        self.assertEqual(c.post("/api/auth/email/change", json={"new_email": victim, "password": PASSWORD}).status_code, 200)
+        token = token_in(self.last_to(victim), "verify-email.html")
+        r = self.anonymous().post("/api/auth/verify-email/info", json={"token": token})
+        self.assertEqual((r.status_code, r.json()), (200, {"kind": "change", "email": victim}))
+        self.assertEqual(bytes(rows(lambda s: s.get(User, mallory.id)).email_hash),
+                         users.server_keys().email_hash(mallory.email))  # nothing moved
+        self.assertIsNone(rows(lambda s: users.find_by_email(s, victim)))
+
+    def test_the_page_does_not_post_on_load(self):
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "frontend" / "verify-email.js").read_text(encoding="utf-8")
+        load = js[js.index("async function initVerify"):]
+        self.assertIn("'/api/auth/verify-email/info'", load)
+        self.assertNotIn("'/api/auth/verify-email'", load)  # that call is in confirmAddress, on the button
+        self.assertIn("addEventListener('click', confirmAddress)", js)
 
     def test_the_token_is_random_hashed_and_good_for_24_hours(self):
         self.open_signup()
@@ -264,7 +305,7 @@ class ChangeEmailTest(AccountMailCase):
         return acct, self.signed_in(acct)
 
     def start(self, c, new: str):
-        return c.post("/api/auth/email/change", json={"new_email": new})
+        return c.post("/api/auth/email/change", json={"new_email": new, "password": PASSWORD})
 
     def test_the_link_goes_to_the_new_address_and_nothing_changes_until_it_is_opened(self):
         bob, c = self.person()
@@ -273,7 +314,12 @@ class ChangeEmailTest(AccountMailCase):
         self.assertEqual((r.status_code, r.json()), (200, {"ok": True, "sent": True}))
         msg = self.last_to(new)
         token = token_in(msg, "verify-email.html")
-        self.assertEqual(self.to(bob.email), [])  # nothing yet to the old address
+        started = self.to(bob.email)  # the old address hears of it now, and it is only a notice: no link
+        self.assertEqual([m["Subject"] for m in started],
+                         ["A change of email address was started on your JobHuntPA account"])
+        for part in (text_of(started[0]), html_of(started[0])):
+            self.assertNotIn("verify-email.html", part)
+            self.assertNotIn(new, part)
         before = rows(lambda s: s.get(User, bob.id))
         self.assertEqual(bytes(before.email_hash), users.server_keys().email_hash(bob.email))
         self.assertEqual(self.login(bob.email)[1].status_code, 200)  # the old address still signs in
@@ -309,7 +355,7 @@ class ChangeEmailTest(AccountMailCase):
         self.assertEqual((row["email"], row["name"], row["details_available"], row["email_verified"]),
                          (new, "Pat Example", True, True))
         # a notice went to the old address, and says nothing about either address
-        notice = [m for m in self.to(bob.email) if "email address" in m["Subject"]]
+        notice = [m for m in self.to(bob.email) if "email address on" in m["Subject"]]
         self.assertEqual(len(notice), 1)
         self.assertEqual(notice[0]["Subject"], "The email address on your JobHuntPA account was changed")
         for part in (text_of(notice[0]), html_of(notice[0])):
@@ -320,6 +366,61 @@ class ChangeEmailTest(AccountMailCase):
         self.assertEqual(self.confirm(token).status_code, 410)
         self.assertEqual(self.anonymous().post("/api/auth/forgot", json={"email": bob.email}).status_code, 202)
         self.assertEqual([m for m in self.to(bob.email) if "Reset" in m["Subject"]], [])
+
+    def test_the_password_in_the_request_is_needed_not_just_a_recent_sign_in(self):
+        """A cookie taken in the 15 minutes after sign-in is a recent sign-in. It must not be able to move the account
+        to another mailbox, where "forgot password" would hand it over."""
+        bob, c = self.person()
+        new = self.new_email("thief")
+        self.assertTrue(c.get("/api/auth/security").json()["recent_auth"])
+        for body in ({"new_email": new}, {"new_email": new, "password": ""}):
+            r = c.post("/api/auth/email/change", json=body)
+            self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "invalid", "password"))
+        r = c.post("/api/auth/email/change", json={"new_email": new, "password": "not the password"})
+        self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "wrong_password", "password"))
+        self.assertEqual(self.to(new), [])
+        self.assertEqual(token_rows(bob.id, "email_change"), [])
+        self.assertEqual(c.get("/api/auth/email").json()["pending_change"], False)
+        self.assertEqual(self.start(c, new).status_code, 200)
+
+    def test_wrong_passwords_here_count_like_any_other_and_five_make_this_browser_wait(self):
+        bob, c = self.person()
+        for _ in range(5):
+            self.assertEqual(c.post("/api/auth/email/change", json={"new_email": self.new_email(),
+                                                                    "password": "wrong wrong"}).status_code, 422)
+        self.assertEqual(helpers.wrong_tries(bob.id), 5)
+        r = c.post("/api/auth/email/change", json={"new_email": self.new_email(), "password": PASSWORD})
+        self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
+
+    def test_with_two_step_sign_in_a_code_is_needed_too(self):
+        from backend import totp
+        bob, c = self.person()
+        secret = c.post("/api/auth/mfa/setup").json()["secret"]
+        step = int(time.time() // totp.STEP_SECONDS)
+        self.assertEqual(c.post("/api/auth/mfa/enable", json={"code": totp.code_at(secret, step)}).status_code, 200)
+        new = self.new_email("moved")
+        r = c.post("/api/auth/email/change", json={"new_email": new, "password": PASSWORD})
+        self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "invalid", "code"))
+        r = c.post("/api/auth/email/change", json={"new_email": new, "password": PASSWORD, "code": "000000"})
+        self.assertEqual((r.status_code, r.json()["code"]), (422, "wrong_code"))
+        self.assertEqual(self.to(new), [])
+        self.assertTrue(c.get("/api/auth/email").json()["mfa_enabled"])
+        with mock.patch("backend.totp.now", lambda: (step + 1) * totp.STEP_SECONDS + 15.0):
+            r = c.post("/api/auth/email/change", json={"new_email": new, "password": PASSWORD,
+                                                       "code": totp.code_at(secret, step + 1)})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(len(self.to(new)), 1)
+
+    def test_the_message_to_the_new_address_says_what_it_is_for(self):
+        bob, c = self.person()
+        new = self.new_email("moved")
+        self.start(c, new)
+        msg = self.last_to(new)
+        self.assertEqual(msg["Subject"], "Confirm your email address for JobHuntPA")
+        for part in (text_of(msg), html_of(msg)):
+            self.assertIn("asked to use this email address", part)
+            self.assertIn("Nothing changes unless you open the link and confirm", part)
+            self.assertNotIn(bob.email, part)
 
     def test_it_needs_recent_sign_in(self):
         bob, c = self.person()
@@ -629,6 +730,59 @@ class InviteMailTest(AccountMailCase):
         self.assertEqual(r.status_code, 201, r.text)
         self.assertTrue(self.verified(self.user_id_of(email)))
         self.assertEqual(c.get("/api/auth/state?invite=" + token).json()["signup"]["invite"]["valid"], False)
+
+    def test_only_an_invitation_that_was_emailed_to_the_address_makes_it_verified(self):
+        """The admin copies a link and sends it some other way (or mistypes the address, or email is down): the mailbox
+        has proved nothing, so the new account is sent the usual verification link."""
+        cases = {
+            "copied": dict(send=False),                                # the admin sends the link herself
+            "queue full": dict(),                                      # the mail queue takes nothing
+            "mail server refuses": dict(),                             # SMTP fails
+        }
+        for name, extra in cases.items():
+            email = self.new_email("friend")
+            if name == "queue full":
+                with mock.patch.object(mail_queue, "submit", return_value=None):
+                    link = self.invite(email=email, **extra).json()
+                self.assertEqual(link["email_status"], "busy")
+            elif name == "mail server refuses":
+                with mock.patch.object(mailer, "send", return_value=mailer.SendResult("failed", "refused")):
+                    link = self.invite(email=email, **extra).json()
+                    self.flush()
+                self.assertEqual(link["email_status"], "queued")  # (it was queued; the server then said no)
+            else:
+                link = self.invite(email=email, **extra).json()
+                self.assertEqual(link["email_status"], "off")
+            _c, r, _ = self.sign_up(email=email, invite=link["link"].split("invite=")[1])
+            self.assertEqual(r.status_code, 201, (name, r.text))
+            uid = self.user_id_of(email)
+            self.assertFalse(self.verified(uid), name)
+            self.assertEqual(len(token_rows(uid, "verify_email")), 1, name)
+            self.assertIn("Confirm your email address", self.last_to(email)["Subject"], name)
+
+    def test_the_flag_is_set_by_the_mail_job_and_only_on_the_invitation_that_was_sent(self):
+        email = self.new_email("friend")
+        link = self.invite(email=email).json()
+        self.flush()
+        token = link["link"].split("invite=")[1]
+        row = rows(lambda s: s.query(AuthToken).filter(AuthToken.id == link["id"]).one())
+        self.assertEqual(tokens.open_payload(token, "invite", row.payload_enc), {"email": email, "emailed": True})
+        other = self.invite(email=self.new_email("other"), send=False).json()
+        row = rows(lambda s: s.query(AuthToken).filter(AuthToken.id == other["id"]).one())
+        self.assertEqual(tokens.open_payload(other["link"].split("invite=")[1], "invite", row.payload_enc),
+                         {"email": other["email"], "emailed": False})
+
+    def test_an_invitation_made_before_the_flag_existed_is_treated_as_not_emailed(self):
+        email = self.new_email("old")
+        link = self.invite(email=email).json()
+        self.flush()
+        token = link["link"].split("invite=")[1]
+        with engine.begin() as conn:  # the payload as the older version sealed it
+            conn.execute(text("UPDATE auth_tokens SET payload_enc = :p WHERE id = :i"),
+                         {"p": tokens.seal_payload(token, "invite", {"email": email}), "i": link["id"]})
+        _c, r, _ = self.sign_up(email=email, invite=token)
+        self.assertEqual(r.status_code, 201)
+        self.assertFalse(self.verified(self.user_id_of(email)))
 
     def test_the_inviters_name_is_in_the_message_but_never_their_address(self):
         boss = helpers.make_user(password=PASSWORD, name="Dana Boss")

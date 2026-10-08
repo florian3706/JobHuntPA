@@ -2,7 +2,8 @@
    reset-password.html#token=…. The token is in the #fragment, so it never reaches a server log or a Referer header;
    it is read once and taken out of the address bar.
 
-   - With background access the data is kept. Without it the data is locked with the old password: the page says so,
+   - With background access the data is kept, and the recovery codes are replaced (the page shows the new ones, as after
+     a wipe). Without it the data is locked with the old password: the page says so,
      points to the recovery-code page, and asks for "I understand my saved data will be deleted" before it sends
      anything. A wipe ends with the new recovery codes, in the same step as first run (auth.js showCodes).
    - The link is checked first (reset/info; this doesn't use it up), so the page shows only what applies.
@@ -102,6 +103,9 @@ function showResetDone(data) {
   announce('Password changed. You are signed in.');
   if (Array.isArray(data.recovery_codes) && data.recovery_codes.length) {
     $('#admin-key-lost').hidden = !data.admin_key_lost;
+    if (data.kept_data) {
+      $('#codes-why').textContent = 'Your data is kept, and your old recovery codes no longer work, so these are new ones. If you ever forget your password, a recovery code is how you get back in and keep your data. Each code works once. Keep them somewhere safe, such as your password manager or a printed copy: JobHuntPA shows them only until you confirm you\'ve saved them.';
+    }
     showCodes(data.recovery_codes, data.csrf); // the same step as first run: Copy, Download, Print, "I've saved them"
     return;
   }

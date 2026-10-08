@@ -8,13 +8,15 @@ resetting with a recovery code are in backend/auth.py.
     POST /api/auth/mfa/setup             (recent sign-in) -> {otpauth_uri, qr_svg, secret, secret_groups}
     POST /api/auth/mfa/enable            {code} (recent sign-in): the code from the app turns two-step sign-in on
     POST /api/auth/mfa/disable           {password, code | recovery_code} (recent sign-in)
-    POST /api/auth/recovery-codes        (recent sign-in; with two-step sign-in on also {code | recovery_code}): eight
-                                         new codes in place of all the old ones; read them once with GET /api/auth/recovery-codes, confirm with POST .../ack (backend/auth.py)
+    POST /api/auth/recovery-codes        {password, code? | recovery_code?} (recent sign-in; the code is needed with two-step
+                                         sign-in on): eight new codes in place of all the old ones, and a notice by
+                                         email; read them once with GET /api/auth/recovery-codes, confirm with
+                                         POST .../ack (backend/auth.py)
     POST /api/auth/sessions/end-others   signs out every other browser, keeps this one
 
 Errors are ``{"detail", "code", "field"?}``. A wrong password here is a 422 ``wrong_password`` (not a 401: the page
-asking is signed in, and a 401 means "signed out"); 5 wrong ones in a row (counted with the sign-in's: see
-``users.check_signed_in_password``) answer 429 ``locked`` with Retry-After. ``reauth_required`` (403) means "ask for the
+asking is signed in, and a 401 means "signed out"); 5 wrong ones in a row from this browser (counted with the
+sign-in's: see backend/lockout.py) answer 429 ``locked`` with Retry-After. ``reauth_required`` (403) means "ask for the
 password with POST /api/auth/reauth, then repeat the request" (``withRecentAuth`` in frontend/common.js).
 """
 from __future__ import annotations
@@ -27,8 +29,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend import account_email, crypto, ratelimit, sessions, totp, users
-from backend.auth import _too_many
+from backend import account_email, crypto, lockout, ratelimit, sessions, totp, users
 from backend.db import AuthSession, User, get_db, scrub_wal, utcnow
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
@@ -40,22 +41,23 @@ router = APIRouter(prefix="/api/auth", tags=["security"])
 def confirm_password(request: Request, db: Session, auth: AuthUser, password: object, *, field: str = "password",
                      reset: bool = True, what: str = "passwords") -> bytes:
     """The signed-in user's DEK if ``password`` is theirs; AuthProblem otherwise. Counted per address like a sign-in
-    (10 in 5 minutes) and per account (``users.check_signed_in_password``), so a stolen session can't guess it.
-    ``reset`` False keeps the wrong-tries count for a caller that checks a code too; ``what`` names what was wrong in
-    the wait message."""
+    (10 in 5 minutes) and per account and source (``lockout.begin``: 5 wrong ones in a row make this browser or
+    address wait), so a stolen session can't guess it. ``reset`` False keeps the wrong-tries count for a caller that
+    checks a code too (a right password gives the try back, and ``check_second_factor`` counts the code); ``what``
+    names what was wrong in the wait message."""
     wait = ratelimit.AUTH.hit(sessions.client_address(request.scope))
     if wait is not None:
         raise AuthProblem(429, "rate_limited", f"Too many password checks from this network. Try again in "
                                                f"{ratelimit.wait_text(wait)}.",
                           headers={"Retry-After": ratelimit.retry_after(wait)})
     user = db.get(User, auth.id)
-    try:
-        return users.check_signed_in_password(db, user, password, reset=reset)
-    except users.AccountLocked as exc:
-        raise _too_many(exc.wait, what) from None
-    except users.WrongPassword:
-        raise AuthProblem(422, "wrong_password", "That password isn't right. Check it and try again.",
-                          field=field) from None
+    ticket = lockout.begin(request.scope, user, what=what)  # counted before the slow check
+    dek = users.unlock_with_password(db, user, password)
+    if dek is None:
+        log.info("Password check failed for user %s (%d in a row)", user.id, ticket.failures)
+        raise AuthProblem(422, "wrong_password", "That password isn't right. Check it and try again.", field=field)
+    ticket.succeed() if reset else ticket.refund()
+    return dek
 
 
 def _mark_recent(db: Session, auth: AuthUser) -> None:
@@ -178,14 +180,17 @@ class DisableMfaIn(SecondFactorIn):
     password: str = Field("", max_length=4096)
 
 
-def check_second_factor(db: Session, user: User, body: SecondFactorIn) -> None:
-    """Needs the app's code or an unused recovery code (which is used up); AuthProblem otherwise. A wrong one counts
-    like a wrong password at sign-in, so five in a row make the account wait. A right one clears the count. The caller
-    has checked the account isn't waiting (``confirm_password`` does)."""
+def check_second_factor(db: Session, user: User, body: SecondFactorIn, scope, *, what: str = "codes") -> None:
+    """Needs the app's code or an unused recovery code (which is used up); AuthProblem otherwise. The try is counted
+    before the code is looked at, like a password at sign-in (``lockout.begin``: five wrong ones in a row make this
+    browser or address wait, and tries sent at the same moment can't all get past it); a right one clears the count.
+    The ceiling over all of an account's sources isn't applied here: the caller holds a proof only the owner has (the
+    password, a reset link)."""
     typed_code, typed_recovery = (body.code or "").strip(), (body.recovery_code or "").strip()
     if bool(typed_code) == bool(typed_recovery):
         raise AuthProblem(422, "invalid", "Enter the 6-digit code from your authenticator app, or a recovery code.",
                           field="code")
+    ticket = lockout.begin(scope, user, ceiling=False, what=what)
     recovery_id: Optional[int] = None
     if typed_code:
         good = users.verify_totp(db, user, typed_code)
@@ -194,7 +199,6 @@ def check_second_factor(db: Session, user: User, body: SecondFactorIn) -> None:
         recovery_id = opened[0] if opened else None
         good = opened is not None
     if not good:
-        users.record_failed_attempt(db, user)
         raise AuthProblem(422, "wrong_code", "That code isn't right. Check it and try again."
                           if typed_code else "That recovery code isn't right. Check it and try again.",
                           field="code" if typed_code else "recovery_code")
@@ -202,8 +206,8 @@ def check_second_factor(db: Session, user: User, body: SecondFactorIn) -> None:
         db.rollback()
         raise AuthProblem(422, "wrong_code", "That recovery code isn't right. Check it and try again.",
                           field="recovery_code")
-    user.failed_logins, user.locked_until = 0, None
     db.commit()  # with the used-up recovery code, if one was typed
+    ticket.succeed()
 
 
 @router.post("/mfa/disable")
@@ -220,7 +224,7 @@ def mfa_disable(body: DisableMfaIn, request: Request, auth: AuthUser = Depends(c
                           field="code")
     # The right password keeps the wrong-tries count, so wrong codes add up to the wait (check_second_factor clears it).
     confirm_password(request, db, auth, body.password, reset=False, what="passwords or codes")
-    check_second_factor(db, user, body)
+    check_second_factor(db, user, body, request.scope, what="passwords or codes")
     users.disable_totp(db, user)
     log.info("Two-step sign-in turned off: user %s", auth.id)
     return {"ok": True, "mfa_enabled": False, "recovery_codes_left": users.recovery_codes_left(db, auth.id)}
@@ -230,20 +234,28 @@ def mfa_disable(body: DisableMfaIn, request: Request, auth: AuthUser = Depends(c
 # Recovery codes and other sessions
 # ---------------------------------------------------------------------------
 
+class NewCodesIn(SecondFactorIn):
+    password: str = Field("", max_length=4096)
+
+
 @router.post("/recovery-codes")
-def new_recovery_codes(body: Optional[SecondFactorIn] = None, auth: AuthUser = Depends(current_user),
+def new_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, auth: AuthUser = Depends(current_user),
                        db: Session = Depends(get_db)):
     """Eight new recovery codes; the old ones, used or not, stop working. They are kept sealed until the person
-    confirms saving them: show them with GET /api/auth/recovery-codes, then POST /api/auth/recovery-codes/ack. With
-    two-step sign-in on, the app's code (or a recovery code) is needed as well as recent sign-in: the new codes can
-    stand in for it, so the password alone must not make them."""
+    confirms saving them: show them with GET /api/auth/recovery-codes, then POST /api/auth/recovery-codes/ack. Each
+    code opens the data key and can set a new password, so a session alone (even a recent one: a cookie taken from
+    a browser a few minutes after sign-in) must not make them: the request carries the password itself. With
+    two-step sign-in on, the app's code (or a recovery code) is needed as well, because the new codes can stand in for
+    it. A notice goes to the account's address."""
     require_recent_auth(auth)
+    body = body or NewCodesIn()
+    if not body.password:
+        raise AuthProblem(422, "invalid", "Enter your password to make new recovery codes.", field="password")
     user = db.get(User, auth.id)
-    if user.mfa_enabled:
-        wait = users.is_locked(user)
-        if wait:
-            raise _too_many(wait, "passwords or codes")
-        check_second_factor(db, user, body or SecondFactorIn())
+    mfa = bool(user.mfa_enabled)
+    confirm_password(request, db, auth, body.password, reset=not mfa, what="passwords or codes")
+    if mfa:
+        check_second_factor(db, user, body, request.scope, what="passwords or codes")
     try:
         users.replace_recovery_codes(db, auth.id, crypto.current().dek)
     except crypto.KeyMismatch:  # the key was replaced under this request (a password reset that deleted the data)
@@ -252,6 +264,7 @@ def new_recovery_codes(body: Optional[SecondFactorIn] = None, auth: AuthUser = D
     db.commit()
     scrub_wal()  # the old codes' copies of the data key
     log.info("New recovery codes made: user %s", auth.id)
+    account_email.notify_in_session(db, auth.id, "recovery_codes_replaced")
     return {"ok": True, "recovery_codes_left": users.RECOVERY_CODES, "recovery_codes_pending": True}
 
 

@@ -73,7 +73,7 @@ class SignedInClient(TestClient):
         return self
 
     def sign_in(self) -> dict:
-        ratelimit.reset_all()  # every test signs in from the same address
+        ratelimit.AUTH.reset()  # every test signs in from the same address
         r = self.post("/api/auth/login", json={"email": self.email, "password": self.password,
                                                 "remember": self.remember})
         if r.status_code != 200:
@@ -85,6 +85,21 @@ class SignedInClient(TestClient):
 def client(email: str = ADMIN_EMAIL, password: Optional[str] = None, **kwargs) -> SignedInClient:
     """A client signed in as ``email`` (the admin by default) once started."""
     return SignedInClient(email, password or _passwords[email], **kwargs)
+
+
+def lock_out(account_id: int, source: str = "testclient", failures: int = 5) -> None:
+    """Five wrong passwords in a row from ``source`` (the test client's network address by default; a signed-in
+    client is a browser the account knows: ``d:<its id>``): that source now waits."""
+    for _ in range(failures):
+        try:
+            ratelimit.guesses.begin(account_id, source, ceiling=False)
+        except ratelimit.Waiting:
+            pass
+
+
+def wrong_tries(account_id: int) -> int:
+    """Wrong tries in a row, all sources together."""
+    return sum(ratelimit.guesses.failures(account_id).values())
 
 
 @dataclass(frozen=True)
@@ -156,6 +171,16 @@ def as_account(account: "Account") -> Iterator[crypto.Scope]:
     uid, dek = key_of(account.email)
     with crypto.as_user(uid, dek) as scope:
         yield scope
+
+
+def pending_codes(account: "Account") -> list[str]:
+    """The recovery codes ``account`` hasn't confirmed saving (a new account's first eight)."""
+    db = SessionLocal()
+    try:
+        with as_account(account):
+            return users.pending_recovery_codes(db, account.id)
+    finally:
+        db.close()
 
 
 _module_scopes: list = []

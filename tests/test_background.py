@@ -368,31 +368,34 @@ class KeepDataResetTest(Base):
 
     def test_a_locked_out_account_can_sign_in_with_the_new_password(self):
         acct, _ = self.new_user(background=True)
+        from backend import ratelimit
+        helpers.lock_out(acct.id, failures=9)
+        self.assertGreater(ratelimit.guesses.waiting(acct.id), 0)
         db = SessionLocal()
         try:
-            db.query(User).filter(User.id == acct.id).update({User.failed_logins: 9,
-                                                              User.locked_until: utcnow() + timedelta(minutes=10)})
-            db.commit()
             self.assertTrue(users.reset_password_keeping_data(db, acct.id, self.NEW))
-            user = db.get(User, acct.id)
-            self.assertEqual((user.failed_logins, user.locked_until), (0, None))
         finally:
             db.close()
+        self.assertEqual((ratelimit.guesses.waiting(acct.id), helpers.wrong_tries(acct.id)), (0, 0))
 
-    def test_recovery_codes_still_work_afterwards(self):
-        """The data key doesn't change, so each recovery code still unwraps it."""
+    def test_recovery_codes_are_replaced_and_the_old_ones_open_nothing(self):
+        """Each old code opens the data key, so it must stop working: whoever held the account before the person who
+        proved the mailbox may have kept them. The new ones wrap the same key."""
         from backend.db import RecoveryCode
         email = f"keepdata-codes-{os.getpid()}@example.invalid"
         account = users.create_user(email, helpers.USER_PASSWORD, background=True)
         db = SessionLocal()
         try:
-            self.assertTrue(users.reset_password_keeping_data(db, account.user_id, self.NEW))
-            salt = db.get(UserKeys, account.user_id).recovery_salt
-            rows = db.query(RecoveryCode).filter(RecoveryCode.user_id == account.user_id).order_by(RecoveryCode.id).all()
-            self.assertEqual(len(rows), len(account.recovery_codes))
-            for code, row in zip(account.recovery_codes, rows):
-                kek = crypto.recovery_kek(users.normalise_recovery_code(code), salt)
-                self.assertEqual(crypto.unwrap(kek, row.wrapped_dek, f"rc|{account.user_id}|{row.id}"), account.dek)
+            new_codes = users.reset_password_keeping_data(db, account.user_id, self.NEW)
+            self.assertEqual(len(new_codes), 8)
+            self.assertFalse(set(new_codes) & set(account.recovery_codes))
+            for code in account.recovery_codes:
+                self.assertIsNone(users.open_recovery_code(db, account.user_id, code))
+            self.assertEqual(db.query(RecoveryCode).filter(RecoveryCode.user_id == account.user_id).count(), 8)
+            for code in new_codes:
+                self.assertEqual(users.open_recovery_code(db, account.user_id, code)[1], account.dek)
+            with crypto.as_user(account.user_id, account.dek):
+                self.assertEqual(users.pending_recovery_codes(db, account.user_id), new_codes)
         finally:
             db.close()
 

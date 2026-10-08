@@ -43,7 +43,7 @@ from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
 from backend import account_email, admin_key, app_settings, billing, email_templates, key_rotation, keys, mail_queue
-from backend import mailer, membership, migrate_encryption, password_reset, ratelimit, signup, tokens, users
+from backend import lockout, mailer, membership, migrate_encryption, password_reset, ratelimit, signup, tokens, users
 from backend.admin_key import Apk, ApkUnavailable
 from backend.db import (
     AdminAudit,
@@ -224,7 +224,7 @@ def _summaries(db: Session, apk: Optional[Apk], only: Optional[list[int]] = None
             "created_via": user.created_via,
             "last_active_on": user.last_active_on.isoformat() if user.last_active_on else None,
             "email_verified": bool(user.email_verified),
-            "locked": bool(user.locked_until and user.locked_until > now),  # waiting after wrong passwords
+            "locked": lockout.waiting(user.id) > 0,  # some place waits after wrong passwords (backend/lockout.py)
             "mfa": bool(user.mfa_enabled),
             "background": user.id in background,
             "workspaces": workspaces.get(user.id, 0),
@@ -460,9 +460,9 @@ def enable_user(user_id: int, admin: AuthUser = Depends(current_user), db: Sessi
     """Turn an account on again, or end the wrong-password wait of an account that is on (unlock)."""
     target = _target(db, user_id)
     changed = target.status != "active"
-    was_locked = bool(target.locked_until and target.locked_until > utcnow())
+    was_locked = lockout.waiting(target.id) > 0
     target.status = "active"
-    target.failed_logins, target.locked_until = 0, None
+    lockout.forget(target.id)
     if changed:
         audit(db, admin, "user_enabled", target.id)
     elif was_locked:
@@ -549,7 +549,7 @@ def send_reset_email(db: Session, admin: AuthUser, target: User, apk: Optional[A
     address = info.get("email") if info else None
     if not address:
         raise _problem(409, "details_unavailable", NO_ADDRESS)
-    wait = ratelimit.RESET_ACCOUNT.hit(target.id)
+    wait = ratelimit.RESET_BY_ADMIN.hit(target.id)
     if wait is not None:
         raise AuthProblem(429, "rate_limited", f"A reset link was sent to this person a moment ago. Try again in "
                                                f"{ratelimit.wait_text(wait)}.",
@@ -865,11 +865,19 @@ def _invite_status(row: AuthToken, now: datetime) -> str:
     return "used" if row.used_at else "expired" if row.expires_at <= now else "pending"
 
 
+def _invite_job(to: str, template: tuple, admin_id: int, token_id: int, token: str) -> None:
+    """On the mail thread: send the invitation, and only if the mail server took it, record that it was emailed to
+    this address (the invited person's address then counts as verified: backend/signup.py)."""
+    if mail_queue.deliver_now(to, template, admin_id).ok:
+        signup.mark_emailed(token_id, token, to)
+
+
 @router.post("/invites", status_code=201)
 def create_invite(body: InviteIn, request: Request, admin: AuthUser = Depends(current_user),
                   db: Session = Depends(get_db)):
     """An invitation link, good for 7 days and one sign-up. Only the link's hash is stored, so this is the one
-    time it can be shown. ``email`` (optional) pre-fills the sign-up form; it counts as verified if used. With an
+    time it can be shown. ``email`` (optional) pre-fills the sign-up form; it counts as verified if used, but only when
+    the invitation was really emailed to it (the mail server took it), not when the admin copied the link. With an
     address (and ``send`` not false) the link is also emailed in the background when email is set up
     (``emailed`` and ``email_status`` say what happened: queued, not_set_up, no_address, busy or off); the link is
     returned either way, to copy. ``send: true`` while email is off is a 409."""
@@ -893,7 +901,7 @@ def create_invite(body: InviteIn, request: Request, admin: AuthUser = Depends(cu
         except users.AccountError as exc:
             raise _problem(422, "invalid", exc.message, "email") from None
     token, row = tokens.create(db, signup.INVITE_KIND, ttl=signup.INVITE_TTL, created_by=admin.id,
-                               payload={"email": email or ""})
+                               payload={"email": email or "", "emailed": False})  # (set once the mail is sent)
     status = "off" if body.send is False else "no_address" if not email else "queued" if mail_queue.enabled() \
         else "not_set_up"
     inviter = users.details(db, admin.id).get("name") or None if status == "queued" else None  # the name, never the address
@@ -901,7 +909,7 @@ def create_invite(body: InviteIn, request: Request, admin: AuthUser = Depends(cu
     db.commit()
     if status == "queued":  # after the commit: the link must work by the time the email arrives
         template = email_templates.invite(token, inviter=inviter, expires=row.expires_at.replace(tzinfo=timezone.utc))
-        if mail_queue.send(email, template, user_id=admin.id) is None:
+        if mail_queue.submit(_invite_job, email, template, admin.id, row.id, token) is None:
             status = "busy"
     return {"ok": True, "id": row.id, "link": f"{_base_url(request)}/signup.html?invite={token}",
             "email": email, "expires_at": _iso(row.expires_at), "emailed": status == "queued",

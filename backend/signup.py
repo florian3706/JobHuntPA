@@ -8,7 +8,11 @@
 ``app_settings["free_searches"]`` is how many free searches a new account gets (3; ``membership.charge_search`` gives them out).
 
 An invitation is an ``auth_tokens`` row of kind ``invite`` (backend/tokens.py): 7 days, single use, only the hash of its
-token stored, and the address it was made for (if the admin gave one) sealed under a key made from the token.
+token stored, and a payload sealed under a key made from the token: ``{email, emailed}``, the address it was made for
+(if the admin gave one) and whether JobHuntPA actually sent the invitation to it. Only an invitation that was emailed
+to the address (the mail server took it: ``mark_emailed``, set by the mail job) makes that address count as verified
+when the invited person signs up with it; a link the admin copied and sent some other way proves nothing about the
+mailbox, so the new account gets the usual verification email.
 """
 from __future__ import annotations
 
@@ -22,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from backend import migrate_encryption, tokens, users
 from backend.access import FREE_SEARCHES
-from backend.db import SessionLocal, User
+from backend.db import AuthToken, SessionLocal, User
 from backend.sessions import AuthProblem
 
 log = logging.getLogger(__name__)
@@ -111,13 +115,14 @@ def sign_up(email: Any, password: Any, *, name: Any = "", invite: Optional[str] 
             raise AuthProblem(422, "invalid", exc.message, field=exc.field) from None
         if users.find_by_email(db, clean_email) is not None:
             raise AuthProblem(409, "email_taken", DUPLICATE, field="email")
-        invited_for = None
+        invited_for = None  # the address the invitation was emailed to (None: it wasn't emailed, or has no address)
         if row is not None:
             used = tokens.consume(db, INVITE_KIND, invite)  # one request wins when two use the same link
             if used is None:
                 raise AuthProblem(403, "invite_invalid", INVITE_INVALID)
             payload = tokens.open_payload(invite, INVITE_KIND, used.payload_enc) or {}
-            invited_for = payload.get("email") if isinstance(payload.get("email"), str) else None
+            if payload.get("emailed") is True and isinstance(payload.get("email"), str):
+                invited_for = payload["email"]
         try:
             account = users.create_user(clean_email, password, name=name, created_via="invite" if row else "open")
         except users.AccountError as exc:
@@ -151,10 +156,21 @@ def _same_address(a: str, b: str) -> bool:
     return keys.normalise_email(a) == keys.normalise_email(b)
 
 
-def _after_invite(db: Session, token_id: int, user_id: int, *, verified: bool) -> None:
-    """Note who used the invitation; an address the invitation was made for counts as verified (design §6.1)."""
-    from backend.db import AuthToken
+def mark_emailed(token_id: int, token: str, email: str) -> None:
+    """The mail server took the invitation for ``email``: from now on signing up with that address counts as
+    verified. Runs on the mail thread after the send; the invitation's payload is sealed again with the flag."""
+    db = SessionLocal()
+    try:
+        db.execute(update(AuthToken).where(AuthToken.id == token_id, AuthToken.kind == INVITE_KIND,
+                                           AuthToken.used_at.is_(None))
+                   .values(payload_enc=tokens.seal_payload(token, INVITE_KIND, {"email": email, "emailed": True})))
+        db.commit()
+    finally:
+        db.close()
 
+
+def _after_invite(db: Session, token_id: int, user_id: int, *, verified: bool) -> None:
+    """Note who used the invitation; an address the invitation was emailed to counts as verified (design §6.1)."""
     db.execute(update(AuthToken).where(AuthToken.id == token_id).values(user_id=user_id))
     if verified:
         db.execute(update(User).where(User.id == user_id).values(email_verified=True))

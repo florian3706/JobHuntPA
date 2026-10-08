@@ -143,15 +143,20 @@ def invite(token: str, *, inviter: Optional[str] = None, expires: Any = None, ba
     return "You are invited to JobHuntPA", text, html, {"Auto-Submitted": "auto-generated"}
 
 
-def verify_email(token: str, *, expires: Any = None, base_url: Optional[str] = None) -> Template:
-    """Confirm an email address (new account or a change of address)."""
+def verify_email(token: str, *, expires: Any = None, change: bool = False, base_url: Optional[str] = None) -> Template:
+    """Confirm an email address (new account, or with ``change`` a change of address: someone signed in to an account
+    asked to use this address for it). The link opens a page that asks before it confirms anything."""
     url = f"{_base(base_url)}/verify-email.html#token={quote(token, safe='')}"
     after = [f"The link expires {_when(expires)}."] if expires else []
-    after.append("If you did not create or change a JobHuntPA account with this address, ignore this email.")
-    text, html = _simple(
-        "Confirm your email address",
-        "Confirm this address so JobHuntPA can send you password resets and your job digest.",
-        (url, "Confirm my email address"), after)
+    if change:
+        intro = ("Someone signed in to a JobHuntPA account asked to use this email address for it, instead of the "
+                 "address it has now. If that was you, open the link and confirm.")
+        after.append("If you did not ask for this, ignore this email. Nothing changes unless you open the link and "
+                     "confirm.")
+    else:
+        intro = "Confirm this address so JobHuntPA can send you password resets and your job digest."
+        after.append("If you did not create or change a JobHuntPA account with this address, ignore this email.")
+    text, html = _simple("Confirm your email address", intro, (url, "Confirm my email address"), after)
     return "Confirm your email address for JobHuntPA", text, html, {"Auto-Submitted": "auto-generated"}
 
 
@@ -162,6 +167,15 @@ SECURITY_EVENTS = {
     "mfa_disabled_by_admin": ("Two-step sign-in was turned off on your JobHuntPA account",
                               "An administrator turned off two-step sign-in (MFA) for your JobHuntPA account.",
                               "You can turn it on again in your account settings."),
+    "recovery_codes_replaced": ("New recovery codes were made for your JobHuntPA account",
+                               "New recovery codes were just made for your JobHuntPA account. The old ones no "
+                               "longer work.",
+                               "If you made them, nothing more is needed."),
+    "email_change_started": ("A change of email address was started on your JobHuntPA account",
+                             "Someone signed in to your JobHuntPA account asked to change its email address to "
+                             "another one. Nothing has changed yet: it changes only when the link sent to the new "
+                             "address is opened.",
+                             "If you asked for this, nothing more is needed."),
     "email_changed": ("The email address on your JobHuntPA account was changed",
                       "The email address of your JobHuntPA account was just changed to a different one. This notice "
                       "goes to the old address.",
@@ -170,7 +184,7 @@ SECURITY_EVENTS = {
 
 
 def security_notice(event: str, *, when: Any = None, base_url: Optional[str] = None) -> Template:
-    """A security notice. ``event`` is "password_changed", "mfa_disabled_by_admin" or "email_changed"."""
+    """A security notice. ``event`` is one of ``SECURITY_EVENTS``."""
     if event not in SECURITY_EVENTS:
         raise ValueError(f"Unknown security event: {event}")
     subject, intro, note = SECURITY_EVENTS[event]

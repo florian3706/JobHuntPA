@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
+import types
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -21,7 +24,7 @@ from fastapi import Depends, FastAPI, Request  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from backend import config, crypto, ratelimit, sessions, users  # noqa: E402
+from backend import config, crypto, lockout, ratelimit, sessions, users  # noqa: E402
 from backend import db as db_module  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import AuthSession, RecoveryCode, SessionLocal, User, UserKeys, Workspace, engine, utcnow  # noqa: E402
@@ -339,31 +342,223 @@ class LoginTest(SignInTestCase):
         self.assertEqual(wrong.json(), unknown.json())
         self.assertNotIn("set-cookie", wrong.headers)
 
+    def fake_time(self) -> types.SimpleNamespace:
+        """A clock for the limits only (ratelimit's own ``time``; the rest of the process keeps the real one)."""
+        clock = types.SimpleNamespace(t=time.monotonic())
+        patch = mock.patch.object(ratelimit, "time", types.SimpleNamespace(monotonic=lambda: clock.t))
+        patch.start()
+        self.addCleanup(patch.stop)
+        return clock
+
+    def try_login(self, c, alice, password=None):
+        ratelimit.AUTH.reset()  # (the per-address request limit is not what is under test)
+        return c.post("/api/auth/login", json={"email": alice.email, "password": password or alice.password})
+
     def test_lockout_after_five_failures_doubles_and_ends(self):
+        clock = self.fake_time()
         alice = helpers.make_user()
         c = self.anonymous()
         for _ in range(5):
-            self.assertEqual(c.post("/api/auth/login", json={"email": alice.email, "password": "wrong-password"}).status_code, 401)
-        locked = c.post("/api/auth/login", json={"email": alice.email, "password": alice.password})
+            self.assertEqual(self.try_login(c, alice, "wrong-password").status_code, 401)
+        locked = self.try_login(c, alice)
         self.assertEqual(locked.status_code, 429)  # even the right password waits
         self.assertEqual(locked.json()["code"], "locked")
         self.assertTrue(25 <= int(locked.headers["retry-after"]) <= 30)
-        db = SessionLocal()
-        user = db.get(User, alice.id)
-        self.assertEqual(user.failed_logins, 5)
-        user.locked_until = utcnow() - timedelta(seconds=1)  # the 30 seconds are over
-        db.commit()
+        self.assertEqual(helpers.wrong_tries(alice.id), 5)
+        clock.t += 31  # the 30 seconds are over
         # A sixth failure waits twice as long.
-        self.assertEqual(c.post("/api/auth/login", json={"email": alice.email, "password": "wrong-password"}).status_code, 401)
-        db.refresh(user)
-        self.assertAlmostEqual((user.locked_until - utcnow()).total_seconds(), 60, delta=5)
-        user.locked_until = utcnow() - timedelta(seconds=1)
-        db.commit()
-        self.assertEqual(c.post("/api/auth/login", json={"email": alice.email, "password": alice.password}).status_code, 200)
-        db.refresh(user)
-        self.assertEqual((user.failed_logins, user.locked_until), (0, None))
-        db.close()
+        self.assertEqual(self.try_login(c, alice, "wrong-password").status_code, 401)
+        again = self.try_login(c, alice)
+        self.assertEqual(again.status_code, 429)
+        self.assertTrue(55 <= int(again.headers["retry-after"]) <= 60)
+        clock.t += 61
+        self.assertEqual(self.try_login(c, alice).status_code, 200)
+        self.assertEqual((helpers.wrong_tries(alice.id), ratelimit.guesses.waiting(alice.id)), (0, 0))
         self.assertEqual([ratelimit.lockout_seconds(n) for n in (4, 5, 6, 7, 10, 30)], [0, 30, 60, 120, 900, 900])
+        # No permanent lockout: at the cap the wait is 15 minutes, and then one more try is allowed.
+        for _ in range(12):
+            clock.t += 901
+            self.try_login(c, alice, "wrong-password")
+        clock.t += 901
+        self.assertEqual(self.try_login(c, alice).status_code, 200)
+
+    def test_an_outsider_who_knows_the_address_cannot_lock_the_owner_out(self):
+        alice = helpers.make_user()
+        outsider = self.anonymous(client=("203.0.113.9", 4000))
+        for _ in range(5):
+            self.assertEqual(self.try_login(outsider, alice, "guess-guess-guess").status_code, 401)
+        self.assertEqual(self.try_login(outsider, alice).status_code, 429)  # the outsider's address waits ...
+        self.assertEqual(ratelimit.guesses.waiting(alice.id) > 0, True)
+        owner = self.anonymous(client=("198.51.100.7", 5000))  # ... the owner, anywhere else, signs in at once
+        self.assertEqual(self.try_login(owner, alice).status_code, 200)
+        # The owner's own browser (it has signed in before) is not held up even from the outsider's address.
+        shared = self.anonymous(client=("203.0.113.9", 4001))
+        self.assertEqual(self.try_login(shared, alice).status_code, 429)  # no cookie: same address, same wait
+        shared.cookies.set("jh_device", owner.cookies.get("jh_device"))
+        self.assertEqual(self.try_login(shared, alice).status_code, 200)
+
+    def test_parallel_guesses_are_counted_before_the_check_so_only_five_get_through(self):
+        alice = helpers.make_user()
+        checked = []
+        real = users.unlock_with_password
+
+        def counting(db, user, password):
+            checked.append(password)
+            return real(db, user, password)
+
+        results = []
+
+        def guess(n):
+            c = TestClient(app, client=("203.0.113.50", 1000 + n))  # (one network address: the same source)
+            results.append(c.post("/api/auth/login", json={"email": alice.email, "password": f"wrong password {n}"}))
+
+        ratelimit.AUTH.reset()
+        with mock.patch.object(users, "unlock_with_password", counting), \
+                mock.patch.object(ratelimit, "AUTH", ratelimit.Limiter([(1000, 60)])):
+            starter = TestClient(app)  # (start the app once, outside the race)
+            starter.__enter__()
+            self.addCleanup(starter.__exit__, None, None, None)
+            threads = [threading.Thread(target=guess, args=(n,)) for n in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(60)
+        codes = sorted(r.status_code for r in results)
+        self.assertEqual(codes, [401] * 5 + [429] * 5)
+        self.assertEqual(len(checked), 5)  # the other five never got as far as the slow password check
+
+    def test_guesses_from_many_addresses_meet_the_account_wide_ceiling_but_the_owners_browser_does_not(self):
+        alice = helpers.make_user()
+        owner = self.anonymous(client=("198.51.100.7", 5000))
+        self.assertEqual(self.try_login(owner, alice).status_code, 200)  # signs in once: the browser is known
+        with mock.patch.object(ratelimit, "ACCOUNT_CEILING", (6, 3600)):
+            for n in range(6):  # a different address each time: no address ever reaches its own 5
+                guesser = self.anonymous(client=(f"192.0.2.{n + 1}", 1000))
+                self.assertEqual(self.try_login(guesser, alice, "guess-guess-guess").status_code, 401)
+            new_device = self.anonymous(client=("198.51.100.77", 5000))
+            slowed = self.try_login(new_device, alice)
+            self.assertEqual((slowed.status_code, slowed.json()["code"]), (429, "locked"))
+            self.assertIn("several places", slowed.json()["detail"])
+            self.assertGreater(int(slowed.headers["retry-after"]), 0)
+            # ... a browser the account has signed in with before is not held up, and signing in clears nothing for others
+            self.assertEqual(self.try_login(owner, alice).status_code, 200)
+            # an address with no account is counted the same way, so the answers can't tell the two apart
+            for n in range(6):
+                ghost = self.anonymous(client=(f"192.0.2.{n + 100}", 1000))
+                self.assertEqual(self.try_login(ghost, types.SimpleNamespace(email="ghost@example.invalid",
+                                                                           password="x" * 12)).status_code, 401)
+            r = self.try_login(self.anonymous(client=("198.51.100.99", 1000)),
+                               types.SimpleNamespace(email="ghost@example.invalid", password="x" * 12))
+            self.assertEqual((r.status_code, r.json()["code"], r.json()["detail"]), (429, "locked", slowed.json()["detail"]))
+
+    def test_the_device_cookie_is_signed_bound_to_the_password_and_to_the_account(self):
+        alice, bob = helpers.make_user(), helpers.make_user()
+        c = self.anonymous()
+        r = self.try_login(c, alice)
+        raw = r.headers.get_list("set-cookie")[1]
+        self.assertTrue(raw.startswith("jh_device="))
+        for flag in ("HttpOnly", "SameSite=strict", "Max-Age=31536000", "Path=/"):
+            self.assertIn(flag, raw)
+        cookie = c.cookies.get("jh_device")
+        scope = {"headers": [(b"cookie", f"jh_device={cookie}".encode())]}
+        db = SessionLocal()
+        try:
+            a, b = db.get(User, alice.id), db.get(User, bob.id)
+            device = lockout.device_id(scope, a)
+            self.assertTrue(device)
+            self.assertIsNone(lockout.device_id(scope, b))  # another account's
+            forged = {"headers": [(b"cookie", f"jh_device={cookie[:-3]}abc".encode())]}
+            self.assertIsNone(lockout.device_id(forged, a))
+            self.assertIsNone(lockout.device_id({"headers": []}, a))
+            # signing in again keeps the same browser id; a new password makes every copy useless
+            self.assertEqual(self.try_login(c, alice).status_code, 200)
+            self.assertEqual(lockout.device_id({"headers": [(b"cookie", f"jh_device={c.cookies.get('jh_device')}".encode())]}, a), device)
+            users.apply_new_password(db, a, helpers.key_of(alice.email)[1], users.new_password_keys("brand new password"))
+            db.commit()
+            db.refresh(a)
+            self.assertIsNone(lockout.device_id(scope, a))
+        finally:
+            db.close()
+
+    def test_a_known_browser_counts_its_own_wrong_tries(self):
+        alice = helpers.make_user()
+        c = self.anonymous(client=("203.0.113.9", 4000))
+        self.assertEqual(self.try_login(c, alice).status_code, 200)
+        for _ in range(5):
+            self.assertEqual(self.try_login(c, alice, "guess-guess-guess").status_code, 401)
+        self.assertEqual(self.try_login(c, alice).status_code, 429)  # this browser waits ...
+        fresh = self.anonymous(client=("203.0.113.9", 4000))
+        self.assertEqual(self.try_login(fresh, alice).status_code, 200)  # ... its address does not
+
+    def test_a_locked_source_is_refused_before_the_slow_work_in_every_sign_in_step(self):
+        """Recovery with a code: counted per source too, and open to the owner while an outsider guesses."""
+        alice = helpers.make_user()
+        outsider = self.anonymous(client=("203.0.113.9", 4000))
+        for _ in range(5):
+            ratelimit.AUTH.reset()
+            r = outsider.post("/api/auth/recover", json={"email": alice.email, "recovery_code": "AAAA-BBBB-CCCC-DDDD",
+                                                         "new_password": "some new password"})
+            self.assertEqual(r.status_code, 401)
+        ratelimit.AUTH.reset()
+        r = outsider.post("/api/auth/recover", json={"email": alice.email, "recovery_code": "AAAA-BBBB-CCCC-DDDD",
+                                                     "new_password": "some new password"})
+        self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
+        code = helpers.pending_codes(alice)[0]
+        owner = self.anonymous(client=("198.51.100.7", 5000))
+        ratelimit.AUTH.reset()
+        r = owner.post("/api/auth/recover", json={"email": alice.email, "recovery_code": code,
+                                                  "new_password": "some new password"})
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_refusals_take_as_long_for_an_address_with_no_account_as_for_a_wrong_password(self):
+        """A real account used to cost a database write and fsync more on a wrong password (the failure count); the
+        counts are in memory now, and every refusal is also held to a floor: one password derivation plus a margin."""
+        alice = helpers.make_user()
+        c = self.anonymous()
+
+        def timed(email, password):
+            ratelimit.reset_all()
+            began = time.monotonic()
+            r = c.post("/api/auth/login", json={"email": email, "password": password})
+            self.assertEqual(r.status_code, 401)
+            return time.monotonic() - began
+
+        floor = users.derivation_floor()
+        self.assertGreaterEqual(floor, users.PAD_MARGIN_S)
+        known = sorted(timed(alice.email, "not-the-password") for _ in range(9))
+        unknown = sorted(timed("nobody-at-all@example.invalid", "not-the-password") for _ in range(9))
+        self.assertGreaterEqual(known[0], floor - 0.005)
+        self.assertGreaterEqual(unknown[0], floor - 0.005)
+        self.assertLess(abs(known[4] - unknown[4]), 0.03, (known, unknown))  # the medians
+
+    def test_every_refusal_is_held_to_the_floor(self):
+        alice = helpers.make_user()
+        c = self.anonymous()
+        with mock.patch.object(users, "derivation_floor", return_value=0.3):
+            def took(path, body):
+                ratelimit.AUTH.reset()
+                began = time.monotonic()
+                r = c.post(path, json=body)
+                return r, time.monotonic() - began
+
+            recover = {"recovery_code": "AAAA-BBBB-CCCC-DDDD", "new_password": "some new password"}
+            cases = [("/api/auth/login", {"email": "ghost@example.invalid", "password": "x" * 12}, 401),
+                     ("/api/auth/login", {"email": alice.email, "password": "x" * 12}, 401),
+                     ("/api/auth/recover", {"email": "ghost@example.invalid", **recover}, 401),
+                     ("/api/auth/recover", {"email": alice.email, **recover}, 401)]
+            for path, body, status in cases:
+                ratelimit.reset_all()
+                r, seconds = took(path, body)
+                self.assertEqual(r.status_code, status, (path, body))
+                self.assertGreaterEqual(seconds, 0.29, (path, body))
+            helpers.lock_out(alice.id)  # a refusal for a wait is held to it too
+            r, seconds = took("/api/auth/login", {"email": alice.email, "password": alice.password})
+            self.assertEqual(r.status_code, 429)
+            self.assertGreaterEqual(seconds, 0.29)
+            ratelimit.reset_all()
+            r, seconds = took("/api/auth/login", {"email": alice.email, "password": alice.password})
+            self.assertEqual(r.status_code, 200)  # a right password is not delayed by it
+            self.assertLess(seconds, 0.29)
 
     def test_an_unknown_email_is_locked_the_same_way(self):
         c = self.anonymous()
@@ -415,7 +610,7 @@ class LoginTest(SignInTestCase):
     def test_cookie_names_and_flags(self):
         alice = helpers.make_user()
         plain = self.anonymous().post("/api/auth/login", json={"email": alice.email, "password": alice.password})
-        cookie = plain.headers["set-cookie"]
+        cookie = plain.headers.get_list("set-cookie")[0]
         self.assertTrue(cookie.startswith("jh_session="))
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=lax", cookie)
@@ -423,7 +618,7 @@ class LoginTest(SignInTestCase):
         self.assertNotIn("Max-Age", cookie)  # a browser session unless "Keep me signed in"
         https = self.anonymous(base_url="https://testserver")
         r = https.post("/api/auth/login", json={"email": alice.email, "password": alice.password, "remember": True})
-        cookie = r.headers["set-cookie"]
+        cookie = r.headers.get_list("set-cookie")[0]
         self.assertTrue(cookie.startswith("__Host-jh_session="))
         self.assertIn("Secure", cookie)
         self.assertIn("Path=/", cookie)
@@ -439,6 +634,31 @@ class LoginTest(SignInTestCase):
             proxied = self.anonymous(base_url="http://jobs.example.com")
             r = proxied.post("/api/auth/login", json={"email": alice.email, "password": alice.password})
             self.assertTrue(r.headers["set-cookie"].startswith("__Host-jh_session="))
+
+    def test_the_port_is_part_of_the_cookie_name(self):
+        """Browsers keep cookies per host name and ignore the port: a test instance on :8001 next to the live app on
+        :8040 would sign each other out if both used one name."""
+        alice = helpers.make_user()
+        login = {"email": alice.email, "password": alice.password}
+        for url, name in (("http://127.0.0.1:8001", "jh_session_8001"), ("http://127.0.0.1:8040", "jh_session_8040"),
+                          ("http://[::1]:8001", "jh_session_8001"), ("https://testserver:8443", "__Host-jh_session_8443"),
+                          ("http://127.0.0.1", "jh_session")):
+            cookie = self.anonymous(base_url=url).post("/api/auth/login", json=login).headers["set-cookie"]
+            self.assertTrue(cookie.startswith(name + "="), (url, cookie))
+        # One browser, one host name, two ports: each instance has its own cookie and neither ends the other's.
+        c = self.anonymous(base_url="http://127.0.0.1:8001")
+        self.assertEqual(c.post("/api/auth/login", json=login).status_code, 200)
+        self.assertEqual(c.get("/api/auth/me").status_code, 200)
+        self.assertEqual(c.get("http://127.0.0.1:8040/api/auth/me").status_code, 401)  # (the other instance: signed out)
+        self.assertEqual(c.post("http://127.0.0.1:8040/api/auth/login", json=login).status_code, 200)
+        self.assertEqual(c.get("http://127.0.0.1:8040/api/auth/me").status_code, 200)
+        self.assertEqual(c.get("http://127.0.0.1:8001/api/auth/me").status_code, 200)
+        self.assertEqual({"jh_session_8001", "jh_session_8040"} <= set(c.cookies.keys()), True)
+        # Signing out of one leaves the other.
+        csrf = c.get("http://127.0.0.1:8001/api/auth/me").json()["csrf"]
+        self.assertEqual(c.post("http://127.0.0.1:8001/api/auth/logout", headers={"X-CSRF-Token": csrf}).status_code, 200)
+        self.assertEqual(c.get("http://127.0.0.1:8001/api/auth/me").status_code, 401)
+        self.assertEqual(c.get("http://127.0.0.1:8040/api/auth/me").status_code, 200)
 
     def test_sessions_expire(self):
         alice = helpers.make_user()

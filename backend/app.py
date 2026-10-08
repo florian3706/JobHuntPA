@@ -132,6 +132,7 @@ async def lifespan(app: FastAPI):
     # The server key file, then the first admin from the environment or the first-run token (backend.users).
     # A missing or wrong key file stops start-up here, with what to do.
     users.startup()
+    threading.Thread(target=users.derivation_floor, daemon=True).start()  # how long a refused sign-in takes at least
     # An encryption run the last process left running waits for its admin's next sign-in; after it, strict mode.
     migrate_encryption.at_startup()
     tasks.mark_interrupted()

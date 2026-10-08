@@ -147,7 +147,14 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
 - **Signing in:** after that, JobHuntPA opens the sign-in page whenever you aren't signed in. Tick
   *Keep me signed in* on your own device to stay signed in for up to 30 days of not using it
   (otherwise 24 hours). **Account > Sign out** at the top right signs this browser out. After 5
-  wrong passwords in a row, the next try has to wait 30 seconds, then longer each time, up to 15 minutes.
+  wrong passwords in a row **from one place** (one network address, or one browser you have signed in
+  with before), the next try from that place has to wait 30 seconds, then longer each time, up to 15
+  minutes. The wait is for that place only: someone who knows your email address and keeps guessing locks
+  out their own address, never you. If guesses come from very many addresses at once (100 wrong tries an
+  hour), a browser you have never signed in with is asked to wait a while; the browsers you
+  usually use are not. JobHuntPA remembers a browser you have signed in with in a small cookie
+  (`jh_device`); it proves nothing about your password and opens nothing. A password change or reset makes the old
+  ones useless. The counts are kept in memory, so restarting JobHuntPA clears them.
 - **Two-step sign-in** (Settings > Two-step sign-in): add an authenticator app (any app that makes 6-digit
   codes) by scanning the QR code, or by typing the setup key if you can't scan. After that, signing
   in asks for the app's code after your password. A code works once, and a recovery code works instead
@@ -167,19 +174,25 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   asks you to tick "I understand my saved data will be deleted"**: your workspaces, jobs, documents and
   uploads are then deleted and you start again with an empty "My job search" and new recovery codes (your
   account, membership and sign-in stay). Either way, every other browser is signed out, you are signed
-  in, and you get a "Your password was changed" email. If you have a recovery code, use it instead: it keeps your data.
+  in, and you get a "Your password was changed" email. **With data kept, your old recovery codes stop
+  working and you are shown eight new ones to save** (someone who had an account on your address before
+  you could otherwise still use theirs). If you have a recovery code, use it instead: it keeps your data.
 - **Your email address** (Settings): once email is set up, a new account gets a link to confirm its address
   (*Send it again* is on the Settings tab; the link lasts 24 hours). An address an admin invited you at counts as
-  confirmed. **Changing your address** asks for your password, sends a link to the *new* address, and changes
-  nothing until you open it; the old address then gets a notice, and Stripe (if you pay) is told the new address
-  for its receipts. You are also emailed when your password is
+  confirmed only if the invitation was really emailed to that address; a link an admin copied and sent
+  another way proves nothing about the mailbox, so you get the usual confirmation email. **Changing your
+  address** asks for your password (and a code from the app with two-step sign-in on), sends a link to the *new*
+  address, and changes nothing until its owner opens the link **and presses the button on the page it shows**
+  (opening it alone, as a mail scanner might, does nothing); the old address gets a notice when you start and
+  when it is done, and Stripe (if you pay) is told the new address for its receipts. You are also emailed when your password is
   changed and when an admin turns off your two-step sign-in. These emails never contain your address or any of your data.
 - **Password, recovery codes and sessions** (Settings > Password, Recovery codes and Signed-in devices): change your password (your data
   stays readable and other browsers are signed out unless you untick that), make 8 new recovery
-  codes (the old ones stop working; with two-step sign-in on you also enter the app's code; you save
-  the new ones the same way as the first set), and *Sign out
-  everywhere else*. Anything sensitive asks you to confirm your password first, if you haven't
-  entered it in the last 15 minutes.
+  codes (the old ones stop working; you enter your password, and with two-step sign-in on also the app's
+  code; you save the new ones the same way as the first set, and we email you that new codes were
+  made), and *Sign out everywhere else*. Anything sensitive asks you to confirm your password first, if you
+  haven't entered it in the last 15 minutes. If you think someone had your session, change your password,
+  make new recovery codes and sign out everywhere else.
 - **Delete your account** (Settings > Delete account): enter your password and everything of yours is
   removed: workspaces, jobs, documents and the uploaded files, chats, cover letters, keys and
   sessions. Job postings and company research that everyone shares stay, because they hold nothing of
@@ -253,7 +266,9 @@ text, documents, chats or any password, token or key: they name the kind of fail
 number. `tests/test_log_leaks.py` runs a whole account through the app with everything planted in it
 and checks this at the most detailed logging level.
 
-**The limits.** The AI provider sees what it scores, chats about or writes. The running app holds
+**The limits.** Wrong passwords are counted per place in memory (see *Signing in*), so a restart gives each
+place its five tries back, and a guesser with many addresses is held to 100 wrong tries an hour for the whole account.
+The AI provider sees what it scores, chats about or writes. The running app holds
 your data in memory while you use it. Someone who changes the app's code on the server could capture
 your password when you next sign in. With **[background access](#background-access)** on, whoever
 runs the server could read your data. On SSDs and SD cards, deleted data may linger in storage the
@@ -328,7 +343,16 @@ The port never matters. Anything else gets "This address isn't allowed" (HTTP 40
 the address it gives you, such as `https://pi.tail1234.ts.net`: that is enough, and it also makes the
 sign-in cookie secure. Without a public address, list the name in `JOBHUNT_ALLOWED_HOSTS` instead.
 Start JobHuntPA through `start.sh` or the launcher, which already trust the proxy on the same computer
-(`--proxy-headers --forwarded-allow-ips 127.0.0.1`).
+(`--proxy-headers --forwarded-allow-ips 127.0.0.1`). The proxy must **append** the real visitor's address to
+`X-Forwarded-For` (`tailscale serve` and the usual proxies do); one that passed a visitor's own header through
+unchanged would let anyone choose the address JobHuntPA counts their sign-in tries under.
+
+**Give JobHuntPA a host name of its own.** The sign-in cookie is kept per host name, and browsers ignore the port,
+so JobHuntPA puts the port into the cookie's name (`jh_session_8001`): a test copy on port 8001 and the live app
+on 8040 on one computer no longer sign each other out (everyone signs in once more after this update). Other apps on
+the same host name still receive the cookie, though, so use a name only JobHuntPA answers to (such as
+`jobs.example.com` or its own Tailscale name) rather than sharing `localhost` or a host name with other
+web apps.
 
 ### Setting up email
 
@@ -727,7 +751,7 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
   leaks into a log; the JobHuntPA window names the kind of failure.
 - **The reset or confirmation email never arrives:** look in spam, and check the From address's SPF and DKIM
   records. Asking again many times in a row is limited (3 an hour per address); the page answers the same either
-  way. A link works once and for 1 hour (confirmation links: 24 hours); only the newest link works.
+  way. If every earlier link has run out, a new request always goes out. A link works once and for 1 hour (confirmation links: 24 hours); only the newest link works.
 - **The reset page says the link has expired or was already used:** ask for a new one on the sign-in page. It
   can't say which, so nobody can use it to find out who has an account.
 - **No job digest arrives:** open Settings > **Job digest emails**. If something is missing it is listed there
