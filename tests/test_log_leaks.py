@@ -266,10 +266,12 @@ class FullRun(MailTestCase):
             logging.getLogger("test").info("the capture works")
             c = self.signed_up()
             self.sign_up_and_set_up(c)
+            grant = self.free_period(c)  # the AI features are for members (a free period, as an admin grants it)
             ads = self.search_and_score(c)
             self.talk_to_the_ai(c, ads)
             self.when_things_fail(c)
             self.with_claude(c)
+            self.end_free_period(grant)  # so the account pays for its membership next
             self.pay_export_and_change(c)
             self.reset_and_digest(c, notice)
         everything = "\n".join(log.lines + [printed.getvalue()])
@@ -284,6 +286,18 @@ class FullRun(MailTestCase):
         self.assertTrue(notice, "the steps didn't all run")
 
     # -- the steps ----------------------------------------------------------------------------------------------
+
+    def free_period(self, c) -> tuple:
+        user_id = c.get("/api/auth/me").json()["user"]["id"]
+        admin = self.signed_in()
+        r = admin.post(f"/api/admin/users/{user_id}/grants",
+                       json={"kind": "free_period", "days": 1, "note": f"{MARK} free period for {self.email}"})
+        self.assertEqual(r.status_code, 201, r.text)
+        return admin, user_id, r.json()["grant"]["id"]
+
+    def end_free_period(self, grant: tuple) -> None:
+        admin, user_id, grant_id = grant
+        self.assertEqual(admin.delete(f"/api/admin/users/{user_id}/grants/{grant_id}").status_code, 200)
 
     def sign_up_and_set_up(self, c):
         # The address check mail, then the search profile, a pin, a source and documents.
