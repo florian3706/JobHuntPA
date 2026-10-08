@@ -1273,6 +1273,7 @@ def sc_job(a, w, theme):
         page.goto(f"{app.base}/job.html?id=1&ws={a.fixtures['ws']}")
         page.wait_for_selector("#job-company dl.profile")
         page.wait_for_function("() => !document.querySelector('#job-commute').textContent.includes('Working out')", timeout=60000)
+        page.wait_for_selector("#job-ghost-section:not([hidden]) .ghost-signs")  # the "Is this a real vacancy?" section (planted signs)
         settle(page, 600)
         a.check(page, "job.html")
     with a.step("job.html: a job that isn't there"):

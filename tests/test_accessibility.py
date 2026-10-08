@@ -1576,6 +1576,10 @@ class BrowserAuditRegressionsTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         for group in ("index", "auth", "links", "wizard", "job", "billing", "admin", "settings", "keyboard"):
             self.assertIn(group + ":", done.stdout)
+        source = tool.read_text(encoding="utf-8")
+        # the audit must reach the ghost-job pages (it fails a run that can't), and ignore a visually hidden clip
+        self.assertIn("#job-ghost-section:not([hidden]) .ghost-signs", source)
+        self.assertIn("r.width <= 2 || r.height <= 2", source)
 
 
 if __name__ == "__main__":
