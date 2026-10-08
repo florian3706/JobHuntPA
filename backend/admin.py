@@ -371,7 +371,7 @@ def set_role(user_id: int, body: RoleIn, admin: AuthUser = Depends(current_user)
                                           "someone else an admin first.")
     target.role = "user"
     db.flush()
-    remaining = [i for (i,) in db.query(User.id).filter(User.role == "admin")]
+    remaining = admin_key.active_admin_ids(db)
     rotation = admin_key.new_key(db, apk, remaining, admin.id)
     audit_detail = {"from": "admin", "to": "user", "apk_version": rotation.apk.version,
                     "resealed": rotation.resealed, "stale": rotation.stale, "dropped": rotation.dropped}
@@ -390,6 +390,8 @@ def regrant(user_id: int, admin: AuthUser = Depends(current_user), db: Session =
     target = _target(db, user_id)
     if target.role != "admin":
         raise _problem(409, "not_admin", "Only an admin holds the admin key. Make them an admin first.")
+    if target.status != "active":
+        raise _problem(409, "disabled", "Turn this account on before sharing the admin key with it.")
     apk = _need_apk(db, admin)
     try:
         admin_key.grant_to(db, apk, target.id, admin.id)
@@ -437,22 +439,39 @@ def disable_user(user_id: int, body: Optional[DisableIn] = None, admin: AuthUser
     """Turn an account off: they are signed out everywhere and can't sign in. Not your own account, and not the last
     admin. A subscription they pay for keeps renewing, and they can't reach the billing page to end it:
     ``subscription`` in the answer says ``still_billing`` for that, or (with ``cancel_subscription_at_period_end``)
-    ``cancelled`` or ``failed``; ``none`` when they have no live one. Stripe is only asked after the refusals above."""
+    ``cancelled`` or ``failed``; ``none`` when they have no live one. Stripe is only asked after the refusals above.
+    Turning off an admin who holds the admin key replaces the key, as demoting does (they keep no copy of anything
+    written afterwards), so it needs your own copy of the key; turning them on again does not share it with them.
+    Recent password required."""
+    require_recent_auth(admin)
     _exclusive(db)
     target = _target(db, user_id)
     if target.id == admin.id:
         raise _problem(409, "self", "You can't turn off your own account.")
     if target.role == "admin" and target.status == "active" and not _active_admins(db, besides=target.id):
         raise _problem(409, "last_admin", "This is the last admin, so their account can't be turned off.")
+    holds_key = target.role == "admin" and db.get(AdminKeyGrant, target.id) is not None
+    apk = _need_apk(db, admin) if holds_key else None  # (before Stripe is asked)
     subscription = _subscription_after_disable(db, admin, target, bool(body and body.cancel_subscription_at_period_end))
     changed = target.status != "disabled"
     target.status = "disabled"
     db.query(AuthSession).filter(AuthSession.user_id == target.id).delete(synchronize_session=False)
-    if changed:
-        audit(db, admin, "user_disabled", target.id, {} if subscription == "none" else {"subscription": subscription})
+    rotation = None
+    if apk is not None:
+        db.flush()
+        rotation = admin_key.new_key(db, apk, admin_key.active_admin_ids(db), admin.id)
+    if changed or rotation is not None:
+        action = "user_disabled" if changed else "admin_key_replaced"  # (a disabled admin who still held a copy)
+        detail: dict = {} if subscription == "none" or not changed else {"subscription": subscription}
+        if rotation is not None:
+            detail.update(apk_version=rotation.apk.version, resealed=rotation.resealed, stale=rotation.stale,
+                          dropped=rotation.dropped)
+            admin_key.audit(db, admin.id, action, target.id, detail, public=rotation.apk.public)
+        else:
+            audit(db, admin, action, target.id, detail)
     db.commit()
-    return {"ok": True, "changed": changed, "subscription": subscription,
-            "user": _summaries(db, _open_apk(db, admin), [target.id])[0]}
+    return {"ok": True, "changed": changed, "subscription": subscription, "apk_rotated": rotation is not None,
+            "user": _summaries(db, rotation.apk if rotation else _open_apk(db, admin), [target.id])[0]}
 
 
 @router.post("/users/{user_id}/enable")
@@ -590,7 +609,9 @@ def put_membership(user_id: int, body: MembershipIn, admin: AuthUser = Depends(c
     """Exempt someone from payment, or set how many free searches they have used. Exempting someone who pays can
     also end their subscription when the period they paid for is over (``cancel_subscription_at_period_end``, only
     when asked; Stripe is changed first, so a Stripe failure changes nothing: 502). ``subscription_ending`` in the
-    answer says whether a subscription was set to end."""
+    answer says whether a subscription was set to end. Recent password required (free access is what a stolen
+    session would give itself)."""
+    require_recent_auth(admin)
     target = _target(db, user_id)
     if body.exempt is None and body.free_searches_used is None and body.cancel_subscription_at_period_end is None:
         raise _problem(422, "invalid", "Send exempt, free_searches_used or cancel_subscription_at_period_end.")
@@ -651,7 +672,8 @@ def _set_note(row: MembershipGrant, public: bytes, note: str) -> None:
 @router.post("/users/{user_id}/grants", status_code=201)
 def add_grant(user_id: int, body: GrantIn, admin: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
     """A free period (or a manual extension) for one person: from ``starts_at`` (now when left out) to ``ends_at``,
-    or for ``days`` days. The note is sealed to the admin key."""
+    or for ``days`` days. The note is sealed to the admin key. Recent password required."""
+    require_recent_auth(admin)
     _exclusive(db)  # before reading the key: a demotion can't replace it between the read and this commit
     target = _target(db, user_id)
     public = _public(db)
@@ -676,7 +698,8 @@ def add_grant(user_id: int, body: GrantIn, admin: AuthUser = Depends(current_use
 def change_grant(user_id: int, grant_id: int, body: GrantPatch, admin: AuthUser = Depends(current_user),
                  db: Session = Depends(get_db)):
     """Change a free period's dates or note. ``days`` counts from the start. An ended-by-admin period can't be
-    changed."""
+    changed. Recent password required."""
+    require_recent_auth(admin)
     _exclusive(db)  # before reading the key (see add_grant)
     _target(db, user_id)
     row = _grant(db, user_id, grant_id)
@@ -711,7 +734,9 @@ def change_grant(user_id: int, grant_id: int, body: GrantPatch, admin: AuthUser 
 
 @router.delete("/users/{user_id}/grants/{grant_id}")
 def end_grant(user_id: int, grant_id: int, admin: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
-    """End a free period now. It stays in the person's history (``revoked_at``) and no longer counts."""
+    """End a free period now. It stays in the person's history (``revoked_at``) and no longer counts. Recent password
+    required."""
+    require_recent_auth(admin)
     _target(db, user_id)
     row = _grant(db, user_id, grant_id)
     stripe = {"extended": False, "trial_end": None, "problem": None}

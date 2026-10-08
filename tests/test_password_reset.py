@@ -158,7 +158,7 @@ class ForgotTest(ResetCase):
         self.assertNotIn(token.encode(), bytes(row.token_hash) + bytes(row.payload_enc))
         self.assertNotIn(bob.email.encode(), bytes(row.payload_enc))  # the address is sealed under a key made from the token
         self.assertLess(abs(timedelta(hours=1) - (row.expires_at - row.created_at)), timedelta(seconds=30))
-        self.assertEqual(len(token), 43)  # 32 random bytes
+        self.assertEqual(len(token), 43 + 22)  # 32 random bytes, then the server key's signature of them
         self.assertEqual(tokens.open_payload(token, "reset", row.payload_enc), {"email": bob.email})
 
     def test_a_new_link_replaces_the_old_one(self):
@@ -970,6 +970,63 @@ class StaleLinkTest(ResetCase):
 # ---------------------------------------------------------------------------
 # What a reset does besides changing the password
 # ---------------------------------------------------------------------------
+
+class WriterTest(ResetCase):
+    """Someone who can write the database (not the key file) can't point a reset link at themselves (Phase L review;
+    accounts design §2.5)."""
+
+    def info(self, token):
+        return self.anonymous().post("/api/auth/reset/info", json={"token": token})
+
+    def refused(self, token, bob):
+        for r in (self.info(token), self.reset(token)):
+            self.assertEqual((r.status_code, r.json()["code"]), (410, "link_invalid"))
+        self.assertEqual(self.login(bob, PASSWORD)[1].status_code, 200)  # the password is the one it was
+
+    def test_a_row_made_without_the_key_file_is_no_link(self):
+        bob = self.user(background=True)
+        db = SessionLocal()
+        try:  # a writer knows everything a link needs except the server key's signature
+            token, _row = tokens.create(db, "reset", ttl=timedelta(hours=1), user_id=bob.id,
+                                        payload={"email": bob.email})
+            db.commit()
+        finally:
+            db.close()
+        self.refused(token, bob)
+
+    def test_a_link_of_another_account_moved_to_this_one_is_no_link(self):
+        bob, mallory = self.user(background=True), self.user(background=True)
+        token = self.link(mallory)  # mallory's own, real link
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE auth_tokens SET user_id = :b WHERE token_hash = :h"),
+                         {"b": bob.id, "h": tokens.hash_token(token)})
+        self.refused(token, bob)
+
+    def test_an_email_hash_rewritten_to_another_address_does_not_send_a_working_link_to_it(self):
+        bob = self.user(background=True)
+        attacker = f"attacker-{bob.id}@example.invalid"
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE users SET email_hash = :h WHERE id = :i"),
+                         {"h": users.server_keys().email_hash(attacker), "i": bob.id})
+        self.assertEqual(self.ask(attacker).status_code, 202)
+        token = token_in(self.last_to(attacker), "reset-password.html")  # a genuine, signed link, to the wrong person
+        for r in (self.info(token), self.reset(token)):
+            self.assertEqual((r.status_code, r.json()["code"]), (410, "link_invalid"))
+        with engine.begin() as conn:  # put it back: the account is still bob's, with the password it had
+            conn.execute(text("UPDATE users SET email_hash = :h WHERE id = :i"),
+                         {"h": users.server_keys().email_hash(bob.email), "i": bob.id})
+        self.assertEqual(self.login(bob, PASSWORD)[1].status_code, 200)
+        self.assertEqual(self.flush()[-1]["To"], attacker)  # (no "password changed" notice: nothing was reset)
+        self.assertEqual(len([m for m in self.flush() if "changed" in (m["Subject"] or "")]), 0)
+
+    def test_a_link_to_the_accounts_real_address_in_another_spelling_still_works(self):
+        bob = self.user(background=True)
+        token = self.link(bob)
+        r = self.reset(token)
+        self.assertEqual((r.status_code, r.json()["kept_data"]), (200, True))
+        notice = [m for m in self.flush() if m["To"] == bob.email and "changed" in (m["Subject"] or "").lower()]
+        self.assertEqual(len(notice), 1)  # the notice goes to the address the account holds
+
 
 class AfterResetTest(ResetCase):
     def test_signing_in_by_reset_starts_a_waiting_encryption_migration(self):

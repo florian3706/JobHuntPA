@@ -186,6 +186,13 @@ class Rotation:
     dropped: int = 0    # other values that no longer opened, and were cleared
 
 
+def active_admin_ids(db: Session) -> list[int]:
+    """The admins who hold the key after a rotation: active ones only. An admin who was turned off is no longer
+    trusted with what is written from now on, so a new key is never shared with them (they get a grant again only
+    when another admin shares it after turning them on)."""
+    return [i for (i,) in db.query(User.id).filter(User.role == "admin", User.status == "active")]
+
+
 def new_key(db: Session, old: Optional[Apk], admin_ids: Iterable[int], granted_by: Optional[int]) -> Rotation:
     """A new APK for ``admin_ids`` (every remaining admin), in ``db``'s transaction (not committed).
 
@@ -301,7 +308,7 @@ def new_admin_key_command(email: str, out=None, err=None) -> int:
         became_admin = found.role != "admin"
         found.role = "admin"
         db.flush()
-        admin_ids = [i for (i,) in db.query(User.id).filter(User.role == "admin")]
+        admin_ids = active_admin_ids(db)
         rotation = new_key(db, None, admin_ids, found.id)
         public = (rotation.apk.public, rotation.apk.version)
         immediately = 0

@@ -243,13 +243,8 @@ def remove_scratch_folders() -> None:
         shutil.rmtree(_FOLDERS.pop(), ignore_errors=True)
 
 
-def scenario(code: str, folder: Optional[str] = None, env: Optional[dict] = None, *,
-             returncode: Optional[int] = 0) -> dict:
-    """Run ``code`` in a fresh Python process on a throwaway data folder, database, .env and key file in
-    ``folder`` (a new one by default; pass the same folder again to "restart"). ``code`` sets ``out``, which comes
-    back as a dict. The admin variables from tests/__init__.py are left out unless ``env`` sets them.
-    ``returncode``: the exit status expected (None: any, for a process that is made to crash)."""
-    folder = folder or scratch_folder()
+def scenario_env(folder: str, env: Optional[dict] = None) -> dict:
+    """The environment of a fresh process on the throwaway data folder ``folder`` (see ``scenario``)."""
     run_env = {k: v for k, v in os.environ.items() if not k.startswith("JOBHUNT_ADMIN_")}
     run_env.update({"JOBHUNT_DATA_DIR": folder, "JOBHUNT_DB_PATH": os.path.join(folder, "jobhunt.db"),
                     "JOBHUNT_ENV_PATH": os.path.join(folder, ".env"),
@@ -257,6 +252,17 @@ def scenario(code: str, folder: Optional[str] = None, env: Optional[dict] = None
                     "JOBHUNT_TESTING": "1", "JOBHUNT_KDF_PROFILE": "test", "PYTHONPATH": str(ROOT)})
     run_env.pop("DATABASE_URL", None)
     run_env.update(env or {})
+    return run_env
+
+
+def scenario(code: str, folder: Optional[str] = None, env: Optional[dict] = None, *,
+             returncode: Optional[int] = 0) -> dict:
+    """Run ``code`` in a fresh Python process on a throwaway data folder, database, .env and key file in
+    ``folder`` (a new one by default; pass the same folder again to "restart"). ``code`` sets ``out``, which comes
+    back as a dict. The admin variables from tests/__init__.py are left out unless ``env`` sets them.
+    ``returncode``: the exit status expected (None: any, for a process that is made to crash)."""
+    folder = folder or scratch_folder()
+    run_env = scenario_env(folder, env)
     program = "import json, os\nout = {}\nFOLDER = %r\n%s\nprint('RESULT ' + json.dumps(out, default=str))\n" % (
         folder, textwrap.dedent(code))
     done = subprocess.run([sys.executable, "-c", program], cwd=folder, env=run_env, capture_output=True, text=True,

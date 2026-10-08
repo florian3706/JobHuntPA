@@ -207,6 +207,8 @@ def check_second_factor(db: Session, user: User, body: SecondFactorIn, scope, *,
         raise AuthProblem(422, "wrong_code", "That recovery code isn't right. Check it and try again.",
                           field="recovery_code")
     db.commit()  # with the used-up recovery code, if one was typed
+    if recovery_id is not None:
+        scrub_wal()  # its copy of the data key must not linger in the write-ahead log
     ticket.succeed()
 
 

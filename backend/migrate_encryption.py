@@ -25,7 +25,10 @@ sealed under their data key. That key exists only while they are signed in, so t
 5. ``PRAGMA secure_delete=ON``, ``wal_checkpoint(TRUNCATE)``, ``VACUUM`` (if the disk has room), checkpoint again,
    so the old plaintext pages are gone from the database and its WAL.
 6. ``done``, with a report (rows and files sealed, the backup, VACUUM's outcome), and strict mode on: from then on a
-   plaintext value in a sealed column is refused (backend.crypto).
+   plaintext value in a sealed column is refused (backend.crypto). "Done" is also written into the key file
+   (``encryption_done_at``, backend.keys), which strict mode trusts over the database: someone who can only write the
+   database can't set the state back to pending and have the next run seal planted plaintext as if it were real.
+   Once the key file says done the run is never repeated (``MigrationError``).
 
 Afterwards the plaintext copies outside the database (the backup above, older ``*.bak-*`` backups, the unused
 ``data/cache/*.html`` pages and any upload left unsealed) are listed by ``leftover_files``. They are never deleted
@@ -52,8 +55,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends
 from sqlalchemy import Table, select, text, update
 
-from backend import crypto
-from backend.db import DATA_DIR, DB_PATH, UPLOAD_DIR, Base, engine
+from backend import crypto, keys
+from backend.db import DATA_DIR, DB_PATH, UPLOAD_DIR, Base, engine, online_backup
 from backend.sessions import AuthUser, current_user
 
 log = logging.getLogger(__name__)
@@ -160,12 +163,34 @@ def owner_of(value: dict) -> Optional[int]:
         return conn.execute(text("SELECT MIN(id) FROM users WHERE role = 'admin'")).scalar()
 
 
+def _marked() -> bool:
+    """Whether the key file says the run has finished (see the module docstring)."""
+    return keys.encryption_marked()
+
+
+def _mark_done() -> None:
+    """Writes "done" into the key file, once (an install from before the marker gets it at its next start). Best
+    effort: without the loaded keys (or a key file that can't be written) the database's state still decides."""
+    from backend import users
+
+    try:
+        if users.server_keys().mark_encryption_done():
+            log.info("The key file now records that the data is encrypted")
+    except (RuntimeError, keys.KeyFileError, OSError) as exc:
+        log.warning("Could not record in the key file that the data is encrypted: %s", exc.__class__.__name__)
+
+
 def is_done() -> bool:
     """Whether the run has finished on this database (cached once true: it never goes back)."""
     global _done
-    if not _done and state().get("state") == "done":
-        _done = True
-        crypto.set_strict(True)
+    if not _done:
+        if _marked():
+            _done = True
+            crypto.set_strict(True)
+        elif state().get("state") == "done":
+            _done = True
+            crypto.set_strict(True)
+            _mark_done()
     return _done
 
 
@@ -192,7 +217,12 @@ def at_startup() -> None:
     """At every start: a run the last process left running resumes at the owner's next sign-in; after the run,
     strict mode is on."""
     value = state()
-    if value.get("state") == "running":
+    if _marked():
+        if value.get("state") != "done":  # the database was set back (a restored copy, or tampering): the key file wins
+            _update_state(state="done", error=None)
+            log.error("The key file says the data was encrypted, but the database said %r. Strict mode stays on: "
+                      "plaintext found in it is refused, not sealed.", value.get("state") or "nothing")
+    elif value.get("state") == "running":
         _update_state(state="pending", interrupted_at=datetime.utcnow().isoformat(timespec="seconds"))
         log.warning("Encrypting the data was interrupted; it carries on when the admin who started it signs in.")
     is_done()
@@ -253,6 +283,8 @@ def _run(owner: int) -> dict:
     value = state()
     if value.get("state") == "done":
         return value
+    if _marked():  # (the database was set back: the key file wins, and nothing found now is sealed as if real)
+        raise MigrationError("The key file says the data is already encrypted, so nothing is sealed again")
     if owner_of(value) != owner:
         raise MigrationError("Only the first admin's key can encrypt the data from before accounts")
     _update_state(state="running", owner=owner, error=None, started_at=value.get("started_at")
@@ -281,6 +313,7 @@ def _run(owner: int) -> dict:
     global _done
     _done = True
     crypto.set_strict(True)
+    _mark_done()
     log.info("Encrypting the data is done: %d rows and %d files in %.1f s", sum(report["rows"].values()),
              report["files_sealed"], report["seconds"])
     return final
@@ -311,19 +344,7 @@ def backup_database() -> Optional[Path]:
     target = backup_path()
     if target.exists():
         return target
-    tmp = target.with_name(target.name + ".tmp")
-    raw = engine.raw_connection()
-    try:
-        dst = sqlite3.connect(str(tmp))
-        try:
-            raw.driver_connection.backup(dst)
-        finally:
-            dst.close()
-    finally:
-        raw.close()
-    os.chmod(tmp, 0o600)
-    tmp.replace(target)
-    return target
+    return online_backup(target)
 
 
 # ---------------------------------------------------------------------------

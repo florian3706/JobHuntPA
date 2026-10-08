@@ -276,6 +276,8 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
     new_secret = sessions.create(db, user, dek, persistent=remember)
     db.delete(pending)
     db.commit()
+    if recovery_id is not None:
+        scrub_wal()  # the used-up code's copy of the data key must not linger in the write-ahead log
     log.info("Signed in with two-step code: user %s%s", user.id, " (recovery code)" if recovery_id else "")
     _after_sign_in(user.id, dek)
     out: dict = {"ok": True, "user": {"id": user.id, "role": user.role}}

@@ -274,6 +274,21 @@ your password when you next sign in. With **[background access](#background-acce
 runs the server could read your data. On SSDs and SD cards, deleted data may linger in storage the
 disk manages itself.
 
+**Other accounts on the same computer** can't read the `data/` folder, the database or its backups:
+JobHuntPA makes them readable by you only (on Windows it relies on the folder's permissions).
+
+**If someone can change the database file, not only copy it,** a few things in it are not protected by
+your key: the lookup values the app needs before anyone signs in (which account an email address
+belongs to, who is an admin, who has two-step sign-in on, who is turned off) and the public keys used
+to share the admin key. With those they could send a password link to their own address, or receive
+the admin key the next time an admin is made or the key is replaced. A password link for an account
+with background access is only accepted for the address inside the account's own encrypted details, and
+every link carries the server's signature, so a link can't be made by editing the database alone. For an
+account without background access, a link sent to the wrong address deletes that account's data and
+never discloses it. The admin key opens only people's names, emails, notes and billing details, never
+searches, documents or jobs. Someone who has the database **and** `data/server-keys.json` can do
+anything the server can.
+
 #### Background access
 
 Settings > **Background access** is a switch for your account.
@@ -287,7 +302,8 @@ How it works: turning it on (it asks for your password again if you haven't type
 minutes) stores a copy of your data key locked with the server's own key, in `data/server-keys.json`.
 Whoever has the database **and** that file can read the data of every account with it on. Turning it
 off deletes that copy at once. The setup walkthrough's *Automatic searches* step turns it on for you
-if you tick it. Back up `data/server-keys.json` with the database.
+if you tick it. Back up `data/server-keys.json` with the database; it also records that the one-time
+encryption of an older install has finished, so restore the two together.
 
 ## Sharing JobHuntPA (admins)
 
@@ -300,12 +316,17 @@ documents or searches. It has five parts:
 - **People:** each account's email, name, role, status, last active day and membership. The columns
   sort (below 640 px wide, each person becomes a card with a "Sort by" menu). Buttons make someone an
   admin or a regular user, disable or enable them (someone who pays by subscription keeps being charged
-  while they are off and can't cancel it themselves: the panel says so, and *Membership* can end it), **unlock** someone who has to wait after wrong
+  while they are off and can't cancel it themselves: the panel says so, and *Membership* can end it;
+  disabling an admin replaces the admin key, and enabling them again does not share it: use *Share the
+  admin key again*), **unlock** someone who has to wait after wrong
   passwords, turn off their two-step sign-in, **delete their account** (with everything in it, their
   uploaded files included; not your own, not the last admin and not while their search is running; deleting
   an admin replaces the admin key like demoting does), and open their
   membership: **exempt from payment**, the number of free searches used, and **free periods**
   (start, end or number of days, a note only admins see; "End now" keeps the period in the history).
+  Disabling, and changing a membership or a free period, ask for your password again if you haven't
+  entered it in the last 15 minutes: free access and switched-off accounts are what a stolen session
+  would use first.
   *Send reset email* sends them the same one-hour link as "Email me a link" (they choose the password; an
   admin never sets one). While email isn't set up it says so, and the person can use a recovery code on the
   sign-in page instead.
@@ -383,9 +404,11 @@ To keep messages out of spam, send through your provider's own SMTP server and s
 
 **Roles and the admin details key.** People's emails, names, notes and billing details are encrypted
 so that only admins can open them, with an *admin key* that each admin holds a copy of (sealed to their
-own password). Making someone an admin shares the key with them. Making an admin a regular user
-**replaces the key** and shares the new one only with the admins who remain, so the person who was
-demoted can't open anything new. These actions ask for your password again if you haven't entered it in
+own password). Making someone an admin shares the key with them. Making an admin a regular user, or
+**disabling** or deleting one, **replaces the key** and shares the new one only with the admins who
+remain and are turned on, so the person who was removed can't open anything new. (Disabling an admin
+needs your own copy of the key; an admin you enable again gets the key only when you *Share the admin
+key* with them.) These actions ask for your password again if you haven't entered it in
 the last 15 minutes. JobHuntPA keeps you from removing the last admin and warns while only one exists:
 with a single admin who loses their password and recovery codes, nobody can read people's details. If
 an admin shows "Admin key not shared with them", use *Share the admin key again* (another admin does
@@ -396,8 +419,9 @@ key, and everyone's details are sealed to it again as they sign in.
 **Rotating the server key.** The server key (`data/server-keys.json`) protects the keys kept for
 background searches and two-step sign-in. *Replace the server key* moves them all to a new one and drops
 the old one; if something can't be moved, the old key is kept and nothing is lost. You can also run
-`python -m backend.keys rotate-kek` with JobHuntPA stopped (these commands refuse while it is running; if
-it isn't, delete `data/running.json`). A running JobHuntPA also won't overwrite a key file that something
+`python -m backend.keys rotate-kek` with JobHuntPA stopped. The app holds a lock on its key file for as long
+as it runs, however it was started, and these commands refuse while they can't get it (if the launcher's
+`data/running.json` is left over from a crash, delete it). A running JobHuntPA also won't overwrite a key file that something
 else changed: it stops with "The key file was changed by something else", and a restart picks up the new file.
 
 ### Job digest emails

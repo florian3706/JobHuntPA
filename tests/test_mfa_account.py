@@ -503,6 +503,23 @@ class MfaRecoveryCodeAtSignInTest(AccountTestCase):
     def codes_of(self, account: helpers.Account, c) -> list[str]:
         return c.get("/api/auth/recovery-codes").json()["codes"]
 
+    def test_a_spent_recovery_code_does_not_linger_in_the_write_ahead_log(self):
+        alice, secret = self.with_mfa()
+        c = self.mfa_client(alice, secret)
+        codes = self.codes_of(alice, c)
+        pending, _ = self.login(alice)
+        with mock.patch("backend.auth.scrub_wal") as scrub:
+            self.assertEqual(self.second_step(pending, recovery_code=codes[0]).status_code, 200)
+        scrub.assert_called_once()
+        with mock.patch("backend.auth.scrub_wal") as scrub:  # (an app code leaves no key copy behind)
+            again, _ = self.login(alice)
+            self.assertEqual(self.second_step(again, code=self.code(secret)).status_code, 200)
+        scrub.assert_not_called()
+        with mock.patch("backend.security.scrub_wal") as scrub:  # the same where a recovery code turns two-step off
+            r = c.post("/api/auth/mfa/disable", json={"password": PASSWORD, "recovery_code": codes[1]})
+            self.assertEqual(r.status_code, 200, r.text)
+        scrub.assert_called_once()
+
     def test_a_recovery_code_works_instead_of_the_app_and_only_once(self):
         alice, secret = self.with_mfa()
         c = self.mfa_client(alice, secret)

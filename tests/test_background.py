@@ -552,7 +552,7 @@ db_files = [Path(str(DB_PATH) + suffix) for suffix in ("", "-wal")]
 out["old_copies_left"] = [f.name for f in db_files if f.exists() and (old_blob in f.read_bytes() or b"sealed-secret" in f.read_bytes())]
 out["file_mode"] = oct(key_path.stat().st_mode & 0o777)
 out["new_file_differs"] = key_path.read_bytes() != old_file
-out["leftover"] = sorted(p.name for p in key_path.parent.iterdir() if p.name.startswith("server-keys") and p.name != "server-keys.json")
+out["leftover"] = sorted(p.name for p in key_path.parent.iterdir() if p.name.startswith("server-keys") and p.name not in ("server-keys.json", "server-keys.json.lock"))
 
 rows, bg, fp = state()
 out["background_left"] = bg

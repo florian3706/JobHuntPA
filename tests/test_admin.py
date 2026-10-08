@@ -398,11 +398,13 @@ class RoleTest(AdminTestCase):
         r = c.post(f"/api/admin/users/{self.admin_id}/role", json={"role": "user"})
         self.assertEqual((r.status_code, r.json()["code"]), (409, "last_admin"))
         self.assertEqual(c.post(f"/api/admin/users/{carol.id}/enable").status_code, 200)
+        self.assertEqual(c.post(f"/api/admin/users/{carol.id}/regrant").status_code, 200)  # (turning on shares nothing)
         c2 = helpers.client(carol.email)
         with c2:  # Carol can demote the first admin (herself remaining), but nobody can turn off the last one
             r = c2.post(f"/api/admin/users/{self.admin_id}/disable")
             self.assertEqual(r.status_code, 200)
             self.assertEqual(c2.post(f"/api/admin/users/{self.admin_id}/enable").status_code, 200)
+            self.assertEqual(c2.post(f"/api/admin/users/{self.admin_id}/regrant").status_code, 200)  # (a new key was made)
 
     def test_changing_a_role_needs_a_recent_password(self):
         c = self.signed_in()
@@ -1452,6 +1454,115 @@ class StaleKeyFileTest(AdminTestCase):
             key_rotation.refuse_while_running()
             open(run_file, "w").write("not json")
             key_rotation.refuse_while_running()
+
+
+class DisabledAdminKeyTest(AdminTestCase):
+    """An admin who is turned off keeps no copy of the admin details key and is given no new one (Phase L review)."""
+
+    def grant_of(self, user_id: int):
+        return db_rows(lambda s: s.get(AdminKeyGrant, user_id) is not None)
+
+    def test_turning_an_admin_off_replaces_the_key_without_them_and_turning_on_shares_nothing(self):
+        c = self.signed_in()
+        carol = self.make_admin(name="Carol")
+        version = apk_version()
+        self.assertTrue(self.grant_of(carol.id))
+        r = c.post(f"/api/admin/users/{carol.id}/disable")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["apk_rotated"])
+        self.assertEqual(apk_version(), version + 1)
+        self.assertFalse(self.grant_of(carol.id))
+        self.assertTrue(self.grant_of(self.admin_id))
+        self.assertEqual(self.user_row(c, self.admin_id)["admin_key_shared"], True)
+        # Not given the next key either, whoever else is promoted or demoted meanwhile.
+        dave = self.make_admin(name="Dave")
+        self.assertEqual(c.post(f"/api/admin/users/{dave.id}/role", json={"role": "user"}).status_code, 200)
+        self.assertFalse(self.grant_of(carol.id))
+        # Sharing the key with someone who is off is refused; turned on, they get it only when an admin shares it.
+        r = c.post(f"/api/admin/users/{carol.id}/regrant")
+        self.assertEqual((r.status_code, r.json()["code"]), (409, "disabled"))
+        self.assertEqual(c.post(f"/api/admin/users/{carol.id}/enable").status_code, 200)
+        self.assertFalse(self.grant_of(carol.id))
+        self.assertFalse(self.user_row(c, carol.id)["admin_key_shared"])
+        self.assertEqual(c.post(f"/api/admin/users/{carol.id}/regrant").status_code, 200)
+        self.assertTrue(self.grant_of(carol.id))
+        entry = c.get("/api/admin/audit").json()["entries"]
+        self.assertIn("user_disabled", [e["action"] for e in entry])
+
+    def test_an_admin_who_is_off_is_not_given_the_key_on_a_demotion_or_a_deletion(self):
+        """A database from before this fix: the disabled admin still holds a grant. The next rotation drops it."""
+        c = self.signed_in()
+        carol = self.make_admin(name="Carol")
+        dave = self.make_admin(name="Dave")
+        with engine.begin() as conn:  # (what disable used to leave: role admin, status disabled, the grant kept)
+            conn.execute(text("UPDATE users SET status = 'disabled' WHERE id = :i"), {"i": carol.id})
+        self.assertTrue(self.grant_of(carol.id))
+        self.assertEqual(c.post(f"/api/admin/users/{dave.id}/role", json={"role": "user"}).status_code, 200)
+        self.assertFalse(self.grant_of(carol.id))
+        self.assertTrue(self.grant_of(self.admin_id))
+        # ... and on deleting an admin
+        erin = self.make_admin(name="Erin")
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO admin_key_grants (user_id, apk_version, sealed_priv, granted_at) "
+                              "SELECT :i, apk_version, sealed_priv, granted_at FROM admin_key_grants "
+                              "WHERE user_id = :a"), {"i": carol.id, "a": self.admin_id})
+        self.assertTrue(self.grant_of(carol.id))
+        self.assertEqual(c.delete(f"/api/admin/users/{erin.id}").status_code, 200)
+        self.assertFalse(self.grant_of(carol.id))
+
+    def test_the_command_that_makes_a_new_key_skips_admins_who_are_off(self):
+        c = self.signed_in()
+        carol = self.make_admin(name="Carol")
+        frank = helpers.make_user(name="Frank")
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE users SET status = 'disabled' WHERE id = :i"), {"i": carol.id})
+        self.assertEqual(keys.main(["new-admin-key", "--email", frank.email]), 0)
+        self.addCleanup(self.demote_quietly, frank.id)
+        self.assertFalse(self.grant_of(carol.id))
+        self.assertTrue(self.grant_of(frank.id))
+        self.assertTrue(self.grant_of(self.admin_id))
+
+    def test_turning_off_an_admin_needs_your_own_copy_of_the_key(self):
+        carol = self.make_admin(name="Carol")
+        dave = self.make_admin(name="Dave")
+        with engine.begin() as conn:  # Carol lost her copy (a password reset without a recovery code does that)
+            conn.execute(text("DELETE FROM admin_key_grants WHERE user_id = :i"), {"i": carol.id})
+        cc = self.signed_in(carol)
+        r = cc.post(f"/api/admin/users/{dave.id}/disable")
+        self.assertEqual((r.status_code, r.json()["code"]), (409, "admin_key_missing"))
+        self.assertEqual(db_rows(lambda s: s.get(User, dave.id).status), "active")  # nothing changed
+        self.assertTrue(self.grant_of(dave.id))
+
+
+class RecentPasswordForMembershipTest(AdminTestCase):
+    """Free access, exemptions and turning accounts off are what a stolen session would use first: they ask for the
+    password again (Phase L review)."""
+
+    def test_each_of_them_wants_a_recent_password(self):
+        c = self.signed_in()
+        bob = helpers.make_user()
+        gid = c.post(f"/api/admin/users/{bob.id}/grants", json={"kind": "manual", "days": 2}).json()["grant"]["id"]
+        self.make_stale()
+        calls = [("put", f"/api/admin/users/{bob.id}/membership", {"exempt": True}),
+                 ("put", f"/api/admin/users/{bob.id}/membership", {"free_searches_used": 0}),
+                 ("post", f"/api/admin/users/{bob.id}/grants", {"kind": "free_period", "days": 3650}),
+                 ("patch", f"/api/admin/users/{bob.id}/grants/{gid}", {"days": 9}),
+                 ("delete", f"/api/admin/users/{bob.id}/grants/{gid}", None),
+                 ("post", f"/api/admin/users/{bob.id}/disable", None)]
+        for method, path, body in calls:
+            r = getattr(c, method)(path, **({"json": body} if body is not None else {}))
+            self.assertEqual((r.status_code, r.json().get("code")), (403, "reauth_required"), (method, path))
+        self.assertEqual(db_rows(lambda s: (s.get(Membership, bob.id) is None or not s.get(Membership, bob.id).exempt,
+                                            s.get(User, bob.id).status,
+                                            s.query(MembershipGrant).filter(MembershipGrant.user_id == bob.id).count(),
+                                            s.get(MembershipGrant, gid).revoked_at)),
+                         (True, "active", 1, None))
+        # Enter the password, and the same calls go through.
+        r = c.post("/api/auth/reauth", json={"password": helpers.ADMIN_PASSWORD})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(c.put(f"/api/admin/users/{bob.id}/membership", json={"exempt": True}).status_code, 200)
+        self.assertEqual(c.post(f"/api/admin/users/{bob.id}/disable").status_code, 200)
+        self.assertEqual(c.post(f"/api/admin/users/{bob.id}/enable").status_code, 200)
 
 
 if __name__ == "__main__":

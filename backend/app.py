@@ -33,7 +33,7 @@ from backend.auth import router as auth_router
 from backend.security import router as security_router
 from backend.security_headers import install as install_security_headers
 from backend.background import router as background_router
-from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
+from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db, scrub_wal
 from backend.cover_letters import router as cover_letters_router
 from backend.digest import public_router as unsubscribe_router
 from backend.digest import router as digest_router
@@ -132,6 +132,7 @@ async def lifespan(app: FastAPI):
     # The server key file, then the first admin from the environment or the first-run token (backend.users).
     # A missing or wrong key file stops start-up here, with what to do.
     users.startup()
+    scrub_wal()  # (a key copy deleted just before the last stop may still sit in the log)
     threading.Thread(target=users.derivation_floor, daemon=True).start()  # how long a refused sign-in takes at least
     # An encryption run the last process left running waits for its admin's next sign-in; after it, strict mode.
     migrate_encryption.at_startup()

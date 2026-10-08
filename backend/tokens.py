@@ -57,10 +57,10 @@ def open_payload(token: str, kind: str, blob: Optional[bytes]) -> Optional[dict]
 
 
 def create(db: Session, kind: str, *, ttl: timedelta, created_by: Optional[int] = None, user_id: Optional[int] = None,
-           payload: Optional[dict] = None) -> tuple[str, AuthToken]:
+           payload: Optional[dict] = None, token: Optional[str] = None) -> tuple[str, AuthToken]:
     """A new token row in ``db``'s transaction (flushed, not committed): ``(token, row)``. The token is not stored
-    anywhere: hand it to the person once."""
-    token = new_token()
+    anywhere: hand it to the person once. ``token`` is one the caller made (a reset link signs its token)."""
+    token = token or new_token()
     row = AuthToken(kind=kind, token_hash=hash_token(token), user_id=user_id, created_by=created_by,
                     expires_at=utcnow() + ttl,
                     payload_enc=seal_payload(token, kind, payload) if payload is not None else None)

@@ -113,7 +113,7 @@ def backup(folder: Path) -> Path | None:
             for p in paths:
                 if p.name.endswith(("-wal", "-shm")) and p.stat().st_size == 0:
                     continue
-                if p.name in ("first-run.txt", "running.json"):  # only meaningful while this copy runs
+                if p.name in ("first-run.txt", "running.json") or p.name.endswith(".lock"):  # only meaningful while this copy runs
                     continue
                 zf.write(p, p.relative_to(folder))
     if not IS_WINDOWS:

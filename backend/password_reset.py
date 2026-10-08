@@ -22,8 +22,12 @@ when the account has no link that can be used (every earlier one was used or has
 limits used up can't leave the owner without a working link; at most one such extra email goes out per hour.
 Requests held back are logged by account id.
 
-**The token** is an ``auth_tokens`` row of kind ``reset``: 32 random bytes, 1 hour, single use, only its hash stored,
-and a payload (sealed under a key made from the token) with the address it went to. A new link replaces any older
+**The token** is an ``auth_tokens`` row of kind ``reset``: 32 random bytes signed with the server key and the
+account's id (``link_token``), 1 hour, single use, only its hash stored, and a payload (sealed under a key made from
+the token) with the address it went to. The signature is what stops someone who can only write the database from making
+a link for another account: a row they add (or an account id they change) has no token that verifies. With background
+access the address must also be the one in the account's own sealed details (``pii_self``): the database's
+``email_hash`` is not enough to point a link somewhere else (docs/design/accounts.md §2.5). A new link replaces any older
 unused one, and so does changing the address, the password or resetting with a recovery code (``account_email.
 end_open_links``); a link whose address is no longer the account's is refused. The address in the payload is what a
 wipe rebuilds ``pii_self`` from, and where the "password changed" notice goes.
@@ -57,7 +61,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from backend import account_email, email_templates, lockout, mail_queue, ratelimit, sessions, tokens, users
+from backend import account_email, crypto, email_templates, keys, lockout, mail_queue, ratelimit, sessions, tokens, users
 from backend.auth import _after_sign_in, _signed_in
 from backend.db import AuthToken, SessionLocal, User, get_db, utcnow
 from backend.keys import normalise_email
@@ -84,6 +88,24 @@ WIPE_NEEDED = ("Your saved searches, documents and jobs are locked with your old
 # Making and sending the link (the forgot-password form and the admin's button)
 # ---------------------------------------------------------------------------
 
+def _purpose(user_id: int) -> str:
+    return f"reset_u{int(user_id)}"
+
+
+def link_token(user_id: int) -> str:
+    """A new reset token for the account: random letters, then the server key's signature of them (the account's id is
+    part of what is signed). Letters, digits, - and _ only, like every token in a link."""
+    return users.server_keys().sign(_purpose(user_id), tokens.new_token()).replace(".", "")
+
+
+def _signed_for(token: str, user_id: int) -> bool:
+    """Whether the server made ``token`` for this account."""
+    if not isinstance(token, str) or len(token) <= keys.MAC_CHARS:
+        return False
+    payload, mac = token[:-keys.MAC_CHARS], token[-keys.MAC_CHARS:]
+    return users.server_keys().verify(_purpose(user_id), f"{payload}.{mac}") == payload
+
+
 def make_reset_email(user_id: int, address: str, *, created_by: Optional[int] = None) -> tuple:
     """A new reset link for the account, committed (older unused ones stop working): returns the message to send to
     ``address``. Runs on whatever thread calls it; it needs no key."""
@@ -91,7 +113,7 @@ def make_reset_email(user_id: int, address: str, *, created_by: Optional[int] = 
     try:
         account_email._forget_unused(db, user_id, RESET_KIND)
         token, row = tokens.create(db, RESET_KIND, ttl=RESET_TTL, user_id=user_id, created_by=created_by,
-                                   payload={"email": address})
+                                   payload={"email": address}, token=link_token(user_id))
         db.commit()
         expires = row.expires_at.replace(tzinfo=timezone.utc)
     finally:
@@ -149,7 +171,7 @@ def forgot(body: ForgotIn, db: Session = Depends(get_db)):
     else:
         # The same hashing and sealing a real link takes, so the answer isn't quicker for an address with no account,
         # and the same time on the mail thread, so the next email isn't later for one that has an account.
-        fake = tokens.new_token()
+        fake = link_token(0)
         tokens.hash_token(fake)
         tokens.seal_payload(fake, RESET_KIND, {"email": address})
         mail_queue.submit(mail_queue.decoy)
@@ -170,7 +192,7 @@ def _row_and_user(db: Session, token: str) -> tuple[AuthToken, User, str]:
     the account's (it was changed since): a link in the old mailbox must not work."""
     row = tokens.find(db, RESET_KIND, token)
     user = db.get(User, row.user_id) if row is not None and row.user_id is not None else None
-    if row is None or user is None:
+    if row is None or user is None or not _signed_for(token, user.id):
         raise AuthProblem(410, "link_invalid", LINK_INVALID)
     if user.status != "active":
         raise AuthProblem(403, "disabled", DISABLED)
@@ -178,7 +200,29 @@ def _row_and_user(db: Session, token: str) -> tuple[AuthToken, User, str]:
     address = payload.get("email") if isinstance(payload.get("email"), str) else ""
     if not address or user.email_hash not in users.server_keys().email_hash_candidates(address):
         raise AuthProblem(410, "link_invalid", LINK_INVALID)
+    sealed = _sealed_address(db, user)
+    if sealed is not None:
+        # Background access: the reset keeps the data, so the link must name the address the account itself holds
+        # (sealed under its own key). The lookup column ``email_hash`` is plaintext and could have been rewritten.
+        if not sealed or normalise_email(sealed) != normalise_email(address):
+            log.warning("Reset link for user %s names an address that isn't the account's own; refused", user.id)
+            raise AuthProblem(410, "link_invalid", LINK_INVALID)
+        address = sealed
     return row, user, address
+
+
+def _sealed_address(db: Session, user: User) -> Optional[str]:
+    """The address in the account's own sealed details (``pii_self``), opened with the server's copy of its key:
+    None without background access, "" when it is missing or doesn't open."""
+    dek = users.background_key(db, user.id)
+    if dek is None:
+        return None
+    try:
+        with crypto.as_user(user.id, dek):
+            email = users.details(db, user.id).get("email")
+    except (crypto.CryptoError, ValueError, AttributeError):
+        return ""
+    return email if isinstance(email, str) else ""
 
 
 @router.post("/reset/info")

@@ -248,8 +248,8 @@ async function personAction(act, id, btn) {
     await run('Sharing the admin key', () => reauth(() => post(`/api/admin/users/${id}/regrant`)), () => `Shared the admin key with ${l}.`);
   } else if (act === 'disable') {
     if (!(await confirmDialog({ title: `Disable ${l}?`, ok: 'Disable', returnTo: back,
-      text: `They are signed out everywhere and can't sign in until you enable them again. Their data is kept.${LIVE_SUB.includes(u.membership.stripe_status) ? ' They pay by subscription, which keeps renewing while they are off, and they can\'t cancel it themselves.' : ''}` }))) return;
-    await run('Disabling', () => post(`/api/admin/users/${id}/disable`), (r) => `${l} is disabled and signed out.${r?.subscription === 'still_billing' ? ' Their subscription is still active and they are still charged. Open Membership to exempt them and end it at the period end, or cancel it in Stripe.' : ''}`);
+      text: `They are signed out everywhere and can't sign in until you enable them again. Their data is kept.${LIVE_SUB.includes(u.membership.stripe_status) ? ' They pay by subscription, which keeps renewing while they are off, and they can\'t cancel it themselves.' : ''}${u.role === 'admin' ? ' They are an admin, so the admin key is replaced, and they are not given the new one. If you enable them again, share the admin key with them again.' : ''} You will be asked for your password.` }))) return;
+    await run('Disabling', () => reauth(() => post(`/api/admin/users/${id}/disable`)), (r) => `${l} is disabled and signed out.${r?.subscription === 'still_billing' ? ' Their subscription is still active and they are still charged. Open Membership to exempt them and end it at the period end, or cancel it in Stripe.' : ''}`);
   } else if (act === 'enable') {
     await run('Enabling', () => post(`/api/admin/users/${id}/enable`), () => `${l} can sign in again.`);
   } else if (act === 'unlock') {
@@ -359,6 +359,7 @@ function openMembership(id, opener) {
       <p id="mem-error" class="error" role="alert" hidden></p>
     </form>
     <h3>Free periods and extensions</h3>
+    <p class="hint">Saving a payment setting or changing a free period asks for your password if you haven't entered it in the last 15 minutes.</p>
     <p class="hint">Dates are in UTC. A free period begins at the start of its first day and "Or ends on" includes that whole day. It gives full access until it ends; "End now" keeps it in the history.${LIVE_SUB.includes(m.stripe_status) ? ' This person pays, so a free period also moves their next payment to when it ends.' : ''}</p>
     <p id="grants-count" class="muted" role="status"></p>
     <p id="grants-error" class="error" role="alert" hidden></p>
@@ -416,7 +417,7 @@ async function saveMembership(e) {
   try {
     const body = { exempt: $('#mem-exempt').checked, free_searches_used: n };
     if (body.exempt && $('#mem-cancel').checked) body.cancel_subscription_at_period_end = true;
-    const r = await api(`/api/admin/users/${memberId}/membership`, { method: 'PUT', body: JSON.stringify(body) });
+    const r = await reauth(() => api(`/api/admin/users/${memberId}/membership`, { method: 'PUT', body: JSON.stringify(body) }));
     say($('#mem-status'), r.subscription_ending ? 'Saved. Their subscription ends when the period they paid for is over.' : 'Saved.');
     await loadUsers();
   } catch (err) { say($('#mem-status'), ''); dialogError('mem-error', failure(err)); }
@@ -444,8 +445,8 @@ async function saveGrant(e) {
   setBusy(btn, true);
   say($('#grant-status'), 'Saving…');
   try {
-    const r = editingGrant ? await api(`/api/admin/users/${memberId}/grants/${editingGrant}`, { method: 'PATCH', body: JSON.stringify(body) })
-      : await post(`/api/admin/users/${memberId}/grants`, { kind: $('#grant-kind').value, ...body });
+    const r = await reauth(() => (editingGrant ? api(`/api/admin/users/${memberId}/grants/${editingGrant}`, { method: 'PATCH', body: JSON.stringify(body) })
+      : post(`/api/admin/users/${memberId}/grants`, { kind: $('#grant-kind').value, ...body })));
     const moved = r?.stripe?.extended ? (r.stripe.trial_end ? ` Their next payment moves to ${fmtDay(r.stripe.trial_end)}.` : ' They are charged again now.') : '';
     say($('#grant-status'), `${editingGrant ? 'Changed.' : 'Added.'}${moved}`);
     announce(`${editingGrant ? 'Free period changed.' : 'Free period added.'}${moved}`);
@@ -481,7 +482,7 @@ async function onGrantClick(e) {
     setBusy(endBtn, true);
     clearDialogError('grants-error');
     try {
-      const r = await api(`/api/admin/users/${memberId}/grants/${endBtn.dataset.grantEnd}`, { method: 'DELETE' });
+      const r = await reauth(() => del(`/api/admin/users/${memberId}/grants/${endBtn.dataset.grantEnd}`));
       const billed = r?.stripe?.extended ? (r.stripe.trial_end ? ` Their next payment moves to ${fmtDay(r.stripe.trial_end)}.` : ' They are charged again now.') : '';
       announce(`Free period ended.${billed}`);
       await loadUsers();

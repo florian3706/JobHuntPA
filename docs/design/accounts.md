@@ -49,7 +49,9 @@ process-only random key (never on disk) ─► http_cache
 
 ### 1.3 The server key file, `data/server-keys.json`
 - **Format.** Mode 0600, written atomically (temp file in the same folder, then `os.replace`, the same approach as `app_settings._replace_file`). `JOBHUNT_KEY_FILE` can point elsewhere, mainly for tests. Contents:
-  `{"version":1,"kek":{"current":"k1","keys":{"k1":b64}},"pepper":{"current":"p1","keys":{"p1":b64}},"signing":{"current":"s1","keys":{"s1":b64}},"created_at":…}`.
+  `{"version":1,"kek":{"current":"k1","keys":{"k1":b64}},"pepper":{"current":"p1","keys":{"p1":b64}},"signing":{"current":"s1","keys":{"s1":b64}},"created_at":…}`, plus `"encryption_done_at"` once the one-time encryption of the data from before accounts has finished (written once, never removed).
+- **`encryption_done_at` and strict mode.** Strict mode (§2.1, refusing plaintext in a sealed column) turns on at every start when the key file says the encryption is done, or the database does (`backend/migrate_encryption.is_done`; `db.encryption_done` reads both). The file is the one that counts: the database's `app_settings["encryption_migration"]` could be set back to `pending` by someone who can only write the database, and the next run would then seal whatever plaintext they planted as if it were real. With the marker set, a run is refused (`MigrationError`), start-up puts the database's state right, and the planted value stays plaintext, which strict mode refuses to read. An install from before the marker gets it at its next start (the database says done). `recover-lost` carries it into the new file. Restore the key file and the database as a pair: an older database with a newer key file is read as encrypted and its plaintext is refused.
+- **One process at a time.** The app takes an exclusive lock on `data/server-keys.json.lock` at start-up (`keys.hold_key_file`: `fcntl.lockf`, `msvcrt.locking` on Windows) and keeps it until it stops; `rotate-kek`, `new-admin-key` and `recover-lost` take it before they change anything and refuse while someone else holds it, and the app refuses to start under a running command. This holds however the app was started; `data/running.json`, which only the launcher writes, stays as a second check. A command that replaced the file under a running app would leave it wrapping with a retired key (every two-step sign-in and background search failing until a restart). `ServerKeys.kek_wrap` also compares the file on disk with what the process loaded and refuses when they differ. The lock file is left out of the uninstaller's backup.
 - **Why a file in `data/` and not `.env`.**
   - The uninstaller backs up `data/`, and the Windows setup keeps `data/` on update.
   - `.env` holds settings that the app edits.
@@ -87,7 +89,7 @@ process-only random key (never on disk) ─► http_cache
 - **Writing personal details needs only the public key.** Sign-ups, email changes and the Stripe sync can all write `users.pii_admin`, `memberships.billing_admin`, `membership_grants.note_admin` and `admin_audit.detail_admin` with no admin logged in.
 - **Reading.** In an admin request: admin DEK → their X25519 private key → open their grant → APK private key. This is repeated for each request; nothing stays in memory.
 - **Making someone an admin.** The promoting admin (logged in, so they have the APK private key) seals it to the new admin's public key. Every user gets a key pair at sign-up, so this works without the new admin being present.
-- **Demoting or deleting an admin.** The APK is rotated automatically: a new key pair is made, every admin-sealed value is decrypted and re-sealed to the new public key, and the remaining admins get new grants. This is cheap at this scale.
+- **Demoting, deleting or turning off an admin.** The APK is rotated automatically: a new key pair is made, every admin-sealed value is decrypted and re-sealed to the new public key, and the remaining *active* admins get new grants (`admin_key.active_admin_ids`). An admin who is turned off is no longer trusted with what is written from now on, so turning one off rotates the key like demoting does (the acting admin needs their own copy), and they are given no grant of any later key. Turning them on again shares nothing: another admin uses "Share the admin key again" (`POST …/regrant`, refused for an account that is off). A database from before this rule may still hold a disabled admin's grant; the next rotation drops it, as does turning them off again.
 - **The last admin loses both their password and every recovery code.**
   - Personal details become unreadable.
   - Users can still sign in, because `email_hash` doesn't need the APK, and membership gating keeps working because its fields are plaintext.
@@ -229,6 +231,22 @@ Notes:
 **Sign-in timing and the mail thread.** Refused sign-ins are held to a floor (§3.6), so an unknown address and a wrong password take the same time to within a few milliseconds. "Forgot password" answers 202 either way and queues the same kind of job on the mail thread, a decoy as long as a typical send for an address with no account, so the delay of the next email shows nothing either. What remains: the delay is an average, so a very long or very short real send can still show, and sign-up answers "already exists" for an existing address anyway, so this is hardening of an already-open door.
 
 **Wrong tries are forgotten on restart and spread over many addresses.** They are counted in memory (§3.6). Restarting the server (or a power cut) gives every source its five tries back. A guesser with many network addresses gets 5 tries per address up to the account-wide ceiling of 100 an hour; IPv6 addresses count one by one, so a whole /64 can rotate through the ceiling. The owner's usual browsers are exempt from the ceiling, a brand-new device is not.
+
+**What someone who can WRITE the database can do (not only read a copy).** These columns are not authenticated by any key the writer lacks:
+- The plaintext lookup and state columns: `email_hash`, `mfa_enabled`, `role`, `status`.
+- The public keys: `user_keys.x25519_pub` and `app_settings.apk_public`/`apk_version`.
+
+A writer can therefore:
+- **Redirect a password link** by rewriting a victim's `email_hash` to their own address and asking for a link. For an account **with background access** this does not work: the reset keeps the data, so it checks that the link's address is the one in the account's own sealed details (`pii_self`, which a writer can't forge without the account's key) and refuses with 410 `link_invalid`. For an account **without** background access the reset deletes the data (the owner accepted that) and the writer ends up with an emptied account: their data is lost, never disclosed.
+- **Not mint a link out of nothing.** A reset token carries the server key's signature of itself and the account id (`password_reset.link_token`), so a row added by hand, or a real link moved to another account, has no token that verifies (tests/test_password_reset.py `WriterTest`). Other single-use links (email checks, address changes, invitations) are not signed and are covered only by this section: a writer can mint them.
+- **Receive the admin details key** by replacing an admin's `x25519_pub` (or `apk_public`) and then waiting for a promotion, regrant, rotation or sign-up, which seals the key (or new details) to the swapped public key. That exposes only admin-visible personal details (names, emails, notes, billing details), never searches, documents or jobs. Hardening for later: a `pub_mac` under HKDF(signing key, "jh pubkey v1") checked in `grant_to`, `admin_public_key` and `heal_details`.
+- Set an account's `role`, `status` or `mfa_enabled`; turning two-step off for an account whose secret is in the file lets them past that step but not past the password.
+
+This is the same class as the plaintext-swap limit in §15 and needs write access to the database file or SQL, which none of a signed-in user, a stolen session, a read-only backup or an outsider has. Someone with both the database and the key file can do anything the server can.
+
+**The write-ahead log.** `secure_delete` zeroes freed pages in the main file; the log (`-wal`) keeps old page images until a checkpoint truncates it. `scrub_wal()` runs after each commit that drops a key copy (a spent recovery code included) but a reader open at that moment blocks it. A blocked scrub is remembered and tried again at start-up and by the clean-up tick (`scrub_wal_again`, every 10 minutes), and `PRAGMA journal_size_limit=0` cuts the log file whenever SQLite resets it. Until one of those happens the old key copy can sit in the log, as it can on flash storage.
+
+**Who can read the files.** The data folder is made 0700 and the database with its `-wal` and `-shm` 0600 (`db.owner_only`, at every start; an existing install is tightened), the plaintext backups (`*.bak-before-encryption`, `*.bak-before-job-pool`) are created 0600 before the first byte is written, and the key file and the uninstaller's zip were already 0600. Other accounts on the same computer can't copy the wrapped keys and password verifiers to guess passwords offline. On Windows this relies on the folder's permissions. Root and the owner can still read everything.
 
 **Logs must never contain plaintext.** Today they do in three places:
 - httpx logs every request URL at INFO, which includes SEEK search terms, Nominatim queries and station names. Set the `httpx` and `httpcore` loggers to WARNING.
@@ -520,14 +538,14 @@ Admin routes never use `current_workspace` and never read sealed DEK columns. Th
 - **User actions**
   - `POST /api/admin/users/{id}/reset-email`
   - `POST …/{id}/mfa/disable`
-  - `POST …/{id}/disable|enable`
+  - `POST …/{id}/disable`†: also replaces the admin key when the account is an admin who holds it, and needs the acting admin's own copy (§1.4). `POST …/{id}/enable` shares nothing.
   - `DELETE …/{id}`†
 - **Roles**
   - `POST …/{id}/role {role}`†: makes a grant, or rotates the APK.
-  - `POST …/{id}/regrant`: shares the admin key again with an admin who lost it.
+  - `POST …/{id}/regrant`†: shares the admin key again with an active admin who lost it, or was turned off and on.
 - **Membership**
-  - `PUT …/{id}/membership {exempt?, free_searches_used?}`
-  - `POST …/{id}/grants {kind, starts_at, ends_at | days, note}`, `PATCH|DELETE …/grants/{gid}`
+  - `PUT …/{id}/membership {exempt?, free_searches_used?}`†
+  - `POST …/{id}/grants {kind, starts_at, ends_at | days, note}`†, `PATCH|DELETE …/grants/{gid}`† (free access outlives a stolen session, so these ask for the password again like the Stripe settings; the dialog's `reauth()` asks for it and repeats the save)
   - `POST /api/admin/billing/sync`
 - **Sign-up and invites**
   - `GET|PUT /api/admin/signup {mode, free_searches}`
@@ -1069,4 +1087,12 @@ A posting missing from one user's query results says nothing about whether it cl
 - **`/docs`, `/redoc` and `/openapi.json` are off:** they listed every route to anyone who could reach the server, and Swagger's page needs scripts the policy refuses.
 - **Leaks the log test found and fixed:** (1) SQLAlchemy at DEBUG logs each row it reads *after* the sealed types have opened it (a search profile, in plaintext), plus the sessions and users rows; `SqlAtWarning` in `backend/app.py` drops everything below WARNING from its engine logger whatever the level. (2) pypdf warned with the first bytes of a file it couldn't read. (3) The Claude SDK logs whole request bodies at DEBUG. (2) and (3) join httpx in `QUIET_LOGGERS`. Everything the app itself logs was already free of personal data. Not covered: uvicorn's traceback for an unhandled exception (a bug, and the message could hold data), and the first-run token, which is printed on purpose.
 - **Sign-in, sessions, resets and email (the Phase L review):** the lockout is per account and source with an account-wide ceiling and a `jh_device` cookie (§3.6); wrong tries are counted before the slow check; refusals wait for a floor; the session cookie carries the port; an email reset that keeps the data replaces the recovery codes; new recovery codes and an address change need the password in the request; the confirmation page asks first; anonymous "forgot" requests have their own limits and put a decoy on the mail thread; an invitation counts the address as verified only if it was emailed to it. `nextPage()` in `frontend/auth.js` refuses a path that starts with `//` or `/\` once resolved (`/.//evil.example` keeps the origin and still means another site). The Host allowlist closes the DNS-rebinding route to the sign-in endpoints, where forged `X-Forwarded-For` values had given every request its own rate-limit bucket; `tests/test_security_headers.py` replays that attack.
+- **Keys, storage and admin actions (the Phase L review, second group):**
+  - An admin who is turned off keeps no grant and is given none (§1.4); turning an admin off, changing a membership or a free period, and sharing the key ask for the password again.
+  - Strict mode is switched on by the key file as well as the database (§1.3). A key file written by an earlier version gets the marker at its next start.
+  - The key file has an exclusive lock for the app's lifetime, and the key commands take it (§1.3). `kek_wrap` refuses when the file changed under the process.
+  - The data folder, the database, its log and the plaintext backups are owner-only (§2.5). `db.online_backup` is the one place a backup is made.
+  - A blocked `scrub_wal()` is tried again (§2.5); a spent recovery code (at the second step of sign-in and when turning two-step off) and the password-key upgrade at sign-in now scrub too.
+  - Reset links are signed with the server key and the account id, and with background access must name the address in `pii_self` (§2.5). The unauthenticated columns and public keys a database writer can change are listed there; the pubkey MAC is left as a later hardening.
+  - Tests: `tests/test_storage_security.py`, `DisabledAdminKeyTest` and `RecentPasswordForMembershipTest` in `tests/test_admin.py`, `WriterTest` in `tests/test_password_reset.py`.
 - **Behind a proxy:** `launch.py` trusts `X-Forwarded-For` from 127.0.0.1. The proxy must append the real client address (`tailscale serve` and the usual proxies do), not pass a client's own header through.

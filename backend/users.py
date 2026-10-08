@@ -299,6 +299,7 @@ def startup() -> None:
     to this database, clear expired sessions, then either create the admin from the process environment, or write
     the first-run token. Raises keys.KeyFileError (start-up stops) for a missing or wrong key file."""
     global _server_keys, _users_exist
+    keys.hold_key_file()  # for as long as this process runs: a key command can't replace the file under it
     db = SessionLocal()
     try:
         has_users = db.query(User.id).first() is not None
@@ -529,6 +530,7 @@ def unlock_with_password(db: Session, user: User, password: Any) -> Optional[byt
         user.kdf_salt, user.kdf_params, user.pw_verifier = salt, current.to_json(), again.auth
         row.pw_wrapped_dek = crypto.wrap(again.kek, dek, f"pw|{user.id}")
         db.commit()
+        scrub_wal()  # the earlier settings' copy of the data key must not linger in the write-ahead log
         log.info("user %s: password key settings updated to the current profile", user.id)
     return dek
 
@@ -1087,7 +1089,7 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
                 detail["user_id"] = user_id
             public = None
             if was_admin:
-                remaining = [i for (i,) in db.query(User.id).filter(User.role == "admin")]
+                remaining = admin_key.active_admin_ids(db)
                 rotation = admin_key.new_key(db, apk, remaining, actor_id)
                 detail.update(apk_version=rotation.apk.version, resealed=rotation.resealed, stale=rotation.stale,
                               dropped=rotation.dropped)

@@ -33,7 +33,8 @@ from typing import Callable, Optional
 from sqlalchemy import func, update
 
 from backend import crypto, key_rotation, keys
-from backend.db import DB_PATH, AdminKeyGrant, AppSetting, SessionLocal, User, UserKeys, scrub_wal
+from backend.db import (DB_PATH, AdminKeyGrant, AppSetting, SessionLocal, User, UserKeys, encryption_done,
+                        scrub_wal)
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +142,8 @@ def _recover(admin_email: str, ask_password: Callable[[str], str], out, path: Pa
         staged.unlink(missing_ok=True)  # left by an earlier try that stopped half way: never adopted
         new = keys.ServerKeys.create(staged)
         try:
+            if encryption_done(db.connection()):  # the new file must keep saying so (strict mode stays on)
+                new.mark_encryption_done()
             hashes, missing = _new_hashes(db, apk_private, new, admin, admin_email)
             background = db.query(func.count()).select_from(UserKeys).filter(
                 UserKeys.server_wrapped_dek.isnot(None)).scalar()
