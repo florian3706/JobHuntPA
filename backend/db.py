@@ -1034,6 +1034,7 @@ class Membership(Base):
     cancel_at_period_end = Column(Boolean, nullable=False, default=False, server_default="0")
     grace_until = Column(DateTime, nullable=True)  # while past_due: access continues until then (access.GRACE)
     stripe_synced_at = Column(DateTime, nullable=True)
+    stripe_mode = Column(String, nullable=True)  # 'test' | 'live': the kind of Stripe key the status above came from
     billing_admin = Column(LargeBinary, nullable=True)  # admin details key
     billing_self = Column(LargeBinary, nullable=True)   # the user's DEK
 

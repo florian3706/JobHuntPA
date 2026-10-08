@@ -208,7 +208,7 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   company research behind your jobs. Links between the files work offline. It asks for your password
   again if you haven't entered it in the last 15 minutes, and is made in memory, so nothing is written to
   disk on the server (an export is refused above 200 MB of files, and the server makes only a couple at
-  a time: try again in a minute). **The zip is not encrypted**: keep it somewhere safe. It holds only your own data
+  a time: try again in a minute; an export keeps its place until your download has ended, so a slow or abandoned download holds it for up to 10 minutes). **The zip is not encrypted**: keep it somewhere safe. It holds only your own data
   (admins can't export other people's), and never your password, recovery codes or keys.
 - **What only the admin sees:** the AI provider, model, API key and reasoning levels, the
   commute API keys, the [email](#setting-up-email) settings and the [Stripe](#memberships-and-payments-optional)
@@ -287,7 +287,9 @@ every link carries the server's signature, so a link can't be made by editing th
 account without background access, a link sent to the wrong address deletes that account's data and
 never discloses it. The admin key opens only people's names, emails, notes and billing details, never
 searches, documents or jobs. Someone who has the database **and** `data/server-keys.json` can do
-anything the server can.
+anything the server can. They could also give an account a membership by editing its plaintext fields.
+
+**Whoever controls the mail route** (the mail server and public address in Admin > Server) receives every password reset link, so it is guarded: see *Setting up email*. On an account without two-step sign-in they could still use the "forgot password" form: for an account with background access that keeps the data. Turn two-step sign-in on if that matters to you.
 
 #### Background access
 
@@ -397,7 +399,7 @@ reset links, address checks, invitations by email and security notices. Nothing 
 because the form removes spaces and tabs, then saves the password in `.env` as `SMTP_PASSWORD_B64` (base64:
 this lets any standard-keyboard character, quotes and `#` included, survive the file). It is never shown
 again, only whether one is set. Changing the mail server asks for the password again, so a saved password
-can't be sent to another server. Saving any of these settings asks for your own password too (if you haven't typed it in the last 15 minutes), because they decide where reset links point. An older hand-written `SMTP_PASSWORD=` line keeps working until you save
+can't be sent to another server. Saving any of these settings asks for your own password too (if you haven't typed it in the last 15 minutes), because they decide where reset links point. **Changing the mail server, its port or encryption, or the public address** (once they have been set) also tells the other admins by email, through the old server, before it is saved, and for the next 24 hours **no admin can turn off anyone's two-step sign-in or send them a reset link** (the admin panel says to try again later; the person can use a recovery code). Whoever receives the mail can reset accounts, so this stops an admin from pointing the mail at their own server and taking over an account in one go. An older hand-written `SMTP_PASSWORD=` line keeps working until you save
 a new password in the form. Email goes out from one background thread, so a slow mail server never slows a page.
 
 To keep messages out of spam, send through your provider's own SMTP server and set up SPF and DKIM for the From address's domain as your provider describes. SPF says which servers may send for your domain, DKIM signs each message, and DMARC tells other mail servers what to do with a message that fails both. Gmail, Outlook and most hosts explain the three DNS records in their help pages. Use *Use this address* next to the public address to fill in the address you are browsing from.
@@ -452,7 +454,7 @@ By default everyone who signs in has full access. To charge for it, an admin con
    live needs no other change.
 3. Paste the key into the **Payments (Stripe)** card in the admin panel's Server section (it asks for your
    password). The card shows whether the key and webhook secret are set, test or live, and the prices it
-   found; **Sync now** asks Stripe again. Memberships switch on as soon as the price is found; with no key, or no price, nobody is limited. A *Test mode* badge shows while a test key is in use.
+   found; **Sync now** asks Stripe again. Memberships switch on as soon as the price is found; with no key, or no price, nobody is limited. A *Test mode* badge shows while a test key is in use. A subscription paid for in test mode stops counting once you switch to a live key (JobHuntPA remembers which kind of key each one came from and asks Stripe again); people who paid with a real card are found again from the live account.
 4. Optional: once Stripe can reach this server, add a webhook endpoint for
    `https://your-address/api/billing/webhook` and paste its signing secret. Without it, JobHuntPA checks
    Stripe when people come back from checkout, when they open the membership page, and every 6 hours.
@@ -468,7 +470,7 @@ searches are used, jobs already found stay visible but new searches wait for a m
 searches** need a membership and background access (free searches are for
 *Run search* only). Where an AI action is refused, the page says it is for members and links to the
 membership page; a short note beside the AI actions tells people on a trial before they click. A free search is used when a search is queued and given back if the run fails or is
-interrupted. A membership comes from a Stripe subscription, a **free period** an admin adds, or an admin
+interrupted while it is still looking for jobs; once the search has finished and scoring has begun it stays used. A membership comes from a Stripe subscription, a **free period** an admin adds, or an admin
 exempting the person. A free period for someone who already pays also moves their next payment to its end;
 ending or shortening it bills them again from then.
 Exempting someone who pays can also end their subscription when the period they paid for is over
@@ -478,7 +480,7 @@ the plan and the price. Deleting an account cancels the person's subscription fi
 **For members and people on free searches:** open **Account > Membership**. The page shows whether you are
 a member and why, how many free searches are left, your plan, and when it renews or ends. **Become a member**
 takes you to Stripe's payment page and brings you back with a clear message that the payment worked (or that
-nothing was charged if you cancelled). **Manage payment and plan** opens Stripe's page to change your card or
+nothing was charged if you cancelled). **Manage payment and plan** (it asks for your password if you haven't typed it in the last 15 minutes) opens Stripe's page to change your card or
 plan, see invoices, or cancel at the end of the period. The Jobs tab says when **Run search** uses one of your
 free searches (and that it scores what it finds), and that the other AI features are for members. Without a
 membership your jobs, notes, documents and settings stay available.
@@ -796,7 +798,7 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
   says no, wait a minute and reload.
 - **"Download your data" is refused:** over 200 MB the zip is too big to make in one go (delete uploaded files you
   no longer need), "other exports are being made" means try again in a minute, and "still being made" means your
-  last request hasn't finished: wait for it.
+  last request hasn't finished or its download is still going: wait for it (a download that has not finished after 10 minutes is cut off).
 - **Lost your authenticator app:** sign in with a recovery code instead of the app's code, then turn
   two-step sign-in off and on again in Settings > Two-step sign-in.
 - **The last admin lost their password and every recovery code:** people can still sign in, but

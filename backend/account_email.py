@@ -85,14 +85,14 @@ def _hash_hex(email: str) -> str:
 # Security notices
 # ---------------------------------------------------------------------------
 
-def notify(event: str, address: Optional[str], user_id: Optional[int] = None) -> bool:
+def notify(event: str, address: Optional[str], user_id: Optional[int] = None, *, config=None) -> bool:
     """Queue a security notice to ``address``. True when it was queued; False when email is off, there is no address
-    or the queue is full. Never raises."""
+    or the queue is full. Never raises. ``config``: the mail server settings to send through (default: the current)."""
     if not address or not isinstance(address, str):
         return False
     try:
         template = email_templates.security_notice(event, when=_utc(utcnow()))
-        queued = mail_queue.send(address, template, user_id=user_id, priority=True) is not None
+        queued = mail_queue.send(address, template, user_id=user_id, priority=True, config=config) is not None
         if not queued and mail_queue.enabled():
             log.warning("A security notice was not queued: the mail queue is full (user %s)", user_id)
         return queued

@@ -176,6 +176,11 @@ SECURITY_EVENTS = {
                              "another one. Nothing has changed yet: it changes only when the link sent to the new "
                              "address is opened.",
                              "If you asked for this, nothing more is needed."),
+    "mail_route_changed": ("The mail server or public address of your JobHuntPA was changed",
+                          "An admin changed where JobHuntPA sends its email: the mail server or the public address "
+                          "the links in emails point to. This notice went through the old server. For the next 24 "
+                          "hours no admin can turn off anyone's two-step sign-in or send them a reset link.",
+                          "If you or another admin made this change, nothing more is needed."),
     "email_changed": ("The email address on your JobHuntPA account was changed",
                       "The email address of your JobHuntPA account was just changed to a different one. This notice "
                       "goes to the old address.",

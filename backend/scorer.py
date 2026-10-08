@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -233,34 +234,44 @@ def parse_json(raw: str) -> dict:
         raise ScorerError(f"model did not return JSON: {raw[:300]}")
     try:
         obj = json.loads(re.sub(r",\s*([}\]])", r"\1", text[start:end + 1]))
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:  # (RecursionError: an answer nested thousands of levels deep)
         raise ScorerError(f"invalid JSON from model: {exc}") from exc
     if not isinstance(obj, dict):
         raise ScorerError(f"model did not return a JSON object: {raw[:300]}")
     return obj
 
 
+def _list(value: Any) -> list:
+    """``value`` when the model sent a list there, else nothing: an answer can put any JSON value anywhere."""
+    return value if isinstance(value, list) else []
+
+
 def parse_result(raw: str) -> dict:
+    """The model's answer as a result dict. Raises ScorerError, and nothing else, for an answer that can't be used
+    (whatever JSON it holds: a bad answer for one job must never end the whole run)."""
     obj = parse_json(raw)
     try:
-        score = max(0, min(100, int(round(float(obj.get("score", 0))))))
-    except (TypeError, ValueError):
+        number = float(obj.get("score", 0))
+        if not math.isfinite(number):
+            raise ValueError("not a finite number")
+        score = max(0, min(100, int(round(number))))
+    except (TypeError, ValueError, OverflowError):
         raise ScorerError(f"no numeric score in model output: {str(obj)[:300]}")
     reqs = []
-    for r in obj.get("requirements") or []:
+    for r in _list(obj.get("requirements")):
         if not isinstance(r, dict) or not str(r.get("point", "")).strip():
             continue
         matched = r.get("matched") is True or str(r.get("matched")).lower() == "true"
         evidence = []
         if matched:
-            for e in r.get("evidence") or []:
+            for e in _list(r.get("evidence")):
                 if isinstance(e, dict) and str(e.get("bullet", "")).strip():
-                    subs = e.get("sub_bullets") if isinstance(e.get("sub_bullets"), list) else []
+                    subs = _list(e.get("sub_bullets"))
                     evidence.append({"bullet": str(e["bullet"]).strip(),
                                      "sub_bullets": [str(s).strip() for s in subs if str(s).strip()]})
         reqs.append({"point": str(r["point"]).strip(), "must_have": r.get("must_have") is not False,
                      "matched": matched, "evidence": evidence})
-    gaps = [str(g).strip() for g in obj.get("gaps") or [] if str(g).strip()]
+    gaps = [str(g).strip() for g in _list(obj.get("gaps")) if str(g).strip()]
     return {"score": score, "requirements": reqs, "gaps": gaps, "summary": str(obj.get("summary") or "").strip(),
             "office_location": str(obj.get("office_location") or "").strip(),
             "employment_type": normalise_employment_type(obj.get("employment_type")),
@@ -292,14 +303,20 @@ def _store(db: Session, job_id: int, *, result: Optional[dict] = None, error: Op
 
 
 def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> dict:
-    """Score a single job and persist the outcome. Raises ScorerError on auth failure."""
+    """Score a single job and persist the outcome. Raises ScorerError when the job couldn't be scored (the error is
+    stored on its fit result); nothing else is raised for the model's answer."""
     db = SessionLocal()
     try:
         job = db.get(Job, job_id)
         if job is None:
             raise ScorerError(f"job {job_id} not found")
         try:
-            result = parse_result(call_model(build_messages(job, profile_text), cfg))
+            try:
+                result = parse_result(call_model(build_messages(job, profile_text), cfg))
+            except ScorerError:
+                raise
+            except Exception as exc:  # noqa: BLE001  (an answer we didn't expect is this job's error, not the run's)
+                raise ScorerError(f"unexpected model answer ({exc.__class__.__name__})") from exc
         except ScorerError as exc:
             _store(db, job_id, error=llm_providers.user_message(exc))
             raise

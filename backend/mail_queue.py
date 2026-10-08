@@ -99,12 +99,13 @@ def _forget(future: Future) -> None:
         _waiting.discard(future)
 
 
-def deliver_now(to: str, template: tuple, user_id: Optional[int] = None) -> mailer.SendResult:
+def deliver_now(to: str, template: tuple, user_id: Optional[int] = None, *,
+                config: Optional[mailer.SmtpConfig] = None) -> mailer.SendResult:
     """Send now, on the calling thread: for work already running on the mail thread (``submit``). Request code uses
-    ``send``."""
+    ``send``. ``config``: send through those mail server settings rather than the current ones."""
     subject, text, html, headers = template
     began = time.monotonic()
-    result = mailer.send(to, subject, text, html, headers)
+    result = mailer.send(to, subject, text, html, headers, config=config)
     with _lock:
         _send_times.append(time.monotonic() - began)
     log.info("Email %s%s", result.status, f" for user {user_id}" if user_id is not None else "")
@@ -126,13 +127,14 @@ def decoy() -> None:
     time.sleep(typical_send_seconds())
 
 
-def send(to: str, template: tuple, *, user_id: Optional[int] = None, priority: bool = False) -> Optional[Future]:
+def send(to: str, template: tuple, *, user_id: Optional[int] = None, priority: bool = False,
+         config: Optional[mailer.SmtpConfig] = None) -> Optional[Future]:
     """Queue one message (``template`` is what ``backend.email_templates`` returns). The Future's result is a
     ``mailer.SendResult``. None when email is off or too much is waiting: the caller decides whether that matters.
-    ``priority`` is for security notices (see ``submit``)."""
+    ``priority`` is for security notices (see ``submit``). ``config``: see ``deliver_now``."""
     if not enabled():
         return None
-    return submit(deliver_now, to, template, user_id, priority=priority)
+    return submit(deliver_now, to, template, user_id, priority=priority, config=config)
 
 
 def drain(timeout: float = 15.0) -> bool:

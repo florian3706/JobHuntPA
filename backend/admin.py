@@ -43,7 +43,7 @@ from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
 from backend import account_email, admin_key, app_settings, billing, email_templates, key_rotation, keys, mail_queue
-from backend import lockout, mailer, membership, migrate_encryption, password_reset, ratelimit, signup, tokens, users
+from backend import lockout, mail_route, mailer, membership, migrate_encryption, password_reset, ratelimit, signup, tokens, users
 from backend.admin_key import Apk, ApkUnavailable
 from backend.db import (
     AdminAudit,
@@ -104,6 +104,19 @@ def _open_apk(db: Session, admin: AuthUser) -> Optional[Apk]:
         return admin_key.open_apk(db, admin.id)
     except ApkUnavailable:
         return None
+
+
+def other_admin_addresses(db: Session, admin: AuthUser) -> list[str]:
+    """The email addresses of the other active admins, from their details sealed to the admin key (this admin's key
+    opens them). An admin whose address can't be read is left out."""
+    apk = _open_apk(db, admin)
+    out = []
+    for admin_id in _active_admins(db, besides=admin.id):
+        row = db.get(User, admin_id)
+        info = _details_of(row, apk) if row is not None else None
+        if info and isinstance(info.get("email"), str) and info["email"]:
+            out.append(info["email"])
+    return out
 
 
 def _key_missing() -> AuthProblem:
@@ -532,6 +545,7 @@ def disable_mfa(user_id: int, admin: AuthUser = Depends(current_user), db: Sessi
     target = _target(db, user_id)
     if target.id == admin.id:
         raise _problem(409, "self", "Turn off your own two-step sign-in in Settings, which asks for a code.")
+    mail_route.refuse_during_hold(db, "turn off two-step sign-in")
     changed = bool(target.mfa_enabled or target.totp_secret_enc or target.totp_pending_enc)
     target.mfa_enabled = False
     target.totp_secret_enc = target.totp_pending_enc = target.totp_last_step = None
@@ -559,7 +573,9 @@ NO_ADDRESS = ("This person's email address can't be read right now (their detail
 
 def send_reset_email(db: Session, admin: AuthUser, target: User, apk: Optional[Apk]) -> None:
     """Makes a reset link for ``target`` (the same one the forgot-password form makes: 1 hour, single use) and sends
-    it in the background to the address in their ``pii_admin``. Admins never set anyone's password."""
+    it in the background to the address in their ``pii_admin``. Admins never set anyone's password. Refused for 24
+    hours after the mail server or public address changed (``mail_route``)."""
+    mail_route.refuse_during_hold(db, "send a reset link")
     if not mail_queue.enabled():
         raise _problem(409, "email_not_set_up", EMAIL_NOT_SET_UP)
     if target.status != "active":

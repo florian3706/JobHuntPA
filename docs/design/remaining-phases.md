@@ -378,7 +378,7 @@ CLAUDE.md's workspace and `duplicate_of` rules.
   `Content-Disposition: attachment; filename="JobHuntPA-export-YYYY-MM-DD.zip"`.
   - A POST with the CSRF token, not a GET: a link or a prefetch must never start an export.
   - It needs recent sign-in (`sessions.require_recent_auth`), and the page calls it through `withRecentAuth`.
-  - One export at a time per account (429 while one is being built).
+  - One export at a time per account (429 while one is being built or its download is still going: the place is kept until the last byte is sent, the client leaves, or 10 minutes pass, because the zip stays in memory until then).
   - It is built in memory (`BytesIO`) inside the request's key scope. Plaintext never touches the disk: no temporary
     files, no `SpooledTemporaryFile`.
   - Only the account's own workspaces (`owner_id`), never anyone else's. Admins can't export other people's data.

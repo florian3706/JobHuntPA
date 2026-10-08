@@ -250,10 +250,12 @@ def build_message(to: str, subject: str, text: str, html: str, *, sender: tuple[
     return msg
 
 
-def send(to: str, subject: str, text: str, html: str, headers: Optional[Mapping[str, str]] = None) -> SendResult:
+def send(to: str, subject: str, text: str, html: str, headers: Optional[Mapping[str, str]] = None, *,
+         config: Optional[SmtpConfig] = None) -> SendResult:
     """Send one email. Never raises. Not configured -> SendResult("not_configured"); a refused or failed
-    delivery -> SendResult("failed", "<ExceptionClass>")."""
-    cfg = get_config()
+    delivery -> SendResult("failed", "<ExceptionClass>"). ``config`` sends through those settings instead of the
+    current ones (a notice about a change of mail server goes through the old server)."""
+    cfg = config or get_config()
     if cfg is None and _outbox is None:
         log.info("Email not sent: SMTP is not configured")
         return SendResult("not_configured")

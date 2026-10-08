@@ -460,14 +460,20 @@ def start_search_run(ws: int, scheduled: bool = False) -> dict:
     def job(progress):
         from backend.duplicates import scan_workspace
 
+        run_id = tasks.current_run_id.get()
+        free = _run_was_free()
         summary = {"search": run_search(ws, progress)}
+        if free:
+            # The search itself is done and cost something (the sources were fetched). From here a failure, or a
+            # restart, no longer gives the free search back: otherwise an answer built to break the scoring would
+            # make every search free.
+            tasks._update(run_id, free_search=False)
         found = set(summary["search"].pop("job_ids", ()))
         # Before scoring, so the same ad on two sites is scored once.
         progress("checking for duplicate ads", {})
         summary["duplicates"] = scan_workspace(ws)
         only = None
-        if _run_was_free():  # a free search scores the jobs it found, not whatever else is waiting
-            run_id = tasks.current_run_id.get()
+        if free:  # a free search scores the jobs it found, not whatever else is waiting
             db = SessionLocal()
             try:
                 found |= {i for (i,) in db.query(Job.id).filter(Job.workspace_id == ws, Job.first_run_id == run_id)}

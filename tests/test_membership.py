@@ -116,6 +116,8 @@ class Base(unittest.TestCase):
         return acct, c
 
     def set_membership(self, user_id, **fields):
+        if fields.get("stripe_status"):
+            fields.setdefault("stripe_mode", "test")  # (setUp runs on a test key)
         db = SessionLocal()
         try:
             db.query(Membership).filter(Membership.user_id == user_id).update(fields)
@@ -407,6 +409,32 @@ class FreeSearches(Base):
         self.assertEqual(done["state"], "failed")
         self.assertEqual(self.member(acct.id).free_searches_used, 0)
         self.assertFalse(c.get(f"/api/runs/{run['id']}").json()["free_search"])
+
+    def test_a_run_that_fails_after_the_search_stage_keeps_the_free_search_used(self):
+        """An answer built to break the scoring must not turn every search into a free one: the search had run (and
+        fetched the sources) by then."""
+        for where, patch in (("scoring", mock.patch("backend.app._score", side_effect=RuntimeError("bad answer"))),
+                             ("duplicates", mock.patch("backend.duplicates.scan_workspace", side_effect=RuntimeError("x")))):
+            acct, c = self.user()
+            with patch:
+                run, done = self.run_and_wait(c)
+            self.assertEqual(done["state"], "failed", where)
+            self.assertEqual(self.member(acct.id).free_searches_used, 1, where)
+            self.assertFalse(done["free_search"], "the mark is cleared so nothing can refund it later")
+            tasks.mark_interrupted()
+            self.assertEqual(self.member(acct.id).free_searches_used, 1, where)
+
+    def test_the_free_search_is_marked_while_the_search_runs_and_kept_once_it_is_over(self):
+        acct, c = self.user()
+        seen = {}
+
+        def search_then_stop(ws, progress):
+            seen["during"] = c.get("/api/runs/latest").json()["free_search"]
+            return {"job_ids": []}
+        with mock.patch("backend.pipeline.run_search", side_effect=search_then_stop):
+            self.run_and_wait(c)
+        self.assertTrue(seen["during"], "marked while the search runs")
+        self.assertEqual(self.member(acct.id).free_searches_used, 1)
 
     def test_a_failure_is_refunded_once_only(self):
         acct, c = self.user(free_searches_used=2)
@@ -836,6 +864,10 @@ def missing(what="customer"):
     return stripe.InvalidRequestError(f"No such {what}: 'cus_123'", what, code="resource_missing")
 
 
+def person_member(db, user_id) -> bool:
+    return membership.person_state(db, user_id, "user")["member"]
+
+
 class StaleStripeState(Base):
     """What a membership row holds from a Stripe account or mode the app no longer talks to (a test key swapped
     for a live one), and a subscription that has ended while its row still says so."""
@@ -883,6 +915,43 @@ class StaleStripeState(Base):
         r = c.post("/api/score/run", json={"mode": "pending"})
         self.assertEqual((r.status_code, r.json()["code"]), (402, "membership_required"))
         self.assertIsNone(self.member(acct.id).stripe_status)
+
+    def test_a_test_mode_subscription_gives_no_access_under_a_live_key(self):
+        """The yearly plan paid with Stripe's test card, then the operator saves a live key: the row says active for a
+        year, and nothing would ask Stripe before then."""
+        acct, c, ref = self.paying(current_period_end=utcnow() + timedelta(days=360), stripe_synced_at=utcnow())
+        self.assertEqual(self.member(acct.id).stripe_mode, "test")
+        self.assertEqual(c.post("/api/score/run", json={"mode": "pending"}).status_code, 200)  # (a member under the test key)
+        self.stripe.v1.subscriptions.list.side_effect = missing()
+        self.stripe.v1.subscriptions.search.return_value = {"data": []}
+        with mock.patch.dict(os.environ, {"STRIPE_SECRET_KEY": LIVE}):
+            billing.clear_price_cache()
+            r = c.post("/api/score/run", json={"mode": "pending"})
+            self.assertEqual((r.status_code, r.json()["code"]), (402, "membership_required"))
+            self.assertIsNone(self.member(acct.id).stripe_status, "Stripe doesn't know the customer: forgotten")
+            self.assertIsNone(self.member(acct.id).stripe_mode)
+            me = c.get("/api/billing/status").json()["me"]
+            self.assertEqual((me["member"], me["stripe_status"], me["plan"]), (False, None, None))
+
+    def test_a_test_mode_row_is_left_out_even_before_stripe_has_been_asked(self):
+        acct, c, ref = self.paying(current_period_end=utcnow() + timedelta(days=360), stripe_synced_at=utcnow())
+        with mock.patch.dict(os.environ, {"STRIPE_SECRET_KEY": LIVE}):
+            with SessionLocal() as db:
+                state = membership.load_state(db, acct.id, "user")
+                self.assertIsNone(state.stripe_status)
+                self.assertIsNotNone(membership.scheduled_block(db, acct.id), "the scheduler can't run it either")
+                self.assertFalse(person_member(db, acct.id))
+
+    def test_a_subscription_the_live_account_does_have_is_kept_and_marked_live(self):
+        acct, c, ref = self.paying()
+        self.set_membership(acct.id, stripe_mode=None)  # a row from before the mode was stored
+        membership._tried.clear()
+        self.stripe.v1.subscriptions.list.return_value = {"data": [stripe_sub(ref)]}
+        with mock.patch.dict(os.environ, {"STRIPE_SECRET_KEY": LIVE}):
+            r = c.post("/api/score/run", json={"mode": "pending"})
+            self.assertEqual(r.status_code, 200, r.text)
+            m = self.member(acct.id)
+            self.assertEqual((m.stripe_status, m.stripe_mode), ("active", "live"))
 
     def test_a_customer_with_no_subscriptions_at_all_is_dropped_too(self):
         acct, c, ref = self.paying()
@@ -1105,6 +1174,26 @@ class Portal(Base):
         self.assertEqual(self.stripe.v1.billing_portal.sessions.create.call_args.kwargs["params"]["customer"],
                          "cus_456")
         self.assertEqual(self.sealed_ids(acct), {"customer": "cus_456"})  # remembered, sealed
+
+    def test_the_portal_needs_the_password_entered_recently(self):
+        """A stolen session cookie must not open the portal: it shows the billing address and card and can cancel."""
+        from backend.db import AuthSession
+        acct, c = self.user()
+        self.stripe.v1.customers.search.return_value = {"data": [{"id": "cus_456"}]}
+        self.stripe.v1.billing_portal.sessions.create.return_value = {"url": "https://portal.stripe.test/p"}
+        db = SessionLocal()
+        try:
+            db.query(AuthSession).filter(AuthSession.user_id == acct.id).update(
+                {AuthSession.reauth_at: utcnow() - timedelta(minutes=20)})
+            db.commit()
+        finally:
+            db.close()
+        r = c.post("/api/billing/portal")
+        self.assertEqual((r.status_code, r.json()["code"]), (403, "reauth_required"))
+        self.stripe.v1.billing_portal.sessions.create.assert_not_called()
+        self.stripe.v1.customers.search.assert_not_called()
+        self.assertEqual(c.post("/api/auth/reauth", json={"password": helpers.USER_PASSWORD}).status_code, 200)
+        self.assertEqual(c.post("/api/billing/portal").status_code, 200)
 
     def test_no_customer_at_all(self):
         acct, c = self.user()

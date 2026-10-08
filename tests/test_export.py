@@ -422,6 +422,58 @@ class ExportTest(unittest.TestCase):
         self.assertNotIn(self.bob.id, export._running)
         self.assertEqual(self.export().status_code, 200)
 
+    def test_the_place_is_kept_until_the_download_has_ended(self):
+        """The zip stays in memory until the client has read it, so neither the account's mark nor the app's slot may be
+        given back when the build is done: a slow reader could otherwise pile up buffers with repeated exports."""
+        import asyncio
+        from types import SimpleNamespace
+        from backend.sessions import AuthProblem
+
+        def fake(db, user_id, now=None):
+            return io.BytesIO(b"zip" * 100_000), 1, "x.zip"
+
+        async def drain(response):
+            return b"".join([c async for c in response.body_iterator])
+
+        def start(user_id):
+            return export.export_data(SimpleNamespace(id=user_id), None)
+
+        def code_of(user_id):
+            with self.assertRaises(AuthProblem) as caught:
+                start(user_id)
+            return caught.exception.code
+        with mock.patch.object(export, "build", side_effect=fake), mock.patch.object(export, "require_recent_auth"):
+            first = start(9001)
+            self.assertIn(9001, export._running, "the build is done but the download isn't")
+            self.assertEqual(code_of(9001), "export_running")
+            second = start(9002)
+            self.assertEqual(code_of(9003), "export_busy", "both slots are still held by the unread downloads")
+            self.assertEqual(len(asyncio.run(drain(first))), 300_000)
+            self.assertNotIn(9001, export._running)
+            third = start(9003)  # a slot came back
+            # a response nobody iterates (the client left at once) still gives its place back
+            asyncio.run(second.background())
+            self.assertNotIn(9002, export._running)
+            asyncio.run(third.background())
+            asyncio.run(third.background())  # and twice is harmless
+            self.assertNotIn(9003, export._running)
+            for user_id in (9004, 9005):
+                start(user_id)
+            self.assertEqual(code_of(9006), "export_busy")  # exactly MAX_AT_ONCE slots, none leaked or given twice
+        for user_id in (9004, 9005):
+            export._running.discard(user_id)
+            export._slots.release()
+
+    def test_a_download_too_slow_to_finish_is_cut_off_and_gives_the_place_back(self):
+        hold = export._Hold(9100)
+        export._running.add(9100)
+        self.assertTrue(export._slots.acquire(blocking=False))
+        hold.buffer = io.BytesIO(b"x" * 200_000)
+        with mock.patch.object(export, "MAX_STREAM_SECONDS", -1):
+            got = list(export._chunks(hold.buffer, hold))
+        self.assertEqual(got, [])
+        self.assertNotIn(9100, export._running)
+
     def test_account_details_membership_and_no_secrets(self):
         from datetime import datetime
         from sqlalchemy import text as sql

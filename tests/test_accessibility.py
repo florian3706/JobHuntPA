@@ -815,6 +815,7 @@ class BillingPageTest(unittest.TestCase):
         self.assertIn("/api/billing/checkout", self.js)
         self.assertIn("/api/billing/verify", self.js)
         self.assertIn("/api/billing/portal", self.js)
+        self.assertRegex(self.js, r"withRecentAuth\(\(\) => api\('/api/billing/portal'", "the portal asks for the password again")
         self.assertIn("session_id", self.js)
         self.assertIn("cancelled", self.js)
         self.assertIn("Nothing was charged", self.js)

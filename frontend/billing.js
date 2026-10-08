@@ -150,7 +150,7 @@ async function openPortal() {
   setBusy(btn, true);
   setText($('#portal-status'), 'Taking you to Stripe…');
   try {
-    const r = await api('/api/billing/portal', { method: 'POST', body: '{}' });
+    const r = await withRecentAuth(() => api('/api/billing/portal', { method: 'POST', body: '{}' }));
     location.assign(r.url);
     return;
   } catch (e) {
