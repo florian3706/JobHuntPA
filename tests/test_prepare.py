@@ -117,6 +117,7 @@ class CompaniesTest(WorkspaceTestCase):
 
 def _reference_list_jobs(db, ws, office_slack, include):
     """The job list as it was built before the left-out rows were dropped in SQL: everything loaded, filtered in Python."""
+    from backend import ghost
     from backend.app import _profile_hash, _soften, _with_copies, job_to_dict
     from backend.db import CoverLetter
     from backend.filters import softened_job_ids
@@ -139,8 +140,10 @@ def _reference_list_jobs(db, ws, office_slack, include):
                 or ("hidden" in leave_out and bool(job.hidden)))
     everything = [(job, fit) for job, fit in rows if not job.duplicate_of]
     listed = [(job, fit) for job, fit in everything if not omitted(job)]
+    signs = ghost.assess_jobs(db, [job for job, _fit in listed], profiles)
     return ([_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
-                                              recruiter=looks_like_recruiter(job.company or "", profiles)), softened),
+                                              recruiter=looks_like_recruiter(job.company or "", profiles),
+                                              signs=signs[job.id]), softened),
                           copies.get(job.id, [])) for job, fit in listed],
             len(everything) - len(listed))
 

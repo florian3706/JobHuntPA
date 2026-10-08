@@ -411,7 +411,7 @@ class JobJsonShapeTest(PoolTestCase):
             "employment_type", "office_days", "salary_text", "salary_min", "salary_max", "url", "distance_km",
             "status", "excluded_reason", "detail_status", "posted_at", "first_seen", "last_seen", "closed", "hidden",
             "fit", "has_cover_letter", "office_text", "office_source", "office_placed", "office_unknown",
-            "location_verdict", "recruiter", "also_on"}
+            "location_verdict", "recruiter", "ghost", "also_on"}
 
     def test_list_jobs_shape_unchanged(self):
         ws = self.workspace()

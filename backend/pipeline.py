@@ -334,6 +334,19 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
     rep.closed = _linked(db, ws, closed)
 
 
+def refresh_ghost_signs(db: Session, now: datetime) -> None:
+    """The ghost-job signs that depend on the pool around each posting (backend.ghost). A bug there must not fail a
+    search, so it only costs the signs until the next run."""
+    from backend import ghost
+
+    try:
+        ghost.refresh(db, now)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        log.error("ghost-job signs failed: %s", exc.__class__.__name__)
+
+
 def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
     db = SessionLocal()
     client = PoliteClient()
@@ -366,6 +379,7 @@ def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
         progress("checking jobs other searches found", {})
         now = datetime.utcnow()
         stale = pool.sweep(db, now)
+        refresh_ghost_signs(db, now)
         matched = pool.match_pool(db, ws, crit, now)
         pool.refresh_links(db, ws, crit)
         db.commit()

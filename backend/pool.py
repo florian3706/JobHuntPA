@@ -91,7 +91,13 @@ def derive(target) -> None:
 
 
 def _changed(posting: Posting) -> None:
+    from backend import ghost
+
+    old_hash = posting.description_hash
     derive(posting)
+    if posting.description_hash != old_hash:
+        posting.ad_ghost_json = None  # the ad's wording changed: the old AI reading no longer applies
+    ghost.stamp(posting)  # the key that finds earlier ads of the role, and the signs in the ad's wording
     posting.rev = (posting.rev or 0) + 1
 
 
@@ -106,7 +112,7 @@ def upsert_scraped(db: Session, p: Scraped, source: str, listing_key: Optional[s
     posting = posting_by_url(db, p.url)
     is_new = posting is None
     if is_new:
-        posting = Posting(url=p.url, first_seen=now, detail_status="none", rev=0)
+        posting = Posting(url=p.url, first_seen=now, listed_since=now, detail_status="none", rev=0)
         db.add(posting)
     changed = merge_posting(posting, p, now)
     if posting.source != source:
@@ -118,7 +124,9 @@ def upsert_scraped(db: Session, p: Scraped, source: str, listing_key: Optional[s
     if listing_key:
         posting.listing_key = listing_key
     if posting.closed_at is not None:
+        posting.reopened_from = posting.close_reason  # (a "stale" run isn't a repost: backend.ghost)
         posting.closed_at = posting.close_reason = None
+        posting.listed_since, posting.ghost_checked_at = now, None  # listed again: a new run (backend.ghost)
     return posting, is_new
 
 
@@ -179,7 +187,7 @@ def sweep(db: Session, now: datetime) -> list[int]:
 
 # Sealed job columns the job list's cards never read: left out of its query, as each costs a decryption per job.
 CARD_UNUSED = (Job._external_id, Job._description_hash, Job._detail_fetched_at, Job._industry, Job.office_checked_at,
-               Job.office_lng)
+               Job.office_lng, Job.ad_ghost_json)  # (ghost.assess_jobs loads the last one itself)
 
 
 def jobs_query(db: Session, *, descriptions: bool = False, card: bool = False):

@@ -431,6 +431,13 @@ can live in their own **workspaces** (switcher at the top right).
   rejected, not interested). Tick jobs, or filter the list and tick **Select all shown**, to change
   status or **Hide** them in bulk (only jobs on screen are ever affected); hidden jobs stay hidden when a search finds them again, aren't scored or
   researched, and come back with *Show hidden*.
+- **Ghost jobs**: some ads stay up when nobody is being hired. A job card shows **Possible ghost job**
+  (*some signs* or *several signs*) when the ad shows signs such as being open for 45 days or more, being
+  posted again after it ended, a posted date that was renewed, wording like "talent pool" or "register your
+  interest", a recruiter ad that may not name the employer, many identical ads, or recent news of job
+  cuts. Press **Why?** on the card, or open the job, to see the signs and what to ask the employer. These are
+  signs only and can be wrong: it may be a real job. Nothing is hidden or changed
+  unless you tick **Hide possible ghost jobs** in the filters (off by default; the count says how many it hid).
 - **Softening the office-days rule**: if you set a maximum number of office days for hybrid roles,
   the Jobs tab's **Office days (temporary)** menu lets you allow extra days (up to 5) for now. Jobs that
   only that rule excluded reappear, marked *shown by temporary +N office days*, and **Score them**

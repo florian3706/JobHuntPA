@@ -1389,5 +1389,76 @@ class DigestPagesTest(unittest.TestCase):
             self.assertEqual(len(ids), len(set(ids)), ids)
 
 
+class GhostJobPagesTest(unittest.TestCase):
+    """The possible-ghost-job badge, its Why? disclosure, the Jobs filter and the job page section."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.common, cls.app, cls.job = read("common.js"), read("app.js"), read("job.js")
+        cls.index, cls.job_html, cls.css = read("index.html"), read("job.html"), read("styles.css")
+
+    def test_badge_has_an_icon_and_text(self):
+        badge = self.common[self.common.index("function ghostBadge"):self.common.index("function ghostWhy")]
+        self.assertIn("Possible ghost job", badge)
+        self.assertIn('<span aria-hidden="true">⚠ </span>', badge)
+        self.assertIn("several signs", self.common)
+        self.assertIn("some signs", self.common)
+        self.assertIn("if (!level) return ''", badge)
+
+    def test_badge_on_cards_compact_cards_and_job_page(self):
+        self.assertIn("${ghostBadge(job)}", self.app)
+        self.assertIn("${ghostBadge(j)}", self.app)
+        self.assertIn("ghostBadge(job)", self.job)
+
+    def test_why_disclosure_is_a_native_details_with_a_full_name_and_escaped_text(self):
+        why = self.common[self.common.index("function ghostWhy"):self.common.index("function modeOf")]
+        self.assertIn("<details", why)
+        self.assertIn("<summary>Why?<span class=\"visually-hidden\">", why)
+        self.assertIn("esc(s.text)", why)
+        self.assertIn("This may still be a real job", why)
+        self.assertIn("${ghostWhy(job)}", self.app)
+
+    def test_filter_is_off_by_default_labelled_and_counted_in_words(self):
+        self.assertIn('<input id="filter-hide-ghost" type="checkbox" /> <span>Hide possible ghost jobs</span>', self.index)
+        self.assertIn("hideGhost: false", self.app)
+        self.assertIn("f.hideGhost && !keepGhost && j.ghost?.level", self.app)
+        # (the ghost jobs are part of the "hidden by filters" number: worded as a share of it, not a second count)
+        self.assertIn("hidden by filters${ghosts ? ` (${ghosts} of them possible ghost job${ghosts === 1 ? '' : 's'})` : ''}", self.app)
+        self.assertNotIn("possible ghost job${ghosts === 1 ? '' : 's'} hidden", self.app)
+        self.assertIn("$('#filter-hide-ghost').addEventListener('change'", self.app)
+
+    def test_job_page_section_is_named_and_hidden_unless_flagged(self):
+        self.assertRegex(self.job_html, r'<section id="job-ghost-section"[^>]*aria-labelledby="ghost-title"[^>]*hidden>')
+        self.assertIn('<h2 id="ghost-title">Is this a real vacancy?</h2>', self.job_html)
+        fn = self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]
+        self.assertIn("box.hidden = !g?.level", fn)
+        self.assertIn("may well be a real job", fn)
+        for ask in ("Is the role open now", "when do they need someone to start", "Why was the ad posted again"):
+            self.assertIn(ask.lower(), fn.lower())
+        self.assertIn("esc(s.text)", fn)
+        self.assertIn("esc(s.detail)", fn)
+
+    def test_the_last_question_follows_the_signs(self):
+        fn = self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]
+        self.assertIn("s.code === 'evergreen_wording' || s.code === 'ad_signs'", fn)
+        self.assertIn("building a list of candidates", fn)
+        self.assertIn("Has the closing date or the number of openings changed?", fn)
+
+    def test_why_summary_is_a_44px_target_on_touch_screens(self):
+        start = self.css.index("@media (pointer: coarse) {\n")
+        coarse = self.css[start:self.css.index("\n}", start)]  # (the whole media block)
+        rule = re.search(r"[^{}]*\.ghost-why summary[^{}]*\{([^}]*)\}", coarse)
+        self.assertIsNotNone(rule)
+        self.assertIn("min-height: 44px", rule.group(1))
+
+    def test_no_inline_styles_or_handlers_and_meaning_is_not_colour_alone(self):
+        for src in (self.common[self.common.index("function ghostBadge"):self.common.index("function modeOf")],
+                    self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]):
+            self.assertNotRegex(src, r'style=|\bon[a-z]+=')
+        self.assertIn(".badge.ghost", self.css)
+        self.assertIn(".ghost-signs", self.css)
+
+
 if __name__ == "__main__":
     unittest.main()

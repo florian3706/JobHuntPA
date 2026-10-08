@@ -594,6 +594,21 @@ function employmentBadge(job) {
   const label = EMPLOYMENT_LABEL[job.employment_type];
   return label ? `<span class="badge soft"><span class="visually-hidden">Employment type: </span>${label}</span>` : '';
 }
+// "Possible ghost job" badge: the icon and the words say it (colour only repeats it); never an accusation.
+const GHOST_STRENGTH = { likely: 'several signs', possible: 'some signs' };
+function ghostBadge(job) {
+  const level = job.ghost?.level;
+  if (!level) return '';
+  return `<span class="badge ghost ghost-${level}"><span aria-hidden="true">⚠ </span>Possible ghost job<span class="ghost-strength">: ${GHOST_STRENGTH[level]}</span></span>`;
+}
+// The "Why?" disclosure on a job card: the signs that raised the flag.
+function ghostWhy(job) {
+  const g = job.ghost;
+  if (!g?.level || !(g.signals || []).length) return '';
+  return `<details class="ghost-why" data-section="ghost"><summary>Why?<span class="visually-hidden"> This job is flagged as a possible ghost job</span></summary>
+    <ul class="ghost-signs">${g.signals.map((s) => `<li>${esc(s.text)}</li>`).join('')}</ul>
+    <p class="hint">This may still be a real job. Ask the employer whether the role is open now.</p></details>`;
+}
 function modeOf(job) { return ['remote', 'hybrid', 'onsite'].includes(job.work_mode) ? job.work_mode : 'unknown'; }
 
 // The number is the score; its colour only repeats it. Screen readers get "Fit score 82 of 100".

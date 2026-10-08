@@ -307,6 +307,7 @@ def digest_card(job: dict, base: str) -> dict:
         "original_url": _http_url(job.get("url")),
         "source": source_label(job.get("source")),
         "workspace": _clean(job.get("workspace_name"), 100),
+        "ghost": f"Possible ghost job: {reason}" if (reason := _clean(job.get("ghost_reason"), 160)) else None,
     }
 
 
@@ -318,7 +319,9 @@ def job_digest(jobs: list[dict], *, keys: ServerKeys, unsubscribe_id: str, every
                more_count: int = 0, name: Optional[str] = None, base_url: Optional[str] = None) -> Template:
     """The job digest. ``jobs`` are plain dicts with the keys id, title, company, salary_min, salary_max,
     salary_text, office_text, location_text, office_days, work_mode, employment_type, fit_score, fit_summary,
-    gap_count (or gaps: a list or a number), url, and workspace_id (optional). Any may be missing.
+    gap_count (or gaps: a list or a number), url, ghost_reason (the first sign that the ad may not be a current
+    vacancy, backend/ghost.py; a line "Possible ghost job: ..." is added when set), and workspace_id (optional).
+    Any may be missing.
     ``unsubscribe_id`` (letters, digits, - and _) is signed with ``keys``; ``more_count`` says how many more jobs
     were left out ("and 23 more in JobHuntPA")."""
     base = _base(base_url)
@@ -365,6 +368,8 @@ def _card_parts(c: dict) -> tuple[list[str], str]:
     lines = [c["title"]] + [f"{k}: {v}" for k, v in meta]
     if c["summary"]:
         lines += ["", c["summary"]]
+    if c["ghost"]:
+        lines += ["", c["ghost"]]
     if c["open_url"]:
         lines += ["", f"Open in JobHuntPA: {c['open_url']}"]
     if c["original_url"]:
@@ -389,6 +394,7 @@ def _card_parts(c: dict) -> tuple[list[str], str]:
         + (f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 8px 0;">'
            f'{rows}</table>' if rows else '')
         + (f'<p style="margin:0 0 12px 0;">{_e(c["summary"])}</p>' if c["summary"] else '')
+        + (f'<p style="margin:0 0 12px 0;">{_e(c["ghost"])}</p>' if c["ghost"] else '')
         + "".join(f'<p style="margin:0 0 4px 0;">{x}</p>' for x in links)
         + '</td></tr></table>')
     return lines, html

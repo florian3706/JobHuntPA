@@ -796,7 +796,7 @@ summary { cursor: pointer; min-height: 24px; }
   .btn, .btn-sm, .tab, .chip, .seg-btn, .chat-job, .toast-close, .chat-close,
   input[type="text"], input[type="search"], input[type="number"], input[type="password"], input[type="url"],
   input[type="email"], input[type="time"], select { min-height: 44px; }
-  .check, .check-field, .run-report summary, .reqs summary, .trip summary, .dupe-side summary { min-height: 44px; }
+  .check, .check-field, .run-report summary, .reqs summary, .trip summary, .dupe-side summary, .ghost-why summary { min-height: 44px; }
   .check input, .check-field input, .job-top input[type="checkbox"], .title-row input { width: 24px; height: 24px; }
   .tag button, .info-btn, .link, .help-link { min-width: 36px; min-height: 36px; }
   .leaflet-touch .leaflet-bar a { width: 44px; height: 44px; line-height: 44px; }
@@ -1052,3 +1052,12 @@ dialog.admin-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 .billing-main #billing-result[hidden], .billing-main #billing-error[hidden] { display: none; }
 @media (max-width: 480px) { .billing-facts { grid-template-columns: 1fr; } .billing-facts dd { margin-bottom: 6px; } }
 .check[hidden] { display: none; }
+
+/* Possible ghost jobs: the icon and words carry the meaning, the colour only repeats it. */
+.badge.ghost { text-transform: none; color: var(--warn); border-color: color-mix(in srgb, var(--warn) 60%, transparent); }
+.badge.ghost-likely { border-width: 2px; padding: 1px 8px; }
+.ghost-why { margin-top: 6px; font-size: 13.5px; }
+.ghost-why summary { cursor: pointer; color: var(--accent-text); }
+.ghost-signs, .ghost-ask { margin: 6px 0 0; padding-left: 18px; }
+.ghost-signs li, .ghost-ask li { margin-bottom: 4px; overflow-wrap: anywhere; }
+.ghost-section .badge { white-space: normal; }

@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import access, crypto, llm_providers, membership, migrate_encryption, schedule, tasks, users
+from backend import access, crypto, ghost, llm_providers, membership, migrate_encryption, schedule, tasks, users
 from backend.account import router as account_router
 from backend.account_email import router as account_email_router
 from backend.admin import router as admin_router
@@ -202,7 +202,7 @@ def _fit_dict(fit: Optional[FitResult], profile_hash: str) -> Optional[dict]:
 
 
 def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: bool = False,
-                has_letter: bool = False, recruiter: bool = False) -> dict:
+                has_letter: bool = False, recruiter: bool = False, signs: Optional[dict] = None) -> dict:
     out = {
         "id": job.id,
         "source": job.source,
@@ -237,10 +237,20 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "office_unknown": office_unknown(job),
         "location_verdict": job.location_verdict,
         "recruiter": recruiter,
+        # Signs that the ad may not be a current vacancy (backend/ghost.py): level "likely" | "possible" | null, and
+        # the reasons (the list page gets code and text; the job page also a sentence of detail). Never hides a job.
+        "ghost": _ghost_dict(signs, full),
     }
     if full:
         out["description"] = job.description or ""
     return out
+
+
+def _ghost_dict(signs: Optional[dict], full: bool) -> dict:
+    if not signs:
+        return {"level": None, "signals": []}
+    keep = ("code", "text", "detail") if full else ("code", "text")
+    return {"level": signs["level"], "signals": [{k: s[k] for k in keep if k in s} for s in signs["signals"]]}
 
 
 def _profile_hash(db: Session, ws: int) -> str:
@@ -306,10 +316,12 @@ def list_jobs(office_slack: int = OfficeSlack,
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
                .filter(Job.workspace_id == ws)}
     profiles = {p.key: p for p in db.query(CompanyProfile).all()}
+    signs = ghost.assess_jobs(db, [job for job, _ in listed], profiles)
     # Plain JSON values already: skip FastAPI's per-field encoder, which took most of the time for
     # thousands of jobs on a Raspberry Pi.
     return JSONResponse([_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
-                                                         recruiter=looks_like_recruiter(job.company or "", profiles)),
+                                                         recruiter=looks_like_recruiter(job.company or "", profiles),
+                                                         signs=signs[job.id]),
                                               softened),
                                       copies.get(job.id, []))
                          for job, fit in listed],
@@ -325,8 +337,9 @@ def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(
     fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
     profiles = {p.key: p for p in db.query(CompanyProfile).filter(CompanyProfile.key == company_key(job.company or ""))}
     letter = db.query(CoverLetter.id).filter(CoverLetter.job_id == job_id).first() is not None
+    signs = ghost.assess_jobs(db, [job], profiles)[job.id]
     out = _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True, has_letter=letter,
-                              recruiter=looks_like_recruiter(job.company or "", profiles)),
+                              recruiter=looks_like_recruiter(job.company or "", profiles), signs=signs),
                   softened_job_ids(db, ws, office_slack))
     out["office_candidates"] = candidates(db, job) if out["office_unknown"] or job.office_source == "company" else []
     return _with_copies(out, db.query(Job).filter(Job.duplicate_of == job_id).all())

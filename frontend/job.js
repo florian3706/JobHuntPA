@@ -40,6 +40,7 @@ function renderHead() {
     job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : '',
     job.posted_at ? `<span class="muted">posted ${esc(fmtDate(job.posted_at).split(',')[0])}</span>` : '',
     job.closed ? '<span class="badge flag">closed</span>' : '',
+    ghostBadge(job),
     job.recruiter ? '<span class="badge flag">recruitment agency</span>' : '',
   ].join('');
   $('#job-head').innerHTML = `
@@ -67,6 +68,26 @@ function renderHead() {
       toast(`Status saved: ${STATUS_LABEL[job.status]}`, 'ok', 2500);
     } catch (err) { toast(`Status update failed: ${err.message}`, 'err'); e.target.value = job.status; }
   });
+}
+
+/* ---------- is this a real vacancy? ---------- */
+function renderGhost() {
+  const g = job.ghost;
+  const box = $('#job-ghost-section');
+  box.hidden = !g?.level;
+  if (!g?.level) return;
+  $('#job-ghost').innerHTML = `
+    <p>${ghostBadge(job)}</p>
+    <ul class="ghost-signs">${g.signals.map((s) => `<li><strong>${esc(s.text)}</strong>${s.detail ? `<br><span class="muted">${esc(s.detail)}</span>` : ''}</li>`).join('')}</ul>
+    <p>These are signs, not proof: this may well be a real job. Employers sometimes keep an ad up while they interview, or post it again to reach more people.</p>
+    <p>You could ask the recruiter or employer:</p>
+    <ul class="ghost-ask">
+      <li>Is the role open now, and has anyone been hired for it?</li>
+      <li>When do they plan to interview, and when do they need someone to start?</li>
+      <li>${g.signals.some((s) => s.code === 'reposted' || s.code === 'date_refreshed') ? 'Why was the ad posted again?'
+        : g.signals.some((s) => s.code === 'evergreen_wording' || s.code === 'ad_signs') ? 'Is this for a specific team, or are they building a list of candidates?'
+        : 'Has the closing date or the number of openings changed?'}</li>
+    </ul>`;
 }
 
 function renderFit() {
@@ -265,6 +286,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   } catch (e) { showPageError(`Could not load this job: ${e.message}`); return; }
   renderHead();
   renderOffice();
+  renderGhost();
   renderFit();
   renderAd();
   await loadAiAccess(); // trial accounts get a note beside "Research this company"

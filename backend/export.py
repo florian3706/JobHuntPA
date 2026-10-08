@@ -43,7 +43,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from backend import account, crypto, docs, schedule, users
+from backend import account, crypto, docs, ghost, schedule, users
 from backend.db import (
     UPLOAD_DIR,
     ChatMessage,
@@ -489,6 +489,7 @@ class JobEntry:
         self.main: Optional[int] = None  # a merged copy: the job it was merged into
         self.url = ""
         self.reason = ""
+        self.ghost: Optional[dict] = None  # backend.ghost: signs that the ad may not be a current vacancy (flagged only)
 
 
 def _job_label(e: JobEntry) -> str:
@@ -528,6 +529,12 @@ def _plan_jobs(db: Session, ws: Workspace, base: str) -> tuple[dict[int, JobEntr
     for job in jobs:
         if job.duplicate_of is not None and job.duplicate_of in entries:
             entries[job.duplicate_of].copies.append(job.id)
+    filed = [j for j in jobs if entries[j.id].path]
+    keys = sorted({company_key(j.company or "") for j in filed} - {""})
+    profiles = {p.key: p for start in range(0, len(keys), 400)
+                for p in db.query(CompanyProfile).filter(CompanyProfile.key.in_(keys[start:start + 400]))}
+    for job_id, signs in ghost.assess_jobs(db, filed, profiles).items():
+        entries[job_id].ghost = signs if signs["level"] else None
     return entries, filtered
 
 
@@ -578,6 +585,14 @@ def _job_md(job: Job, entry: JobEntry, fit: Optional[FitResult], entries: dict[i
             out.append("\n### Gaps\n\n" + bullets(data["gaps"]))
     elif fit is not None and fit.error:
         out.append(f"\n## How well you fit\n\nScoring failed: {line(fit.error)}\n")
+    if entry.ghost:
+        out.append("\n## Is this a real vacancy?\n\n")
+        out.append(f"{'Several signs' if entry.ghost['level'] == 'likely' else 'Some signs'} suggest this ad may not be "
+                   "a current vacancy:\n\n")
+        for sign in entry.ghost["signals"]:
+            out.append(f"- {line(sign['text'])}{': ' + line(sign['detail']) if sign.get('detail') else ''}\n")
+        out.append("\nThese are only signs, and the job may well be real. You could ask the employer whether the role "
+                   "is open now and when they need someone to start.\n")
     out.append(f"\n## Description\n\n{text(job.description) if (job.description or '').strip() else '(no description saved)'}\n")
     others = [entries[c] for c in entry.copies if c in entries]
     if others:
@@ -611,7 +626,7 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
     if filtered:
         out.append(f"\nAnother {len(filtered)} job(s) the search filters left out are in {rel_link('Filtered out', index, f'{base}/Jobs/Filtered out.md')}.\n")
     if with_files:
-        out.append("\n| Job | Company | Status | Fit | Closed |\n|---|---|---|---|---|\n")
+        out.append("\n| Job | Company | Status | Fit | Closed | Ghost job? |\n|---|---|---|---|---|---|\n")
         folders = [*STATUS_FOLDER.values(), HIDDEN_FOLDER]   # the order of the folders, Hidden last
 
         def folder(e: JobEntry) -> str:
@@ -619,7 +634,7 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
         for e in sorted(with_files, key=lambda e: (folders.index(folder(e)), _job_label(e).casefold())):
             status = folder(e)
             name = rel_link(e.title or "Job", index, e.path)
-            out.append(f"| {esc_pipe(name)} | {cell(e.company)} | {cell(status)} | {cell(e.fit)} | {'yes' if e.closed else ''} |\n")
+            out.append(f"| {esc_pipe(name)} | {cell(e.company)} | {cell(status)} | {cell(e.fit)} | {'yes' if e.closed else ''} | {e.ghost['level'].capitalize() if e.ghost else ''} |\n")
     arc.add(index, "".join(out))
     out = ["# Filtered out\n", "\nJobs the search filters left out. They have no file of their own.\n"]
     if filtered:

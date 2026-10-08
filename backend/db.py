@@ -174,6 +174,13 @@ class Posting(Base):
     closed_at = Column(DateTime, nullable=True, index=True)
     close_reason = Column(String, nullable=True)        # gone | unlisted | stale
     rev = Column(Integer, nullable=False, default=1, server_default="1")  # bumped when the content changes
+    # Ghost-job signs (backend/ghost.py, docs/design/ghost-jobs.md). All derived from public ads, so plaintext.
+    listed_since = Column(DateTime, nullable=True)      # start of the current run of listing (reset when it reopens)
+    repost_key = Column(String, nullable=True, index=True)  # normalised company|title: finds earlier ads of the role
+    ghost_json = Column(Text, nullable=True)            # {"text": [...signals from the ad], "pool": [...from the pool]}
+    ghost_checked_at = Column(DateTime, nullable=True)  # when the pool half was last worked out
+    ad_ghost_json = Column(Text, nullable=True)         # JSON list: what an LLM read in the public ad (NULL: not read)
+    reopened_from = Column(String, nullable=True)       # close_reason of the run before this one (set when it reopens)
 
 
 # A job's content: the posting's for a pool link (with this workspace's own value, when it has one, on top), or
@@ -311,6 +318,10 @@ class Job(Base):
     _industry = Column("industry", SealedAlways(SealedText), default=always_none, nullable=True)
     # a private job's; a pool link's is the posting's
     _closed_at = Column("closed_at", SealedAlways(SealedDateTime), default=always_none, nullable=True)
+    # What an LLM read in this workspace's own ad (a private upload or private job) that suggests it isn't a current
+    # vacancy: a JSON list. Not SealedAlways: a column added to a database that is already in strict mode is NULL
+    # in every old row. The public ad's is ``Posting.ad_ghost_json`` (backend.pool.share_ad_fact).
+    ad_ghost_json = Column(SealedText(), nullable=True)
 
     @python_only
     def url(self) -> Optional[str]:
@@ -1178,6 +1189,7 @@ def _ensure_indexes() -> None:
     """Indexes on columns added to existing tables (create_all only indexes new tables)."""
     with engine.begin() as conn:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_posting_id ON jobs (posting_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_postings_repost_key ON postings (repost_key)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_workspaces_owner_id ON workspaces (owner_id)"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_workspace_url_index "
                           "ON jobs (workspace_id, url_index)"))

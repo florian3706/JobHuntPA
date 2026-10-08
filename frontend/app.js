@@ -11,7 +11,7 @@ const state = {
   loadedOmit: 'excluded,hidden', // what the loaded list left out ("Show excluded"/"Show hidden" fetch them)
   omittedCount: 0, // how many jobs it left out
   details: new Map(), // job id -> full job (with description)
-  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
+  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, hideGhost: false, status: 'all', sort: 'score' },
   selected: new Set(),
   profile: null,
   pins: [],
@@ -195,13 +195,14 @@ async function loadJobs() {
   loadDuplicates();
 }
 
-function visibleJobs() {
+function visibleJobs(keepGhost = false) {
   const f = state.filter;
   const q = f.q.trim().toLowerCase();
   const list = state.jobs.filter((j) => {
     if (!f.showExcluded && j.excluded_reason) return false;
     if (!f.showClosed && j.closed) return false;
     if (!f.showHidden && j.hidden) return false;
+    if (f.hideGhost && !keepGhost && j.ghost?.level) return false;
     if (f.status !== 'all' && j.status !== f.status) return false;
     if (f.minScore > 0 && (scoreOf(j) ?? -1) < f.minScore) return false;
     if (f.mode !== 'all' && modeOf(j) !== f.mode) return false;
@@ -226,7 +227,8 @@ function renderStatusChips() {
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   box.innerHTML = '';
   const base = state.jobs.filter((j) => (state.filter.showExcluded || !j.excluded_reason)
-    && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden));
+    && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden)
+    && !(state.filter.hideGhost && j.ghost?.level));
   [['all', 'all'], ...STATUSES.map((s) => [s, STATUS_LABEL[s]])].forEach(([val, label]) => {
     const n = val === 'all' ? base.length : base.filter((j) => j.status === val).length;
     const b = document.createElement('button');
@@ -301,7 +303,8 @@ function renderJobs() {
   list.innerHTML = '';
   $('#jobs-empty').hidden = jobs.length !== 0;
   const hidden = state.jobs.length - jobs.length + state.omittedCount;
-  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
+  const ghosts = state.filter.hideGhost ? visibleJobs(true).length - jobs.length : 0;
+  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters${ghosts ? ` (${ghosts} of them possible ghost job${ghosts === 1 ? '' : 's'})` : ''}` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
   jobs.forEach((job) => list.appendChild(renderJobCard(job)));
   if (focusBack) (focusBack() || $('#tab-jobs')).focus({ preventScroll: true });
   renderBulkBar();
@@ -340,8 +343,9 @@ function renderJobCard(job) {
         <h3 class="job-title" id="${titleId}"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
         <div class="job-meta">
           <span>${esc(job.location_text || 'location unknown')}</span>
-          <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${employmentBadge(job)}${dist}${flags}
+          <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${employmentBadge(job)}${dist}${flags}${ghostBadge(job)}
         </div>
+        ${ghostWhy(job)}
       </div>
       ${scoreBadge(job)}
     </div>
@@ -536,6 +540,7 @@ function initJobs() {
     state.filter.showHidden = e.target.checked;
     if (e.target.checked && state.loadedOmit.includes('hidden')) loadJobs(); else renderJobs();
   });
+  $('#filter-hide-ghost').addEventListener('change', (e) => { state.filter.hideGhost = e.target.checked; renderJobs(); });
   $('#bulk-hide').addEventListener('click', () => {
     const ids = Array.from(state.selected);
     if (ids.length > 20 && !confirm(`Hide ${ids.length} jobs?`)) return;
@@ -2226,7 +2231,7 @@ function renderMapJobs() {
         <div><a class="map-job-title" id="mapjob-${j.id}-title" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Open the full page in a new tab">${esc(j.title || '—')}<span class="visually-hidden"> (opens in a new tab)</span></a>
           <span class="muted">· ${esc(j.company || '—')}</span></div>
         <div class="muted">${esc(j.location_text || '')}${j.office_unknown ? ' · office unknown' : ''}${j.distance_km !== null ? ` · <span aria-hidden="true">📍 </span><span class="visually-hidden">distance </span>${j.distance_km} km` : ''}
-          · <span class="badge ${modeOf(j)}">${modeOf(j)}</span> · ${esc(STATUS_LABEL[j.status] || j.status)}${j.excluded_reason ? ` · excluded: ${esc(j.excluded_reason)}` : ''}</div>
+          · <span class="badge ${modeOf(j)}">${modeOf(j)}</span>${ghostBadge(j)} · ${esc(STATUS_LABEL[j.status] || j.status)}${j.excluded_reason ? ` · excluded: ${esc(j.excluded_reason)}` : ''}</div>
       </div>
       <button class="btn btn-ghost btn-sm" type="button" id="mapjob-${j.id}-show" data-act="show" title="Show it on the map">Show<span class="visually-hidden"> ${esc(j.title || 'job')} on the map</span></button>
       <a class="btn btn-ghost btn-sm" id="mapjob-${j.id}-open" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener">Open<span class="visually-hidden"> ${esc(j.title || 'job')}</span>${NEW_TAB}</a>
