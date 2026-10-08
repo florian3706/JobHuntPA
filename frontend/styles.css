@@ -140,6 +140,8 @@ input[type="range"] { accent-color: var(--accent); min-height: 24px; }
 .field-error { color: var(--danger); font-size: 13px; margin: 4px 0 0; }
 .check-field, .check { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 14px; min-height: 24px; }
 .check-field input, .check input { width: 18px; height: 18px; margin: 0; flex: none; accent-color: var(--accent); }
+/* On a phone-sized window the Jobs tab's filter boxes wrap into rows a few pixels apart: full-size targets (WCAG 2.5.8). */
+@media (max-width: 480px) { .check-field input { width: 24px; height: 24px; } }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 
 /* Jobs toolbar */
@@ -709,7 +711,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .theme-split { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 
 .theme-preview {
-  display: flex; flex-direction: column; height: 92px; overflow: hidden; border-radius: 6px;
+  display: flex; flex-direction: column; min-height: 92px; overflow: hidden; border-radius: 6px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
   font-family: var(--font-ui); letter-spacing: var(--tracking); word-spacing: var(--word-spacing); line-height: 1.25;
 }
@@ -718,21 +720,22 @@ a.btn { text-decoration: none; display: inline-block; }
 .tp-tab.tp-off { width: 20px; background: var(--border-strong); }
 .tp-page { flex: 1; padding: 6px; min-height: 0; }
 .tp-card {
-  display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; height: 100%; overflow: hidden;
+  display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; min-height: 100%; box-sizing: border-box;
   background: var(--card); border: 1px solid var(--border); border-radius: 5px;
 }
-.tp-title { font-size: 10.5px; font-weight: 700; white-space: nowrap; overflow: hidden; }
-.tp-muted { font-size: 9.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+/* The miniature's text wraps and the box grows rather than cutting it off (WCAG 1.4.12 text spacing). */
+.tp-title { font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; }
+.tp-muted { font-size: 9.5px; color: var(--muted); overflow-wrap: anywhere; }
 .tp-row { display: flex; gap: 4px; align-items: center; margin-top: auto; }
 .tp-badge { font-size: 9px; padding: 0 5px; border-radius: 999px; color: var(--ok);
   background: color-mix(in srgb, var(--ok) 15%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 55%, transparent); }
 .tp-score { font-size: 9.5px; font-weight: 700; padding: 0 4px; border-radius: 4px; color: var(--ok); background: var(--field); border: 1px solid var(--border); }
 .tp-btn { margin-left: auto; font-size: 9px; padding: 1px 6px; border-radius: 4px; background: var(--accent); color: var(--on-accent); }
-.theme-split .theme-preview { height: 92px; }
+.theme-split .theme-preview { min-height: 92px; }
 @media (pointer: coarse) { .theme-card input[type="radio"] { width: 24px; height: 24px; } }
 @media (max-width: 480px) { /* two cards a row on phones, so the list isn't endless */
   .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .theme-preview, .theme-split .theme-preview { height: 76px; }
+  .theme-preview, .theme-split .theme-preview { min-height: 76px; }
   .tp-muted { display: none; }
   .theme-card { padding: 6px; }
   .theme-card:has(input:checked) { padding: 4px; }

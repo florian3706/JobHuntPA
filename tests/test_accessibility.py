@@ -731,15 +731,21 @@ class AdminPageTest(unittest.TestCase):
         self.assertEqual(self.js.count("role=\"table\""), 1, "one table builder, so every table is built the same way")
 
     def test_action_buttons_name_their_person(self):
-        for phrase in ("Send reset email to ${l}", "Edit membership of ${l}", "Make ${l} an admin", "Disable ${l}",
-                       "Enable ${l}", "Turn off two-step sign-in for ${l}", "Share the admin key with ${l} again",
-                       "Make ${l} a regular user", "Delete the account of ${l}", "Unlock ${l}"):
+        for phrase in ("Send reset email to ${l}", "Edit membership of ${l}", "Make admin: ${l}", "Disable ${l}",
+                       "Enable ${l}", "Turn off two-step sign-in for ${l}", "Share the admin key again: ${l}",
+                       "Make regular user: ${l}", "Delete the account of ${l}", "Unlock ${l}"):
             self.assertIn(phrase, self.js)
         self.assertIn('aria-label="${esc(name)}"', self.js, "names go through esc()")
-        # The visible text starts the accessible name (WCAG 2.5.3)
-        for visible, name in (("Send reset email", "Send reset email to"), ("Disable", "Disable ${l}"),
-                              ("Make admin", "Make ${l} an admin")):
-            self.assertRegex(self.js, r"'%s', `%s" % (re.escape(visible), re.escape(name)))
+
+    def test_visible_text_is_inside_the_accessible_name(self):
+        """WCAG 2.5.3 (Label in Name; axe's label-content-name-mismatch): a button's visible words are in its aria-label,
+        in that order, so speech control ("click Make admin") finds it. Checks the admin panel's row buttons."""
+        calls = re.findall(r"btn\('[\w-]+', '([^']+)', `([^`]+)`", self.js)
+        self.assertGreaterEqual(len(calls), 8)
+        for visible, name in calls:
+            self.assertIn(visible.lower(), name.lower(), f"the button '{visible}' is named '{name}'")
+        self.assertIn('aria-label="End now: the', self.js)
+        self.assertIn('aria-label="Change the', self.js)
 
     def test_other_peoples_text_only_goes_in_escaped(self):
         # Names and emails are chosen by their owners: never into innerHTML except through esc().
@@ -1494,6 +1500,77 @@ class GhostJobPagesTest(unittest.TestCase):
             self.assertNotRegex(src, r'style=|\bon[a-z]+=')
         self.assertIn(".badge.ghost", self.css)
         self.assertIn(".ghost-signs", self.css)
+
+
+class BrowserAuditRegressionsTest(unittest.TestCase):
+    """Things the browser audit (tools/a11y_audit.py: axe-core, reflow, text spacing, keyboard) found or watches, kept
+    as static checks so they can't creep back without a browser."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+
+    def test_the_company_icon_is_named_by_hidden_text_not_an_aria_label(self):
+        """WCAG 2.5.3 (axe label-content-name-mismatch): the button shows "ⓘ" and a count; an aria-label would not
+        contain what is shown. The name is visually hidden text, and it says how many controversies there are."""
+        start = self.app.index("function companyIcon")
+        body = self.app[start:self.app.index("function showCompany")]
+        button = re.search(r'return `<button[^`]*`', body).group(0)
+        self.assertNotIn("aria-label", button)
+        self.assertIn('<span class="visually-hidden">${esc(label)}</span>', button)
+        self.assertIn("controversy ${n === 1 ? 'item' : 'items'}", body)
+
+    def test_the_jobs_tab_check_boxes_are_full_size_targets_on_a_phone(self):
+        """WCAG 2.5.8: Show excluded / closed / hidden wrap into rows close together at 320 px."""
+        self.assertRegex(self.css, r"@media \(max-width: 480px\) \{ \.check-field input \{ width: 24px; height: 24px; \} \}")
+        for ident in ("filter-show-excluded", "filter-show-closed", "filter-show-hidden"):
+            self.assertRegex((FRONTEND / "index.html").read_text(encoding="utf-8"),
+                             r'<label class="field check-field"><input id="%s" type="checkbox" />' % ident)
+
+    def test_theme_miniatures_grow_instead_of_cutting_text_off(self):
+        """WCAG 1.4.12: with wider text spacing the miniature's text must not be clipped by a fixed-size box."""
+        for rule in (".tp-title", ".tp-muted"):
+            line = next(l for l in self.css.splitlines() if l.startswith(rule + " {"))
+            self.assertNotIn("nowrap", line)
+            self.assertNotIn("overflow: hidden", line)
+        self.assertRegex(self.css, r"\.theme-preview \{[^}]*min-height: 92px")
+        self.assertNotRegex(self.css, r"\.tp-card \{[^}]*overflow: hidden")
+
+    def test_no_orientation_lock(self):
+        """WCAG 1.3.4: nothing may work in one orientation only."""
+        for name in ("styles.css", "themes.css"):
+            self.assertNotRegex((FRONTEND / name).read_text(encoding="utf-8"), r"orientation\s*:", name)
+        for page in PAGES:
+            self.assertNotIn("orientation", (FRONTEND / page).read_text(encoding="utf-8"), page)
+
+    def test_every_dialog_is_labelled_and_closes_with_escape(self):
+        """Every <dialog> is a native one (Escape closes it, focus is kept inside) with an accessible name."""
+        for page in PAGES:
+            html = (FRONTEND / page).read_text(encoding="utf-8")
+            for tag in re.findall(r"<dialog\b[^>]*>", html):
+                self.assertRegex(tag, r'aria-labelledby="[\w-]+"', f"{page}: {tag}")
+        common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        self.assertIn("document.createElement('dialog')", common)
+        self.assertRegex(common, r"dlg\.setAttribute\('aria-labelledby'|aria-labelledby")
+
+    def test_the_audit_tool_is_a_standalone_developer_script(self):
+        """tools/a11y_audit.py: documented in the README, importable only for its own sake, needing nothing new."""
+        tool = ROOT / "tools" / "a11y_audit.py"
+        self.assertTrue(tool.is_file())
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("tools/a11y_audit.py", readme)
+        for folder in ("backend", "tests", "installer"):
+            for src in (ROOT / folder).rglob("*.py"):
+                if src.name == Path(__file__).name:
+                    continue
+                self.assertNotIn("a11y_audit", src.read_text(encoding="utf-8"), f"{src} must not use the audit tool")
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
+        self.assertNotIn("axe", requirements, "axe-core is a developer-only npm install, not an app dependency")
+        done = subprocess.run([sys.executable, str(tool), "--list"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for group in ("index", "auth", "links", "wizard", "job", "billing", "admin", "settings", "keyboard"):
+            self.assertIn(group + ":", done.stdout)
 
 
 if __name__ == "__main__":

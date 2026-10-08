@@ -161,9 +161,9 @@ function actionButtons(u, data) {
   const btn = (act, text, name, extra = '') => `<button class="btn btn-sm" type="button" data-act="${act}" data-id="${u.id}" aria-label="${esc(name)}"${extra}>${esc(text)}</button>`;
   const out = [btn('membership', 'Membership', `Edit membership of ${l}`)];
   out.push(u.role === 'admin'
-    ? btn('role-user', 'Make regular user', `Make ${l} a regular user`, canRole ? '' : ' disabled')
-    : btn('role-admin', 'Make admin', `Make ${l} an admin`, canRole && u.status === 'active' ? '' : ' disabled'));
-  if (u.role === 'admin' && !u.admin_key_shared && canRole) out.push(btn('regrant', 'Share the admin key again', `Share the admin key with ${l} again`));
+    ? btn('role-user', 'Make regular user', `Make regular user: ${l}`, canRole ? '' : ' disabled')
+    : btn('role-admin', 'Make admin', `Make admin: ${l}`, canRole && u.status === 'active' ? '' : ' disabled'));
+  if (u.role === 'admin' && !u.admin_key_shared && canRole) out.push(btn('regrant', 'Share the admin key again', `Share the admin key again: ${l}`));
   if (!self) out.push(u.status === 'active' ? btn('disable', 'Disable', `Disable ${l}`) : btn('enable', 'Enable', `Enable ${l}`));
   if (u.locked && u.status === 'active' && !self) out.push(btn('unlock', 'Unlock', `Unlock ${l}, who must wait after wrong passwords`));
   if (u.mfa && !self) out.push(btn('mfa-off', 'Turn off two-step sign-in', `Turn off two-step sign-in for ${l}`));
@@ -289,7 +289,7 @@ function renderGrants() {
     const when = `${fmtDay(g.starts_at)} to ${fmtDay(g.ends_at)}`;
     const buttons = g.revoked_at ? '' : `<div class="row-actions">
       <button class="btn btn-sm" type="button" data-grant-edit="${g.id}" aria-label="Change the ${esc(GRANT_KIND[g.kind] || g.kind).toLowerCase()} ${esc(when)}">Change</button>
-      <button class="btn btn-sm" type="button" data-grant-end="${g.id}" aria-label="End the ${esc(GRANT_KIND[g.kind] || g.kind).toLowerCase()} ${esc(when)} now">End now</button></div>`;
+      <button class="btn btn-sm" type="button" data-grant-end="${g.id}" aria-label="End now: the ${esc(GRANT_KIND[g.kind] || g.kind).toLowerCase()} ${esc(when)}">End now</button></div>`;
     return [`${esc(GRANT_KIND[g.kind] || g.kind)}`, esc(fmtDay(g.starts_at)), esc(fmtDay(g.ends_at)), esc(grantState(g)),
       g.note ? esc(g.note) : '<span class="muted">–</span>', buttons];
   });

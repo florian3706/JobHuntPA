@@ -725,8 +725,10 @@ function companyIcon(job) {
   else if (p?.status === 'skipped') { cls = 'none'; title = 'Not a researchable company'; }
   const n = p?.status === 'done' ? p.controversies.length : 0;
   const count = n ? `<sup>${n}</sup>` : '';
-  const label = `Company info: ${job.company}`; // the title says what's known, and is read as the description
-  return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}" aria-label="${esc(label)}"><span aria-hidden="true">ⓘ${count}</span></button>`;
+  // The name is hidden text beside the symbol, not an aria-label: the symbol and count ("ⓘ1") would not be part of an
+  // aria-label (WCAG 2.5.3 Label in Name). The title says what's known, and is read as the description.
+  const label = `Company info: ${job.company}${n ? `, ${n} controversy ${n === 1 ? 'item' : 'items'}` : ''}`;
+  return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}"><span aria-hidden="true">ⓘ${count}</span><span class="visually-hidden">${esc(label)}</span></button>`;
 }
 
 function showCompany(job) {

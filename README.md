@@ -859,25 +859,28 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 - **Motion:** with *reduce motion* set on the device, spinners, progress bars and map animations
   stop.
 
-**How it was tested** (October 2026; the account cards, admin panel, sign-up and recover pages have
-only the automated checks in `tests/test_accessibility.py`, not this run): [axe-core](https://github.com/dequelabs/axe-core) 4.13 with
-the WCAG 2.0, 2.1 and 2.2 A and AA rules plus best practices, in headless Chromium (Playwright),
-on 19 screens and states of the dashboard and job page (every tab, every dialog, the chat, the map
-in both modes, loading, empty and error states) at 320, 375, 768 and 1280 px wide: no violations. Its colour
-contrast rule ran on 12 of those screens in all 28 themes: no violations. Scripts also pressed Tab
-through every page (a visible focus ring on every stop, none hidden, no traps), drove the dialogs,
-the chat, the tabs, the theme picker and the map by keyboard, measured touch targets (24 px or more,
-or spaced), and checked reflow at 320 px, 200% zoom and WCAG text spacing. `tests/test_accessibility.py`
-keeps the contrast and the pages' basics (language, viewport, skip link, headings, labels) checked
-on every test run.
+**How it was tested** (October 2026, `tools/a11y_audit.py`, see [For developers](#for-developers)):
+[axe-core](https://github.com/dequelabs/axe-core) 4.14 with the WCAG 2.0, 2.1 and 2.2 A and AA rules, in
+headless Chromium (Playwright), on every page and every state of it: the dashboard's tabs, cards and
+dialogs, the job page, the sign-in, first-run, recover, sign-up, reset, confirm-email, billing, admin and
+unsubscribe pages, each step of the walkthrough, at 320 and 1280 px wide in the Light, Dark, Dyslexia and
+Deuteranomaly themes (the colour contrast rule also in all 28 themes): no violations. The same run
+checked reflow at 320 px and WCAG's text spacing, watched the console (no errors, no
+Content-Security-Policy violations) and pressed Tab through the main flows (sign in with a code, the
+walkthrough, change password, two-step setup, a job's status, the admin people table and its dialogs, the
+data export) and through every page: a visible focus ring on every stop, none hidden, no traps, focus back
+where it came from after a dialog, Escape closing it. `tests/test_accessibility.py` keeps the contrast and
+the pages' basics (language, viewport, skip link, headings, labels) checked on every test run.
 
 **Known limitations:**
 - Not yet tried with real screen readers (NVDA, JAWS, VoiceOver, TalkBack) or by disabled users: the
   checks above are automated, plus a review of the code.
 - The map tiles are OpenStreetMap's own pictures and stay light in every theme; street names on them
-  are outside the app's control. The job dots and pins on the map aren't keyboard stops themselves:
-  the list under the map is the keyboard route. Panning the map takes a drag, the arrow keys, or the
-  zoom buttons and a double-click.
+  are outside the app's control. The job dots on the map aren't keyboard stops, and a pin can't be
+  dragged with the keyboard: the lists under the map are the keyboard route (Show, Drop a pin at the
+  cross, Delete). Two pins dropped on the same spot sit on top of each other on the map, so their
+  markers are smaller than 24 px targets where they overlap; the same list reaches each of them.
+  Panning the map takes a drag, the arrow keys, or the zoom buttons and a double-click.
 - Text from elsewhere (job ads, company research, AI answers) is shown as it comes.
 - Messages in the corner disappear after a few seconds; they wait while the pointer or focus is on
   them, have a Dismiss button, and screen readers announce them.
@@ -981,6 +984,22 @@ pairs the app uses together and fails on any below WCAG AA (`--all` shows the pa
 When you style something with a new combination of colour tokens, add it to `PAIRS` there. The
 unit tests run the same check plus a static check of the pages (language, viewport, skip link,
 headings, a name for every control). See [Accessibility](#accessibility) for the browser checks.
+
+**Browser accessibility audit:** `python3 tools/a11y_audit.py NODE_MODULES` drives every page and
+dialog in headless Chromium (Playwright) on made-up data and runs axe-core (the WCAG 2.0, 2.1 and 2.2 A
+and AA rules) on each state at 320 and 1280 px in four themes. It also checks reflow at 320 px and
+WCAG's text spacing, watches the browser console (any error or Content-Security-Policy violation is
+reported) and walks the main flows with the keyboard (sign in with a code, the walkthrough, change
+password, two-step setup, a job's status, the admin people table and its dialogs, the data export).
+`NODE_MODULES` is a folder with `axe-core` in it: `mkdir /tmp/a11y && cd /tmp/a11y && npm install axe-core`
+(add `leaflet@1.9.4` when unpkg.com isn't reachable: the map is then served from there). It uses the
+Playwright and Chromium that setup installs. axe-core is developer-only: nothing in `requirements.txt`
+or the app uses the tool. It starts its own throwaway copy of the app (a demo database, a mail catcher
+for the reset and confirmation links, the sign-in rate limits lifted) and never touches `data/` or
+`.env`. axe is put into each page by the browser itself, so the page's Content-Security-Policy stays as
+it is. Options: `--widths 320,640,1280`, `--themes light,dark,monochromacy` (or `all`), `--only
+index,keyboard` (`--list` names the groups), `--review` (axe's "needs review" results), `--json FILE`.
+A full run takes about 45 minutes. The exit status is 1 when anything is reported.
 
 **Releasing the Windows programs:** bump `VERSION`, commit, then `git tag v$(cat VERSION) && git
 push --tags`. `.github/workflows/release.yml` builds JobHuntPA-Setup.exe and JobHuntPA.exe on
