@@ -1536,6 +1536,11 @@ class BrowserAuditRegressionsTest(unittest.TestCase):
             self.assertNotIn("overflow: hidden", line)
         self.assertRegex(self.css, r"\.theme-preview \{[^}]*min-height: 92px")
         self.assertNotRegex(self.css, r"\.tp-card \{[^}]*overflow: hidden")
+        # (the audit's text-spacing check found these: the page part kept its content's height, and the row of
+        # badge, score and button wrapped instead of running out of the narrow box)
+        self.assertRegex(self.css, r"\.tp-page \{ flex: 1 0 auto;")
+        self.assertRegex(self.css, r"\.tp-row \{[^}]*flex-wrap: wrap")
+        self.assertRegex(self.css, r"\.tp-badge, \.tp-score, \.tp-btn \{ overflow-wrap: anywhere; \}")
 
     def test_no_orientation_lock(self):
         """WCAG 1.3.4: nothing may work in one orientation only."""

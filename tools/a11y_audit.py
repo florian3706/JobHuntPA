@@ -338,15 +338,18 @@ REFLOW_JS = r"""() => {
 # no text may be cut off by a box that clips, and the page may not grow sideways. The sheet is added through the CSSOM
 # (a constructed style sheet), which the app's Content-Security-Policy allows, and taken away again.
 SPACING_JS = r"""() => {
+  // How many pixels of text each clipping box hides (a box that clips its children's text counts, not only one with text of its own).
   const clips = () => {
-    const found = new Set();
+    const found = new Map();
     for (const el of document.querySelectorAll('body *')) {
-      if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
+      if (!el.textContent.trim() || el.closest('.visually-hidden')) continue;
       const cs = getComputedStyle(el), r = el.getBoundingClientRect();
-      if (!r.width || !r.height || cs.visibility === 'hidden') continue;
+      // (a box of a pixel or two is a deliberate "visually hidden" clip, not text a reader loses)
+      if (r.width <= 2 || r.height <= 2 || cs.visibility === 'hidden') continue;
       const cut = (v) => v === 'hidden' || v === 'clip';
-      if ((cut(cs.overflowY) && el.scrollHeight > el.clientHeight + 1) || (cut(cs.overflowX) && el.scrollWidth > el.clientWidth + 1)) {
-        found.add(el.tagName.toLowerCase() + (el.id ? '#' + el.id : typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/)[0] : '') + ' "' + el.textContent.trim().slice(0, 30) + '"');
+      const hidden = Math.max(cut(cs.overflowY) ? el.scrollHeight - el.clientHeight : 0, cut(cs.overflowX) ? el.scrollWidth - el.clientWidth : 0);
+      if (hidden > 0) {
+        found.set(el.tagName.toLowerCase() + (el.id ? '#' + el.id : typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/)[0] : '') + ' "' + el.textContent.trim().slice(0, 30) + '"', hidden);
       }
     }
     return found;
@@ -357,7 +360,8 @@ SPACING_JS = r"""() => {
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   const after = clips(), wideAfter = document.documentElement.scrollWidth;
   document.adoptedStyleSheets = document.adoptedStyleSheets.filter((x) => x !== sheet);
-  return { newlyCut: [...after].filter((x) => !before.has(x)).slice(0, 5), widened: wideAfter > innerWidth + 1 && wideAfter > wide ? wideAfter : 0 };
+  return { newlyCut: [...after].filter(([k, px]) => px > (before.get(k) || 0)).map(([k, px]) => k + ' (' + px + 'px more hidden)').slice(0, 5),
+           widened: wideAfter > innerWidth + 1 && wideAfter > wide ? wideAfter : 0 };
 }"""
 
 # Leaflet is served from the local copy when asked for; tiles are a grey square; fonts come from the real thing.
@@ -462,8 +466,9 @@ class Auditor:
         page._expect = []  # (status, url fragment) pairs this state is meant to cause
         page.on("pageerror", lambda e: self.report("pageerror", page, text=str(e)[:300]))
         page.on("console", lambda m: self.on_console(page, m))
+        # (the map cancels tiles it no longer needs when the view changes: ERR_ABORTED on a tile is not a failure)
         page.on("requestfailed", lambda r: self.report("requestfailed", page, text=f"{r.url[:140]} {r.failure}")
-                if "favicon" not in r.url else None)
+                if "favicon" not in r.url and not ("tile.openstreetmap.org" in r.url and r.failure == "net::ERR_ABORTED") else None)
         page.on("response", lambda r: self.on_response(page, r))
         return page
 
@@ -625,6 +630,19 @@ def sc_jobs(a, w, theme):
         a.check(page, "index: Jobs tab, nothing matches")
         page.fill("#filter-search", "")
         settle(page, 400)
+    with a.step("index: ghost-job badges and a Why? list"):
+        if not page.query_selector(".badge.ghost"):
+            raise RuntimeError("no job carries a possible-ghost-job badge (plant_ghost_signs did not take)")
+        a.check(page, "index: Jobs tab, ghost-job badges")
+        for summary in page.query_selector_all("details.ghost-why summary")[:2]:
+            summary.click()
+        settle(page, 300)
+        a.check(page, "index: Jobs tab, Why? lists open")
+        page.check("#filter-hide-ghost")
+        settle(page, 500)
+        a.check(page, "index: Jobs tab, ghost jobs hidden")
+        page.uncheck("#filter-hide-ghost")
+        settle(page, 300)
     with a.step("index: a job selected (bulk bar)"):
         page.check(".job-card:first-of-type input[type=checkbox]")
         page.wait_for_selector("#bulk-bar:not([hidden])")
@@ -747,6 +765,49 @@ def sc_dialogs(a, w, theme):
         page.wait_for_selector("dialog.confirm-dialog [role=alert]:not(:empty)")
         a.check(page, "index: confirm your password dialog, wrong password")
         page.keyboard.press("Escape")
+    ctx.close()
+
+
+@scenario("index")
+def sc_members_only(a, w, theme):
+    """A trial account (payments on, not a member): the notes beside the AI features, on the Documents tab, in the chat,
+    the cover letter and company dialogs, and the job page. (The page is told it is a trial; the server is not.)"""
+    app = a.apps["demo"]
+    ctx = admin_ctx(a, w, theme)
+    page = a.page(ctx, "index: members-only notes")
+    mock(page, "/api/billing/status", {"billing": {"enabled": True, "test_mode": True, "prices": PRICES}, "me": person()})
+    page._expect.append((404, "/api/"))
+    with a.step("index: members-only notes"):
+        page.goto(f"{app.base}/#jobs")
+        page.wait_for_selector(".job-card")
+        page.wait_for_function("() => document.querySelector('#next-scheduled') && !document.querySelector('#next-scheduled').hidden", timeout=30000)
+        settle(page)
+        open_tab(page, "docs")
+        page.wait_for_selector(".ai-note:not([hidden])")
+        a.check(page, "index: Documents tab, members-only note")
+        open_tab(page, "jobs")
+        first = ".job-card:first-of-type"
+        page.click(f'{first} [data-act="letter"]')
+        page.wait_for_selector("#modal[open] .ai-note")
+        settle(page, 400)
+        a.check(page, "index: cover letter dialog, members-only note")
+        page.keyboard.press("Escape")
+        page.click(f'{first} [data-act="company"]')
+        page.wait_for_selector("#modal[open]")
+        settle(page, 600)
+        a.check(page, "index: company dialog, members-only note")
+        page.keyboard.press("Escape")
+        page.click(f'{first} [data-act="chat"]')
+        page.wait_for_selector("#chat-panel .ai-note:not([hidden]), .chat-hint:not([hidden])")
+        settle(page, 400)
+        a.check(page, "index: chat panel, members-only note")
+        page.click("#chat-close")
+    with a.step("job.html: members-only note"):
+        page.goto(f"{app.base}/job.html?id=1&ws={a.fixtures['ws']}")
+        page.wait_for_selector("#job-company dl.profile")
+        page.wait_for_selector("#job-company .ai-note")
+        settle(page, 600)
+        a.check(page, "job.html: members-only note")
     ctx.close()
 
 
@@ -1020,11 +1081,22 @@ def sc_codes_step(a, w, theme):
     app = a.apps["demo"]
     user = a.fixtures["fresh"]
     api = Api(a.pw, app, user["email"], PASSWORD)
-    api.call("POST", "/api/auth/recovery-codes", {})  # new codes are pending
+    api.call("POST", "/api/auth/recovery-codes", {"password": PASSWORD})  # new codes are pending
     ctx = plain_ctx(a, w, theme, login=(user["email"], PASSWORD))
     page = a.page(ctx, "first-run: recovery codes")
     with a.step("first-run: recovery codes"):
         page.goto(f"{app.base}/first-run.html")
+        page.wait_for_selector("#show-step:not([hidden])")  # the codes come back for the password
+        settle(page, 300)
+        a.check(page, "first-run: recovery codes, password asked")
+        page.click("#show-submit")
+        page.wait_for_selector("#error-summary:not([hidden])")
+        a.check(page, "first-run: recovery codes, password missing")
+        page.evaluate("() => { document.querySelector('#show-code-field').hidden = false; }")  # (the field a two-step account gets)
+        a.check(page, "first-run: recovery codes, password and code asked")
+        page.evaluate("() => { document.querySelector('#show-code-field').hidden = true; }")
+        page.fill("#show-password", PASSWORD)
+        page.click("#show-submit")
         page.wait_for_selector("#codes-step:not([hidden])")
         settle(page, 300)
         a.check(page, "first-run: recovery codes step")
@@ -1088,6 +1160,10 @@ def sc_verify(a, w, theme):
     link = a.verify_link()
     with a.step("verify-email: confirmed"):
         page.goto(link)
+        page.wait_for_selector("#verify-ask:not([hidden])")  # opening the link only asks; the button confirms
+        settle(page, 300)
+        a.check(page, "verify-email: asks to confirm")
+        page.click("#verify-confirm")
         page.wait_for_selector("#verify-result:not([hidden])")
         settle(page, 300)
         a.check(page, "verify-email: confirmed")
@@ -1717,6 +1793,32 @@ def kb_job_status(a, w, theme):
 
 
 @scenario("keyboard")
+def kb_ghost_why(a, w, theme):
+    ctx = admin_ctx(a, w, theme)
+    page = dashboard(a, ctx)
+    with a.step("keyboard: a ghost-job Why? list"):
+        card = page.locator(".job-card:has(details.ghost-why)").first
+        summary = card.locator("details.ghost-why summary")
+        summary.scroll_into_view_if_needed()
+        summary.focus()
+        info = expect_focus(a, page, "ghost Why?: the summary takes focus", None)
+        if info and not info["ring"]:
+            key_problem(a, page, "ghost Why?: no visible focus ring on the summary")
+        page.keyboard.press("Enter")
+        if not card.locator("details.ghost-why").evaluate("(d) => d.open"):
+            key_problem(a, page, "ghost Why?: Enter does not open the list")
+        expect_focus(a, page, "ghost Why?: focus stays on the summary after opening", None)
+        a.check(page, "keyboard: a ghost-job Why? list opened with Enter")
+        page.keyboard.press("Space")
+        if card.locator("details.ghost-why").evaluate("(d) => d.open"):
+            key_problem(a, page, "ghost Why?: Space does not close the list")
+        stops = walk(a, page, "ghost Why?: Tab goes on from the summary", limit=3)
+        if any(s is None for s in stops):
+            key_problem(a, page, "ghost Why?: Tab from the summary left the page")
+    ctx.close()
+
+
+@scenario("keyboard")
 def kb_admin(a, w, theme):
     app = a.apps["demo"]
     ctx = admin_ctx(a, w, theme)
@@ -2051,6 +2153,25 @@ def mint_unsubscribe_token(app: App) -> str:
     return out.stdout.strip().splitlines()[-1]
 
 
+def plant_ghost_signs(app: App) -> None:
+    """Ghost-job signs on a few demo jobs, so the Jobs tab and the job page show the badge, the Why? list and the
+    "Is this a real vacancy?" section: one job open for 100 days with evergreen wording in its ad (likely), two open
+    for 50 and 65 days (possible). Written straight to the database while the app is stopped."""
+    code = (
+        "import json\nfrom datetime import datetime, timedelta\nfrom backend import users, ghost\n"
+        "from backend.db import SessionLocal, Job, Posting\nusers.startup()\ndb = SessionLocal()\nnow = datetime.utcnow()\n"
+        "for job_id, days, evergreen in ((1, 100, True), (2, 65, False), (3, 50, False)):\n"
+        "    pid = db.query(Job.posting_id).filter(Job.id == job_id).scalar()\n    p = db.get(Posting, pid) if pid else None\n"
+        "    if p is None:\n        continue\n"
+        "    p.first_seen, p.listed_since, p.last_listed_at, p.closed_at = now - timedelta(days=days), None, now, None\n"
+        "    if evergreen:\n        p.ghost_json = json.dumps({'text': [ghost.signal('evergreen_wording', 3, 'The ad says it is always hiring',\n"
+        "            'Phrases like \"ongoing recruitment\" and \"talent pool\" suggest a standing list, not one vacancy.')]})\n"
+        "db.commit()\n")
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=app.env(), capture_output=True, text=True, timeout=60)
+    if out.returncode:
+        raise RuntimeError(f"could not plant ghost-job signs: {out.stderr[-300:]}")
+
+
 def setup(a: Auditor) -> None:
     """Accounts and settings the scenarios need."""
     demo = a.apps["demo"]
@@ -2072,6 +2193,7 @@ def setup(a: Auditor) -> None:
     # (the key file is locked while the app runs: stop it for a moment, make the token, start it on the same database)
     demo.stop()
     a.fixtures["unsub_token"] = mint_unsubscribe_token(demo)
+    plant_ghost_signs(demo)
     demo.start(fresh=False)
 
 
