@@ -19,15 +19,24 @@ from sqlalchemy.orm import Session
 from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import crypto, migrate_encryption, schedule, tasks, users
+from backend import access, crypto, llm_providers, membership, migrate_encryption, schedule, tasks, users
 from backend.account import router as account_router
+from backend.account_email import router as account_email_router
+from backend.admin import router as admin_router
 from backend.app_settings import router as app_settings_router
+from backend.email_settings import router as email_settings_router
+from backend.password_reset import router as password_reset_router
 from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
 from backend.auth import router as auth_router
+from backend.security import router as security_router
+from backend.background import router as background_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
 from backend.cover_letters import router as cover_letters_router
+from backend.digest import public_router as unsubscribe_router
+from backend.digest import router as digest_router
 from backend.docs import router as docs_router
+from backend.export import router as export_router
 from backend.commute import router as commute_router
 from backend.commute import status_router as commute_status_router
 from backend.duplicates import router as duplicates_router
@@ -47,7 +56,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger(__name__)
 
 # Log hygiene: URLs and queries can hold search terms, place names and (later) tokens.
-for _name in ("httpx", "httpcore"):  # they log every request URL at INFO
+for _name in ("httpx", "httpcore", "httpx2", "httpcore2"):  # they log every request URL at INFO (the anthropic SDK's
+    # client is httpx2)
     logging.getLogger(_name).setLevel(logging.WARNING)
 
 
@@ -115,7 +125,16 @@ app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=5)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(NoStoreApi)
 app.include_router(auth_router)
+app.include_router(security_router)
+app.include_router(password_reset_router)
+app.include_router(account_email_router)
 app.include_router(account_router)
+app.include_router(digest_router)
+app.include_router(unsubscribe_router)  # /unsubscribe: outside /api, so no session (the signed token is the proof)
+app.include_router(export_router)
+app.include_router(membership.router)
+app.include_router(admin_router)
+app.include_router(background_router)
 app.include_router(geo_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)
@@ -124,6 +143,7 @@ app.include_router(sources_router)
 app.include_router(workspaces_router)
 app.include_router(llm_router)
 app.include_router(app_settings_router)
+app.include_router(email_settings_router)
 app.include_router(cover_letters_router)
 app.include_router(duplicates_router)
 app.include_router(chat_router)
@@ -137,6 +157,13 @@ app.include_router(migrate_encryption.router)
 @app.exception_handler(AuthProblem)
 def auth_problem(_request: Request, exc: AuthProblem):
     return exc.response()
+
+
+@app.exception_handler(access.MembershipRequired)
+def membership_required(_request: Request, exc: access.MembershipRequired):
+    """The free searches ran out between the gate's check and the run being queued (backend.membership.charge_search)."""
+    return JSONResponse({"detail": str(exc), "code": "membership_required", "reason": "free_searches_used"},
+                        status_code=402)
 
 
 @app.exception_handler(crypto.KeyMismatch)
@@ -370,7 +397,7 @@ def _score(ws: int, mode: str, progress, office_slack: int = 0) -> dict:
     try:
         return score_jobs(ws, ids, progress)
     except ScorerError as exc:
-        return {"aborted": str(exc)}
+        return {"aborted": llm_providers.user_message(exc)}
 
 
 def start_search_run(ws: int, scheduled: bool = False) -> dict:
@@ -389,11 +416,11 @@ def start_search_run(ws: int, scheduled: bool = False) -> dict:
         summary["scoring"] = {"skipped": config_problem()} if config_problem() else _score(ws, "pending", progress)
         return summary
 
-    return tasks.start("search", job, ws, scheduled=scheduled)
+    return tasks.start("search", job, ws, scheduled=scheduled, charge=membership.charge_search)
 
 
 @app.post("/api/search/run")
-def start_search(ws: int = Depends(current_workspace)):
+def start_search(ws: int = Depends(current_workspace), _gate=Depends(membership.gate(access.SEARCH))):
     return start_search_run(ws)
 
 
@@ -403,7 +430,8 @@ class ScoreRunRequest(BaseModel):
 
 
 @app.post("/api/score/run")
-def start_scoring(payload: ScoreRunRequest, ws: int = Depends(current_workspace)):
+def start_scoring(payload: ScoreRunRequest, ws: int = Depends(current_workspace),
+                  _gate=Depends(membership.gate(access.RESCORE))):
     from backend.scorer import config_problem
 
     if config_problem():
@@ -467,7 +495,7 @@ def scorer_status(office_slack: int = OfficeSlack, db: Session = Depends(get_db)
 
 @app.post("/api/score/{job_id}")
 def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(get_db),
-                 ws: int = Depends(current_workspace)):
+                 ws: int = Depends(current_workspace), _gate=Depends(membership.gate(access.RESCORE))):
     from backend.scorer import ScorerError, build_profile, config_problem, get_config, score_one
 
     cfg = {**get_config("scoring"), "workspace_id": ws}
@@ -478,7 +506,7 @@ def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Dep
     try:
         score_one(job_id, text, phash, cfg)
     except ScorerError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     db.expire_all()
     return get_job(job_id, office_slack, db, ws)
 
@@ -507,7 +535,8 @@ class ResearchRequest(BaseModel):
 
 
 @app.post("/api/companies/research")
-def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace)):
+def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace),
+                   _gate=Depends(membership.gate(access.RESEARCH))):
     from backend.research import companies_to_research, job_context, research_companies
     from backend.scorer import ScorerError, config_problem
 
@@ -527,7 +556,7 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
         try:
             summary = {"research": research_companies(companies, progress)}
         except ScorerError as exc:
-            return {"research": {"aborted": str(exc)}}
+            return {"research": {"aborted": llm_providers.user_message(exc)}}
         if payload.name:  # one company: place its jobs at the offices research found
             from backend.offices import assign_company
 
@@ -540,7 +569,7 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
             try:
                 summary["offices"] = find_offices(ws, payload.job_ids, progress)
             except ScorerError as exc:
-                summary["offices"] = {"aborted": str(exc)}
+                summary["offices"] = {"aborted": llm_providers.user_message(exc)}
         return summary
 
     return tasks.start("research", job, ws)

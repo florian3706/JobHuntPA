@@ -80,6 +80,22 @@ def _sqlite_pragmas(dbapi_conn, _record) -> None:
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def scrub_wal() -> bool:
+    """After deleting a secret (a key copy), empty the write-ahead log: secure_delete only zeroes the main file, and the
+    log keeps the old page image until a checkpoint truncates it. Best effort: a reader open at the same moment can
+    block it, then the log is emptied by a later checkpoint. Call after the commit. True if it was emptied."""
+    try:
+        with engine.connect() as conn:
+            row = conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        done = bool(row) and row[0] == 0  # row[0] is 1 when the checkpoint was blocked
+        if not done:
+            logging.getLogger(__name__).warning("wal checkpoint after deleting a secret was blocked")
+        return done
+    except Exception as exc:  # never fails the change that was already committed
+        logging.getLogger(__name__).warning("wal checkpoint after deleting a secret failed: %s", exc.__class__.__name__)
+        return False
 Base = declarative_base()
 
 
@@ -96,6 +112,10 @@ class Workspace(Base):
     (``owner_id``); a workspace from before accounts has none until the first admin claims it (backend.users)."""
 
     __tablename__ = "workspaces"
+    # An id is never given out twice: a request that resolved a workspace before it was deleted (a password reset that
+    # wiped the data, an account deletion) must not write into the next account's new one.
+    # (_rebuild_workspaces_for_autoincrement does this for a database made without it.)
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(SealedText(), nullable=False)
@@ -254,6 +274,10 @@ class Job(Base):
     # the copy keeps its row so later searches recognise its URL, but only the
     # job it points to is listed, scored and researched.
     duplicate_of = Column(Integer, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    # The search run during which this workspace first got the job (NULL for a link made outside a run, or before
+    # this column): "new since the last digest" (backend.digest). Plain, not a foreign key: a run is never deleted
+    # alone, only with its workspace.
+    first_run_id = Column(Integer, nullable=True)
     # Where the office actually is, when the ad's location is only a city
     # (backend.offices). Its coordinates replace the listing's for the
     # location filter and distance.
@@ -654,6 +678,9 @@ class LlmUsage(Base):
     created_at = Column(DateTime, default=utcnow, index=True)
     # Kept when the workspace is deleted: usage happened all the same.
     workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Whose request it was (the admin panel's usage per user); NULL once the account is deleted. Older rows have
+    # none: the statistics fall back to the workspace's owner.
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     purpose = Column(String, nullable=True)         # scoring | chat | cover_letter | research | concise | summary ...
     provider = Column(String, nullable=True)        # llm_providers.provider_for: openai | anthropic | ...
     model = Column(String, nullable=True)
@@ -692,6 +719,8 @@ class SearchRun(Base):
     summary_json = Column(SealedText(), nullable=True)
     error = Column(SealedText(), nullable=True)
     error_code = Column(String, nullable=True)  # a short code written without any key, e.g. "interrupted"
+    # Queueing this run used one of its owner's free searches (backend.membership gives it back if the run fails).
+    free_search = Column(Boolean, nullable=False, default=False, server_default="0")
     started_at = Column(DateTime, default=utcnow)
     finished_at = Column(DateTime, nullable=True)
 
@@ -706,6 +735,7 @@ class SearchRun(Base):
             "workspace_id": self.workspace_id,
             "kind": self.kind,
             "scheduled": bool(self.scheduled),
+            "free_search": bool(self.free_search),
             "state": self.state,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
@@ -734,6 +764,10 @@ class SearchSchedule(Base):
     skip_holidays = Column(Boolean, nullable=False, default=True, server_default="1")
     state = Column(String, nullable=False, default="NSW", server_default="NSW")  # holidays + time zone
     last_slot = Column(DateTime, nullable=True)     # UTC time of the last slot run or passed over
+    # Why the last slot was passed over, when the person can do something about it (backend.schedule SKIP_TEXT:
+    # "background_off", ...), and which slot. Plain codes: the scheduler writes them with nobody's key.
+    skipped_reason = Column(String, nullable=True)
+    skipped_slot = Column(DateTime, nullable=True)
 
 
 class HttpCache(Base):
@@ -858,6 +892,7 @@ class AuthSession(Base):
     idle_expires_at = Column(DateTime, nullable=False)
     absolute_expires_at = Column(DateTime, nullable=False)
     reauth_at = Column(DateTime, nullable=True)     # the password was last entered (sensitive actions need 15 min)
+    mfa_failures = Column(Integer, nullable=False, default=0, server_default="0")  # wrong codes while pending_mfa (Phase E)
 
 
 class AuthToken(Base):
@@ -912,6 +947,7 @@ class Membership(Base):
     plan = Column(String, nullable=True)
     current_period_end = Column(DateTime, nullable=True)
     cancel_at_period_end = Column(Boolean, nullable=False, default=False, server_default="0")
+    grace_until = Column(DateTime, nullable=True)  # while past_due: access continues until then (access.GRACE)
     stripe_synced_at = Column(DateTime, nullable=True)
     billing_admin = Column(LargeBinary, nullable=True)  # admin details key
     billing_self = Column(LargeBinary, nullable=True)   # the user's DEK
@@ -1077,6 +1113,38 @@ def _rebuild_for_workspaces(table_name: str) -> None:
     log.info("migrated %s to per-workspace uniqueness", table_name)
 
 
+def _rebuild_workspaces_for_autoincrement() -> None:
+    """Replace a workspaces table made without AUTOINCREMENT (SQLite can't add it in place): create-copy-drop-rename
+    with foreign keys off, as ``_rebuild_for_workspaces`` does, so the rows that reference it are untouched. Ids
+    given out before this are not remembered, only the highest one still there."""
+    with engine.connect() as conn:
+        sql = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'").scalar()
+    if not sql or "AUTOINCREMENT" in sql.upper():
+        return
+    table = Base.metadata.tables["workspaces"]
+    old_cols = {c["name"] for c in inspect(engine).get_columns("workspaces")}
+    cols = ", ".join(c.name for c in table.columns if c.name in old_cols)
+    ddl = str(CreateTable(table).compile(engine)).replace("CREATE TABLE workspaces ", "CREATE TABLE workspaces_new ", 1)
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        try:
+            conn.exec_driver_sql("DROP TABLE IF EXISTS workspaces_new")
+            conn.exec_driver_sql(ddl)
+            conn.exec_driver_sql(f"INSERT INTO workspaces_new ({cols}) SELECT {cols} FROM workspaces")
+            conn.exec_driver_sql("DROP TABLE workspaces")
+            conn.exec_driver_sql("ALTER TABLE workspaces_new RENAME TO workspaces")
+            for index in table.indexes:
+                index.create(conn, checkfirst=True)
+            problems = conn.exec_driver_sql("PRAGMA foreign_key_check(workspaces)").fetchall()
+            if problems:
+                conn.rollback()
+                raise RuntimeError(f"workspaces migration failed foreign key check: {problems[:5]}")
+            conn.commit()
+        finally:
+            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+    log.info("migrated workspaces to ids that are never reused")
+
+
 def encryption_done(conn) -> bool:
     """Whether the encryption migration (backend.migrate_encryption) has finished on this database."""
     raw = conn.execute(text("SELECT value_json FROM app_settings WHERE key = 'encryption_migration'")).scalar()
@@ -1137,6 +1205,7 @@ def init_db() -> None:
         with engine.begin() as conn:  # a database from before accounts (only this column: see _rebuild_for_workspaces)
             conn.execute(text("ALTER TABLE workspaces ADD COLUMN owner_id INTEGER"))
         log.info("migrated: added workspaces.owner_id")
+    _rebuild_workspaces_for_autoincrement()
     with engine.begin() as conn:
         # The first workspace, only on a fresh database: the first admin claims it (backend.users). Once there
         # are accounts, every workspace is made by and for one of them.

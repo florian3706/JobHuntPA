@@ -15,6 +15,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from backend import access, llm_providers, membership
 from backend.db import Document, get_db
 from backend.profile import get_profile
 from backend.workspaces import current_workspace
@@ -59,7 +60,8 @@ def _parse(raw: str) -> list[dict]:
 
 
 @router.post("/suggest-titles")
-def suggest_titles(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def suggest_titles(db: Session = Depends(get_db), ws: int = Depends(current_workspace),
+                   _gate=Depends(membership.gate(access.CONCISE_OR_SUMMARY))):
     from backend.scorer import ScorerError, build_profile, call_model, config_problem, get_config
 
     cfg = {**get_config("scoring"), "purpose": "title_suggestions", "workspace_id": ws}
@@ -74,7 +76,7 @@ def suggest_titles(db: Session = Depends(get_db), ws: int = Depends(current_work
     try:
         raw = call_model([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}], cfg)
     except ScorerError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     current_l = {c.lower() for c in current}
     titles = [{**t, "in_search": t["title"].lower() in current_l} for t in _parse(raw)]
     return {"titles": titles, "current_titles": current}

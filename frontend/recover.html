@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Set a new password · JobHuntPA</title>
+  <script>
+    // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
+    (function () {
+      var t = "dark";
+      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <link rel="stylesheet" href="./themes.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="auth-page" data-page="recover">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="app-header auth-header">
+    <div class="header-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span class="brand-text"><span class="brand-name">JobHuntPA</span><span class="subtitle">Personal job-hunt dashboard</span></span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="main auth-main" tabindex="-1">
+    <section class="card auth-card" aria-labelledby="page-title">
+      <h1 id="page-title" tabindex="-1">Set a new password</h1>
+      <p id="auth-status" class="muted" role="status"></p>
+      <div id="error-summary" class="error-summary" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
+        <h2 id="error-summary-title">There is a problem</h2>
+        <ul id="error-summary-list"></ul>
+      </div>
+      <form id="recover-form" class="auth-form" novalidate>
+        <p>Forgot your password? A recovery code sets a new one and <strong>keeps your data</strong>. The code you use is used up.</p>
+        <div class="auth-field">
+          <label for="email">Email address</label>
+          <input id="email" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="none"
+                 spellcheck="false" required />
+        </div>
+        <div class="auth-field">
+          <label for="recovery-code">Recovery code</label>
+          <p id="recovery-hint" class="hint">One of the codes you saved when you made your account. Capitals, spaces and hyphens don't matter.</p>
+          <input id="recovery-code" name="recovery-code" type="text" autocomplete="off" autocapitalize="none"
+                 spellcheck="false" aria-describedby="recovery-hint" required />
+        </div>
+        <div class="auth-field">
+          <label for="password">New password</label>
+          <p id="password-hint" class="hint">At least 10 characters. A few random words work well; a password manager can make and remember one for you.</p>
+          <div class="pw-row">
+            <input id="password" name="password" type="password" autocomplete="new-password" spellcheck="false"
+                   aria-describedby="password-hint" required />
+            <button class="btn pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show password</button>
+          </div>
+        </div>
+        <div id="code-field" class="auth-field" hidden>
+          <label for="code">Code from your authenticator app, or a second recovery code</label>
+          <p id="code-hint" class="hint">Your account uses two-step sign-in, so this needs a second proof. Spaces and hyphens are fine.</p>
+          <input id="code" name="code" type="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false"
+                 aria-describedby="code-hint" />
+        </div>
+        <div class="auth-field">
+          <label class="check"><input id="remember" name="remember" type="checkbox" aria-describedby="remember-hint" /> Keep me signed in</label>
+          <p id="remember-hint" class="hint">On this device, until you sign out or haven't used JobHuntPA for 30 days. Don't tick it on a shared computer.</p>
+        </div>
+        <button id="recover-submit" class="btn btn-primary auth-submit" type="submit">Set new password and sign in</button>
+      </form>
+      <div id="recover-done" class="auth-step" hidden>
+        <p></p>
+        <a id="recover-continue" class="btn btn-primary auth-submit" href="./">Continue to JobHuntPA</a>
+      </div>
+    </section>
+
+    <section class="auth-help" aria-labelledby="help-title">
+      <h2 id="help-title">Trouble signing in?</h2>
+      <ul>
+        <li>Remembered your password? <a href="login.html">Sign in</a> instead.</li>
+        <li>Use the email address your account was made with. Capitals and spaces around it don't matter.</li>
+        <li>Each recovery code works once. After 5 wrong tries in a row, JobHuntPA asks you to wait a little before the next one.</li>
+        <li id="forgot-item" hidden>No recovery code? <button id="forgot-btn" class="btn-link" type="button">Email me a link</button> to the address typed above. If your data is locked, the link asks you to confirm that it will be deleted.
+          <span id="forgot-status" class="muted" role="status"></span></li>
+        <li>No recovery code left? Ask the person who runs this JobHuntPA. Without your password or a recovery code, your encrypted data can't be read by anyone.</li>
+      </ul>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
+
+  <script src="./common.js"></script>
+  <script src="./auth.js"></script>
+  <script src="./forgot.js"></script>
+</body>
+</html>

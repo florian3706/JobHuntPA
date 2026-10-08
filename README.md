@@ -40,9 +40,11 @@ underneath.
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
 **Settings**: the theme, scheduled searches (by themselves at set times on workdays, skipping public
-holidays), your AI provider, model and key, how long the AI thinks for each task, and the commute keys.
+holidays), the AI status with the Rescore buttons, and your account (password, two-step sign-in,
+recovery codes, background access, download your data). The admin sets the AI provider and the
+commute keys in the admin panel.
 
-![The Settings tab: scheduled searches, the AI provider with its model, key and reasoning levels, and the commute API keys](docs/screenshots/settings.png)
+![The Settings tab: scheduled searches, the AI status and the Rescore buttons](docs/screenshots/settings.png)
 
 **Themes**: Dark (above), Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and Everforest
 families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from live
@@ -69,7 +71,7 @@ previews on the Settings tab.
   [Meta](https://dev.meta.ai/) (Muse Spark), Mistral, Groq, xAI (Grok), DeepSeek or OpenRouter, or
   any other service with an OpenAI-compatible API. A model running on your own computer with
   [Ollama](https://ollama.com/) needs no key. Setup lets you pick the provider, then asks for the
-  model and your key; you can change them any time under **Settings > LLM**. Using the model costs
+  model and your key; you can change them any time in the admin panel (Account > Admin > Server). Using the model costs
   money on your provider account. The app still collects and filters jobs without one, but
   scoring, cover letters, title suggestions, chat and company research need it.
 - Company research, finding offices and *Search the web* in chats use the provider's web search,
@@ -146,10 +148,69 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   *Keep me signed in* on your own device to stay signed in for up to 30 days of not using it
   (otherwise 24 hours). **Account > Sign out** at the top right signs this browser out. After 5
   wrong passwords in a row, the next try has to wait 30 seconds, then longer each time, up to 15 minutes.
-- **What only the admin sees:** the AI provider, model, API key and reasoning levels, and the
-  commute API keys, are set by the admin for everyone (Settings tab). Other accounts see whether AI
+- **Two-step sign-in** (Settings > Two-step sign-in): add an authenticator app (any app that makes 6-digit
+  codes) by scanning the QR code, or by typing the setup key if you can't scan. After that, signing
+  in asks for the app's code after your password. A code works once, and a recovery code works instead
+  of the app (each recovery code once; the page says how many are left). Turning it off needs your
+  password and a code.
+- **Forgot your password?** On the sign-in page, *Trouble signing in?* then *I have a recovery code*:
+  enter your email, a recovery code and a new password. **Your data is kept**, because the recovery
+  code unlocks it; every other browser is signed out. With two-step sign-in on, you also enter the
+  app's code or a second recovery code. This works without any email set up.
+- **Forgot your password and have no recovery code?** If an admin has [set up email](#setting-up-email),
+  the sign-in page offers *Email me a link*. Type your address: whether or not an account has it, the
+  page answers the same ("If an account has that address, we've sent a link"), so nobody can use it to
+  find out who has an account. The link works once and lasts 1 hour; only the newest link works. With two-step
+  sign-in on, you also enter the app's code (or a recovery code). What happens to your saved searches
+  depends on **background access** (Settings): **with it on, your data is kept**, because the server can
+  unlock it; **with it off, the data is locked with your old password and can't be unlocked, so the page
+  asks you to tick "I understand my saved data will be deleted"**: your workspaces, jobs, documents and
+  uploads are then deleted and you start again with an empty "My job search" and new recovery codes (your
+  account, membership and sign-in stay). Either way, every other browser is signed out, you are signed
+  in, and you get a "Your password was changed" email. If you have a recovery code, use it instead: it keeps your data.
+- **Your email address** (Settings): once email is set up, a new account gets a link to confirm its address
+  (*Send it again* is on the Settings tab; the link lasts 24 hours). An address an admin invited you at counts as
+  confirmed. **Changing your address** asks for your password, sends a link to the *new* address, and changes
+  nothing until you open it; the old address then gets a notice, and Stripe (if you pay) is told the new address
+  for its receipts. You are also emailed when your password is
+  changed and when an admin turns off your two-step sign-in. These emails never contain your address or any of your data.
+- **Password, recovery codes and sessions** (Settings > Password, Recovery codes and Signed-in devices): change your password (your data
+  stays readable and other browsers are signed out unless you untick that), make 8 new recovery
+  codes (the old ones stop working; with two-step sign-in on you also enter the app's code; you save
+  the new ones the same way as the first set), and *Sign out
+  everywhere else*. Anything sensitive asks you to confirm your password first, if you haven't
+  entered it in the last 15 minutes.
+- **Delete your account** (Settings > Delete account): enter your password and everything of yours is
+  removed: workspaces, jobs, documents and the uploaded files, chats, cover letters, keys and
+  sessions. Job postings and company research that everyone shares stay, because they hold nothing of
+  yours. It can't be undone, and it waits while one of your searches is running. An admin can delete
+  their own account while another admin remains (the admin key is replaced for the others, so the one
+  you held opens nothing new); the last admin can't, because nobody would be left to run JobHuntPA.
+  Make someone else an admin first. The admin panel's **delete their account** removes exactly the same things.
+- **Download your data:** **Settings > Download your data** makes a zip file with everything JobHuntPA
+  keeps for your account, as Markdown files in folders made for people: `Account.md`; for each
+  workspace its search setup, sources, documents (with the original files you uploaded, byte for byte),
+  jobs sorted into folders by your status (each with its fit score, description, cover letter and the
+  other sites that advertised it), jobs the filters left out, your chats and search history; and the
+  company research behind your jobs. Links between the files work offline. It asks for your password
+  again if you haven't entered it in the last 15 minutes, and is made in memory, so nothing is written to
+  disk on the server (an export is refused above 200 MB of files, and the server makes only a couple at
+  a time: try again in a minute). **The zip is not encrypted**: keep it somewhere safe. It holds only your own data
+  (admins can't export other people's), and never your password, recovery codes or keys.
+- **What only the admin sees:** the AI provider, model, API key and reasoning levels, the
+  commute API keys, the [email](#setting-up-email) settings and the [Stripe](#memberships-and-payments-optional)
+  keys are set by the admin for everyone (admin panel, Server). Other accounts see whether AI
   scoring and commute times are available, and everything of their own: workspaces, search setup,
   documents, schedule and theme. Each workspace belongs to one account; nobody else can open it.
+- **Letting other people in (admins):** the admin chooses who can sign up: **by invitation** (the
+  default: the admin makes an invite link, good for 7 days and one sign-up), **open** (anyone with
+  the address) or **closed**. New people get their own account, recovery codes and walkthrough, as
+  above. Admins see each person's email, name, role, last day active (the day only), whether
+  two-step sign-in and background access are on, and their membership, and they can turn accounts
+  off and on, turn off someone's two-step sign-in, give free periods and exempt people from
+  payment, and see the AI usage figures. They **never** see anyone's searches, documents or jobs,
+  and people's email addresses and names are encrypted so that only signed-in admins can open them
+  (the admin key; see below). Every admin action is written to an audit log.
 - **Headless servers and CI:** instead of the first-run page, start JobHuntPA with
   `JOBHUNT_ADMIN_EMAIL` and `JOBHUNT_ADMIN_PASSWORD` in its environment (exported, or in the
   service definition; never in `.env`, which is ignored for these two) and that admin is created
@@ -189,10 +250,161 @@ and an excluded job looks the same as one you kept.
 
 **The limits.** The AI provider sees what it scores, chats about or writes. The running app holds
 your data in memory while you use it. Someone who changes the app's code on the server could capture
-your password when you next sign in. With **background access** (scheduled searches keep running
-while you're signed out; the first account has it on), the server keeps a copy of your key in
-`data/server-keys.json`, so whoever runs the server could read your data with that file. On SSDs and
-SD cards, deleted data may linger in storage the disk manages itself.
+your password when you next sign in. With **[background access](#background-access)** on, whoever
+runs the server could read your data. On SSDs and SD cards, deleted data may linger in storage the
+disk manages itself.
+
+#### Background access
+
+Settings > **Background access** is a switch for your account.
+
+- **Off** (the default for a new account): only you can unlock your data. JobHuntPA can't run
+  searches while you're away, so **scheduled searches are skipped** (the schedule card says so).
+- **On** (the first account has it on): JobHuntPA keeps a key on the server so it can run scheduled
+  searches while you're away. The server's operator could technically read your data.
+
+How it works: turning it on (it asks for your password again if you haven't typed it in the last 15
+minutes) stores a copy of your data key locked with the server's own key, in `data/server-keys.json`.
+Whoever has the database **and** that file can read the data of every account with it on. Turning it
+off deletes that copy at once. The setup walkthrough's *Automatic searches* step turns it on for you
+if you tick it. Back up `data/server-keys.json` with the database.
+
+## Sharing JobHuntPA (admins)
+
+Admins open the **admin panel** from **Account > Admin** (`admin.html`). It never shows anyone's jobs,
+documents or searches. It has five parts:
+
+- **Summary and AI use:** people, admins, how many were active in 7 and 30 days and how many joined
+  in 30 days, and the AI service's use for the last 7 to 365 days: requests, tokens in and out, and
+  how much came from the cache, by model and purpose, by person and by day.
+- **People:** each account's email, name, role, status, last active day and membership. The columns
+  sort (below 640 px wide, each person becomes a card with a "Sort by" menu). Buttons make someone an
+  admin or a regular user, disable or enable them (someone who pays by subscription keeps being charged
+  while they are off and can't cancel it themselves: the panel says so, and *Membership* can end it), **unlock** someone who has to wait after wrong
+  passwords, turn off their two-step sign-in, **delete their account** (with everything in it, their
+  uploaded files included; not your own, not the last admin and not while their search is running; deleting
+  an admin replaces the admin key like demoting does), and open their
+  membership: **exempt from payment**, the number of free searches used, and **free periods**
+  (start, end or number of days, a note only admins see; "End now" keeps the period in the history).
+  *Send reset email* sends them the same one-hour link as "Email me a link" (they choose the password; an
+  admin never sets one). While email isn't set up it says so, and the person can use a recovery code on the
+  sign-in page instead.
+- **Sign-up and invitations:** choose who can create an account: **only with an invitation link** (the
+  default), **anyone** (open sign-up) or **nobody**. An invitation link (`signup.html?invite=…`) is shown
+  once when you make it, works for one sign-up and lasts 7 days. Give an email address to fill in the
+  form for them; the address then counts as verified, and the link is also emailed to that address when
+  email is set up (you can always copy it instead). New people get
+  recovery codes and the setup walkthrough, as on first run. Open sign-up lets anyone who can reach the
+  server use the AI service you pay for, so use it only on a private network.
+- **Server:** the AI provider (provider, model, key, reasoning levels, *Test connection*), the commute
+  keys, which used to be on the Settings tab, [email](#setting-up-email) and the **Payments (Stripe)** card
+  (see [Memberships and payments](#memberships-and-payments-optional)); changes are logged by name, never the value;
+  **Replace the server key**; and the report of
+  **unencrypted copies of data** with *Delete these files now* for the backups and old page cache that
+  the one-time encryption leaves.
+- **Audit log:** every admin action, newest first: what was done, by whom, to whom, and details such as
+  dates or counts (never anyone's content). The details are readable while you hold the current admin key.
+
+### Setting up email
+
+Email is optional and off until an admin sets it up in **Admin > Server > Email**: the mail server
+(*SMTP*), the *From* address, and the **public address** (the web address people use to reach
+JobHuntPA, such as `https://jobs.example.com`; links in emails point to it, and `http` is only
+accepted for `localhost`). While either is missing, everything that needs email is off and says so:
+reset links, address checks, invitations by email and security notices. Nothing else changes.
+
+| Setting | What to enter |
+|---|---|
+| Mail server and port | your provider's SMTP server, e.g. `smtp.gmail.com` and `587` |
+| Encryption | `starttls` (port 587), `ssl` (port 465), or `none`, only for a mail server on this computer |
+| User name and password | the account that sends mail (leave both empty for a local server without a login) |
+| From address | one address, e.g. `jobs@example.com`; the name shown is always "JobHuntPA" |
+| Public address | `https://jobs.example.com`, with no `/` at the end |
+
+*Send a test email* sends a message to your own address and reports how it went.
+
+**The SMTP password.** Gmail shows its app passwords in groups ("abcd efgh ijkl mnop"): paste it as it is,
+because the form removes spaces and tabs, then saves the password in `.env` as `SMTP_PASSWORD_B64` (base64:
+this lets any standard-keyboard character, quotes and `#` included, survive the file). It is never shown
+again, only whether one is set. Changing the mail server asks for the password again, so a saved password
+can't be sent to another server. Saving any of these settings asks for your own password too (if you haven't typed it in the last 15 minutes), because they decide where reset links point. An older hand-written `SMTP_PASSWORD=` line keeps working until you save
+a new password in the form. Email goes out from one background thread, so a slow mail server never slows a page.
+
+To keep messages out of spam, send through your provider's own SMTP server and set up SPF and DKIM for the From address's domain as your provider describes. SPF says which servers may send for your domain, DKIM signs each message, and DMARC tells other mail servers what to do with a message that fails both. Gmail, Outlook and most hosts explain the three DNS records in their help pages. Use *Use this address* next to the public address to fill in the address you are browsing from.
+
+**Roles and the admin details key.** People's emails, names, notes and billing details are encrypted
+so that only admins can open them, with an *admin key* that each admin holds a copy of (sealed to their
+own password). Making someone an admin shares the key with them. Making an admin a regular user
+**replaces the key** and shares the new one only with the admins who remain, so the person who was
+demoted can't open anything new. These actions ask for your password again if you haven't entered it in
+the last 15 minutes. JobHuntPA keeps you from removing the last admin and warns while only one exists:
+with a single admin who loses their password and recovery codes, nobody can read people's details. If
+an admin shows "Admin key not shared with them", use *Share the admin key again* (another admin does
+this). **Recovering when no admin can open the key:** stop JobHuntPA and run
+`python -m backend.keys new-admin-key --email you@example.com`. That person becomes an admin with a new
+key, and everyone's details are sealed to it again as they sign in.
+
+**Rotating the server key.** The server key (`data/server-keys.json`) protects the keys kept for
+background searches and two-step sign-in. *Replace the server key* moves them all to a new one and drops
+the old one; if something can't be moved, the old key is kept and nothing is lost. You can also run
+`python -m backend.keys rotate-kek` with JobHuntPA stopped (these commands refuse while it is running; if
+it isn't, delete `data/running.json`). A running JobHuntPA also won't overwrite a key file that something
+else changed: it stops with "The key file was changed by something else", and a restart picks up the new file.
+
+### Job digest emails
+
+A digest is one email with the new jobs your scheduled searches found, best fit first. Each job shows its
+title, company, pay, where and how it is worked, a short summary, your fit score and a link to the
+original posting. Up to 60 jobs are shown; the email says how many more there are.
+
+- **When:** around 07:00 in your search schedule's time zone (New South Wales if you have none), every
+  1 to 7 days as you choose. Nothing is sent when there are no new jobs.
+- **What it needs:** email set up by an admin, a confirmed address, Background access on (the server
+  has to open your jobs without you), and, when memberships are on, a membership for scheduled searches.
+  Settings > **Job digest emails** lists what is missing and links to where you fix it.
+- **Turning it on or off:** use the switch in Settings, or tick it in the setup walkthrough's *Automatic
+  searches* step. Every digest ends with an **Unsubscribe** link that opens a page with one button; it
+  needs no sign-in and changes nothing until you press it. Right after you unsubscribe, the page offers
+  *Subscribe again* for an hour; later, turn it back on in Settings. Mail programs that offer an
+  "Unsubscribe" button work too.
+
+### Memberships and payments (optional)
+
+By default everyone who signs in has full access. To charge for it, an admin connects Stripe:
+
+1. In the Stripe dashboard (**Developers > API keys**), copy the secret key: `sk_test_...` for test mode
+   (no real money) or `sk_live_...` for real payments.
+2. Create a product with a monthly price and give the price the **lookup key** `jobhunt_monthly` (an
+   optional yearly price uses `jobhunt_yearly`). Prices are found by these keys, so moving from test to
+   live needs no other change.
+3. Paste the key into the **Payments (Stripe)** card in the admin panel's Server section (it asks for your
+   password). The card shows whether the key and webhook secret are set, test or live, and the prices it
+   found; **Sync now** asks Stripe again. Memberships switch on as soon as the price is found; with no key, or no price, nobody is limited. A *Test mode* badge shows while a test key is in use.
+4. Optional: once Stripe can reach this server, add a webhook endpoint for
+   `https://your-address/api/billing/webhook` and paste its signing secret. Without it, JobHuntPA checks
+   Stripe when people come back from checkout, when they open the membership page, and every 6 hours.
+   To try webhooks on your own computer with the [Stripe CLI](https://docs.stripe.com/stripe-cli), run
+   `stripe listen --forward-to http://127.0.0.1:8000/api/billing/webhook`: it prints a `whsec_...` secret to
+   paste in the card. Until a secret is saved, the webhook address answers 404.
+
+What people get: admins need no membership. Everyone else has **3 free searches** (change the number in
+the Sign-up section), then jobs they already found stay visible but new searches, rescoring, chat, cover
+letters, research, "Fill missing info", concise versions, summaries and title suggestions wait for a
+membership. **Scheduled searches** need a membership and background access (free searches are for
+*Run search* only). A free search is used when a search is queued and given back if the run fails or is
+interrupted. A membership comes from a Stripe subscription, a **free period** an admin adds, or an admin
+exempting the person. A free period for someone who already pays also moves their next payment to its end;
+ending or shortening it bills them again from then.
+Exempting someone who pays can also end their subscription when the period they paid for is over
+(only if you choose it). Card numbers never reach JobHuntPA: admins see the card brand and last four digits,
+the plan and the price. Deleting an account cancels the person's subscription first.
+
+**For members and people on free searches:** open **Account > Membership**. The page shows whether you are
+a member and why, how many free searches are left, your plan, and when it renews or ends. **Become a member**
+takes you to Stripe's payment page and brings you back with a clear message that the payment worked (or that
+nothing was charged if you cancelled). **Manage payment and plan** opens Stripe's page to change your card or
+plan, see invoices, or cancel at the end of the period. The Jobs tab says when **Run search** uses one of your
+free searches. Without a membership your jobs, notes, documents and settings stay available.
 
 ## Using it
 
@@ -207,6 +419,10 @@ can live in their own **workspaces** (switcher at the top right).
   off, per workspace. Pick your state: it sets which public holidays apply and the time zone of the
   times. Searches only run while JobHuntPA is running; a search missed because it was closed runs
   if you start it within the hour. Each run scores the new jobs it finds, like **Run search**.
+  **Scheduled searches need [background access](#background-access)** (Settings > Background
+  access): your jobs are encrypted, so while you're signed out the server can only search for you if
+  it holds a key. Without it each slot is skipped, and the schedule card says "Scheduled search
+  skipped: background access is off".
 - **Tracking and tidying**: set each job's status (to review, shortlisted, applied, interviewing,
   rejected, not interested). Tick jobs, or filter the list and tick **Select all shown**, to change
   status or **Hide** them in bulk (only jobs on screen are ever affected); hidden jobs stay hidden when a search finds them again, aren't scored or
@@ -316,7 +532,7 @@ can live in their own **workspaces** (switcher at the top right).
   contrast minimums it is a little lighter or darker in the same hue (themes.css lists each change).
   Labels, marks or shapes always accompany colours, so nothing relies on colour alone. See
   [Accessibility](#accessibility).
-- **Reasoning level** (Settings > LLM): how long the AI thinks, set separately for scoring,
+- **Reasoning level** (admin panel > Server): how long the AI thinks, set separately for scoring,
   cover letters, company research and job chat. *Detect supported levels* shows what your model accepts.
 
 ## Adding company careers pages
@@ -393,9 +609,10 @@ the admin's key:
 3. It checks that nothing is left unencrypted, then rebuilds the database file so the old
    unencrypted pages are gone.
 
-Afterwards the dashboard lists the files that still hold your data unencrypted (that backup, older
-`data/jobhunt.db.bak-*` backups and the `data/cache` pages of an earlier version) with **Delete them
-now (recommended)**, until they're gone. Keep the backup only if you might go back to an older
+Afterwards the dashboard shows admins a notice that links to the admin panel's **Server** section.
+Its "Unencrypted copies of data" part lists the files that still hold your data unencrypted (that
+backup, older `data/jobhunt.db.bak-*` backups and the `data/cache` pages of an earlier version) with
+**Delete these files now**, which asks for your password, until they're gone. Keep the backup only if you might go back to an older
 version: **older versions can't read the encrypted database**. To go back, stop JobHuntPA, install
 the older version, and replace `data/jobhunt.db` with the backup (delete `data/jobhunt.db-wal` and
 `data/jobhunt.db-shm` too); anything you did since the update is lost.
@@ -409,7 +626,7 @@ show as closed.
 
 ## Changing your AI provider or key
 
-Only the admin account can see or change these; they apply to everyone. Open **Settings > LLM**: pick the provider (it fills in the API address and suggests models),
+Only the admin account can see or change these; they apply to everyone. Open the **admin panel** (Account > Admin), **Server > AI provider**: pick the provider (it fills in the API address and suggests models),
 choose the model, paste your key and click **Save**. It takes effect straight away; click
 **Detect supported levels** afterwards, as each model offers different reasoning levels, and
 **Test connection** to check the key. The key is saved in the `.env` file in the app folder and
@@ -421,8 +638,7 @@ edit `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` in `.env` and restart the app
 
 ## Commute times (optional)
 
-The commute on each job's page uses two free services. The admin adds their keys under **Settings > API keys
-for commute times** (they work straight away for everyone; **Test saved keys** checks them), or when setup
+The commute on each job's page uses two free services. The admin adds their keys in the admin panel under **Server > Commute data** (they work straight away for everyone; **Test saved keys** checks them), or when setup
 asks, or in `.env` followed by a restart:
 
 - `TFNSW_API_KEY`: public transport in NSW. Sign up at https://opendata.transport.nsw.gov.au,
@@ -458,9 +674,50 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **The first-run page says the setup code isn't right:** close JobHuntPA and start it again; it
   prints a fresh link, and the code is in `data/first-run.txt`. The code only works until the first
   account exists; after that, sign in instead.
-- **Forgotten password:** keep your recovery codes: a coming version uses them to set a new password
-  and keep your data. Without your password or a recovery code, your encrypted data can't be read,
-  by you, the admin or anyone else.
+- **Forgotten password:** on the sign-in page choose *Trouble signing in?* and use a recovery code to set
+  a new password and keep your data. Without your password or a recovery code, your encrypted data
+  can't be read, by you, the admin or anyone else.
+- **"Email isn't set up on this JobHuntPA yet":** an admin sets it up in **Admin > Server > Email**: the mail
+  server, the From address and the public address. Until then, use a recovery code on the sign-in page.
+- **No "Email me a link" on the sign-in page:** it shows only once email is set up (see above).
+- **The test email fails** ("The mail server refused it" and a name such as `SMTPAuthenticationError`): check the
+  server, port and encryption (587 with STARTTLS, or 465 with SSL), the user name and the password. Gmail and
+  many others need an *app password*, not your usual one. Nothing else is shown, so no password or address
+  leaks into a log; the JobHuntPA window names the kind of failure.
+- **The reset or confirmation email never arrives:** look in spam, and check the From address's SPF and DKIM
+  records. Asking again many times in a row is limited (3 an hour per address); the page answers the same either
+  way. A link works once and for 1 hour (confirmation links: 24 hours); only the newest link works.
+- **The reset page says the link has expired or was already used:** ask for a new one on the sign-in page. It
+  can't say which, so nobody can use it to find out who has an account.
+- **No job digest arrives:** open Settings > **Job digest emails**. If something is missing it is listed there
+  (email not set up, address not confirmed, Background access off, no membership). Otherwise check that the
+  switch is on, that scheduled searches have run since you turned it on (only jobs found after that are
+  sent), that it is past 07:00 on a day it is due, and the spam folder. If the mail server fails, JobHuntPA
+  tries again a few minutes later.
+- **The reset page says my data will be deleted:** background access is off for that account, so the saved data
+  is locked with the old password. A recovery code keeps it (*I have a recovery code*); otherwise tick the box
+  to start again with an empty account.
+- **Memberships don't switch on:** Stripe has no active price with the right lookup key. In the Stripe
+  dashboard check that the price's **lookup key** is `jobhunt_monthly` (or the one set in the Payments (Stripe)
+  card) and that you are in the same mode (test or live) as the key you pasted, then press **Sync now** in the card.
+- **"You have used your free searches" (or "Scheduled searches need a membership") although I paid:** open
+  **Account > Membership**. It asks Stripe again and updates your status; if you paid a moment ago and it still
+  says no, wait a minute and reload.
+- **"Download your data" is refused:** over 200 MB the zip is too big to make in one go (delete uploaded files you
+  no longer need), "other exports are being made" means try again in a minute, and "still being made" means your
+  last request hasn't finished: wait for it.
+- **Lost your authenticator app:** sign in with a recovery code instead of the app's code, then turn
+  two-step sign-in off and on again in Settings > Two-step sign-in.
+- **The last admin lost their password and every recovery code:** people can still sign in, but
+  admins can't read names and email addresses any more ("Details unavailable until this person
+  signs in"). Stop JobHuntPA and run `python -m backend.keys new-admin-key --email you@example.com`
+  (in the app folder, with the app's Python: `.venv/bin/python` on macOS and Linux). That account
+  becomes an admin with a new admin key; everyone's details are re-sealed to it when they next
+  sign in (at once for people with background access).
+- **Changing the server key:** the admin panel's *Replace the server key* button (Server) (it asks for your
+  password again), or with JobHuntPA stopped, `python -m backend.keys rotate-kek`. The server key
+  opens background-access keys and two-step secrets; rotating it is safe to interrupt, and the next
+  start finishes it.
 - **"JobHuntPA is waiting for its admin to sign in, to finish encrypting the data":** the one-time
   encryption after an update needs the first admin's password; it carries on when they sign in.
 - **"Encrypting your data stopped (...)":** JobHuntPA tries again a minute later and whenever the
@@ -469,6 +726,17 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **JobHuntPA stops at start-up with "Restore data/server-keys.json from your backup":** the key file
   is missing or isn't the one that belongs to this database. Put back the `data/server-keys.json`
   from the same backup as the database. A new key file is never made while accounts exist.
+- **The key file is lost and there is no backup:** nobody can sign in, because email addresses are
+  found through that file. With JobHuntPA stopped (the command refuses while it is running), an active
+  admin can make a new one: run
+  `.venv/bin/python -m backend.keys recover-lost --admin-email you@example.com` (on Windows,
+  `.venv\Scripts\python -m backend.keys ...`) from the JobHuntPA folder and type that admin's
+  password when asked. It writes a new `data/server-keys.json` and works out every account's email
+  lookup again, so everyone signs in as before and **keeps their data**. What everyone must then
+  redo: **turn background access on again** (Settings > Background access; until then scheduled
+  searches are skipped) and, if they used it, **set up two-step sign-in again**. If it says some
+  accounts "could not be worked out", those accounts can't sign in until the original key file is
+  back. Then back up the new file with the database.
 - **Some company sites return no jobs:** they may block automated access or need the browser
   component; setup's step 3 installs it. On Linux you can fix a failed browser install with
   `.venv/bin/python -m playwright install --with-deps chromium`.
@@ -496,10 +764,11 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 - **Motion:** with *reduce motion* set on the device, spinners, progress bars and map animations
   stop.
 
-**How it was tested** (October 2026): [axe-core](https://github.com/dequelabs/axe-core) 4.13 with
+**How it was tested** (October 2026; the account cards, admin panel, sign-up and recover pages have
+only the automated checks in `tests/test_accessibility.py`, not this run): [axe-core](https://github.com/dequelabs/axe-core) 4.13 with
 the WCAG 2.0, 2.1 and 2.2 A and AA rules plus best practices, in headless Chromium (Playwright),
-on 19 screens and states (every tab, every dialog, the chat, the job page, the map in both modes,
-loading, empty and error states) at 320, 375, 768 and 1280 px wide: no violations. Its colour
+on 19 screens and states of the dashboard and job page (every tab, every dialog, the chat, the map
+in both modes, loading, empty and error states) at 320, 375, 768 and 1280 px wide: no violations. Its colour
 contrast rule ran on 12 of those screens in all 28 themes: no violations. Scripts also pressed Tab
 through every page (a visible focus ring on every stop, none hidden, no traps), drove the dialogs,
 the chat, the tabs, the theme picker and the map by keyboard, measured touch targets (24 px or more,
@@ -544,8 +813,36 @@ environment (not `.env`) create the first admin at start-up, which is how CI sig
 database, `.env` and key file, with `JOBHUNT_TESTING=1` and the fast `JOBHUNT_KDF_PROFILE=test`
 (tests/__init__.py); `tests/helpers.py` gives signed-in clients (`with helpers.client() as c:`),
 other accounts (`helpers.make_user()`) and the admin's key scope (`helpers.as_admin()`). Code and the
-design notes: `backend/users.py` (accounts, first run), `backend/sessions.py` (sessions, CSRF, the
-checks on every request), `backend/auth.py` (the endpoints), `docs/design/accounts.md`.
+design notes: `backend/users.py` (accounts, first run, deleting an account), `backend/sessions.py`
+(sessions, CSRF, the checks on every request), `backend/auth.py` (signing in, sign-up, the two-step code,
+resetting with a recovery code), `backend/security.py` (password, two-step setup, recovery codes, other
+sessions), `backend/totp.py` (authenticator codes), `backend/admin.py` (the admin panel's API) with
+`backend/admin_key.py` (the admin key: grants, replacing it, healing details), `backend/signup.py` and
+`backend/tokens.py` (sign-up modes and invitations), `backend/key_rotation.py` (the server key),
+`backend/background.py` (background access), `backend/key_recovery.py` (the `recover-lost` command),
+`backend/export.py` (data export), `backend/account.py` (preferences, the walkthrough step, deleting
+an account), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
+`new-admin-key` and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
+(account cards), `account-email.js` and `email-settings.js` (email address and server settings), `background.js`,
+`export.js`, `admin.js`, `server-settings.js` and `stripe-settings.js` (the admin panel), `dialogs.js` (its
+dialogs), `signup.js`, `forgot.js`, `reset-password.js` and `verify-email.js` (the link pages), `billing.js`
+(`billing.html`, Account > Membership) and `free-searches.js` (the Jobs tab's free-search note).
+
+**Email** (design §9, §16): `backend/mailer.py` (SMTP, never logs an address) and `backend/email_templates.py`
+(HTML and text parts); `backend/mail_queue.py` sends from one background thread and says whether email is on
+(`enabled`: SMTP and the public address are set); `backend/email_settings.py` (the admin's settings and test
+email, `/api/settings/email`), `backend/account_email.py` (address checks, changing the address, security
+notices), `backend/password_reset.py` (forgot, reset). Links that give access carry the token in the URL fragment
+(`reset-password.html#token=…`, `verify-email.html#token=…`). Tests mock SMTP with `mailer.capture()` and wait for the
+thread with `mail_queue.drain()` (`tests/mail_helpers.py`). `backend/schedule.py`'s loop also clears expired
+sessions and links every 10 minutes (`auth.cleanup_tick`; off with `JOBHUNT_SCHEDULER=off`).
+
+**Memberships** (design §8): `backend/access.py` (pure decisions: who has access and why, no database or
+network), `backend/billing.py` (the only module that talks to Stripe, through the official SDK),
+`backend/membership.py` (the gate every paid endpoint depends on, free searches, `/api/billing/*` and the webhook).
+`backend/schedule.py` also syncs subscriptions with Stripe every 6 hours. Stripe is mocked in tests by patching
+`backend.billing._client` with a `MagicMock` (`tests/test_membership.py`, `tests/test_billing.py` show the shapes
+Stripe answers with); nothing in the tests reaches the network.
 
 **Encrypted columns** (`backend/crypto.py`, `docs/design/accounts.md` §2): personal columns use the
 `Sealed*` types, which encrypt under the key of the request's account (or the background run's). The
@@ -589,7 +886,9 @@ tag, so the tag must exist on GitHub.
 `Run search` starts a background run (`backend/tasks.py`); the page polls its progress.
 `backend/schedule.py` starts the same run at each workspace's scheduled times (public holidays
 from the `holidays` package); runs never overlap, so a due search waits up to an hour for a
-busy one.
+busy one. A workspace's slot runs under its owner's key (`users.background_key`, the data key
+unwrapped with the server key) and is skipped, with a reason recorded for the schedule card, when
+the owner hasn't turned on background access or the account is turned off.
 
 1. **Listing** (`backend/adapters/`): SEEK search pages, then each enabled company source. A
    source URL is resolved in order: an APSJobs search URL (`apsjobs.py`); a known ATS board

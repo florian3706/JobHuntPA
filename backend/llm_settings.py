@@ -26,10 +26,11 @@ from typing import Any, Optional
 import httpx  # noqa: F401  (tests patch llm_settings.httpx; the probes are sent by backend/llm_providers.py)
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-from backend import llm_providers
-from backend.db import AppSetting, SessionLocal
-from backend.sessions import require_admin
+from backend import admin_key, llm_providers
+from backend.db import AppSetting, SessionLocal, get_db
+from backend.sessions import AuthUser, require_admin
 
 log = logging.getLogger(__name__)
 
@@ -155,8 +156,10 @@ class ReasoningUpdate(BaseModel):
 
 
 @router.put("/reasoning")
-def update_reasoning(payload: ReasoningUpdate):
+def update_reasoning(payload: ReasoningUpdate, admin: AuthUser = Depends(require_admin),
+                     db: Session = Depends(get_db)):
     current = task_levels()
+    changed = {}
     for task in TASKS:
         value = getattr(payload, task)
         if value is None:
@@ -164,5 +167,7 @@ def update_reasoning(payload: ReasoningUpdate):
         if value and value not in ALL_LEVELS:
             raise HTTPException(status_code=422, detail=f"Unknown reasoning level {value!r}")
         current[task] = value
+        changed[f"reasoning_{task}"] = bool(value)
     _set("reasoning", current)
+    admin_key.audit_settings(db, admin.id, changed)
     return _state()

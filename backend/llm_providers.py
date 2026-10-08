@@ -61,11 +61,43 @@ COUNTRY = "AU"  # where web searches are located (the app targets Australian job
 
 class ScorerError(Exception):
     """An LLM call failed. ``auth`` marks failures that retrying other requests cannot fix (key rejected,
-    nothing configured): batch runs stop at the first one."""
+    nothing configured): batch runs stop at the first one. ``str(exc)`` is the full detail (the provider's address,
+    its answer): it is for admins and logs only; whatever reaches a person goes through ``user_message``."""
 
     def __init__(self, message: str, *, auth: bool = False):
         super().__init__(message)
         self.auth = auth
+
+
+# What an ordinary user is told about an AI problem: never the provider's address, its answer or how it is set up
+# (accounts design §14.8). Admins keep the detail.
+USER_PROBLEM = "The AI service had a problem; your admin can see details."
+USER_NOT_SET_UP = "AI features aren't set up yet. Ask your admin."
+
+
+def viewer_is_admin() -> bool:
+    """Whether the person this request or run acts for (the key scope's user) is an admin. Fails closed: no key
+    scope, an unknown user or any trouble reading the account means no."""
+    try:
+        from backend import crypto
+        from backend.db import SessionLocal, User  # here, so the installer can import this module
+
+        if not crypto.has_scope():
+            return False
+        db = SessionLocal()
+        try:
+            row = db.query(User.role).filter(User.id == crypto.current().user_id).first()
+        finally:
+            db.close()
+        return bool(row and row[0] == "admin")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def user_message(detail: Any) -> str:
+    """``detail`` (an exception or text from an LLM call) as the person who will read it may see it: an admin gets
+    it as it is, anyone else a plain sentence with none of the provider's address or setup."""
+    return str(detail) if viewer_is_admin() else USER_PROBLEM
 
 
 # --------------------------------------------------------------------------
@@ -221,9 +253,11 @@ def web_search_problem(cfg: dict, feature: str = "Web search") -> Optional[str]:
     provider = provider_for(cfg.get("base_url", ""))
     if _SEARCH[provider] is not None:
         return None
+    if not viewer_is_admin():  # who offers search, and where it is chosen, is the admin's business
+        return f"{feature} needs web search, which this app's AI service doesn't offer. Your admin can see details."
     ok = ", ".join(p["label"] for p in PRESETS if p["web_search"] and p["id"] != "custom")
     return (f"{feature} needs web search, which {_BY_ID[provider]['label']} doesn't offer through this app. "
-            f"Choose one of {ok} in Settings > LLM to use it; everything else works with "
+            f"Choose one of {ok} in the admin panel (Server, AI provider) to use it; everything else works with "
             f"{_BY_ID[provider]['label']}.")
 
 
@@ -504,6 +538,20 @@ def usage_from_gemini(data: Any) -> dict:
             "cached_tokens": as_int(field(meta, "cachedContentTokenCount")), "cache_write_tokens": None}
 
 
+def _usage_user(db, workspace_id: Optional[int]) -> Optional[int]:
+    """Whose request this was, for ``llm_usage.user_id``: the user of the key scope the call runs in, else the
+    workspace's owner. None when neither is known (or the account has gone)."""
+    from backend import crypto
+    from backend.db import User, Workspace
+
+    user_id = crypto.current().user_id if crypto.has_scope() else None
+    if user_id is None and workspace_id is not None:
+        user_id = db.query(Workspace.owner_id).filter(Workspace.id == workspace_id).scalar()
+    if user_id is None or db.query(User.id).filter(User.id == user_id).first() is None:
+        return None
+    return user_id
+
+
 def record_usage(cfg: dict, usage: Optional[dict] = None, *, model: Optional[str] = None) -> None:
     """Store one answered request's token usage. Never raises: missing usage fields are stored as empty, and a
     failure to store is only logged, so a request never fails because of its statistics."""
@@ -514,8 +562,10 @@ def record_usage(cfg: dict, usage: Optional[dict] = None, *, model: Optional[str
                   ("input_tokens", "output_tokens", "cached_tokens", "cache_write_tokens")}
         db = SessionLocal()
         try:
-            db.add(LlmUsage(workspace_id=as_int(cfg.get("workspace_id")), purpose=cfg.get("purpose") or None,
-                            provider=provider_for(cfg.get("base_url", "")), model=model or cfg.get("model"), **counts))
+            workspace_id = as_int(cfg.get("workspace_id"))
+            db.add(LlmUsage(workspace_id=workspace_id, user_id=_usage_user(db, workspace_id),
+                            purpose=cfg.get("purpose") or None, provider=provider_for(cfg.get("base_url", "")),
+                            model=model or cfg.get("model"), **counts))
             db.commit()
         finally:
             db.close()

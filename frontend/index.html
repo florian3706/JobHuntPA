@@ -44,6 +44,7 @@
             <div id="account-panel" class="account-panel" hidden>
               <p class="account-who">Signed in as <strong id="account-email"></strong> <span id="account-role" class="scope-tag" hidden></span></p>
               <ul class="account-links">
+                <li><a href="billing.html">Membership</a></li>
                 <li id="account-admin" hidden><a href="admin.html">Admin</a></li>
                 <li><button id="account-signout" class="btn btn-sm" type="button">Sign out</button></li>
               </ul>
@@ -67,12 +68,13 @@
       <h2 class="visually-hidden">Jobs</h2>
       <div class="card run-card">
         <div class="toolbar-row">
-          <button id="search-run" class="btn btn-primary" type="button">Run search</button>
+          <button id="search-run" class="btn btn-primary" type="button" aria-describedby="free-search-note">Run search</button>
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
           <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
           <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
           <span id="run-status" class="muted" role="status"></span>
         </div>
+        <p id="free-search-note" class="hint" role="status" hidden></p>
         <div id="next-scheduled" class="muted" hidden></div>
         <div id="run-progress" class="progress" role="progressbar" aria-label="Progress of the run" aria-valuemin="0" aria-valuemax="100" hidden><div class="progress-bar"></div></div>
         <details id="run-report" class="run-report" hidden>
@@ -410,7 +412,8 @@
           <span id="sched-save-status" class="muted" role="status"></span>
         </div>
         <p class="hint">JobHuntPA runs this search by itself at set times while it is running; a search missed because it was closed runs if you start it within the hour.
-          Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.</p>
+          Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.
+          Scheduled searches need <strong>background access</strong> (the card further down this tab); without it they are skipped.</p>
         <label class="check sched-enable"><input type="checkbox" id="sched-enabled" /> Run searches automatically</label>
         <div class="form-grid">
           <div class="form-group">
@@ -444,94 +447,41 @@
       </div>
 
       <div class="card form-card">
-        <h3>LLM (scoring, cover letters, company research and job chat) <span class="scope-tag" data-admin-only hidden>All workspaces</span></h3>
+        <h3>AI (scoring, cover letters, company research and job chat)</h3>
         <div id="scorer-info" class="muted"></div>
-        <p class="hint" data-user-only hidden>The AI provider and model are chosen by the admin of this JobHuntPA, for everyone who uses it.
+        <p class="hint">The AI provider, model and keys are set by the admin of this JobHuntPA, for everyone who uses it<span data-admin-only hidden>:
+          open <a href="admin.html#server">the admin panel, Server</a></span>.
           The buttons below rescore this workspace's jobs.</p>
-        <form id="llm-form" class="llm-form" autocomplete="off" novalidate data-admin-only hidden>
-          <h4>Provider, model and API key</h4>
-          <div class="form-grid">
-            <label class="field"><span class="field-label">Provider</span><select id="llm-provider"></select></label>
-            <label class="field"><span class="field-label">Model</span>
-              <input id="llm-model" type="text" list="llm-models" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Model name" required /></label>
-            <label class="field"><span class="field-label">API address</span>
-              <input id="llm-base-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://api.example.com/v1" required /></label>
-            <div class="field">
-              <label class="field-label" for="llm-key">API key</label>
-              <input id="llm-key" type="password" autocomplete="new-password" spellcheck="false"
-                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
-              <div id="llm-key-state" class="key-state"></div>
-            </div>
-          </div>
-          <datalist id="llm-models"></datalist>
-          <p id="llm-note" class="hint"></p>
-          <p id="llm-key-hint" class="hint warn-text" hidden></p>
-          <div id="llm-web-notice" class="callout" role="note" hidden></div>
-          <div id="llm-error" class="error" role="alert" hidden></div>
-          <div class="toolbar-row">
-            <button id="llm-save" class="btn btn-primary" type="submit">Save</button>
-            <span id="llm-save-status" class="muted" role="status"></span>
-          </div>
-        </form>
-        <div class="reasoning-settings" data-admin-only hidden>
-          <h4>Reasoning level</h4>
-          <p class="hint">Higher levels think longer: usually better results, but slower and more expensive.
-            The choices are the levels your model accepts; use <strong>Detect</strong> after changing model.</p>
-          <div class="form-grid">
-            <label class="field"><span class="field-label">Fit scoring</span><select data-task="scoring"></select></label>
-            <label class="field"><span class="field-label">Cover letters</span><select data-task="cover_letter"></select></label>
-            <label class="field"><span class="field-label">Company research</span><select data-task="research"></select></label>
-            <label class="field"><span class="field-label">Job chat</span><select data-task="chat"></select></label>
-          </div>
-          <div class="toolbar-row">
-            <button id="detect-levels" class="btn btn-sm" type="button">Detect supported levels</button>
-            <span id="levels-status" class="muted" role="status"></span>
-          </div>
-        </div>
         <div class="toolbar-row llm-actions">
-          <button id="score-test" class="btn" type="button" data-admin-only hidden>Test connection</button>
           <button id="score-stale" class="btn" type="button" title="Also rescore this workspace's jobs that were scored before your documents changed">Rescore stale</button>
           <button id="score-all" class="btn btn-ghost" type="button" title="Rescore every job in this workspace">Rescore all</button>
-          <span id="score-test-status" class="muted" role="status"></span>
         </div>
       </div>
 
-      <div id="commute-keys-card" class="card form-card" data-admin-only hidden>
-        <h3>API keys for commute times <span class="scope-tag">All workspaces</span></h3>
-        <p class="hint">Both keys are optional and free. They are saved in the <code>.env</code> file on this computer and work straight away,
-          with no restart. A saved key is never shown again in full, only its last few characters. Where the commute starts and when it
-          arrives is set under Search setup &gt; Commute.</p>
-        <div class="form-grid">
-          <form class="form-group key-field" data-key="tfnsw" autocomplete="off" novalidate>
-            <label for="key-tfnsw">Transport for NSW key (public transport times)</label>
-            <div class="key-state"></div>
-            <div class="key-row">
-              <input id="key-tfnsw" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
-                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
-              <button class="btn btn-primary btn-sm key-save" type="submit">Save</button>
-              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear</button>
-            </div>
-            <small class="hint">Free: sign up at <a href="https://opendata.transport.nsw.gov.au" target="_blank" rel="noopener">opendata.transport.nsw.gov.au</a>,
-              create an application, and copy its API key. Without it the job page shows driving only.</small>
-          </form>
-          <form class="form-group key-field" data-key="tomtom" autocomplete="off" novalidate>
-            <label for="key-tomtom">TomTom key (driving with peak traffic)</label>
-            <div class="key-state"></div>
-            <div class="key-row">
-              <input id="key-tomtom" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
-                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
-              <button class="btn btn-primary btn-sm key-save" type="submit">Save</button>
-              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear</button>
-            </div>
-            <small class="hint">Free: sign up at <a href="https://developer.tomtom.com" target="_blank" rel="noopener">developer.tomtom.com</a>
-              and copy the default key. Without it, driving times come from OSRM's public server and ignore traffic (the job page says so).</small>
-          </form>
-        </div>
-        <div class="toolbar-row key-test">
-          <button id="keys-test" class="btn btn-sm" type="button" title="Makes one small real request to each service with the saved key">Test saved keys</button>
-          <span id="keys-test-status" class="muted" role="status"></span>
+      <!-- Account cards (accounts design §6): they apply to the signed-in account, in every workspace. Each feature
+           fills its own slot, so the pieces stay apart. -->
+      <div id="account-security-slot"></div><!-- password, two-step sign-in, recovery codes, sign out everywhere -->
+      <div id="account-address-slot"></div><!-- your email address (frontend/account-email.js) -->
+
+      <div id="account-background-slot"><!-- background access (frontend/background.js) -->
+        <div id="background-card" class="card form-card">
+          <div class="card-head">
+            <h3 id="background-title" tabindex="-1">Background access <span class="scope-tag">Your account</span></h3>
+            <span id="background-status" class="muted"></span>
+          </div>
+          <p id="background-error" class="error" role="alert" hidden></p>
+          <button id="background-retry" class="btn" type="button" hidden>Try again</button>
+          <label class="check"><input type="checkbox" id="background-switch" role="switch" aria-describedby="background-explain" disabled /> Let JobHuntPA work while I'm signed out</label>
+          <p id="background-explain" class="hint">Loading…</p>
+          <p id="background-more" class="hint"></p>
         </div>
       </div>
+
+      <div id="account-email-slot"></div><!-- job digest emails -->
+
+      <div id="account-export-slot"></div><!-- download your data -->
+
+      <div id="account-delete-slot"></div><!-- delete the account (last) -->
     </section>
   </main>
 
@@ -576,5 +526,11 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="./common.js"></script>
   <script src="./app.js"></script>
+  <script src="./account.js"></script>
+  <script src="./export.js"></script>
+  <script src="./background.js"></script>
+  <script src="./account-email.js"></script>
+  <script src="./digest.js"></script>
+  <script src="./free-searches.js"></script>
 </body>
 </html>

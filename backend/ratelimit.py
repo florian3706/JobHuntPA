@@ -110,8 +110,21 @@ AUTH = Limiter([(10, 5 * 60), (60, 60 * 60)])
 # Wrong passwords for email addresses that have no account.
 unknown_emails = FailureCounter()
 
+# Email (Phase H). A refused "forgot password" request still answers 202, so a limit can't show whether an account
+# exists: it is counted per typed address (accounts or not) and, for real accounts, per account. The admin's reset
+# button shares the per-account one. Keyed by what the caller says: an address hash, a user id.
+FORGOT_ADDRESS = Limiter([(3, 60 * 60), (6, 24 * 60 * 60)])
+RESET_ACCOUNT = Limiter([(3, 60 * 60), (6, 24 * 60 * 60)])
+VERIFY_RESEND = Limiter([(3, 60 * 60), (10, 24 * 60 * 60)])   # per signed-in user
+EMAIL_CHANGE = Limiter([(5, 60 * 60)])                         # per signed-in user
+EMAIL_TEST = Limiter([(5, 10 * 60)])                           # per admin
+# The unsubscribe link's POSTs (Phase J, no session): per client address.
+UNSUBSCRIBE = Limiter([(30, 60)])
+
 
 def reset_all() -> None:
     """Forget every count (tests)."""
     AUTH.reset()
     unknown_emails.reset()
+    for limiter in (FORGOT_ADDRESS, RESET_ACCOUNT, VERIFY_RESEND, EMAIL_CHANGE, EMAIL_TEST, UNSUBSCRIBE):
+        limiter.reset()

@@ -27,12 +27,16 @@ email lookup and orphan every background-access key.
      transaction), check that none is left, then write the file with only the current KEK.
 A crash anywhere leaves a file with every KEK still in use; at start-up, ``kek_rotation_pending`` says to run step 2
 again. (The design sets the new KEK current after step 2; setting it in step 1 is as safe and means a wrap made
-while step 2 runs can't be left under a key that is about to be dropped.)
+after step 1 is under the new key.) A wrap made *before* step 1 but stored after step 2 would be left under a dropped
+key, so whoever wraps holds ``wrapping()`` from the wrap until the row is committed: a rotation waits for it.
 
-Command line (run with the app stopped)::
+Command line (run with the app stopped; the commands refuse while it is running)::
 
     python -m backend.keys bench-kdf [--profile default|low|all] [--runs N]
-    python -m backend.keys rotate-kek | recover-lost --admin-email X | new-admin-key --email X   (not yet available)
+    python -m backend.keys rotate-kek                 replace the server key (backend/key_rotation.py)
+    python -m backend.keys new-admin-key --email X    a new admin details key, after the last admin lost theirs
+                                                      (backend/admin_key.py)
+    python -m backend.keys recover-lost --admin-email X     (key file lost: backend/key_recovery.py)
 """
 from __future__ import annotations
 
@@ -52,10 +56,11 @@ import sys
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional, Union
+from typing import Any, Callable, Iterable, Iterator, Optional, Union
 
 from backend import config, crypto
 
@@ -195,7 +200,22 @@ class ServerKeys:
         doc["created_at"] = self.created_at
         return (json.dumps(doc, indent=2) + "\n").encode("utf-8")
 
+    def _check_unchanged(self) -> None:
+        """Refuse when the file on disk isn't what this process loaded: another process (``python -m backend.keys
+        rotate-kek``) replaced it, and writing from this stale copy would drop its keys and orphan everything wrapped
+        under them. Nothing is written or changed."""
+        stale = KeyFileError("The key file was changed by something else since JobHuntPA started, so it wasn't "
+                             "touched. Restart JobHuntPA and try again.")
+        try:
+            doc = json.loads(self.path.read_bytes())
+            sections, retired, _created = _parse(doc, self.path)
+        except (OSError, ValueError, KeyFileError):
+            raise stale from None
+        if not hmac.compare_digest(self._dump(sections, retired), self._dump(self._sections, self._retired)):
+            raise stale
+
     def _commit(self, sections: dict, retired: dict) -> None:
+        self._check_unchanged()
         crypto.write_private(self.path, self._dump(sections, retired))
         self._sections, self._retired = sections, retired
 
@@ -236,6 +256,14 @@ class ServerKeys:
     def kek_rotation_pending(self) -> bool:
         """More than one KEK in the file: a rotation was started and not finished. Run finish_kek_rotation."""
         return len(self._sections["kek"]["keys"]) > 1
+
+    @contextmanager
+    def wrapping(self) -> Iterator[None]:
+        """Hold this from a ``kek_wrap`` until the row it goes into is committed. A rotation takes the same lock, so
+        it can't finish (and drop the KEK) between the wrap and the commit and leave the stored blob under a key
+        that is gone. Take it before touching the database, as a rotation does, and keep what's inside short."""
+        with self._lock:
+            yield
 
     def kek_wrap(self, secret: bytes, label: str) -> tuple[str, bytes]:
         """``secret`` wrapped under the current KEK, labelled ``{label}|{kek_id}``: ``(kek_id, blob)``. Store the
@@ -288,6 +316,7 @@ class ServerKeys:
         with self._lock:
             if not self.kek_rotation_pending:
                 return 0
+            self._check_unchanged()  # before anything is re-wrapped in the database
             current = self.current_kek_id
             todo: list[tuple[Any, str, bytes]] = []
             failed: list[Any] = []
@@ -505,16 +534,6 @@ def load_or_create(has_users: Union[bool, Callable[[], bool]], stored_fingerprin
 # Command line
 # ---------------------------------------------------------------------------
 
-_NOT_YET = {
-    "rotate-kek": "rotate-kek isn't available yet: it arrives with user accounts (accounts design, Phase C/D). "
-                  "Until then nothing is wrapped with the server key, so there is nothing to rotate.",
-    "recover-lost": "recover-lost isn't available yet: it arrives with user accounts (accounts design, Phase C/D), "
-                    "when there are accounts to recover.",
-    "new-admin-key": "new-admin-key isn't available yet: it arrives with admin accounts (accounts design, "
-                     "Phase C/D).",
-}
-
-
 def bench_kdf(profiles: Iterable[str], runs: int = 3, out=None) -> dict[str, float]:
     """Median seconds per password derivation for each profile, on this machine; also printed to ``out``."""
     out = out or sys.stdout
@@ -541,7 +560,8 @@ def bench_kdf(profiles: Iterable[str], runs: int = 3, out=None) -> dict[str, flo
     return results
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None, *, ask_password: Optional[Callable[[str], str]] = None) -> int:
+    """``ask_password`` replaces getpass for recover-lost (tests)."""
     parser = argparse.ArgumentParser(prog="python -m backend.keys",
                                      description="JobHuntPA's server keys (data/server-keys.json). Run with the app "
                                                  "stopped.")
@@ -549,11 +569,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     bench = sub.add_parser("bench-kdf", help="time the password key derivation (argon2id) profiles on this machine")
     bench.add_argument("--profile", choices=["default", "low", "all"], default="all")
     bench.add_argument("--runs", type=int, default=3)
-    sub.add_parser("rotate-kek", help="replace the server key (not available yet)")
-    recover = sub.add_parser("recover-lost", help="rebuild a lost key file (not available yet)")
+    sub.add_parser("rotate-kek", help="replace the server key and re-wrap everything that uses it")
+    recover = sub.add_parser("recover-lost", help="make a new key file after losing data/server-keys.json (asks for "
+                                                  "that admin's password)")
     recover.add_argument("--admin-email", required=True)
-    admin_key = sub.add_parser("new-admin-key", help="new admin details key after losing the last admin (not "
-                                                     "available yet)")
+    admin_key = sub.add_parser("new-admin-key", help="make --email an admin with a new admin details key (after the "
+                                                     "last admin lost theirs)")
     admin_key.add_argument("--email", required=True)
     args = parser.parse_args(argv)
     if args.command == "bench-kdf":
@@ -561,8 +582,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             parser.error("--runs must be at least 1")
         bench_kdf(["default", "low"] if args.profile == "all" else [args.profile], args.runs)
         return 0
-    print(_NOT_YET[args.command] + " Nothing was changed.", file=sys.stderr)
-    return 2
+    if args.command == "rotate-kek":
+        from backend import key_rotation
+
+        return key_rotation.rotate_kek_command()
+    if args.command == "new-admin-key":
+        from backend import admin_key
+
+        return admin_key.new_admin_key_command(args.email)
+    if args.command == "recover-lost":
+        from backend import key_recovery
+
+        return key_recovery.run(args.admin_email, ask_password=ask_password)
+    parser.error(f"unknown command {args.command}")
 
 
 if __name__ == "__main__":

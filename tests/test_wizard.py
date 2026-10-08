@@ -44,9 +44,11 @@ class WizardApiTest(unittest.TestCase):
         self.assertEqual(me["prefs"], {"theme": None})
         info = self.c.get("/api/account/onboarding").json()
         self.assertEqual((info["step"], info["path"]), (1, "full"))
-        # Scheduled searches and digests are hidden until Phases G and J ship them.
-        self.assertFalse(info["features"]["scheduled_searches"])
-        self.assertFalse(info["features"]["digests"])
+        # Scheduled searches (background access, Phase G) are offered, and digests (Phase J) with email.
+        self.assertTrue(info["features"]["scheduled_searches"])
+        self.assertFalse(info["features"]["digests"], "digests are offered only when the server can send email")
+        with mock.patch.object(account.mail_queue, "enabled", return_value=True):
+            self.assertTrue(self.c.get("/api/account/onboarding").json()["features"]["digests"])
 
     def test_each_step_saves_through_the_search_endpoints_and_progress_resumes(self):
         c = self.c
@@ -262,6 +264,11 @@ class RoutingTest(unittest.TestCase):
         self.assertIsNone(self.route({"onboarding_step": 0, "recovery_codes_pending": False}))
         self.assertIsNone(self.route({"onboarding_step": 2, "recovery_codes_pending": False}, "welcome"))
 
+    def test_first_run_page_is_not_sent_to_itself(self):
+        """Its password dialog calls loadSession(); redirecting first-run.html to first-run.html reloaded it for ever."""
+        self.assertIsNone(self.route({"onboarding_step": 1, "recovery_codes_pending": True}, "first-run"))
+        self.assertIsNone(self.route({"onboarding_step": 1, "recovery_codes_pending": False}, "first-run"))
+
     def test_first_run_ends_at_the_dashboard_which_routes_on(self):
         """first-run.html sends people to './' once the codes are saved, and './' goes through loadSession()."""
         auth = (FRONTEND / "auth.js").read_text(encoding="utf-8")
@@ -275,6 +282,139 @@ class RoutingTest(unittest.TestCase):
         js = (FRONTEND / "welcome.js").read_text(encoding="utf-8")
         self.assertIn("if (!me.onboarding_step) { location.replace('./'); return; }", js)
         self.assertIn("location.replace('first-run.html')", js)
+
+
+@unittest.skipUnless(shutil.which("node"), "needs node to run the page's script")
+class AutomaticSearchesStepTest(unittest.TestCase):
+    """The wizard's "Automatic searches" step (Phase G): offered when ``features.scheduled_searches`` is true, it turns
+    background access on (the server must hold a key to search while you're away) and the schedule on, or leaves both
+    alone. welcome.js runs in node with small stand-ins for the page (``$``, ``api``) that record every call."""
+
+    HARNESS = r"""
+const vm = require('vm'), fs = require('fs');
+const [welcome, common, scenario] = [process.argv[1], process.argv[2], JSON.parse(process.argv[3])];
+const calls = [];
+const els = { '#wz-auto': { checked: !!scenario.ticked } };
+const failures = { ...(scenario.fail || {}) };
+const ctx = {
+  document: { addEventListener() {} },
+  $: (sel) => els[sel], $$: () => [],
+  esc: (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+  announce() {}, setText() {}, confirmPassword: async () => { calls.push(['confirm']); return scenario.confirm !== false; },
+  api: async (url, opts = {}) => {
+    const method = opts.method || 'GET', body = opts.body ? JSON.parse(opts.body) : null;
+    calls.push([method, url, body]);
+    const key = `${method} ${url}`;
+    if (failures[key] > 0) { failures[key] -= 1; const e = new Error('For your safety, enter your password again to do this.'); e.code = 'reauth_required'; throw e; }
+    if (url === '/api/account/background') return { enabled: !!(body && body.enabled), since: '2026-10-07T00:00:00Z' };
+    if (url === '/api/schedule') return method === 'PUT' ? { ...body } : { enabled: true, times: ['10:00'], days: [0, 1], skip_holidays: true, state: 'NSW' };
+    return {};
+  },
+};
+vm.createContext(ctx);
+const m = fs.readFileSync(common, 'utf8').match(/async function withRecentAuth\(fn\) \{.*?\n\}\n/s);
+vm.runInContext(m[0], ctx);
+vm.runInContext(fs.readFileSync(common, 'utf8').match(/const BACKGROUND_ON_COPY = .*\nconst BACKGROUND_OFF_COPY = .*\n/)[0], ctx);
+const page = vm.runInContext(fs.readFileSync(welcome, 'utf8') + '\n;({ wiz, STEPS, buildSteps })', ctx);
+Object.assign(page.wiz, scenario.wiz || {});
+(async () => {
+  const out = { steps: page.buildSteps() };
+  if (scenario.html) out.html = page.STEPS.auto.html();
+  if (scenario.save) {
+    try { out.saved = await page.STEPS.auto.save(); } catch (e) { out.error = { message: e.message, code: e.code }; }
+  }
+  out.calls = calls;
+  console.log(JSON.stringify(out));
+})();
+"""
+
+    def run_page(self, scenario: dict) -> dict:
+        done = subprocess.run(["node", "-e", self.HARNESS, "--", str(FRONTEND / "welcome.js"),
+                               str(FRONTEND / "common.js"), json.dumps(scenario)],
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_the_step_appears_just_before_the_resume_step_only_when_the_server_offers_it(self):
+        on = self.run_page({"wiz": {"features": {"scheduled_searches": True}}})
+        self.assertEqual(on["steps"], ["theme", "titles", "where", "extras", "auto", "resume"])
+        off = self.run_page({"wiz": {"features": {"scheduled_searches": False}}})
+        self.assertEqual(off["steps"], ["theme", "titles", "where", "extras", "resume"])
+        short = self.run_page({"wiz": {"short": True, "features": {"scheduled_searches": True}}})
+        self.assertEqual(short["steps"], ["theme", "keep"])
+
+    def test_the_server_offers_what_the_page_asks_for(self):
+        bob = helpers.make_user()
+        with helpers.client(bob.email) as c:
+            self.assertTrue(c.get("/api/account/onboarding").json()["features"]["scheduled_searches"])
+            # the three calls the step makes exist
+            self.assertEqual(c.get("/api/account/background").status_code, 200)
+            self.assertEqual(c.get("/api/schedule").status_code, 200)
+
+    def test_the_step_explains_both_choices_in_the_words_of_the_background_card(self):
+        html = self.run_page({"html": True, "wiz": {"features": {"scheduled_searches": True}}})["html"]
+        self.assertIn('id="wz-auto"', html)
+        self.assertNotIn(" checked", html.split("<input")[1].split(">")[0], "off by default for a new account")
+        self.assertIn('aria-describedby="wz-auto-hint"', html)
+        self.assertIn("JobHuntPA keeps a key on the server so it can run scheduled searches while you&#39;re away.", html)
+        self.assertIn("Only you can unlock your data. JobHuntPA can&#39;t run searches while you&#39;re away", html)
+        # the same words as the Settings card: one definition, in common.js
+        self.assertNotIn("BACKGROUND_ON_COPY =", (FRONTEND / "welcome.js").read_text(encoding="utf-8"))
+        self.assertNotIn("BACKGROUND_ON_COPY =", (FRONTEND / "background.js").read_text(encoding="utf-8"))
+        self.assertIn("BACKGROUND_ON_COPY =", (FRONTEND / "common.js").read_text(encoding="utf-8"))
+
+    def test_it_starts_ticked_when_searches_already_run_automatically(self):
+        html = self.run_page({"html": True, "wiz": {"features": {"scheduled_searches": True},
+                                                    "background": {"enabled": True}, "schedule": {"enabled": True}}})["html"]
+        self.assertIn(" checked", html.split("<input")[1].split(">")[0])
+        html = self.run_page({"html": True, "wiz": {"background": {"enabled": True}, "schedule": {"enabled": False}}})["html"]
+        self.assertNotIn(" checked", html.split("<input")[1].split(">")[0])
+
+    def test_ticking_it_turns_background_access_on_then_the_schedule(self):
+        out = self.run_page({"save": True, "ticked": True, "wiz": {"background": {"enabled": False}}})
+        self.assertTrue(out["saved"])
+        self.assertEqual([c[:2] for c in out["calls"]], [["POST", "/api/account/background"], ["GET", "/api/schedule"],
+                                                         ["PUT", "/api/schedule"]])
+        self.assertEqual(out["calls"][0][2], {"enabled": True})
+        self.assertEqual(out["calls"][2][2], {"enabled": True, "times": ["10:00"], "days": [0, 1],
+                                              "skip_holidays": True, "state": "NSW"})
+
+    def test_an_old_sign_in_asks_for_the_password_and_tries_again(self):
+        out = self.run_page({"save": True, "ticked": True, "wiz": {"background": {"enabled": False}},
+                             "fail": {"POST /api/account/background": 1}})
+        self.assertTrue(out["saved"])
+        self.assertEqual([c[0] for c in out["calls"]], ["POST", "confirm", "POST", "GET", "PUT"])
+
+    def test_without_the_password_nothing_is_switched_on(self):
+        out = self.run_page({"save": True, "ticked": True, "wiz": {"background": {"enabled": False}},
+                             "fail": {"POST /api/account/background": 1}, "confirm": False})
+        self.assertEqual(out["error"]["code"], "reauth_required")
+        self.assertNotIn("PUT", [c[0] for c in out["calls"]], "no schedule is saved for a key the server doesn't have")
+
+    def test_leaving_it_empty_only_turns_the_schedule_off(self):
+        out = self.run_page({"save": True, "ticked": False, "wiz": {"background": {"enabled": False}}})
+        self.assertEqual([c[:2] for c in out["calls"]], [["GET", "/api/schedule"], ["PUT", "/api/schedule"]])
+        self.assertFalse(out["calls"][1][2]["enabled"])
+
+    def test_already_on_is_not_asked_again(self):
+        out = self.run_page({"save": True, "ticked": True, "wiz": {"background": {"enabled": True},
+                                                                  "schedule": {"enabled": False, "times": ["09:00"], "days": [2],
+                                                                               "skip_holidays": False, "state": "VIC"}}})
+        self.assertEqual([c[:2] for c in out["calls"]], [["PUT", "/api/schedule"]])
+        self.assertEqual(out["calls"][0][2], {"enabled": True, "times": ["09:00"], "days": [2], "skip_holidays": False, "state": "VIC"})
+
+    def test_the_calls_work_against_the_real_server(self):
+        """What the step sends, in order, with a new account's fresh sign-in."""
+        bob = helpers.make_user()
+        with helpers.client(bob.email) as c:
+            self.assertEqual(c.post("/api/account/background", json={"enabled": True}).json()["enabled"], True)
+            current = c.get("/api/schedule").json()
+            put = c.put("/api/schedule", json={"enabled": True, "times": current["times"], "days": current["days"],
+                                               "skip_holidays": current["skip_holidays"], "state": current["state"]})
+            self.assertEqual(put.status_code, 200)
+            self.assertTrue(put.json()["enabled"])
+            self.assertTrue(put.json()["background"])
+            self.assertIsNone(put.json()["skipped"])
 
 
 if __name__ == "__main__":

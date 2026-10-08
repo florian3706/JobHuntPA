@@ -26,8 +26,15 @@ signed in". Lifetimes: 24 hours idle and 7 days in all, or 30 days idle and 90 i
   7. Until the one-time encryption of the data from before accounts has run (backend.migrate_encryption), every
      API but health, /api/auth/* and /api/encryption/* answers 423 ``encrypting`` with its progress; a request
      from the admin whose key it needs starts or resumes it.
-Later phases add their own paths: the unsubscribe link and Stripe's webhook (no session, no CSRF; signed instead),
-sign-up, forgot, reset and recover (PRE_SESSION), and the MFA step (a ``pending_mfa`` session).
+**Two-step sign-in.** After a correct password, an account with MFA gets a ``pending_mfa`` session (10 minutes) and
+no data key in use: its row holds the DEK wrapped under the cookie secret with its own label (``pend|{sid}``, not
+``sess|{sid}``), ``load`` never unwraps a row that isn't ``active``, and so a pending session reaches nothing but
+/api/auth/login/mfa (which checks the code, then makes a new ``active`` session with a new cookie secret) and
+/api/auth/logout; every other path answers 401 ``mfa_required`` and keeps the cookie, so the sign-in page can go on.
+Flipping ``state`` in the database doesn't turn a pending row into a usable session: the DEK wouldn't unwrap.
+The unsubscribe link is still to come (no session, no CSRF; signed instead). Stripe's webhook is outside the
+session check the same way (``STRIPE_WEBHOOK``). Sign-up, forgot, reset and opening a verification link are
+PRE_SESSION too: a token in the body proves what a session would.
 
 The DB work runs in the thread pool, so a slow write elsewhere never stalls the event loop.
 """
@@ -40,6 +47,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -47,7 +55,7 @@ from starlette.datastructures import Headers
 from starlette.requests import cookie_parser
 from starlette.responses import JSONResponse, Response
 
-from backend import crypto, mailer, ratelimit, users
+from backend import admin_key, crypto, mailer, ratelimit, users
 from backend.db import AuthSession, SessionLocal, User, utcnow
 
 log = logging.getLogger(__name__)
@@ -58,18 +66,29 @@ IDLE = {False: timedelta(hours=24), True: timedelta(days=30)}
 ABSOLUTE = {False: timedelta(days=7), True: timedelta(days=90)}
 TOUCH_EVERY = timedelta(minutes=5)   # last_seen_at (and the idle expiry) is written at most this often
 RECENT_AUTH = timedelta(minutes=15)  # sensitive actions need the password entered this recently (Phases E, F)
+PENDING_MFA = timedelta(minutes=10)  # how long a password-checked sign-in waits for its code
+MFA_ATTEMPTS = 5                     # wrong codes before a pending session is dropped
 
 HEALTH = "/api/health"
 STATE = "/api/auth/state"
 FIRST_RUN = "/api/auth/first-run"
 LOGIN = "/api/auth/login"
 LOGOUT = "/api/auth/logout"
+LOGIN_MFA = "/api/auth/login/mfa"   # the code step: its session is still pending_mfa
+RECOVER = "/api/auth/recover"       # a forgotten password, reset with a recovery code (the data is kept)
+SIGNUP = "/api/auth/signup"
+FORGOT = "/api/auth/forgot"               # a reset link by email (Phase H)
+RESET_INFO = "/api/auth/reset/info"
+RESET = "/api/auth/reset"
+VERIFY_EMAIL = "/api/auth/verify-email"   # opening a link from a verification email: it may be another browser
+STRIPE_WEBHOOK = "/api/billing/webhook"  # Stripe's events: signed by Stripe (backend.membership), never a session or CSRF
 # Answered without a session.
-OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, LOGOUT})
+OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, LOGOUT, SIGNUP, FORGOT, RESET_INFO, RESET,
+                        VERIFY_EMAIL})
 # Answered before the first account exists.
 SETUP_PATHS = frozenset({HEALTH, STATE, FIRST_RUN})
 # Sign-in endpoints: JSON only and rate-limited per client address; no CSRF token (there may be no session yet).
-PRE_SESSION = frozenset({FIRST_RUN, LOGIN})
+PRE_SESSION = frozenset({FIRST_RUN, LOGIN, LOGIN_MFA, RECOVER, SIGNUP, FORGOT, RESET_INFO, RESET, VERIFY_EMAIL})
 UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
@@ -142,7 +161,9 @@ def clear_cookie(response: Response, scope) -> None:
 # ---------------------------------------------------------------------------
 
 def create(db: Session, user: User, dek: bytes, *, persistent: bool, state: str = "active") -> bytes:
-    """A new session for ``user`` (added to ``db``, not committed). Returns the cookie secret."""
+    """A new session for ``user`` (added to ``db``, not committed). Returns the cookie secret. Signing in also
+    re-seals the person's details for admins when they aren't sealed to the current admin key (backend.admin_key)."""
+    admin_key.heal_details(db, user, dek)
     secret = crypto.new_key()
     now = utcnow()
     absolute = now + ABSOLUTE[persistent]
@@ -151,6 +172,64 @@ def create(db: Session, user: User, dek: bytes, *, persistent: bool, state: str 
                        idle_expires_at=min(now + IDLE[persistent], absolute), absolute_expires_at=absolute,
                        reauth_at=now))
     return secret
+
+
+def create_pending(db: Session, user: User, dek: bytes, *, persistent: bool) -> bytes:
+    """A ``pending_mfa`` session (added to ``db``, not committed): the password was right, the code isn't checked yet.
+    ``persistent`` is "Keep me signed in", for the session that replaces this one. Returns the cookie secret. The DEK
+    is wrapped under a label no ``active`` session uses (design §3, Phase E), and the cookie lasts the browser's
+    session, whatever ``persistent`` says."""
+    secret = crypto.new_key()
+    sid = crypto.session_id(secret)
+    now = utcnow()
+    until = now + PENDING_MFA
+    db.add(AuthSession(id=sid, user_id=user.id, state="pending_mfa", persistent=persistent,
+                       wrapped_dek=crypto.wrap(crypto.session_kek(secret), dek, f"pend|{sid}"), created_at=now,
+                       last_seen_at=now, idle_expires_at=until, absolute_expires_at=until, reauth_at=now,
+                       mfa_failures=0))
+    return secret
+
+
+def load_pending(db: Session, secret: bytes) -> Optional[AuthSession]:
+    """The unexpired ``pending_mfa`` row for a cookie secret, or None (an expired row is deleted)."""
+    row = db.get(AuthSession, crypto.session_id(secret))
+    if row is None or row.state != "pending_mfa":
+        return None
+    if _expired(row, utcnow()):
+        db.delete(row)
+        db.commit()
+        return None
+    return row
+
+
+def pending_dek(secret: bytes, row: AuthSession) -> bytes:
+    """The DEK of a pending session. Call it only after the code has been checked."""
+    return crypto.unwrap(crypto.session_kek(secret), row.wrapped_dek, f"pend|{row.id}")
+
+
+def count_mfa_attempt(db: Session, session_id: str) -> int:
+    """Counts one try at the code and returns how many there have been (this one included). It is counted before the
+    code is looked at, in one statement, so guesses sent at the same moment can't get past the limit."""
+    db.execute(update(AuthSession).where(AuthSession.id == session_id).values(mfa_failures=AuthSession.mfa_failures + 1))
+    n = db.execute(select(AuthSession.mfa_failures).where(AuthSession.id == session_id)).scalar()
+    db.commit()
+    return int(n or 0)
+
+
+def is_pending(secret: bytes) -> bool:
+    """Whether the cookie belongs to a live ``pending_mfa`` session."""
+    db = SessionLocal()
+    try:
+        return load_pending(db, secret) is not None
+    finally:
+        db.close()
+
+
+def end_cookie_session(db: Session, scope) -> None:
+    """Ends the session this request's cookie names, whatever its state (a new sign-in or a sign-out replaces it)."""
+    secret = read_secret(scope)
+    if secret:
+        end(db, crypto.session_id(secret))
 
 
 def end(db: Session, session_id: str) -> None:
@@ -222,6 +301,31 @@ def has_recent_auth(user: AuthUser, now: Optional[datetime] = None) -> bool:
     return user.reauth_at is not None and (now or utcnow()) - user.reauth_at <= RECENT_AUTH
 
 
+class AuthProblem(Exception):
+    """An error answer shaped ``{"detail", "code", "field"?}`` (app.py turns it into the response)."""
+
+    def __init__(self, status: int, code: str, detail: str, field: Optional[str] = None,
+                 headers: Optional[dict] = None):
+        super().__init__(detail)
+        self.status, self.code, self.detail, self.field, self.headers = status, code, detail, field, headers
+
+    def response(self) -> JSONResponse:
+        body = {"detail": self.detail, "code": self.code}
+        if self.field:
+            body["field"] = self.field
+        return JSONResponse(body, status_code=self.status, headers=self.headers)
+
+
+REAUTH_REQUIRED = "reauth_required"
+
+
+def require_recent_auth(user: AuthUser) -> None:
+    """Refuses a sensitive action unless the password was entered in the last 15 minutes (design §3). The page
+    answers the 403 by asking for the password again (``withRecentAuth`` in frontend/common.js) and retrying."""
+    if not has_recent_auth(user):
+        raise AuthProblem(403, REAUTH_REQUIRED, "For your safety, enter your password again to do this.")
+
+
 # ---------------------------------------------------------------------------
 # The checks (see the module docstring)
 # ---------------------------------------------------------------------------
@@ -288,6 +392,8 @@ class AuthMiddleware:
             return _deny(403, "bad_origin", "This request came from another website, so it was refused.")
         if not (users.known_to_exist() or await run_in_threadpool(users.users_exist)) and path not in SETUP_PATHS:
             return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create the admin account first.")
+        if path == STRIPE_WEBHOOK:
+            return None  # no session is loaded, so it runs with nobody's key and needs no CSRF token
         if path in PRE_SESSION and unsafe:
             if headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
                 return _deny(415, "json_required", "Send this as JSON.")
@@ -301,6 +407,8 @@ class AuthMiddleware:
         if found is None:
             if path in OPEN_PATHS:
                 return None
+            if secret and await run_in_threadpool(is_pending, secret):  # password checked, code still to come
+                return _deny(401, "mfa_required", "Enter your two-step sign-in code to continue.")
             response = _deny(401, "signed_out", "You're signed out. Sign in to continue.")
             if secret:
                 clear_cookie(response, scope)

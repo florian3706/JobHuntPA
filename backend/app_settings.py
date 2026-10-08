@@ -1,5 +1,7 @@
-"""App-wide settings made in the dashboard's Settings tab and kept in .env: the LLM (provider address, model, API
-key) and the API keys for commute times.
+"""App-wide settings made in the admin panel's Server section and kept in .env: the LLM (provider address, model, API
+key), the API keys for commute times, email (SMTP_*, PUBLIC_BASE_URL; saved through backend/email_settings.py) and
+Stripe (STRIPE_*; saved through backend/admin.py). The two endpoints below are the LLM's and the commute keys';
+the others write through ``_save`` with the same rules.
 
     GET  /api/settings/keys        {"tfnsw": {"set": bool, "hint": "…abcd" | null}, "tomtom": {...}}  (never a key)
     PUT  /api/settings/keys        {"tfnsw"?: "<key>", "tomtom"?: "<key>"}: "" clears a key, an omitted one is unchanged
@@ -9,6 +11,7 @@ key) and the API keys for commute times.
     PUT  /api/settings/llm         {"base_url"?, "model"?, "api_key"?}: same omitted / "" semantics; see put_llm for the
                                    rule that moving to another server needs the key typed again
 
+Every change is written to the admin audit log (``server_settings_changed``: which settings, never a value).
 Admins only, for reading as well as writing (accounts design §14.8): these settings serve every account, and the
 keys cost the operator money. Everyone else is refused with 403.
 
@@ -16,8 +19,9 @@ A saved value takes effect at once (os.environ is updated; backend.commute.keys(
 read it on every call) and is written to .env (backend.config.ENV_PATH) so it survives a restart. That file holds the
 LLM key, which costs the owner money, and the app can be reachable by other devices, so writing it is locked down:
   * only the names in ENV_RULES can be written, whatever a request says, and each has its own strict value rule
-    (keys: KEY_RE; model: MODEL_RE; address: normalise_base_url): no whitespace, newline, "=", "#" or quote, so a
-    value can't start a new line or a second setting;
+    (keys: KEY_RE; model: MODEL_RE; address: normalise_base_url; the email and Stripe names: their own): never a
+    newline or a quote, and the keys, model and address no whitespace, "=" or "#" either, so a value can't start a new
+    line or a second setting;
   * the LLM address can't be pointed at another server without the API key typed again in the same request, so a
     saved key can't be redirected to a server someone else controls;
   * the file is replaced atomically (temp file in the same folder, then os.replace), keeping every other line
@@ -39,9 +43,11 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.orm import Session
 
-from backend import commute, config, llm_providers, mailer, scorer
-from backend.sessions import require_admin
+from backend import admin_key, commute, config, llm_providers, mailer, scorer
+from backend.db import get_db
+from backend.sessions import AuthUser, require_admin
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +134,7 @@ ENV_RULES: dict[str, Callable[[str], bool]] = {
     "SMTP_PORT": mailer.valid_port,
     "SMTP_USER": mailer.valid_user,
     "SMTP_PASSWORD": mailer.valid_password,
+    "SMTP_PASSWORD_B64": mailer.valid_password_b64,
     "SMTP_FROM": mailer.valid_from,
     "SMTP_SECURITY": mailer.valid_security,
     "PUBLIC_BASE_URL": mailer.valid_public_base_url,
@@ -238,7 +245,7 @@ def _save(updates: dict[str, str]) -> None:
 
 
 @router.put("/keys")
-def put_keys(body: KeysIn):
+def put_keys(body: KeysIn, admin: AuthUser = Depends(require_admin), db: Session = Depends(get_db)):
     updates: dict[str, str] = {}
     for name, var in KEY_VARS.items():
         value = getattr(body, name)
@@ -250,6 +257,8 @@ def put_keys(body: KeysIn):
         updates[var] = value
     if updates:
         _save(updates)
+        admin_key.audit_settings(db, admin.id, {f"{name}_key": bool(updates[var])
+                                                for name, var in KEY_VARS.items() if var in updates})
     return key_status()
 
 
@@ -309,7 +318,7 @@ def get_llm():
 
 
 @router.put("/llm")
-def put_llm(body: LlmIn):
+def put_llm(body: LlmIn, admin: AuthUser = Depends(require_admin), db: Session = Depends(get_db)):
     """Save the LLM address, model and/or key. ``""`` clears a value, an omitted (or null) one is unchanged.
 
     Moving to a different server (another scheme, host or port than the saved address) needs ``api_key`` in the same
@@ -344,4 +353,6 @@ def put_llm(body: LlmIn):
         updates["LLM_API_KEY"] = key
     if updates:
         _save(updates)
+        names = {"LLM_BASE_URL": "ai_address", "LLM_MODEL": "ai_model", "LLM_API_KEY": "ai_key"}
+        admin_key.audit_settings(db, admin.id, {names[var]: bool(value) for var, value in updates.items()})
     return llm_state()

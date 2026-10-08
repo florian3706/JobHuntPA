@@ -29,6 +29,8 @@ const wiz = {
   steps: [], // step ids in order
   idx: 0,
   profile: null,
+  background: null, // { enabled, since }: background access, when the automatic-searches step is offered
+  schedule: null, // this workspace's schedule, for the same step
   dealbreakers: { industries: [], keywords: [] },
   pins: [],
   homeText: '', // the home place as last saved (its text and radius are kept on the pin)
@@ -317,22 +319,47 @@ const STEPS = {
     },
   },
 
-  /* Shown only when me.features.scheduled_searches is true (Phase G, background access). The digest email option
-     (me.features.digests, Phase J) goes in this step too: add its control in html() and its save in save(). */
+  /* Shown only when me.features.scheduled_searches is true (background access, Phase G). Searching by itself needs
+     the server to hold a key (background access), so ticking this turns that on (it asks for the password again if
+     it was entered a while ago) and the explanation says what that means. The digest email option
+     (me.features.digests, Phase J) is in this step too, saved through /api/account/digest. */
   auto: {
     title: 'Automatic searches',
-    intro: 'JobHuntPA can look for new jobs by itself, so they are waiting when you sign in.',
+    intro: 'JobHuntPA can look for new jobs by itself while you are away, so they are waiting when you sign in.',
     skippable: true,
     html() {
-      return `<label class="check"><input type="checkbox" id="wz-auto" /> Search for new jobs automatically</label>
-        <p class="hint">You can change the days and times on the Search setup tab.</p>`;
+      const on = !!(wiz.background?.enabled && wiz.schedule?.enabled);
+      const d = wiz.digest;
+      const digest = !wiz.features.digests ? '' : `<div class="form-group">
+          <label class="check"><input type="checkbox" id="wz-digest" aria-describedby="wz-digest-hint" ${d?.enabled ? 'checked' : ''} /> Email me a digest of new jobs</label>
+          <label for="wz-digest-days">How often</label>
+          <select id="wz-digest-days">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<option value="${n}"${n === (d?.every_days || 1) ? ' selected' : ''}>${n === 1 ? 'Every day' : `Every ${n} days`}</option>`).join('')}</select>
+          <p id="wz-digest-hint" class="hint">One email with the new jobs the automatic searches found, best fit first, with a link to stop them. It needs automatic searches and a confirmed email address. You can change this later in Settings.</p>
+        </div>`;
+      return `<label class="check"><input type="checkbox" id="wz-auto" aria-describedby="wz-auto-hint" ${on ? 'checked' : ''} /> Search for new jobs automatically</label>
+        <div id="wz-auto-hint" class="hint">
+          <p><strong>If you tick this:</strong> ${esc(BACKGROUND_ON_COPY)}</p>
+          <p><strong>If you leave it empty:</strong> ${esc(BACKGROUND_OFF_COPY)}</p>
+          <p>You can change this later in Settings: the days and times under Scheduled searches, and Background access.</p>
+        </div>
+        ${digest}`;
     },
     async save() {
-      const s = await api('/api/schedule');
-      await api('/api/schedule', {
+      const want = $('#wz-auto').checked;
+      if (want && !wiz.background?.enabled) {
+        wiz.background = await withRecentAuth(() => api('/api/account/background', { method: 'POST', body: JSON.stringify({ enabled: true }) }));
+      }
+      const s = wiz.schedule || await api('/api/schedule');
+      wiz.schedule = await api('/api/schedule', {
         method: 'PUT',
-        body: JSON.stringify({ enabled: $('#wz-auto').checked, times: s.times, days: s.days, skip_holidays: s.skip_holidays, state: s.state }),
+        body: JSON.stringify({ enabled: want, times: s.times, days: s.days, skip_holidays: s.skip_holidays, state: s.state }),
       });
+      if (wiz.features.digests) {
+        wiz.digest = await api('/api/account/digest', {
+          method: 'PUT',
+          body: JSON.stringify({ enabled: $('#wz-digest').checked, every_days: Number($('#wz-digest-days').value) }),
+        });
+      }
       return true;
     },
   },
@@ -353,7 +380,7 @@ const STEPS = {
 function buildSteps() {
   if (wiz.short) return ['theme', 'keep'];
   const steps = ['theme', 'titles', 'where', 'extras'];
-  if (wiz.features.scheduled_searches) steps.push('auto'); // Phase G; digests (Phase J) join this step
+  if (wiz.features.scheduled_searches) steps.push('auto'); // Phase G; the digest option (Phase J) is in this step
   steps.push('resume');
   return steps;
 }
@@ -464,6 +491,10 @@ async function start() {
     wiz.profile = profile;
     wiz.dealbreakers = dealbreakers;
     wiz.pins = pins;
+    if (wiz.features.scheduled_searches) {
+      [wiz.background, wiz.schedule] = await Promise.all([api('/api/account/background'), api('/api/schedule')]);
+      if (wiz.features.digests) wiz.digest = await api('/api/account/digest');
+    }
     wiz.steps = buildSteps();
     status('');
     go((info.step || 1) - 1, { remember: false });

@@ -29,10 +29,11 @@ sealed under their data key. That key exists only while they are signed in, so t
 
 Afterwards the plaintext copies outside the database (the backup above, older ``*.bak-*`` backups, the unused
 ``data/cache/*.html`` pages and any upload left unsealed) are listed by ``leftover_files``. They are never deleted
-silently: the page offers "Delete them now (recommended)" to an admin (``POST /api/encryption/leftovers/delete``).
+silently: the admin panel's Server section lists them and offers "Delete them" (``POST
+/api/admin/plaintext-files/delete``, backend/admin.py: recent password, audited), and a notice on the dashboard
+points admins there.
 
     GET  /api/encryption/status              {state, done, total, error?} (+ report, leftovers for an admin)
-    POST /api/encryption/leftovers/delete    admin, password entered in the last 15 minutes
 """
 from __future__ import annotations
 
@@ -48,12 +49,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import Table, select, text, update
 
 from backend import crypto
 from backend.db import DATA_DIR, DB_PATH, UPLOAD_DIR, Base, engine
-from backend.sessions import AuthUser, current_user, has_recent_auth
+from backend.sessions import AuthUser, current_user
 
 log = logging.getLogger(__name__)
 
@@ -654,16 +655,3 @@ def encryption_status(user: AuthUser = Depends(current_user)):
         out["finished_at"] = value.get("finished_at")
         out["leftovers"] = [_public(i) for i in leftover_files()] if out["state"] == "done" else []
     return out
-
-
-@router.post("/leftovers/delete")
-def delete_leftover_files(user: AuthUser = Depends(current_user)):
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Only an admin can delete these files.")
-    if not is_done():
-        raise HTTPException(status_code=409, detail="Wait until your data is encrypted.")
-    if not has_recent_auth(user):
-        raise HTTPException(status_code=403, detail="For your safety, sign out and sign in again, then delete them "
-                                                    "within 15 minutes.")
-    deleted = delete_leftovers()
-    return {"ok": True, "deleted": deleted, "leftovers": [_public(i) for i in leftover_files()]}

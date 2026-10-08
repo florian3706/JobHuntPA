@@ -146,8 +146,8 @@ function carHtml(c, label) {
   return `<div class="trip"><strong>${label}</strong> ${when}<strong>${minutes(c.minutes)}</strong>${traffic} · ${c.km} km</div>`;
 }
 
-// A commute note may point to the dashboard's Settings tab (API keys): make that a link.
-const noteHtml = (n) => esc(n).replace('the Settings tab', `<a href="./#settings" target="_blank" rel="noopener">the Settings tab${NEW_TAB}</a>`);
+// A commute note may point to the admin panel (API keys): make that a link.
+const noteHtml = (n) => esc(n).replace('the admin panel', isAdmin() ? `<a href="admin.html#server" target="_blank" rel="noopener">the admin panel${NEW_TAB}</a>` : 'the admin panel');
 
 async function loadCommute() {
   const box = $('#job-commute');
@@ -254,7 +254,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('themechange', () => { if (view.map) drawMap(...(lastCommute || [null])); });
   if (!JOB_ID) { showPageError('No job given. Open a job from the dashboard (Open ↗ on a job card).'); return; }
   try {
-    initAccountMenu(await loadSession()); // signed out: goes to the sign-in page, then back here
+    const me = await loadSession(); // signed out: goes to the sign-in page, then back here
+    initAccountMenu(me);
+    remindRecoveryCodes(me);
+    showSignInNotice();
     const workspaces = await api('/api/workspaces');
     const ws = workspaces.find((w) => w.id === currentWorkspace());
     if (ws) $('#ws-name').textContent = ws.name;

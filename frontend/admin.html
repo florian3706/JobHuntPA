@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin · JobHuntPA</title>
+  <script>
+    // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
+    (function () {
+      var t = "dark";
+      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <link rel="stylesheet" href="./themes.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="admin-page">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="app-header">
+    <div class="header-inner">
+      <a class="brand brand-link" href="./">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span class="brand-text">
+          <span class="brand-name">JobHuntPA</span>
+          <span class="subtitle">Admin</span>
+          <span class="visually-hidden"> (back to the dashboard)</span>
+        </span>
+      </a>
+      <div class="header-tools">
+        <a class="help-link" href="https://github.com/florian3706/JobHuntPA#sharing-jobhuntpa-admins" target="_blank" rel="noopener">Help<span class="visually-hidden"> (opens in a new tab)</span></a>
+        <div id="account-menu" class="account-menu">
+          <button id="account-btn" class="btn btn-ghost btn-sm" type="button" aria-expanded="false" aria-controls="account-panel">Account<span aria-hidden="true"> ▾</span></button>
+          <div id="account-panel" class="account-panel" hidden>
+            <p class="account-who">Signed in as <strong id="account-email"></strong> <span id="account-role" class="scope-tag" hidden></span></p>
+            <ul class="account-links">
+              <li><a href="./">Back to the dashboard</a></li>
+              <li><a href="billing.html">Membership</a></li>
+              <li><button id="account-signout" class="btn btn-sm" type="button">Sign out</button></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="main admin-main" tabindex="-1">
+    <div class="panel-head">
+      <h1>Admin</h1>
+      <p class="muted">People, sign-up and the server's settings. Nothing here shows anyone's jobs, documents or searches.</p>
+    </div>
+    <nav class="admin-nav" aria-label="Admin sections">
+      <a href="#usage">Summary and AI use</a>
+      <a href="#users">People</a>
+      <a href="#signup">Sign-up and invitations</a>
+      <a href="#server">Server</a>
+      <a href="#audit">Audit log</a>
+    </nav>
+    <div id="admin-warnings" class="admin-warnings"></div>
+    <p id="admin-load-error" class="error" role="alert" hidden></p>
+
+    <section id="usage" class="card admin-section" aria-labelledby="usage-title">
+      <div class="card-head">
+        <h2 id="usage-title">Summary and AI use</h2>
+        <label class="inline-field" for="usage-days">Show AI use for the last
+          <select id="usage-days">
+            <option value="7">7 days</option>
+            <option value="30" selected>30 days</option>
+            <option value="90">90 days</option>
+            <option value="365">365 days</option>
+          </select></label>
+      </div>
+      <dl id="tiles" class="tiles"></dl>
+      <p id="usage-status" class="muted" role="status"></p>
+      <div id="usage-tables"></div>
+    </section>
+
+    <section id="users" class="card admin-section" aria-labelledby="users-title">
+      <h2 id="users-title">People</h2>
+      <p id="users-note" class="hint"></p>
+      <div id="users-table"></div>
+      <p id="users-status" class="muted" role="status"></p>
+    </section>
+
+    <section id="signup" class="card admin-section" aria-labelledby="signup-title">
+      <h2 id="signup-title">Sign-up and invitations</h2>
+      <form id="signup-form" class="admin-form" novalidate>
+        <fieldset class="form-group">
+          <legend>Who can create an account</legend>
+          <label class="check"><input type="radio" name="signup-mode" value="invite" /> Only people with an invitation link</label>
+          <label class="check"><input type="radio" name="signup-mode" value="open" /> Anyone who opens the sign-up page</label>
+          <label class="check"><input type="radio" name="signup-mode" value="closed" /> Nobody (sign-up is closed, invitations included)</label>
+        </fieldset>
+        <div class="field narrow">
+          <label class="field-label" for="signup-free">Free searches for a new account</label>
+          <input id="signup-free" type="number" min="0" max="1000" step="1" inputmode="numeric" aria-describedby="signup-free-hint" />
+          <small id="signup-free-hint" class="hint">Counts only once memberships are switched on.</small>
+        </div>
+        <div class="toolbar-row">
+          <button id="signup-save" class="btn btn-primary" type="submit">Save sign-up settings</button>
+          <span id="signup-status" class="muted" role="status"></span>
+        </div>
+      </form>
+
+      <h3 id="invite-title">Invitations</h3>
+      <form id="invite-form" class="admin-form" novalidate>
+        <div class="field narrow">
+          <label class="field-label" for="invite-email">Email address <span class="muted">(optional)</span></label>
+          <input id="invite-email" type="email" autocomplete="off" inputmode="email" autocapitalize="none" spellcheck="false" aria-describedby="invite-email-hint" />
+          <small id="invite-email-hint" class="hint">Fills in the sign-up form for them. The link works once and for 7 days, whatever the address.</small>
+        </div>
+        <div id="invite-send-field" class="field" hidden>
+          <label class="check"><input id="invite-send" type="checkbox" checked aria-describedby="invite-send-hint" /> Email the link to this address</label>
+          <small id="invite-send-hint" class="hint">Needs an address above. You can still copy the link yourself.</small>
+        </div>
+        <div class="toolbar-row">
+          <button id="invite-create" class="btn btn-primary" type="submit">Create invitation link</button>
+          <span id="invite-status" class="muted" role="status"></span>
+        </div>
+      </form>
+      <div id="invite-result" class="callout" hidden>
+        <h4 id="invite-result-title" tabindex="-1">Invitation link</h4>
+        <p id="invite-result-note">Copy it now: it is shown only once. Send it to the person yourself.</p>
+        <div class="key-row">
+          <input id="invite-link" class="key-input" type="text" readonly aria-label="Invitation link" />
+          <button id="invite-copy" class="btn btn-sm" type="button">Copy link</button>
+        </div>
+        <p id="invite-copy-status" class="muted" role="status"></p>
+      </div>
+      <div id="invites-table"></div>
+    </section>
+
+    <section id="server" class="admin-section" aria-labelledby="server-title">
+      <h2 id="server-title">Server</h2>
+
+      <div class="card form-card" id="llm-card">
+        <h3>AI provider <span class="scope-tag">Everyone</span></h3>
+        <form id="llm-form" class="llm-form" autocomplete="off" novalidate>
+          <h4>Provider, model and API key</h4>
+          <div class="form-grid">
+            <label class="field"><span class="field-label">Provider</span><select id="llm-provider"></select></label>
+            <label class="field"><span class="field-label">Model</span>
+              <input id="llm-model" type="text" list="llm-models" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Model name" required /></label>
+            <label class="field"><span class="field-label">API address</span>
+              <input id="llm-base-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://api.example.com/v1" required /></label>
+            <div class="field">
+              <label class="field-label" for="llm-key">API key</label>
+              <input id="llm-key" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
+              <div id="llm-key-state" class="key-state"></div>
+            </div>
+          </div>
+          <datalist id="llm-models"></datalist>
+          <p id="llm-note" class="hint"></p>
+          <p id="llm-key-hint" class="hint warn-text" hidden></p>
+          <div id="llm-web-notice" class="callout" role="note" hidden></div>
+          <div id="llm-error" class="error" role="alert" hidden></div>
+          <div class="toolbar-row">
+            <button id="llm-save" class="btn btn-primary" type="submit">Save</button>
+            <span id="llm-save-status" class="muted" role="status"></span>
+          </div>
+        </form>
+        <div class="reasoning-settings">
+          <h4>Reasoning level</h4>
+          <p class="hint">Higher levels think longer: usually better results, but slower and more expensive.
+            The choices are the levels your model accepts; use <strong>Detect</strong> after changing model.</p>
+          <div class="form-grid">
+            <label class="field"><span class="field-label">Fit scoring</span><select data-task="scoring"></select></label>
+            <label class="field"><span class="field-label">Cover letters</span><select data-task="cover_letter"></select></label>
+            <label class="field"><span class="field-label">Company research</span><select data-task="research"></select></label>
+            <label class="field"><span class="field-label">Job chat</span><select data-task="chat"></select></label>
+          </div>
+          <div class="toolbar-row">
+            <button id="detect-levels" class="btn btn-sm" type="button">Detect supported levels</button>
+            <span id="levels-status" class="muted" role="status"></span>
+          </div>
+        </div>
+        <div class="toolbar-row llm-actions">
+          <button id="score-test" class="btn" type="button">Test connection</button>
+          <span id="score-test-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
+      <div id="commute-keys-card" class="card form-card">
+        <h3>Commute data <span class="scope-tag">Everyone</span></h3>
+        <p class="hint">Both keys are optional and free. They are saved in the <code>.env</code> file on this computer and work straight away,
+          with no restart. A saved key is never shown again in full, only its last few characters. Where the commute starts and when it
+          arrives is set by each person under Search setup &gt; Commute.</p>
+        <div class="form-grid">
+          <form class="form-group key-field" data-key="tfnsw" autocomplete="off" novalidate>
+            <label for="key-tfnsw">Transport for NSW key (public transport times)</label>
+            <div class="key-state"></div>
+            <div class="key-row">
+              <input id="key-tfnsw" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> Transport for NSW key</span></button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> Transport for NSW key</span></button>
+            </div>
+            <small class="hint">Free: sign up at <a href="https://opendata.transport.nsw.gov.au" target="_blank" rel="noopener">opendata.transport.nsw.gov.au<span class="visually-hidden"> (opens in a new tab)</span></a>,
+              create an application, and copy its API key. Without it the job page shows driving only.</small>
+          </form>
+          <form class="form-group key-field" data-key="tomtom" autocomplete="off" novalidate>
+            <label for="key-tomtom">TomTom key (driving with peak traffic)</label>
+            <div class="key-state"></div>
+            <div class="key-row">
+              <input id="key-tomtom" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> TomTom key</span></button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> TomTom key</span></button>
+            </div>
+            <small class="hint">Free: sign up at <a href="https://developer.tomtom.com" target="_blank" rel="noopener">developer.tomtom.com<span class="visually-hidden"> (opens in a new tab)</span></a>
+              and copy the default key. Without it, driving times come from OSRM's public server and ignore traffic (the job page says so).</small>
+          </form>
+        </div>
+        <div class="toolbar-row key-test">
+          <button id="keys-test" class="btn btn-sm" type="button" title="Makes one small real request to each service with the saved key">Test saved keys</button>
+          <span id="keys-test-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
+      <div id="email-card" class="card form-card">
+        <h3 id="email-title">Email <span class="scope-tag">Everyone</span></h3>
+        <p id="email-state" class="hint" role="status">Loading…</p>
+        <p class="hint">With email set up, JobHuntPA can send password reset links, address confirmations, invitations and security notices.
+          Use your email provider's own mail server (SMTP). The settings are saved in the <code>.env</code> file on this computer and work
+          straight away. The password is never shown again. To keep messages out of spam, set up SPF, DKIM and DMARC for the From address's
+          domain as your provider describes.</p>
+        <form id="email-form" class="admin-form" autocomplete="off" novalidate>
+          <div class="form-grid">
+            <div class="field">
+              <label class="field-label" for="email-host">Mail server (SMTP host)</label>
+              <input id="email-host" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="smtp.example.com" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-port">Port</label>
+              <input id="email-port" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-security">Encryption</label>
+              <select id="email-security" aria-describedby="email-security-hint"></select>
+              <small id="email-security-hint" class="hint">Use "STARTTLS" (port 587) or "SSL" (port 465). "None" is only for a mail server on this computer.</small>
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-user">User name <span class="muted">(optional)</span></label>
+              <input id="email-user" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore data-lpignore="true" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-password">Password <span class="muted">(optional)</span></label>
+              <div class="key-state" id="email-password-state"></div>
+              <div class="key-row">
+                <input id="email-password" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                       data-1p-ignore data-lpignore="true" aria-describedby="email-password-state email-password-hint" />
+                <button id="email-password-clear" class="btn btn-ghost btn-sm" type="button">Remove<span class="visually-hidden"> the saved password</span></button>
+              </div>
+              <small id="email-password-hint" class="hint">Spaces are removed from the password, so an app password can be pasted as Gmail shows it. Leave this empty to keep the saved one.</small>
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-from">From address</label>
+              <input id="email-from" type="email" autocomplete="off" inputmode="email" autocapitalize="none" spellcheck="false" aria-describedby="email-from-hint" />
+              <small id="email-from-hint" class="hint">One address, such as jobs@example.com. People see the name "JobHuntPA".</small>
+            </div>
+            <div class="field">
+              <label class="field-label" for="email-public">Public address</label>
+              <input id="email-public" type="url" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="email-public-hint" placeholder="https://jobs.example.com" />
+              <small id="email-public-hint" class="hint">The web address people use to reach JobHuntPA. Links in emails point to it. No "/" at the end; http:// works only for localhost.</small>
+              <div class="toolbar-row"><button id="email-use-origin" class="btn btn-sm" type="button">Use this address</button> <span id="email-origin" class="muted"></span></div>
+            </div>
+          </div>
+          <div class="toolbar-row">
+            <button id="email-save" class="btn btn-primary" type="submit">Save email settings</button>
+            <span id="email-save-status" class="muted" role="status"></span>
+          </div>
+          <p id="email-error" class="error" role="alert" hidden></p>
+        </form>
+        <div class="toolbar-row key-test">
+          <button id="email-test" class="btn btn-sm" type="button" title="Sends a short message to your own address">Send a test email</button>
+          <span id="email-test-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
+      <div class="card form-card" id="stripe-card">
+        <h3 id="stripe-title">Payments (Stripe) <span id="stripe-mode" class="scope-tag" hidden></span></h3>
+        <p id="stripe-summary" class="muted" role="status" tabindex="-1">Checking…</p>
+        <div id="stripe-setup" class="callout" hidden>
+          <p><strong>To switch memberships on</strong></p>
+          <ol id="stripe-steps"></ol>
+        </div>
+        <div id="stripe-fields">
+          <form class="form-group key-field" data-stripe="secret_key" autocomplete="off" novalidate>
+            <label for="stripe-secret-key">Stripe secret key</label>
+            <div class="key-state"></div>
+            <div class="key-row">
+              <input id="stripe-secret-key" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="sk_test_… or sk_live_…" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> Stripe secret key</span></button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> Stripe secret key</span></button>
+            </div>
+            <small class="hint">From the Stripe dashboard, Developers, API keys. A key starting with sk_test_ is test mode: no real money moves.</small>
+          </form>
+          <form class="form-group key-field" data-stripe="webhook_secret" autocomplete="off" novalidate>
+            <label for="stripe-webhook-secret">Webhook signing secret (optional)</label>
+            <div class="key-state"></div>
+            <div class="key-row">
+              <input id="stripe-webhook-secret" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="whsec_…" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> webhook signing secret</span></button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> webhook signing secret</span></button>
+            </div>
+            <small class="hint">Lets Stripe tell JobHuntPA about payments straight away. Without it, memberships still update when people come back from checkout and every 6 hours.</small>
+          </form>
+          <div class="form-group">
+            <label for="stripe-webhook-url">Webhook address (add it in Stripe, Developers, Webhooks)</label>
+            <input id="stripe-webhook-url" type="text" readonly />
+          </div>
+          <form class="form-group key-field" data-stripe="price_lookup_key" autocomplete="off" novalidate>
+            <label for="stripe-lookup-key">Price lookup key</label>
+            <div class="key-row">
+              <input id="stripe-lookup-key" class="key-input" type="text" autocomplete="off" spellcheck="false" autocapitalize="none" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> price lookup key</span></button>
+            </div>
+            <small class="hint">The monthly price in Stripe has this lookup key (default jobhunt_monthly). An optional yearly price uses jobhunt_yearly.</small>
+          </form>
+        </div>
+        <div id="stripe-prices"></div>
+        <div class="toolbar-row">
+          <button id="stripe-sync" class="btn btn-sm" type="button" title="Asks Stripe for the prices again">Sync now</button>
+          <span id="stripe-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
+      <div class="card form-card" id="rotate-card">
+        <h3>Server key</h3>
+        <p>The server key protects the keys JobHuntPA keeps for background searches and two-step sign-in. Replacing it
+          moves all of them to a new key and drops the old one. Do it if the <code>data</code> folder or a backup of it
+          may have been copied by someone else. It asks for your password and takes a few seconds.</p>
+        <div class="toolbar-row">
+          <button id="rotate-key" class="btn" type="button">Replace the server key</button>
+          <span id="rotate-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
+      <div class="card form-card" id="plain-card">
+        <h3>Unencrypted copies of data</h3>
+        <p id="plain-summary" class="muted" role="status" tabindex="-1">Checking…</p>
+        <div id="plain-details"></div>
+        <div class="toolbar-row">
+          <button id="plain-delete" class="btn btn-primary" type="button" hidden>Delete these files now</button>
+          <span id="plain-status" class="muted" role="status"></span>
+        </div>
+      </div>
+    </section>
+
+    <section id="audit" class="card admin-section" aria-labelledby="audit-title">
+      <h2 id="audit-title">Audit log</h2>
+      <p class="hint">What admins did, newest first. Details are readable only with the admin key.</p>
+      <div id="audit-table"></div>
+      <div class="toolbar-row">
+        <button id="audit-more" class="btn" type="button" hidden>Show older entries</button>
+        <span id="audit-status" class="muted" role="status"></span>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="person-dialog" class="admin-dialog" aria-labelledby="person-title">
+    <div class="admin-dialog-box">
+      <div class="modal-head">
+        <h2 id="person-title" class="modal-title" tabindex="-1"></h2>
+        <button id="person-close" class="btn btn-ghost btn-sm" type="button"><span aria-hidden="true">✕ </span>Close</button>
+      </div>
+      <div id="person-body" class="admin-dialog-body"></div>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="admin-dialog admin-dialog-small" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+    <form method="dialog" id="confirm-form" class="admin-dialog-box">
+      <div class="modal-head">
+        <h2 id="confirm-title" class="modal-title" tabindex="-1"></h2>
+      </div>
+      <div class="admin-dialog-body">
+        <p id="confirm-text"></p>
+        <div class="toolbar-row">
+          <button id="confirm-ok" class="btn btn-primary" type="submit" value="ok">Confirm</button>
+          <button id="confirm-cancel" class="btn" type="button">Cancel</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
+
+  <script src="./common.js"></script>
+  <script src="./dialogs.js"></script>
+  <script src="./server-settings.js"></script>
+  <script src="./email-settings.js"></script>
+  <script src="./stripe-settings.js"></script>
+  <script src="./admin.js"></script>
+</body>
+</html>

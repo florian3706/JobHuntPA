@@ -824,14 +824,6 @@ class CliTest(unittest.TestCase):
         self.assertGreater(results["low"], 0)
         self.assertIn("m=19 MiB, t=2, p=1", out.getvalue())
 
-    def test_not_yet_commands(self):
-        for argv in (["rotate-kek"], ["recover-lost", "--admin-email", "a@b.c"], ["new-admin-key", "--email", "a@b.c"]):
-            err = io.StringIO()
-            with redirect_stderr(err):
-                self.assertEqual(keys.main(argv), 2)
-            self.assertIn("isn't available yet", err.getvalue())
-            self.assertIn("Nothing was changed", err.getvalue())
-
 
 if __name__ == "__main__":
     unittest.main()

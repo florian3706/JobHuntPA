@@ -407,7 +407,7 @@ class LogHygieneTest(WorkspaceTestCase):
         self.assertIn("ConnectError", logged)
 
     def test_library_loggers_are_quiet(self):
-        for name in ("httpx", "httpcore"):
+        for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
             self.assertGreaterEqual(logging.getLogger(name).getEffectiveLevel(), logging.WARNING)
 
     def test_access_log_filter_strips_query_strings(self):

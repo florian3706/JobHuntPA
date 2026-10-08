@@ -13,8 +13,16 @@ search, or when the workspace's owner hasn't allowed background access
 (the server then has no key to their data). Workspaces due at the same
 time run one after another.
 
+A slot is also passed over when the owner has no membership (backend.membership; admins, exempt accounts, free
+periods and subscribers have one; so has everyone while billing is off).
+
+A slot passed over because the owner hasn't allowed background access (or the account is turned off) is recorded
+with a reason the person sees under their schedule (``skipped``, from SKIP_TEXT); it goes away when they turn
+background access on, or when a later slot runs.
+
 Endpoints:
-    GET/PUT /api/schedule
+    GET/PUT /api/schedule      the settings, plus next_run, last_run, ``background`` (whether the owner allowed
+                               background access) and ``skipped`` ({reason, text, slot} or null)
 """
 from __future__ import annotations
 
@@ -54,6 +62,14 @@ DEFAULT_TIMES = ["10:00", "12:00", "14:00", "16:00"]
 DEFAULT_DAYS = [0, 1, 2, 3, 4]  # Monday to Friday
 GRACE = timedelta(hours=1)      # how long a due slot may wait for a busy worker
 TICK_SECONDS = 30
+# What a person is told when a slot is passed over for lack of a key (SearchSchedule.skipped_reason).
+SKIP_TEXT = {
+    "background_off": "Scheduled search skipped: background access is off",
+    "account_off": "Scheduled search skipped: this account is turned off",
+    "key_unusable": "Scheduled search skipped: the server can't open your background key. Turn background access "
+                    "off and on again",
+    "membership_required": "Scheduled search skipped: scheduled searches need a membership",
+}
 
 
 class ScheduleSchema(BaseModel):
@@ -176,7 +192,7 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
     A workspace's data is sealed under its owner's key, which the server holds only for an owner who allowed
     background access (``users.background_key``): the search runs inside that key's scope, and a slot of an owner
     who didn't is passed over."""
-    from backend import migrate_encryption, users
+    from backend import membership, migrate_encryption, users
 
     now = now or datetime.now(timezone.utc)
     if not migrate_encryption.is_done():
@@ -192,10 +208,14 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
             slot = due_slot(get_schedule(db, ws), now, _utc(row.last_slot) if row else None)
             if slot is None:
                 continue
-            reason, run = None, None
-            key = users.background_key(db, owner)
-            if key is None:
-                reason = "the account doesn't allow background access"
+            reason, run, skipped = None, None, None
+            skipped = membership.scheduled_block(db, owner, now)  # scheduled searches need a membership (design §8)
+            key = None if skipped else users.background_key(db, owner)
+            if skipped:
+                reason = f"no membership ({skipped})"
+            elif key is None:
+                skipped = users.background_block(db, owner)
+                reason = f"no background key ({skipped})"
             else:
                 with crypto.as_user(owner, key):
                     if nothing_to_search(db, ws):
@@ -211,7 +231,9 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
                 log.info("workspace %s: scheduled search for %s started (run %s)", ws, slot.isoformat(), run["id"])
             else:
                 log.info("workspace %s: scheduled search for %s passed over: %s", ws, slot.isoformat(), reason)
-            _row(db, ws).last_slot = _naive_utc(slot)
+            sched_row = _row(db, ws)
+            sched_row.last_slot = _naive_utc(slot)
+            sched_row.skipped_reason, sched_row.skipped_slot = skipped, _naive_utc(slot) if skipped else None
             db.commit()
             if run is not None:
                 return run
@@ -220,12 +242,30 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
         db.close()
 
 
+BILLING_SYNC_EVERY = timedelta(hours=6)
+_billing_synced: list = [None]  # when the Stripe sync last ran (this process; it also runs at start-up)
+
+
+def billing_sync_tick(now: Optional[datetime] = None) -> Optional[int]:
+    """Every 6 hours (and once soon after start-up), refresh every member's subscription from Stripe
+    (``membership.sync_tick``): the safety net behind the webhook. Does nothing without a Stripe key. Returns how
+    many members were updated, or None when it wasn't due."""
+    from backend import membership
+
+    now = now or datetime.now(timezone.utc)
+    last = _billing_synced[0]
+    if last is not None and now - last < BILLING_SYNC_EVERY:
+        return None
+    _billing_synced[0] = now
+    return membership.sync_tick(now)
+
+
 _stop = threading.Event()
 
 
 def start_scheduler(start_search: Callable[[int], dict]) -> None:
     """Check for due searches every TICK_SECONDS on a daemon thread.
-    ``JOBHUNT_SCHEDULER=off`` (e.g. in .env) turns scheduled searches off."""
+    ``JOBHUNT_SCHEDULER=off`` (e.g. in .env) turns scheduled searches off, and the 6-hourly Stripe sync with them."""
     if os.getenv("JOBHUNT_SCHEDULER", "on").strip().lower() in ("0", "off", "false", "no"):
         log.info("scheduled searches are off (JOBHUNT_SCHEDULER)")
         return
@@ -237,8 +277,57 @@ def start_scheduler(start_search: Callable[[int], dict]) -> None:
                 tick(start_search)
             except Exception:
                 log.exception("scheduled search check failed")
+            housekeeping()
+            digest_tick()
+            try:
+                billing_sync_tick()
+            except Exception:
+                log.exception("membership sync failed")
 
     threading.Thread(target=loop, name="jobhunt-scheduler", daemon=True).start()
+
+
+CLEANUP_EVERY = timedelta(minutes=10)
+_last_cleanup: Optional[datetime] = None
+
+
+def housekeeping(now: Optional[datetime] = None) -> bool:
+    """Every 10 minutes, with the scheduler's loop (so off with JOBHUNT_SCHEDULER=off): delete expired sessions and
+    links that can't be used any more (``auth.cleanup_tick``). True when it ran. Never raises."""
+    global _last_cleanup
+    now = now or datetime.now(timezone.utc)
+    if _last_cleanup is not None and now - _last_cleanup < CLEANUP_EVERY:
+        return False
+    _last_cleanup = now
+    try:
+        from backend import auth  # (auth imports modules that import this one)
+
+        auth.cleanup_tick()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Clean-up of expired sessions and links failed: %s", exc.__class__.__name__)
+    return True
+
+
+DIGEST_EVERY = timedelta(minutes=10)
+_last_digest: Optional[datetime] = None
+
+
+def digest_tick(now: Optional[datetime] = None) -> Optional[int]:
+    """Every 10 minutes, with the scheduler's loop (so off with JOBHUNT_SCHEDULER=off): send the job digests that
+    are due (``digest.tick``; nothing unless email is on). Returns how many went, or None when it wasn't due or
+    failed. Never raises."""
+    global _last_digest
+    now = now or datetime.now(timezone.utc)
+    if _last_digest is not None and now - _last_digest < DIGEST_EVERY:
+        return None
+    _last_digest = now
+    try:
+        from backend import digest  # (digest imports this module)
+
+        return digest.tick(now)
+    except Exception as exc:  # noqa: BLE001  (the message may hold a job's text)
+        log.warning("Digest check failed: %s", exc.__class__.__name__)
+        return None
 
 
 def stop_scheduler() -> None:
@@ -249,9 +338,22 @@ def stop_scheduler() -> None:
 # API
 # ---------------------------------------------------------------------------
 
+def skipped_info(db: Session, ws: int) -> Optional[dict[str, Any]]:
+    """The last slot passed over for lack of a key, with the words to show, or None."""
+    row = db.get(SearchSchedule, ws)
+    if row is None or row.skipped_reason not in SKIP_TEXT:
+        return None
+    slot = _utc(row.skipped_slot)
+    return {"reason": row.skipped_reason, "text": SKIP_TEXT[row.skipped_reason],
+            "slot": slot.isoformat() if slot else None}
+
+
 def schedule_info(db: Session, ws: int, now: Optional[datetime] = None) -> dict[str, Any]:
+    from backend import membership, users
+
     now = now or datetime.now(timezone.utc)
     sched = get_schedule(db, ws)
+    owner = db.query(Workspace.owner_id).filter(Workspace.id == ws).scalar()
     nxt = next_run(sched, now)
     last = (db.query(SearchRun).filter(SearchRun.workspace_id == ws, SearchRun.scheduled.is_(True))
             .order_by(SearchRun.id.desc()).first())
@@ -263,6 +365,9 @@ def schedule_info(db: Session, ws: int, now: Optional[datetime] = None) -> dict[
         "skipped_holidays": skipped_holidays(sched, now.astimezone(_tz(sched)).date()),
         "last_run": last.to_dict() if last else None,
         "nothing_to_search": nothing_to_search(db, ws),
+        "background": owner is not None and users.background_enabled(db, owner),
+        "membership_required": owner is not None and bool(membership.scheduled_block(db, owner, now)),
+        "skipped": skipped_info(db, ws),
     }
 
 

@@ -446,7 +446,7 @@ class LlmConfigTest(unittest.TestCase):
         from unittest import mock
         from backend.scorer import config_problem, get_config
         with mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "", "LLM_MODEL": ""}):
-            self.assertEqual(config_problem(get_config()), "Set LLM_BASE_URL, LLM_MODEL in .env and restart the server.")
+            self.assertEqual(config_problem(get_config()), "Set LLM_BASE_URL, LLM_MODEL in the admin panel (Server > AI provider).")
         with mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "https://x/v1/", "LLM_MODEL": "m"}):
             cfg = get_config()
             self.assertIsNone(config_problem(cfg))
@@ -1390,7 +1390,7 @@ class CommuteTest(unittest.TestCase):
             self.assertEqual(out["car"]["there"]["minutes"], 66)
             self.assertFalse(out["car"]["there"]["traffic"])
             self.assertTrue(any("only a city" in n for n in out["notes"]))
-            self.assertTrue(any("TomTom" in n and "Settings tab" in n for n in out["notes"]))  # where to add the key
+            self.assertTrue(any("TomTom" in n and "admin panel" in n for n in out["notes"]))  # where to add the key
             self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": False})
             c.delete(f"/api/workspaces/{ws}")
 

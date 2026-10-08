@@ -75,7 +75,9 @@ def config_problem(cfg: Optional[dict] = None) -> Optional[str]:
     missing = [name for name, key in REQUIRED if not cfg[key] and not (key == "api_key" and keyless)]
     if not missing:
         return None
-    return f"Set {', '.join(missing)} in .env and restart the server."
+    if not llm_providers.viewer_is_admin():  # what to set, and where, is for the admin (accounts design §14.8)
+        return llm_providers.USER_NOT_SET_UP
+    return f"Set {', '.join(missing)} in the admin panel (Server > AI provider)."
 
 
 def public_config() -> dict[str, Any]:
@@ -296,7 +298,7 @@ def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> d
         try:
             result = parse_result(call_model(build_messages(job, profile_text), cfg))
         except ScorerError as exc:
-            _store(db, job_id, error=str(exc))
+            _store(db, job_id, error=llm_providers.user_message(exc))
             raise
         office = result.pop("office_location", "")
         ad_employment = result.pop("employment_type", None)
@@ -407,9 +409,9 @@ def score_jobs(ws: int, job_ids: list[int], progress: Callable[[str, dict], None
             ok = False
             if exc.auth:
                 stop.set()
-                aborted.append(str(exc))
+                aborted.append(llm_providers.user_message(exc))
             elif not first_error:
-                first_error.append(str(exc))
+                first_error.append(llm_providers.user_message(exc))
         with lock:
             counts["done"] += 1
             counts["scored" if ok else "errors"] += 1

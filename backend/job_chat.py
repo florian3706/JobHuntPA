@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from backend import access, membership
 from backend.db import (ChatMessage, ChatThread, CompanyProfile, CoverLetter, FitResult, Job, company_key,
                         get_db)
 from backend.workspaces import current_workspace, owned
@@ -256,7 +257,7 @@ def ask(db: Session, ws: int, jobs: list[Job], history: list[dict], message: str
             text = call_model(messages, {**cfg, "timeout_s": max(cfg["timeout_s"], 300)}, json_mode=False)
             text, sources = keep_known_links(text, known_links(db, jobs)), []
     except ScorerError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     text = (text or "").strip()
     if not text:
         raise HTTPException(status_code=502, detail="The model returned an empty answer; try again.")
@@ -356,7 +357,8 @@ def list_chats(job_ids: str = Query("", description="comma-separated job ids"), 
 
 
 @router.post("")
-def start_chat(payload: StartChat, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def start_chat(payload: StartChat, db: Session = Depends(get_db), ws: int = Depends(current_workspace),
+               _gate=Depends(membership.gate(access.CHAT))):
     jobs = resolve_jobs(db, ws, payload.job_ids)
     thread = _answer(db, ws, None, jobs, payload.message.strip(), payload.web_search)
     return _thread_dict(db, thread)
@@ -368,7 +370,8 @@ def get_chat(chat_id: int, db: Session = Depends(get_db), ws: int = Depends(curr
 
 
 @router.post("/{chat_id}/messages")
-def follow_up(chat_id: int, payload: FollowUp, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def follow_up(chat_id: int, payload: FollowUp, db: Session = Depends(get_db), ws: int = Depends(current_workspace),
+              _gate=Depends(membership.gate(access.CHAT))):
     thread = owned(db, ChatThread, chat_id, ws, "Chat")
     jobs = _thread_jobs(db, thread)
     if not jobs:

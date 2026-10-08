@@ -11,7 +11,7 @@ Car: TomTom Routing with predicted traffic for those times when
 ``TOMTOM_API_KEY`` is set (free tier), otherwise OSRM's public server,
 which knows no traffic (the page says so). Starts at the home pin.
 
-Both keys are entered in the dashboard's Settings tab (backend/app_settings.py)
+Both keys are entered in the admin panel (Server) (backend/app_settings.py)
 or in .env, and are read on every call, so a new key works at once.
 
 Answers are cached for a week in ``commute_cache``, per user and sealed (``_cached``).
@@ -313,7 +313,7 @@ def commute_for(db: Session, job: Job) -> dict:
                 row["error"] = str(exc)
             trips.append(row)
     else:
-        notes.append("Public transport times need a free Transport for NSW API key: add it in the Settings tab.")
+        notes.append("Public transport times need a free Transport for NSW API key: your admin can add it in the admin panel.")
 
     car: dict[str, Any] = {}
     try:
@@ -322,8 +322,8 @@ def commute_for(db: Session, job: Job) -> dict:
     except CommuteError as exc:
         car = {"error": str(exc)}
     if not k["tomtom"] and "error" not in car:
-        notes.append("Driving times are without traffic; peak traffic adds a lot. A free TomTom key, added in "
-                     "the Settings tab, gives peak-hour times.")
+        notes.append("Driving times are without traffic; peak traffic adds a lot. A free TomTom key, added by "
+                     "your admin in the admin panel, gives peak-hour times.")
 
     return {
         "day": f"{day:%A} {day.day} {day:%B}",

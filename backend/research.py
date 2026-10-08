@@ -462,7 +462,8 @@ def research_one(company: dict, cfg: dict) -> dict:
         text, seen = extract(run_agent(company, cfg))
         profile, dropped = parse_profile(text, seen)
     except ScorerError as exc:
-        _save(company, error=str(exc))
+        # A profile is shared by every workspace: what it keeps is never the provider's address or answer.
+        _save(company, error=llm_providers.USER_PROBLEM)
         raise
     _save(company, profile=profile, dropped=dropped, model=cfg["model"])
     return profile
@@ -505,9 +506,9 @@ def research_companies(companies: list[dict], progress: Callable[[str, dict], No
             ok = False
             if exc.auth:
                 stop.set()
-                aborted.append(str(exc))
+                aborted.append(llm_providers.user_message(exc))
             elif not first_error:
-                first_error.append(f"{company['name']}: {exc}")
+                first_error.append(f"{company['name']}: {llm_providers.user_message(exc)}")
         with lock:
             counts["done"] += 1
             counts["researched" if ok else "errors"] += 1

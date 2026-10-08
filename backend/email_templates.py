@@ -7,8 +7,11 @@ Accessibility: ``<html lang>``, a real ``<title>``, layout tables with ``role="p
 images, links whose text names their target, and colours above 4.5:1 (checked in tests). The page reads fine with
 CSS stripped, and the text part carries the same content.
 
-Link targets (the pages that consume them belong to the wiring phases):
-    {base}/reset-password.html?token=...   {base}/accept-invite.html?token=...   {base}/verify-email.html?token=...
+Link targets. A token that gives access (a reset or an email check) sits in the address's fragment, after "#": a
+browser never sends the fragment to a server or in a Referer header, so it can't end up in an access log. The page reads
+it with ``location.hash`` and posts it. An invitation links to the sign-up page itself (it reads
+``?invite=``):
+    {base}/reset-password.html#token=...   {base}/verify-email.html#token=...   {base}/signup.html?invite=...
     {base}/job.html?id=ID[&ws=WORKSPACE]   {base}/unsubscribe?token=...
 """
 from __future__ import annotations
@@ -116,7 +119,7 @@ def _simple(title: str, intro: str, link: Optional[tuple[str, str]], after: Iter
 
 def password_reset(token: str, expires: Any, *, base_url: Optional[str] = None) -> Template:
     """A password reset: a link carrying ``token`` and the time (or text, e.g. "1 hour") it stops working."""
-    url = f"{_base(base_url)}/reset-password.html?token={quote(token, safe='')}"
+    url = f"{_base(base_url)}/reset-password.html#token={quote(token, safe='')}"
     subject = "Reset your JobHuntPA password"
     text, html = _simple(
         "Reset your password",
@@ -129,7 +132,7 @@ def password_reset(token: str, expires: Any, *, base_url: Optional[str] = None) 
 
 def invite(token: str, *, inviter: Optional[str] = None, expires: Any = None, base_url: Optional[str] = None) -> Template:
     """An invitation to create an account; ``inviter`` is a display name (optional)."""
-    url = f"{_base(base_url)}/accept-invite.html?token={quote(token, safe='')}"
+    url = f"{_base(base_url)}/signup.html?invite={quote(token, safe='')}"
     who = f"{inviter} has invited you" if inviter else "You have been invited"
     after = [f"The invitation expires {_when(expires)}."] if expires else []
     after.append("If you were not expecting this, you can ignore this email.")
@@ -142,7 +145,7 @@ def invite(token: str, *, inviter: Optional[str] = None, expires: Any = None, ba
 
 def verify_email(token: str, *, expires: Any = None, base_url: Optional[str] = None) -> Template:
     """Confirm an email address (new account or a change of address)."""
-    url = f"{_base(base_url)}/verify-email.html?token={quote(token, safe='')}"
+    url = f"{_base(base_url)}/verify-email.html#token={quote(token, safe='')}"
     after = [f"The link expires {_when(expires)}."] if expires else []
     after.append("If you did not create or change a JobHuntPA account with this address, ignore this email.")
     text, html = _simple(
@@ -159,11 +162,15 @@ SECURITY_EVENTS = {
     "mfa_disabled_by_admin": ("Two-step sign-in was turned off on your JobHuntPA account",
                               "An administrator turned off two-step sign-in (MFA) for your JobHuntPA account.",
                               "You can turn it on again in your account settings."),
+    "email_changed": ("The email address on your JobHuntPA account was changed",
+                      "The email address of your JobHuntPA account was just changed to a different one. This notice "
+                      "goes to the old address.",
+                      "If you made this change, nothing more is needed."),
 }
 
 
 def security_notice(event: str, *, when: Any = None, base_url: Optional[str] = None) -> Template:
-    """A security notice. ``event`` is "password_changed" or "mfa_disabled_by_admin"."""
+    """A security notice. ``event`` is "password_changed", "mfa_disabled_by_admin" or "email_changed"."""
     if event not in SECURITY_EVENTS:
         raise ValueError(f"Unknown security event: {event}")
     subject, intro, note = SECURITY_EVENTS[event]
@@ -176,6 +183,18 @@ def security_notice(event: str, *, when: Any = None, base_url: Optional[str] = N
         link = (f"{base.rstrip('/')}/", "Open JobHuntPA")
     text, html = _simple(subject, intro, link, after)
     return subject, text, html, {"Auto-Submitted": "auto-generated"}
+
+
+def smtp_test_message(*, base_url: Optional[str] = None) -> Template:
+    """What an admin gets from "Send a test email": proof that mail leaves this server."""
+    base = base_url or mailer.public_base_url()
+    link = (f"{base.rstrip('/')}/", "Open JobHuntPA") if base else None
+    text, html = _simple(
+        "Email is working",
+        "This is a test message from your JobHuntPA. If you can read it, JobHuntPA can send password resets, "
+        "invitations and security notices.",
+        link, ["You asked for this test in the admin panel. Nothing else is needed."])
+    return "JobHuntPA test email", text, html, {"Auto-Submitted": "auto-generated"}
 
 
 # -- the job digest ----------------------------------------------------------------------------------------------
@@ -242,6 +261,25 @@ def _plural(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
 
+def source_label(source: Any) -> Optional[str]:
+    """Where an ad was listed, in words ("SEEK"): the same rule as ``sourceLabel`` in frontend/common.js."""
+    s = str(source or "").strip()
+    if not s:
+        return None
+    if s == "seek":
+        return "SEEK"
+    if s == "import":
+        return "imported page"
+    kind, sep, rest = s.partition(":")
+    if not sep:
+        return _clean(s, 80)
+    if kind == "apsjobs":
+        return "APSJobs"
+    if kind in ("site", "generic"):
+        return _clean(rest, 80)
+    return _clean(f"{rest.split('/')[0]} ({kind[:1].upper()}{kind[1:]})", 80)
+
+
 def digest_card(job: dict, base: str) -> dict:
     """The displayable facts of one job: a dict of ready text (a field that is missing is None), and the links."""
     mode = str(job.get("work_mode") or "").strip().lower()
@@ -267,6 +305,8 @@ def digest_card(job: dict, base: str) -> dict:
         "gaps": None if gaps is None else _plural(gaps, "gap", "gaps"),
         "open_url": link,
         "original_url": _http_url(job.get("url")),
+        "source": source_label(job.get("source")),
+        "workspace": _clean(job.get("workspace_name"), 100),
     }
 
 
@@ -293,7 +333,7 @@ def job_digest(jobs: list[dict], *, keys: ServerKeys, unsubscribe_id: str, every
         "is the job JobHuntPA found since your last digest." if n == 1
         else "are the jobs JobHuntPA found since your last digest, best fit first.")
     freq = (f"You get this digest {_frequency(every_days)}. Change how often, or turn it off, in JobHuntPA under "
-            "your account's email settings.")
+            "Settings > Job digest emails.")
 
     text = [heading, "", intro]
     html = [_h1(heading), _p(intro)]
@@ -318,7 +358,7 @@ def job_digest(jobs: list[dict], *, keys: ServerKeys, unsubscribe_id: str, every
 
 def _card_parts(c: dict) -> tuple[list[str], str]:
     """(text lines, html) for one job card."""
-    meta = [("Company", c["company"]), ("Salary", c["salary"]), ("Location", c["location"]),
+    meta = [("Workspace", c["workspace"]), ("Company", c["company"]), ("Salary", c["salary"]), ("Location", c["location"]),
             ("Office days", c["office_days"]), ("Work type", c["work_mode"]), ("Employment", c["employment"]),
             ("Fit score", None if c["score"] is None else f"{c['score']} out of 100"), ("Gaps", c["gaps"])]
     meta = [(k, v) for k, v in meta if v]
@@ -328,7 +368,8 @@ def _card_parts(c: dict) -> tuple[list[str], str]:
     if c["open_url"]:
         lines += ["", f"Open in JobHuntPA: {c['open_url']}"]
     if c["original_url"]:
-        lines += [f"Original posting: {c['original_url']}"]
+        where = f" on {c['source']}" if c["source"] else ""
+        lines += [f"Original posting{where}: {c['original_url']}"]
 
     rows = "".join(
         f'<tr><th scope="row" align="left" style="padding:2px 12px 2px 0;font-weight:bold;color:{MUTED};'
@@ -338,7 +379,8 @@ def _card_parts(c: dict) -> tuple[list[str], str]:
     if c["open_url"]:
         links.append(f'<strong>{_link(c["open_url"], "Open " + c["title"] + " in JobHuntPA")}</strong>')
     if c["original_url"]:
-        links.append(_link(c["original_url"], "View the original posting for " + c["title"]))
+        where = f" on {c['source']}" if c["source"] else ""
+        links.append(_link(c["original_url"], f"View the original posting for {c['title']}{where}"))
     html = (
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
         f'style="margin:0 0 16px 0;background-color:{CARD};border:1px solid {BORDER};">'

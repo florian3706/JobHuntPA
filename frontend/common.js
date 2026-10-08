@@ -95,7 +95,7 @@ function setFieldError(input, msg, { focus = true } = {}) {
     el = document.createElement('p');
     el.id = id;
     el.className = 'field-error';
-    (input.closest('.key-row, .tag-input, .sched-add') || input).insertAdjacentElement('afterend', el);
+    (input.closest('.key-row, .tag-input, .sched-add, .pw-row') || input).insertAdjacentElement('afterend', el);
   }
   el.innerHTML = `<span aria-hidden="true">⚠ </span>${esc(msg)}`;
   input.setAttribute('aria-invalid', 'true');
@@ -205,7 +205,9 @@ function signedOut(code) {
    them, then comes back here), then welcome.html, which resumes where they left off. null when the page may load. */
 function walkthroughPage(me) {
   if (!me.onboarding_step) return null;
-  if (document.body?.dataset.page === 'welcome') return null;
+  // first-run.html is where the codes are shown: sending it there again would reload it for ever (its password
+  // dialog calls loadSession() first)
+  if (['welcome', 'first-run'].includes(document.body?.dataset.page)) return null;
   return me.recovery_codes_pending ? 'first-run.html' : 'welcome.html';
 }
 
@@ -282,9 +284,143 @@ async function apiResponse(url, opts = {}, retried = false) {
     // stop quietly (no "could not load" errors on the way), as for a 401.
     if (res.status === 423) { showAccessNotice('encrypting', data); return new Promise(() => {}); }
     const detail = data && typeof data === 'object' && data.detail ? data.detail : text;
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    const err = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    err.status = res.status;
+    err.code = code; // e.g. 'reauth_required' (withRecentAuth)
+    err.field = data && typeof data === 'object' ? data.field : undefined; // the form field a refusal is about
+    throw err;
   }
   return { data, headers: res.headers };
+}
+
+/* A one-off message from a sign-in page (auth.js) for the page that opens next, such as how many recovery codes are
+   left after signing in with one. It is kept for this tab only and shown once. */
+const SIGN_IN_NOTICE_KEY = 'jobhunt.signin-notice';
+
+function recoveryLeftText(left) {
+  if (left <= 0) return 'You have no recovery codes left. Make new ones in Settings > Recovery codes.';
+  return `You have ${left} recovery code${left === 1 ? '' : 's'} left. Make new ones in Settings > Recovery codes.`;
+}
+
+function showSignInNotice() {
+  let msg = '';
+  try { msg = sessionStorage.getItem(SIGN_IN_NOTICE_KEY) || ''; sessionStorage.removeItem(SIGN_IN_NOTICE_KEY); } catch { /* private mode */ }
+  if (msg) toast(msg, '', 15000);
+}
+
+/* What the Background access card (background.js) and the walkthrough's automatic-searches step (welcome.js) say.
+   Say only what exists: the server key runs scheduled searches; email digests and reset by email come later. */
+const BACKGROUND_ON_COPY = "JobHuntPA keeps a key on the server so it can run scheduled searches while you're away. The server's operator could technically read your data.";
+const BACKGROUND_OFF_COPY = "Only you can unlock your data. JobHuntPA can't run searches while you're away.";
+
+/* Sensitive actions (accounts design §3) answer 403 {code: 'reauth_required'} unless the password was entered in
+   the last 15 minutes. withRecentAuth(fn) runs fn (which calls api()); on that refusal it asks for the password with
+   confirmPassword() and, once confirmed, runs fn again. Everything that needs recent sign-in goes through it. */
+async function withRecentAuth(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e?.code !== 'reauth_required' || !(await confirmPassword())) throw e;
+    return fn();
+  }
+}
+
+/* Asks for the password again (POST /api/auth/reauth) in a "Confirm your password" dialog and resolves true once it
+   is confirmed, false if the person cancels (Cancel or Escape). A native <dialog>: focus moves into it and goes back
+   to the control that opened it. A wrong password is said under the field and announced; the dialog stays open.
+   Two calls at once share one dialog. A hidden username field holds the account email, so password managers fill in
+   the right password. */
+let confirmDialogOpen = null;
+function confirmPassword() {
+  if (!confirmDialogOpen) confirmDialogOpen = openConfirmDialog().finally(() => { confirmDialogOpen = null; });
+  return confirmDialogOpen;
+}
+
+async function openConfirmDialog() {
+  const opener = document.activeElement;
+  const email = (SESSION.me || await loadSession())?.user?.email || '';
+  const dlg = document.createElement('dialog');
+  dlg.className = 'confirm-dialog';
+  dlg.setAttribute('aria-labelledby', 'confirm-pw-title');
+  dlg.setAttribute('aria-describedby', 'confirm-pw-intro');
+  dlg.innerHTML = `<form class="confirm-box" novalidate>
+    <h2 id="confirm-pw-title">Confirm your password</h2>
+    <p id="confirm-pw-intro">To keep your account safe, enter your password to go on. You won't be asked again for 15 minutes.</p>
+    <div id="confirm-pw-status" class="visually-hidden" role="status"></div>
+    <input class="visually-hidden" type="text" name="username" autocomplete="username" tabindex="-1" readonly
+           aria-hidden="true" aria-label="Email address" value="${esc(email)}" />
+    <div class="auth-field">
+      <label for="confirm-password">Password</label>
+      <div class="pw-row">
+        <input id="confirm-password" name="password" type="password" autocomplete="current-password" spellcheck="false" required />
+        <button id="confirm-toggle" class="btn pw-toggle" type="button" aria-controls="confirm-password" aria-pressed="false">Show password</button>
+      </div>
+    </div>
+    <div class="confirm-actions">
+      <button id="confirm-pw-cancel" class="btn" type="button">Cancel</button>
+      <button id="confirm-submit" class="btn btn-primary" type="submit">Confirm</button>
+    </div>
+  </form>`;
+  document.body.appendChild(dlg);
+  const form = dlg.querySelector('form');
+  const input = dlg.querySelector('#confirm-password');
+  const toggle = dlg.querySelector('#confirm-toggle');
+  const submit = dlg.querySelector('#confirm-submit');
+  const status = dlg.querySelector('#confirm-pw-status');
+  let confirmed = false;
+  let busy = false;
+  const problem = (msg) => {
+    setFieldError(input, '');
+    if (!msg) return;
+    const note = document.createElement('p');
+    note.id = 'confirm-pw-error';
+    note.className = 'field-error';
+    note.setAttribute('role', 'alert'); // read out inside the dialog, where the page's own live regions are inert
+    note.innerHTML = `<span class="visually-hidden">Error: </span>${esc(msg)}`;
+    input.closest('.pw-row').insertAdjacentElement('afterend', note);
+    input.setAttribute('aria-invalid', 'true');
+    input.setAttribute('aria-describedby', note.id);
+    input.addEventListener('input', () => problem(''), { once: true });
+    input.focus(); // the error is read from here (aria-describedby)
+  };
+  toggle.addEventListener('click', () => {
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    toggle.setAttribute('aria-pressed', String(show));
+  });
+  dlg.querySelector('#confirm-pw-cancel').addEventListener('click', () => dlg.close());
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    const old = document.getElementById('confirm-pw-error');
+    if (old) { old.remove(); input.removeAttribute('aria-invalid'); input.removeAttribute('aria-describedby'); }
+    if (!input.value) { problem('Enter your password.'); return; }
+    busy = true;
+    setBusy(submit, true);
+    setText(status, 'Checking your password…'); // inside the dialog: the rest of the page is inert while it is open
+    input.type = 'password';
+    toggle.setAttribute('aria-pressed', 'false');
+    try {
+      await api('/api/auth/reauth', { method: 'POST', body: JSON.stringify({ password: input.value }) });
+      confirmed = true;
+      dlg.close();
+    } catch (err) {
+      setText(status, '');
+      problem(err.message || "That didn't work. Try again.");
+    } finally {
+      busy = false;
+      setBusy(submit, false);
+    }
+  });
+  return new Promise((resolve) => {
+    dlg.addEventListener('close', () => {
+      dlg.remove();
+      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+      resolve(confirmed);
+    });
+    dlg.showModal(); // Escape fires 'cancel', which closes the dialog: resolved as false
+    input.focus();
+  });
 }
 
 /* A notice at the top of the page that stays until the situation changes. One per kind; showing it again
@@ -363,35 +499,16 @@ function fmtBytes(n) {
 }
 
 /* After the encryption: the copies of the data that still hold it unencrypted (the backup it made first, older
-   backups, an old page cache) are listed for an admin, with "Delete them now", until they are gone (accounts design
-   §5.5). Nothing is deleted without that click. */
+   backups, an old page cache) are reported in the admin panel's Server section (accounts design §5.5), where an
+   admin can delete them. This notice only points there, until they are gone. */
 async function remindLeftovers(me) {
   if (me?.user?.role !== 'admin') return;
   let status;
   try { status = await api('/api/encryption/status'); } catch { return; }
   const files = status?.leftovers || [];
   if (status?.state !== 'done' || !files.length) return;
-  const el = pageNotice('leftovers', `<p><strong>Your data is encrypted now.</strong> These files from before still hold it
-      unencrypted. You only need the backup to go back to an older version of JobHuntPA.</p>
-    <ul class="leftover-files">${files.map((f) => `<li><code>${esc(f.path)}</code> (${fmtBytes(f.bytes)})</li>`).join('')}</ul>
-    <p><button type="button" class="btn btn-primary btn-sm" id="leftovers-delete">Delete them now (recommended)</button></p>`);
-  el?.querySelector('#leftovers-delete').addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    setBusy(btn, true);
-    try {
-      const out = await api('/api/encryption/leftovers/delete', { method: 'POST' });
-      if (out.leftovers?.length) {
-        toast(`${out.leftovers.length} file(s) could not be deleted. Check the data folder's permissions.`, 'err', 10000);
-      } else {
-        pageNotice('leftovers', '<p>Deleted. No unencrypted copy of your data is left in the data folder.</p>');
-        announce('Deleted the unencrypted copies of your data.');
-      }
-    } catch (err) {
-      toast(err.message, 'err', 10000);
-    } finally {
-      setBusy(btn, false);
-    }
-  });
+  pageNotice('leftovers', `<p><strong>Your data is encrypted now.</strong> ${files.length === 1 ? 'A file' : `${files.length} files`} from before still
+      ${files.length === 1 ? 'holds' : 'hold'} it unencrypted. <a href="admin.html#server">See them in the admin panel</a>, where you can delete them.</p>`);
 }
 
 /* ---------- the account menu in the header ----------

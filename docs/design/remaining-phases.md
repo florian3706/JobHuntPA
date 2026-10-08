@@ -20,9 +20,14 @@ Everything since v1.13.0 is on GitHub `main` (pushed 2026-10-07, not released or
 | C | Accounts and sessions: first run, sign-in, cookie-wrapped data key, CSRF, rate limits, admin-only global settings | done |
 | D | Encrypting user data and migrating it | done (see the commit log on `wip/accounts`) |
 | K | Sign-up wizard (`welcome.html`): theme first, then search setup | done |
-| Email core | `backend/mailer.py`, `backend/email_templates.py`. Not wired in yet | done |
-| Billing core | `backend/access.py` (membership gate) and `backend/billing.py` (Stripe). Not wired in yet | done |
-| E, F, G, H, I, J, L | Below | **to do** |
+| Email core | `backend/mailer.py`, `backend/email_templates.py` | done, wired in by H |
+| Billing core | `backend/access.py` (membership gate) and `backend/billing.py` (Stripe) | done, wired in by I |
+| E, F, G | Below. Built in parallel and merged | done (merged 2026-10-07) |
+| H | Email: settings, address checks, forgot password, notices | done (merged at 7d74fd7) |
+| I | Memberships and Stripe | done (merged at 7d74fd7) |
+| X | Data export (added on 2026-10-07) | done (merged at 7d74fd7) |
+| J | Job digest emails | in progress (worktree `phase-j`) |
+| L | Hardening and final review | **to do** |
 
 ## Order and what can run in parallel
 
@@ -34,8 +39,8 @@ D (done) ───┼── F  (admin panel) ───────────�
 
 - **Wave 1, in parallel:** E, F and G. E and G both add cards to the Account part of the Settings tab, so merge E
   first and give G's UI a quick rebase.
-- **Wave 2, in parallel:** H (needs E, F and G) and I (needs F). Both add settings to `ENV_RULES` and to the admin
-  panel; those merges are trivial.
+- **Wave 2, in parallel:** H (needs E, F and G), I (needs F) and X, the data export (needs E's password dialog).
+  H and I both add settings to `ENV_RULES` and to the admin panel; those merges are trivial.
 - **Wave 3:** J (needs G and H; I is optional).
 - **Wave 4:** L, the final hardening and review.
 
@@ -150,7 +155,7 @@ D (done) ───┼── F  (admin panel) ───────────�
 - An admin user type with an admin panel.
 - See the users.
 - Send password-reset emails. Build the button and the endpoint here; the email itself is sent once Phase H wires
-  mail in. Until then, show "email isn't set up yet".
+  mail in. Until then, show "email isn't set up yet". (Historical: Phase H has since wired it in.)
 - LLM usage stats.
 - The number of users, and active users in the past week and month.
 - Manually change membership time frames; add free periods for users; exempt users from payment entirely.
@@ -238,7 +243,8 @@ D (done) ───┼── F  (admin panel) ───────────�
 ## Phase H: email wiring
 
 **Design:** §9, §13 items 1–2, §16 (the link names, the SMTP password decision, sending from one background thread).
-Uses `backend/mailer.py` and `backend/email_templates.py`, which exist but aren't wired in.
+Uses `backend/mailer.py` and `backend/email_templates.py`, which existed but weren't wired in when this brief was
+written (historical: this brief describes the state before H was merged).
 
 **Build:**
 - **SMTP and public-address settings** in the admin panel (Phase F): `SMTP_*` and `PUBLIC_BASE_URL`. Add a "send a
@@ -251,7 +257,7 @@ Uses `backend/mailer.py` and `backend/email_templates.py`, which exist but aren'
   - If MFA is on, a code is required.
   - Without a recovery code, locked data is wiped, with a clear warning first.
   - Users with background access keep their data (Phase G's hook).
-- **Admin buttons:** "send password reset" (from Phase F) and invite emails (`accept-invite.html`).
+- **Admin buttons:** "send password reset" (from Phase F) and invite emails (the link goes to `signup.html?invite=`; there is no accept-invite page).
 - **Security notices:** password changed, MFA turned off by an admin.
 - **Sending:** from one background thread; never block a request; never log addresses or bodies.
 
@@ -268,8 +274,9 @@ Uses `backend/mailer.py` and `backend/email_templates.py`, which exist but aren'
 
 ## Phase I: memberships and Stripe
 
-**Design:** §8, §11 row I, §13 item 3. Uses `backend/access.py` and `backend/billing.py`, which exist with tests but
-aren't wired in. Read their module docstrings and the notes in their tests.
+**Design:** §8, §11 row I, §13 item 3. Uses `backend/access.py` and `backend/billing.py`, which existed with tests but
+weren't wired in when this brief was written (historical: this brief describes the state before I was merged). Read
+their module docstrings and the notes in their tests.
 
 **The user's rules:**
 - Stripe takes payments.
@@ -354,6 +361,82 @@ aren't wired in. Read their module docstrings and the notes in their tests.
 - A one-click POST works with no session.
 - A GET doesn't unsubscribe.
 - Opt-out stops the emails.
+
+---
+
+## Phase X: download your data (added 2026-10-07)
+
+**What the user asked for:** "a data export feature. I want to create a zip of a folder structure with all the user
+data in markdown files in a sensible folder structure for humans."
+
+**Design:** §2.2 (what is sealed, so what has to be opened), §2.5 (logs), §3 (recent sign-in for sensitive actions),
+CLAUDE.md's workspace and `duplicate_of` rules.
+
+**Build:**
+- **`backend/export.py`, `POST /api/account/export`.** It answers `application/zip` with
+  `Content-Disposition: attachment; filename="JobHuntPA-export-YYYY-MM-DD.zip"`.
+  - A POST with the CSRF token, not a GET: a link or a prefetch must never start an export.
+  - It needs recent sign-in (`sessions.require_recent_auth`), and the page calls it through `withRecentAuth`.
+  - One export at a time per account (429 while one is being built).
+  - It is built in memory (`BytesIO`) inside the request's key scope. Plaintext never touches the disk: no temporary
+    files, no `SpooledTemporaryFile`.
+  - Only the account's own workspaces (`owner_id`), never anyone else's. Admins can't export other people's data.
+  - Logs say only that user N exported (file count and size), never names or content.
+- **The folder layout** is for people, not programs:
+  ```
+  JobHuntPA export 2026-10-07/
+  ├── README.md               what this is, when it was made, how it's organised, what isn't included and why
+  ├── Account.md              email, name, account created, admin or not, two-step sign-in and background access
+  │                           on or off, theme, membership (whatever the account has when the export runs)
+  ├── Companies/              research on the companies of the jobs that have their own file (shared research)
+  │   └── Acme Corp.md
+  └── Workspaces/
+      └── My job search/
+          ├── Search setup.md     job titles, keywords, dealbreakers, salary floor, work modes and office days,
+          │                       SEEK locations, home and other pins, commute settings, the search schedule
+          ├── Sources.md          company career pages and feeds: label, address, type, on or off, last result
+          ├── Documents/
+          │   ├── Resume.md           the text, plus the concise version as its own section; notes and the summary
+          │   └── Original files/     each upload exactly as uploaded (opened from its sealed file)
+          ├── Jobs/
+          │   ├── Jobs.md             an index table: title, company, status, fit score, closed, link to the file
+          │   ├── Shortlisted/, Applied/, Interviewing/, To review/, Rejected/, Not interested/, Hidden/
+          │   │   ├── Acme Corp - Senior Analyst.md
+          │   │   └── Acme Corp - Senior Analyst - Cover letter.md
+          │   └── Filtered out.md     jobs the search filters left out: title, company, reason, link (no file each)
+          ├── Chats/
+          │   └── 2026-10-01 Ask about Acme Corp.md
+          └── Search history.md   each run: when, manual or scheduled, how it ended, what it found
+  ```
+  - **A job's file:** title and company as the heading; your status, the fit score, where (work mode, office days,
+    distance from home), salary, employment type, posted, first seen and closed dates, the office, a link to the
+    original ad; then the fit summary, points, evidence and gaps; the description; and "Also advertised at" listing
+    its merged copies. Merged copies (`duplicate_of` set) get no file of their own.
+  - **Chats** keep each message's role and time, and link the jobs they're about to those jobs' files (relative
+    links).
+  - **Links between files are relative,** so they work after unzipping, offline.
+- **Safe names on Windows, macOS and Linux:** no `<>:"/\|?*` or control characters, no leading or trailing dots or
+  spaces, none of Windows' reserved names (CON, PRN, AUX, NUL, COM1–9, LPT1–9), at most 80 characters per part,
+  NFC-normalised, and unique within a folder ("Resume (2).md"). Zip entries use forward slashes and UTF-8 names.
+- **Safe Markdown:** ads and AI answers are other people's text. Escape raw HTML so a Markdown viewer shows it as
+  text, escape `|` and line breaks inside table cells, and only link `http`/`https` addresses.
+- **The page:** a "Download your data" card in Settings (`#account-export-slot`). It says what's in the file, that
+  the file isn't encrypted (keep it somewhere safe), then "Download my data (.zip)". The download happens through
+  `fetch`, a Blob and an object URL, with a busy state and a status message in a live region.
+- **Later phases** that add personal data (I's membership details, J's digest settings) add it to the export too.
+
+**Tests:**
+- The zip's folders and names.
+- A marker planted in every sealed field comes out readable in the right file.
+- Another user's data and workspaces never appear.
+- Merged copies have no file and show in the main job's file; excluded jobs only in `Filtered out.md`; hidden jobs in
+  `Hidden/`.
+- Hostile names (`../x`, `CON`, `a/b`, 300 characters, emoji, two documents with one name) become safe, unique names.
+- HTML in a description comes out escaped.
+- It needs recent sign-in and the CSRF token; a second export while one runs gets 429.
+- No file is written to disk while exporting.
+- An original upload comes back byte for byte.
+- Accessibility checks for the card.
 
 ---
 
