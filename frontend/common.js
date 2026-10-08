@@ -440,6 +440,30 @@ function pageNotice(kind, html) {
   return el;
 }
 
+/* Whether this person is on a trial: billing is on and they aren't a member. The AI features (rescoring, chat, cover
+   letters, company research and Fill missing info, title ideas, shorter versions and summaries of documents) are for
+   members; a free search still finds and scores jobs. Pages call loadAiAccess() once at start; a failure counts as
+   "not locked" (the server decides anyway, and answers 402). */
+const AI_NOTE = 'AI features are for members. Your free searches still find and score jobs.';
+let aiLockedNow = false;
+async function loadAiAccess() {
+  try {
+    const st = await api('/api/billing/status');
+    aiLockedNow = !!(st.billing.enabled && !st.me.member);
+  } catch { aiLockedNow = false; }
+  showAiNotes();
+  return aiLockedNow;
+}
+const aiNoteHtml = () => (aiLockedNow ? `<p class="hint ai-note">${esc(AI_NOTE)} <a href="billing.html">See membership options</a></p>` : '');
+/* Fills the static <p class="hint ai-note" hidden> elements of a page. */
+function showAiNotes() {
+  document.querySelectorAll('.ai-note[hidden]').forEach((el) => {
+    if (!aiLockedNow) return;
+    el.innerHTML = `${esc(AI_NOTE)} <a href="billing.html">See membership options</a>`;
+    el.hidden = false;
+  });
+}
+
 /* 402: a membership is needed for this (Phase I); 423: the data is being encrypted (Phase D). */
 function showAccessNotice(kind, data) {
   if (kind === 'membership') {
@@ -733,7 +757,7 @@ const RESEARCHED = ['done', 'error', 'skipped'];
 /* Company profile body (info modal and job page). Has a #company-research button. */
 function companyProfileHtml(p, name) {
   if (p && !RESEARCHED.includes(p.status)) p = null; // only offices known so far
-  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>`;
+  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>${aiNoteHtml()}`;
   if (!p) {
     return `<p class="modal-links">${glassdoorLink(p, name)}</p>
       <p class="muted">Not researched yet. <strong>Fill missing info</strong> researches every company in your list, or research just this one:</p>${researchBtn}`;

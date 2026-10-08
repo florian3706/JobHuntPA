@@ -321,6 +321,7 @@
         <strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
         the chat and title suggestions use them, and cover letters never see them.
         Untick "use for scoring" to keep a document out of every prompt. Changing documents marks existing scores as stale.</p>
+      <p class="hint ai-note" hidden></p>
       <div class="card form-card summary-card">
         <h3>One summary instead of many documents</h3>
         <p class="hint">Every ticked document goes with every request to the AI, repeats and all. <strong>Create summary</strong> merges the
@@ -507,6 +508,7 @@
       <button id="chat-delete" class="btn btn-ghost btn-sm" type="button" title="Delete this conversation">Delete<span class="visually-hidden"> this chat</span></button>
     </div>
     <ul id="chat-jobs" class="chat-jobs" aria-label="Jobs in this chat"></ul>
+    <p class="hint ai-note chat-hint" hidden></p>
     <div id="chat-messages" class="chat-messages" role="region" aria-label="Conversation" tabindex="0"></div>
     <form id="chat-form" class="chat-form" autocomplete="off">
       <label for="chat-input" class="visually-hidden">Your question</label>

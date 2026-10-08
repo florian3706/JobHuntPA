@@ -594,9 +594,9 @@ The panel also shows the cache hit rate (cached tokens ÷ input tokens). Users a
   | Viewing data, statuses, notes, uploads, pins, settings, account, billing, deleting the account | Always |
   | Run search (manual) | Member, or trial. A trial search uses one free search. |
   | Scheduled searches (and so digests) | Member and background access on. Free searches are for Run search only, so the default schedule doesn't use them up on day one. |
-  | LLM features (score or rescore, chat, cover letters, title suggestions, research or Fill missing info, concise versions, summary) | Member, or trial. The run that uses the last free search still finishes its own scoring. |
+  | AI features (rescore and Score pending, chat, cover letters, title suggestions, research or Fill missing info, concise versions, summary) | Members only (reason `ai_members_only`), whatever is left of the free searches (§13 item 5). A free search run still scores the jobs it finds: that scoring happens inside the run and doesn't ask the gate. |
 
-  - **What counts as a "search":** one search run (Run search or a scheduled search), counted when it is queued (`search_runs.free_search=1`). A run that ends `failed` or is interrupted gives it back. Rescoring, research, chat, cover letters, title suggestions and importing saved pages don't count.
+  - **What counts as a "search":** one search run (Run search or a scheduled search), counted when it is queued (`search_runs.free_search=1`). A run that ends `failed` or is interrupted gives it back. Rescoring, research, chat, cover letters, title suggestions and importing saved pages don't count (the AI features are refused to trial accounts, so they never reach a count).
   - **Free periods and free searches:** free searches are not used up during a free period.
   - **Free period for someone already paying:** an admin grant also pushes back their next payment, with `subscriptions.update(sub, trial_end=grant_end, proration_behavior="none")`.
   - **Exempting someone who pays:** the admin is offered "Cancel their subscription at period end".
@@ -763,7 +763,7 @@ Every phase must leave `python3 -m unittest discover -s tests -t .` passing, kee
    - **Work type:** default is remote, hybrid or onsite. Employment type (full-time or contract) isn't stored today; it would need changes to the adapters.
    - **Job title:** default is to show it as the card heading, although your list didn't name it.
    - **Score:** default is to leave it out.
-3. **LLM features after the free searches run out:** default is that rescoring, chat and cover letters are blocked until the person becomes a member. The jobs found stay visible.
+3. **LLM features after the free searches run out:** default is that rescoring, chat and cover letters are blocked until the person becomes a member. The jobs found stay visible. (Item 5 in section 13 later made the AI features members-only from the start.)
 
 **Defaults I chose without asking:**
 - Sign-up is invite-only, as an admin setting (invite, open or closed).
@@ -798,8 +798,9 @@ New modules: `backend/crypto.py`, `backend/keys.py`, `backend/sessions.py`, `bac
    - every field the user listed; "work type" is remote, hybrid or onsite
    - the fit score (0–100)
    - the **employment type** (full-time, part-time, contract, casual). Jobs don't record this yet, so it needs a new `jobs.employment_type` column, sealed in Phase D, filled by the adapters (SEEK's work type; ATS fields where they exist). The main job cards show it too, so the digest mirrors the app.
-3. **After the 3 free searches:** jobs already found stay visible. New searches, rescoring, chat and cover letters are blocked until the person becomes a member.
+3. **After the 3 free searches:** jobs already found stay visible. New searches, rescoring, chat and cover letters are blocked until the person becomes a member. (Item 5 later made the AI features members-only from the start.)
 4. **Release timing:** Phase 1 and the WCAG/mobile pass ship together in one release; no push before then.
+5. **AI features are for members only (2026-10-08).** A security review pointed out that a trial account could use the AI features as much as it liked without spending a free search. The user's decision: trial accounts get their free searches, and each free search run still scores the jobs it finds (inside the run, not through a gated endpoint), but rescoring, chat, cover letters, company research and Fill missing info, title suggestions, and the concise versions and summary of documents wait until the person becomes a member. With billing off nothing is gated. Admins, exempt accounts, active free periods and paying members are members, as before. Built as: `access.decide` refuses every feature except `view_jobs` and `search` without a membership; the AI features get the reason `ai_members_only` and the message "AI features are for members. Your free searches still find and score jobs. ..." (a search keeps `free_searches_used`, a scheduled search `membership_required`). The pages show the usual 402 notice and a short note beside the AI actions for trial accounts. The sign-up walkthrough has no AI step: titles are typed, so a trial account can finish it.
 
 ## 14. Shared job pool and company-profile cache (2026-10-05)
 

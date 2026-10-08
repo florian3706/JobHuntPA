@@ -267,6 +267,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderOffice();
   renderFit();
   renderAd();
+  await loadAiAccess(); // trial accounts get a note beside "Research this company"
   loadCompany();
   loadCommute();
 });

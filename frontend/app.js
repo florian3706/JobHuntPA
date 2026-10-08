@@ -466,7 +466,11 @@ function showUploadAd(job) {
         Object.assign(job, await api(`/api/score/${job.id}${slackQuery()}`, { method: 'POST' }));
         status.textContent = `Updated and rescored: ${job.fit?.score ?? '?'}.`;
       } catch (err) {
-        status.textContent = `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
+        status.textContent = err.status === 402
+          ? (job.fit?.status === 'ok'
+            ? 'Updated with the full ad. Rescoring is for members, so the old score stays until you become one.'
+            : 'Updated with the full ad. Scoring a job by hand is for members; your next free search scores it.')
+          : `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
       }
       renderJobs();
     } catch (err) {
@@ -753,6 +757,7 @@ async function showCoverLetter(job) {
       </div>
       <p class="hint">Drafts use only facts from your documents, but always check them before sending.
         Upload earlier cover letters as "Cover letter" documents and drafts will follow your style.</p>
+      ${aiNoteHtml()}
     </div>`);
   const meta = (l) => {
     if (!l) return '';
@@ -2519,6 +2524,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try { me = await loadSession(); } // signed out: goes to the sign-in page and never returns
   catch (e) { toast(e.message, 'err', 15000); return; }
   applyAccount(me);
+  await loadAiAccess(); // trial accounts get a note beside the AI features
   state.ws = storedWorkspace();
   try { await loadWorkspaces(); } catch (e) { toast(`Could not load workspaces: ${e.message}`, 'err'); }
   initWorkspaces();

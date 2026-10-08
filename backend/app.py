@@ -386,18 +386,27 @@ def refilter_jobs(db: Session = Depends(get_db), ws: int = Depends(current_works
 # Background runs
 # ---------------------------------------------------------------------------
 
-def _score(ws: int, mode: str, progress, office_slack: int = 0) -> dict:
+def _score(ws: int, mode: str, progress, office_slack: int = 0, only: Optional[set] = None) -> dict:
     from backend.scorer import ScorerError, build_profile, score_jobs, select_jobs
 
     db = SessionLocal()
     try:
-        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws, office_slack)
+        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws, office_slack, only)
     finally:
         db.close()
     try:
         return score_jobs(ws, ids, progress)
     except ScorerError as exc:
         return {"aborted": llm_providers.user_message(exc)}
+
+
+def _run_was_free() -> bool:
+    """Whether the running search used one of the owner's free searches."""
+    db = SessionLocal()
+    try:
+        return bool(db.query(SearchRun.free_search).filter(SearchRun.id == tasks.current_run_id.get()).scalar())
+    finally:
+        db.close()
 
 
 def start_search_run(ws: int, scheduled: bool = False) -> dict:
@@ -410,10 +419,20 @@ def start_search_run(ws: int, scheduled: bool = False) -> dict:
         from backend.duplicates import scan_workspace
 
         summary = {"search": run_search(ws, progress)}
+        found = set(summary["search"].pop("job_ids", ()))
         # Before scoring, so the same ad on two sites is scored once.
         progress("checking for duplicate ads", {})
         summary["duplicates"] = scan_workspace(ws)
-        summary["scoring"] = {"skipped": config_problem()} if config_problem() else _score(ws, "pending", progress)
+        only = None
+        if _run_was_free():  # a free search scores the jobs it found, not whatever else is waiting
+            run_id = tasks.current_run_id.get()
+            db = SessionLocal()
+            try:
+                found |= {i for (i,) in db.query(Job.id).filter(Job.workspace_id == ws, Job.first_run_id == run_id)}
+            finally:
+                db.close()
+            only = found
+        summary["scoring"] = {"skipped": config_problem()} if config_problem() else _score(ws, "pending", progress, only=only)
         return summary
 
     return tasks.start("search", job, ws, scheduled=scheduled, charge=membership.charge_search)

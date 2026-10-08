@@ -14,6 +14,7 @@ import logging
 import os
 import time
 import unittest
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -263,17 +264,41 @@ class GateAtTheEndpoints(Base):
         for key, r in self.answers(c).items():
             self.assertNotEqual(r.status_code, 402, f"{key} {msg} {r.text}")
 
-    def assertRefused(self, c, msg=""):
+    def assertRefused(self, c, msg="", search_left=False):
+        """Every gated endpoint says 402: the AI features always with ai_members_only, a search with
+        free_searches_used (or, with ``search_left``, a search is let through: the account has free searches)."""
         for key, r in self.answers(c).items():
+            if search_left and GATED[key] == access.SEARCH:
+                self.assertNotEqual(r.status_code, 402, f"{key} {msg} {r.text}")
+                continue
             self.assertEqual(r.status_code, 402, f"{key} {msg} {r.text}")
             body = r.json()
             self.assertEqual(body["code"], "membership_required")
             self.assertTrue(body["detail"])
-            self.assertEqual(body["reason"], "free_searches_used")
+            ai = GATED[key] != access.SEARCH
+            self.assertEqual(body["reason"], "ai_members_only" if ai else "free_searches_used", f"{key} {msg}")
+            self.assertEqual("AI features are for members" in body["detail"], ai, f"{key} {msg} {body['detail']}")
 
-    def test_a_new_account_has_free_searches_for_everything(self):
+    def test_a_trial_account_may_search_but_every_ai_feature_is_refused(self):
         acct, c = self.user()
-        self.assertAllowed(c, "(trial)")
+        self.assertRefused(c, "(trial)", search_left=True)
+        self.assertEqual(self.member(acct.id).free_searches_used, 1, "only the search used a free search")
+
+    def test_the_ai_refusal_is_the_same_whatever_is_left_of_the_free_searches(self):
+        for used in (0, 2, 3):
+            acct, c = self.user(free_searches_used=used)
+            for key, r in self.answers(c).items():
+                if GATED[key] != access.SEARCH:
+                    self.assertEqual((r.status_code, r.json()["reason"]), (402, "ai_members_only"), (used, key))
+
+    def test_a_failed_ai_request_uses_no_free_search_and_starts_nothing(self):
+        acct, c = self.user()
+        for key, (path, body) in REQUESTS.items():
+            if GATED[key] != access.SEARCH:
+                c.post(path, json=body) if body is not None else c.post(path)
+        self.assertEqual(self.member(acct.id).free_searches_used, 0)
+        self.assertEqual(c.get("/api/runs/latest").json(), None)
+        self.score.assert_not_called()
 
     def test_when_the_free_searches_are_used_every_paid_feature_is_refused_but_viewing_stays(self):
         acct, c = self.user(free_searches_used=3)
@@ -464,6 +489,61 @@ class FreeSearches(Base):
         self.assertEqual((again.status_code, again.json()["code"]), (402, "membership_required"))
         self.assertEqual(self.member(acct.id).free_searches_used, 3)
 
+    def test_a_free_search_scores_only_the_jobs_it_found_but_a_members_search_scores_every_pending_one(self):
+        acct, c = self.user()
+        with mock.patch("backend.pipeline.run_search", return_value={"job_ids": [7, 8]}):
+            self.run_and_wait(c)
+        self.assertEqual(self.score.call_args.kwargs["only"], {7, 8})
+        member, mc = self.user(exempt=True)
+        with mock.patch("backend.pipeline.run_search", return_value={"job_ids": [7, 8]}):
+            self.run_and_wait(mc)
+        self.assertIsNone(self.score.call_args.kwargs["only"])
+
+    def test_select_jobs_can_be_limited_to_some_ids(self):
+        from backend.scorer import select_jobs
+        with mock.patch("backend.pool.job_states", return_value=[(1, False, None, False, "full"),
+                                                                 (2, False, None, False, "full")]), \
+                mock.patch("backend.filters.softened_job_ids", return_value=set()):
+            db = mock.MagicMock()
+            db.query.return_value.join.return_value.filter.return_value = []
+            self.assertEqual(select_jobs(db, "pending", "h", 1), [1, 2])
+            self.assertEqual(select_jobs(db, "pending", "h", 1, only={2}), [2])
+
+    def test_a_free_search_run_scores_through_the_real_scoring_code_with_no_membership(self):
+        """The run's own scoring is not behind the gate: a trial account's run reaches the model for its jobs
+        (the model call is the only thing replaced), while rescoring by hand is refused."""
+        self.scored.stop()  # the real backend.app._score
+        self.addCleanup(self.scored.start)
+        acct, c = self.user()
+        with mock.patch("backend.scorer.select_jobs", return_value=[4242]), \
+                mock.patch("backend.scorer._duplicate_groups", return_value={4242: []}), \
+                mock.patch("backend.scorer.score_one", return_value={"score": 77}) as score_one:
+            run, done = self.run_and_wait(c)
+            self.assertEqual(done["state"], "done", done)
+            score_one.assert_called_once()
+            self.assertEqual(score_one.call_args.args[0], 4242)
+            self.assertEqual(done["summary"]["scoring"]["scored"], 1)
+            self.assertFalse(done["summary"]["scoring"].get("aborted"))
+            self.assertEqual(c.post("/api/score/run", json={"mode": "pending"}).status_code, 402)
+            self.assertEqual(c.post("/api/score/4242").status_code, 402)
+            score_one.assert_called_once()  # the refused requests scored nothing
+
+    def test_the_wizards_title_step_works_for_a_trial_account_without_the_ai(self):
+        """The sign-up wizard only saves typed titles (PUT /api/profile): a trial account can finish it. Title
+        suggestions are refused with the members-only reason, and the wizard never calls them."""
+        acct, c = self.user()
+        r = c.post("/api/documents/suggest-titles")
+        self.assertEqual((r.status_code, r.json()["reason"]), (402, "ai_members_only"))
+        profile = c.get("/api/profile")
+        self.assertEqual(profile.status_code, 200)
+        saved = c.put("/api/profile", json={**profile.json(), "titles": ["Product Manager", "Business Analyst"]})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(c.get("/api/profile").json()["titles"], ["Product Manager", "Business Analyst"])
+        wizard = (Path(__file__).resolve().parent.parent / "frontend" / "welcome.js").read_text(encoding="utf-8")
+        for path in ("suggest-titles", "/api/score", "/api/chats", "cover-letter", "companies/research", "/concise",
+                     "documents/summary"):
+            self.assertNotIn(path, wizard)
+
     def test_two_runs_cannot_both_take_the_last_free_search(self):
         """The gate said yes to both; the guarded update lets only one through."""
         acct, c = self.user(free_searches_used=2)
@@ -497,6 +577,7 @@ class FreeSearches(Base):
 
     def test_scoring_and_the_rest_dont_use_free_searches(self):
         acct, c = self.user()
+        self.subscribe(acct.id)  # the AI features are for members
         for url, body in (("/api/score/run", {"mode": "pending"}), ("/api/companies/research", {})):
             r = c.post(url, json=body)
             self.assertIn(r.status_code, (200, 202), f"{url}: {r.text}")
@@ -615,7 +696,7 @@ class AccountsWithoutAMembershipRow(Base):
         acct, c = self.user()
         self.drop_row(acct.id)
         self.assertIsNone(c.get("/api/billing/status").json()["me"]["stripe_status"])
-        self.assertNotEqual(c.post("/api/documents/summary").status_code, 402)
+        self.assertEqual(c.post("/api/documents/summary").json()["reason"], "ai_members_only")  # a trial account
         run, _ = self.run_and_wait(c)
         m = self.member(acct.id)
         self.assertEqual(m.free_searches_used, 1)
@@ -1404,7 +1485,8 @@ class AdminSide(Base):
         self.admin.delete(f"/api/admin/users/{acct.id}/grants/{r.json()['grant']['id']}")
         self.assertEqual(c.post("/api/documents/summary").status_code, 402)
         self.admin.put(f"/api/admin/users/{acct.id}/membership", json={"free_searches_used": 0})
-        self.assertNotEqual(c.post("/api/documents/summary").status_code, 402)
+        self.assertEqual(c.post("/api/documents/summary").status_code, 402)  # free searches don't open the AI
+        self.assertNotEqual(c.post("/api/search/run").status_code, 402)
 
     def test_a_free_period_for_someone_who_pays_moves_their_next_payment(self):
         acct, c, ref = self.subscriber()

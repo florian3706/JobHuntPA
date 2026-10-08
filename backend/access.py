@@ -9,9 +9,16 @@ Rules (first match wins):
   2. an active free period (grant): ``starts_at <= now < ends_at``
   3. a subscription that is active or trialing, or past_due and now < ``grace_until`` (3 days after the failed
      payment, set by ``billing.apply_subscription``)
-  4. otherwise: view_jobs always; search while free searches remain; the LLM features while free searches remain
-     (the run that uses the last free search still finishes its own scoring: the caller scores inside the run
-     without asking the gate); scheduled_search never (it needs a membership).
+  4. otherwise (a trial or lapsed account): view_jobs always; search while free searches remain; nothing else.
+     The AI features (rescore, chat, cover_letter, research, concise_or_summary) and scheduled_search need a
+     membership, whatever is left of the free searches. A free search run still scores the jobs it finds: the
+     caller scores inside the run without asking the gate.
+
+  feature            member   trial, free search left   free searches used up
+  view_jobs          yes      yes                       yes
+  search             yes      yes (uses one)            no  (free_searches_used)
+  scheduled_search   yes      no  (membership_required) no  (membership_required)
+  AI features        yes      no  (ai_members_only)     no  (ai_members_only)
 """
 from __future__ import annotations
 
@@ -60,7 +67,7 @@ class AccessState:
 class Decision:
     allowed: bool
     reason_code: str   # why: admin, exempt, billing_off, grant, subscribed, grace, free_search, view_always,
-    #                    membership_required, free_searches_used
+    #                    membership_required (scheduled search), free_searches_used (search), ai_members_only
     message: str       # plain words for the user (the body of a 402)
     needs_sync: bool = False  # the subscription looks stale (period end passed): the caller should sync with Stripe
 
@@ -70,7 +77,9 @@ class MembershipRequired(Exception):
 
 
 _MSG_FREE_USED = ("You have used your free searches. Your jobs stay visible; become a member to run new "
-                  "searches, rescore, chat, write cover letters and research companies.")
+                  "searches and use the AI features.")
+_MSG_AI = ("AI features are for members. Your free searches still find and score jobs. Become a member to "
+           "rescore, chat, write cover letters and research companies.")
 _MSG_SCHEDULED = "Scheduled searches need a membership. Become a member to turn them on."
 
 
@@ -129,6 +138,8 @@ def decide(feature: str, state: AccessState, now: datetime) -> Decision:
     stale = needs_sync(state, now)
     if feature == SCHEDULED_SEARCH:
         return Decision(False, "membership_required", _MSG_SCHEDULED, stale)
+    if feature != SEARCH:  # the AI features: members only, free searches or not
+        return Decision(False, "ai_members_only", _MSG_AI, stale)
     if free_searches_left(state) > 0:
         return Decision(True, "free_search", "", stale)
     return Decision(False, "free_searches_used", _MSG_FREE_USED, stale)

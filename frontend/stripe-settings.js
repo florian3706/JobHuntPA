@@ -23,7 +23,7 @@ function renderStripe(st) {
   let summary;
   if (!st.configured) summary = 'Off: no Stripe key is saved, so everyone has full access and nobody is charged.';
   else if (!st.enabled) summary = 'Off for now: Stripe has no active price for the lookup key, so everyone has full access and nobody is charged.';
-  else summary = `On${st.test_mode ? ' in test mode' : ''}: people use their free searches, then need a membership.`;
+  else summary = `On${st.test_mode ? ' in test mode' : ''}: people use their free searches (the AI features are for members), then need a membership.`;
   setText($('#stripe-summary'), summary);
   $('#stripe-setup').hidden = !st.setup.length;
   $('#stripe-steps').innerHTML = st.setup.map((t) => `<li>${esc(t)}</li>`).join('');

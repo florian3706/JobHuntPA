@@ -388,10 +388,13 @@ By default everyone who signs in has full access. To charge for it, an admin con
    paste in the card. Until a secret is saved, the webhook address answers 404.
 
 What people get: admins need no membership. Everyone else has **3 free searches** (change the number in
-the Sign-up section), then jobs they already found stay visible but new searches, rescoring, chat, cover
-letters, research, "Fill missing info", concise versions, summaries and title suggestions wait for a
-membership. **Scheduled searches** need a membership and background access (free searches are for
-*Run search* only). A free search is used when a search is queued and given back if the run fails or is
+the Sign-up section). A free search finds jobs and **scores them**. The **AI features are for members only**,
+even while free searches are left: rescoring and *Score pending*, chat, cover letters, company research and
+"Fill missing info", concise versions and summaries of documents, and title suggestions. Once the free
+searches are used, jobs already found stay visible but new searches wait for a membership too. **Scheduled
+searches** need a membership and background access (free searches are for
+*Run search* only). Where an AI action is refused, the page says it is for members and links to the
+membership page; a short note beside the AI actions tells people on a trial before they click. A free search is used when a search is queued and given back if the run fails or is
 interrupted. A membership comes from a Stripe subscription, a **free period** an admin adds, or an admin
 exempting the person. A free period for someone who already pays also moves their next payment to its end;
 ending or shortening it bills them again from then.
@@ -404,7 +407,8 @@ a member and why, how many free searches are left, your plan, and when it renews
 takes you to Stripe's payment page and brings you back with a clear message that the payment worked (or that
 nothing was charged if you cancelled). **Manage payment and plan** opens Stripe's page to change your card or
 plan, see invoices, or cancel at the end of the period. The Jobs tab says when **Run search** uses one of your
-free searches. Without a membership your jobs, notes, documents and settings stay available.
+free searches (and that it scores what it finds), and that the other AI features are for members. Without a
+membership your jobs, notes, documents and settings stay available.
 
 ## Using it
 
@@ -700,6 +704,8 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **Memberships don't switch on:** Stripe has no active price with the right lookup key. In the Stripe
   dashboard check that the price's **lookup key** is `jobhunt_monthly` (or the one set in the Payments (Stripe)
   card) and that you are in the same mode (test or live) as the key you pasted, then press **Sync now** in the card.
+- **"AI features are for members" although I still have free searches:** that is the rule: a free search finds and
+  scores jobs, and the other AI features need a membership (or an admin's free period).
 - **"You have used your free searches" (or "Scheduled searches need a membership") although I paid:** open
   **Account > Membership**. It asks Stripe again and updates your status; if you paid a moment ago and it still
   says no, wait a minute and reload.

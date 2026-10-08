@@ -4,8 +4,10 @@
 module is what joins them to the database and the API:
 
 **The gate.** ``gate(feature)`` is a FastAPI dependency for every endpoint that starts a paid feature; a refusal is
-402 ``{"code": "membership_required", "detail": ..., "reason": ...}`` (``reason`` is access.py's reason code, e.g.
-``free_searches_used``). ``load_state`` builds the ``AccessState`` from the account's membership row, its unrevoked
+402 ``{"code": "membership_required", "detail": ..., "reason": ...}`` (``reason`` is access.py's reason code:
+``ai_members_only`` for the AI features, ``free_searches_used`` for a search, ``membership_required`` for a scheduled
+search). Only members use the AI features; a trial account gets its free searches (each still scores the jobs it
+finds, inside the run) and nothing else. ``load_state`` builds the ``AccessState`` from the account's membership row, its unrevoked
 grants, its role and the admin's free-search allowance (``signup.free_searches``); with billing off (no Stripe key,
 or no price in Stripe, ``billing.enabled()``) every account counts as a member, which keeps local installs as they
 were. When the gate sees a subscription whose period has passed it asks Stripe once (at most hourly per person).
@@ -13,7 +15,8 @@ were. When the gate sees a subscription whose period has passed it asks Stripe o
 **Free searches.** ``charge_search`` runs inside ``tasks.start``'s transaction: it uses one free search and marks the
 run (``search_runs.free_search``) in the same commit as the run's row. ``refund_runs`` gives it back when the run ends
 failed or is interrupted (``tasks``); it is idempotent, because it only refunds a run whose flag it clears.
-Members, admins, exempt accounts and anyone in a free period are never charged.
+Members, admins, exempt accounts and anyone in a free period are never charged. The run scores its own jobs
+without asking the gate, so a free search is worth having even though rescoring needs a membership.
 
 **Endpoints** (all need a signed-in user; none is gated: billing must work when you have no access):
 

@@ -821,7 +821,7 @@ class BillingPageTest(unittest.TestCase):
         self.assertIn("Manage payment and plan", self.ids["portal-btn"]["text"])
         self.assertIn("doesn't charge", self.ids["off-title"]["text"])
         text = self.ids["without-card"]["text"]
-        for word in ("stays", "searches", "chat", "cover letters", "research"):
+        for word in ("stays", "searches", "chat", "cover letters", "research", "AI features are for members"):
             self.assertIn(word, text)
 
     def test_plan_buttons_name_their_plan_and_start_with_their_visible_text(self):
@@ -843,6 +843,44 @@ class BillingPageTest(unittest.TestCase):
         self.assertIn("esc(k)", self.js)
         self.assertRegex(self.css, r"\.billing-card \.btn \{[^}]*min-height: 44px")
         self.assertRegex(self.css, r"@media \(max-width: 480px\) \{ \.billing-facts \{ grid-template-columns: 1fr")  # 320 px
+
+
+class AiMembersOnlyNoteTest(unittest.TestCase):
+    """Trial accounts are told, next to the AI features, that they are for members (common.js loadAiAccess)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        cls.index = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        cls.html = parse("index.html")
+
+    def test_the_static_notes_start_hidden_and_are_plain_text_with_a_link(self):
+        notes = [n for n in self.html.nodes if "ai-note" in n["attrs"].get("class", "").split()]
+        self.assertGreaterEqual(len(notes), 2, "the chat panel and the Documents tab")
+        for n in notes:
+            self.assertEqual(n["tag"], "p")
+            self.assertIn("hidden", n["attrs"])
+            self.assertNotIn("role", n["attrs"], "a note that is there from the start isn't announced")
+        self.assertIn("AI features are for members", self.common)
+        self.assertIn('<a href="billing.html">See membership options</a>', self.common)
+
+    def test_nothing_is_hidden_or_disabled_without_saying_why(self):
+        self.assertIn("const aiNoteHtml", self.common)
+        self.assertIn("await loadAiAccess()", self.app)
+        for button in ("score-pending", "fill-info", "suggest-titles", "summary-make"):
+            node = next(n for n in self.html.nodes if n["attrs"].get("id") == button)
+            self.assertNotIn("disabled", node["attrs"], f"{button}: a click shows the membership notice instead")
+
+    def test_the_dynamic_places_carry_the_note_too(self):
+        self.assertIn("${aiNoteHtml()}", self.app, "the cover letter dialog")
+        self.assertIn("${aiNoteHtml()}", self.common, "the company profile (info dialog and job page)")
+        job = (FRONTEND / "job.js").read_text(encoding="utf-8")
+        self.assertIn("await loadAiAccess()", job)
+        self.assertRegex(job, r"await loadAiAccess\(\);[^\n]*\n  loadCompany\(\);")
+
+    def test_a_refused_rescore_after_importing_an_ad_says_so(self):
+        self.assertIn("err.status === 402", self.app)
 
 
 class FreeSearchNoteTest(unittest.TestCase):

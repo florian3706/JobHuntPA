@@ -283,8 +283,9 @@ their module docstrings and the notes in their tests.
 - Admins need no membership.
 - Admins can add free periods or exempt someone entirely.
 - New users get **3 free searches**.
-- After those run out, jobs already found stay visible. New searches, rescoring, chat, cover letters, research and
-  the document AI features wait for a membership.
+- Jobs already found stay visible. New searches wait for a membership once the free searches run out. The AI
+  features (rescoring, chat, cover letters, research, Fill missing info, title suggestions, document concise
+  versions and summary) are members-only from the start; each free search run still scores its own jobs.
 - Scheduled searches need a membership (and background access).
 - A free search is given back if its run fails.
 - Card numbers are never stored.
@@ -296,7 +297,7 @@ their module docstrings and the notes in their tests.
 - **Free searches:**
   - Use one when a run is queued, and set `search_runs.free_search`.
   - Give it back when the run fails or is interrupted.
-  - The run that uses the last free search still scores its own jobs.
+  - Every free search run scores its own jobs inside the run.
 - **Stripe pages and endpoints:**
   - `billing.html`
   - checkout

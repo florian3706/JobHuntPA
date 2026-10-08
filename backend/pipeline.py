@@ -266,7 +266,7 @@ def _linked(db: Session, ws: int, posting_ids: list[int]) -> int:
 
 
 def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter: Adapter,
-                    crit: Criteria, rep: SourceReport, progress: Progress) -> None:
+                    crit: Criteria, rep: SourceReport, progress: Progress, found: set) -> None:
     postings = adapter.list_postings()
     rep.method = adapter.method
     rep.listed = len(postings)
@@ -289,6 +289,7 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
         if own_label and named_by_label:
             job.company = own_label  # the name the user gave the source: this workspace's own
         rep.new += is_new
+        found.add(job.id)
         posting = job.posting
 
         if posting.not_a_job:
@@ -340,13 +341,14 @@ def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
         crit = load_criteria(db, ws)
         repair_geocodes(db, ws, crit, progress)
         reports: list[SourceReport] = []
+        found: set[int] = set()  # jobs this run listed, for scoring just those
         for src, adapter in build_adapters(db, ws, client):
             label = (src.label or src.careers_url) if src is not None else "SEEK"
             rep = SourceReport(label=label, url=src.careers_url if src is not None else "https://www.seek.com.au")
             reports.append(rep)
             progress(f"{label}: listing jobs", {"source": label})
             try:
-                _process_source(db, ws, src, adapter, crit, rep, progress)
+                _process_source(db, ws, src, adapter, crit, rep, progress, found)
             except (SourceError, FetchError) as exc:
                 db.rollback()
                 rep.error = str(exc)
@@ -374,7 +376,7 @@ def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
                   for k in ("listed", "new", "details_fetched", "details_deferred", "excluded", "kept", "closed")}
         totals["closed"] += _linked(db, ws, stale)
         totals["pool_matched"] = matched
-        return {"per_source": [r.__dict__ for r in reports], "totals": totals}
+        return {"per_source": [r.__dict__ for r in reports], "totals": totals, "job_ids": sorted(found)}
     finally:
         client.close()
         db.close()

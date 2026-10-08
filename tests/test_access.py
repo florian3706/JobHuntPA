@@ -35,14 +35,22 @@ class GateTruthTable(unittest.TestCase):
         for kw in ({}, {"free_searches_used": 99}, {"stripe_status": "canceled"}, {"billing_enabled": False}):
             self.assertTrue(allowed("view_jobs", **kw), kw)
 
-    def test_fresh_user_has_free_searches_for_everything_but_schedules(self):
-        for f in ("search", *LLM):
-            d = decide(f, AccessState(), NOW)
-            self.assertTrue(d.allowed, f)
-            self.assertEqual(d.reason_code, "free_search")
+    def test_a_trial_account_may_search_and_view_but_nothing_else(self):
+        d = decide("search", AccessState(), NOW)
+        self.assertEqual((d.allowed, d.reason_code), (True, "free_search"))
+        self.assertTrue(decide("view_jobs", AccessState(), NOW).allowed)
         d = decide("scheduled_search", AccessState(), NOW)
         self.assertFalse(d.allowed)
         self.assertEqual(d.reason_code, "membership_required")
+
+    def test_the_ai_features_are_for_members_even_with_free_searches_left(self):
+        for used in (0, 1, 2, 3):
+            for f in LLM:
+                d = decide(f, AccessState(free_searches_used=used), NOW)
+                self.assertFalse(d.allowed, (f, used))
+                self.assertEqual(d.reason_code, "ai_members_only")
+                self.assertIn("AI features are for members", d.message)
+                self.assertNotIn("used your free searches", d.message)
 
     def test_after_the_free_searches_only_viewing_is_left(self):
         st = AccessState(free_searches_used=3)
@@ -51,6 +59,7 @@ class GateTruthTable(unittest.TestCase):
             self.assertFalse(d.allowed, f)
             self.assertTrue(d.message.endswith(".") and len(d.message) > 20)
         self.assertEqual(decide("search", st, NOW).reason_code, "free_searches_used")
+        self.assertEqual({decide(f, st, NOW).reason_code for f in LLM}, {"ai_members_only"})
         self.assertTrue(decide("view_jobs", st, NOW).allowed)
 
     def test_free_search_limit_boundary_and_custom_limit(self):
@@ -125,6 +134,7 @@ class GateTruthTable(unittest.TestCase):
             kw = {"stripe_status": status, "current_period_end": NOW + DAY, "grace_until": NOW + DAY}
             self.assertFalse(allowed("search", free_searches_used=3, **kw), status)
             self.assertFalse(allowed("scheduled_search", **kw), status)
+            self.assertFalse(allowed("chat", **kw), status)  # the AI features need a membership, not a free search
             self.assertTrue(allowed("search", **kw), status)  # still has free searches
             self.assertTrue(allowed("view_jobs", free_searches_used=3, **kw))
 

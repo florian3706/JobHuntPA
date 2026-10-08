@@ -318,10 +318,11 @@ def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> d
         db.close()
 
 
-def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack: int = 0) -> list[int]:
+def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack: int = 0,
+                only: Optional[set] = None) -> list[int]:
     """Job ids to score. mode: pending (never scored or errored) | stale (+ scored
     against older documents) | all (every eligible job). ``office_slack`` also
-    counts jobs a temporarily softened office-days limit lets through."""
+    counts jobs a temporarily softened office-days limit lets through. ``only`` limits the result to these ids."""
     from backend.filters import softened_job_ids
     from backend.pool import job_states
 
@@ -333,6 +334,8 @@ def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack
             .join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws)}
     out = []
     for job_id, hidden, reason, closed, detail in job_states(db, ws):
+        if only is not None and job_id not in only:
+            continue
         if (reason and job_id not in softened) or hidden or closed or detail not in ("full", "summary"):
             continue
         status, phash, score = fits.get(job_id, (None, None, None))
