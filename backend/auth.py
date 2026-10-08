@@ -16,8 +16,9 @@
                                           reset with a recovery code, and the data kept
     POST /api/auth/logout                 ends this session (pending or active); Clear-Site-Data: "cache"
     GET  /api/auth/me                     {user: {id, email, name, role}, csrf, recovery_codes_pending, features}
-    GET  /api/auth/recovery-codes         (recent sign-in) {codes}: the codes not yet confirmed as saved (404 when none);
-                                          new ones are made with POST /api/auth/recovery-codes, which needs the password
+    POST /api/auth/recovery-codes/show    {password, code? | recovery_code?} -> {codes}: the codes not yet confirmed as
+                                          saved (404 when none); new ones are made with POST /api/auth/recovery-codes
+                                          (both are in backend/security.py and need the password)
     POST /api/auth/recovery-codes/ack     "I've saved my recovery codes": the copy kept to show them is deleted
 
 Errors are ``{"detail": "<plain words>", "code": "...", "field"?: "email" | "password" | ...}``. A wrong password and
@@ -43,8 +44,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend import (account, account_email, crypto, lockout, mail_queue, migrate_encryption, sessions, signup,
-                     users)
+from backend import (account, account_email, crypto, lockout, mail_queue, migrate_encryption, ratelimit, sessions,
+                     signup, users)
 from backend.db import AuthSession, AuthToken, SessionLocal, User, get_db, scrub_wal, utcnow
 from backend.sessions import REAUTH_REQUIRED, AuthProblem, AuthUser, current_user, require_recent_auth  # noqa: F401
 
@@ -343,6 +344,13 @@ def _recover(body: RecoverIn, request: Request, db: Session):
             ticket.refund()  # (the code was right; the page now asks for the second proof)
             raise AuthProblem(422, "second_factor_required", "This account uses two-step sign-in. Enter the code "
                               "from your authenticator app, or a second recovery code.", field="code")
+        # Codes have their own ceiling over all sources (``lockout.begin_code``): a found recovery code is no reason to
+        # let the app's code be guessed from many addresses.
+        try:
+            code_ticket = lockout.begin_code(request.scope, user)
+        except AuthProblem:
+            ticket.refund()
+            raise
         if typed_code:
             good = users.verify_totp(db, user, typed_code)
         else:
@@ -352,8 +360,15 @@ def _recover(body: RecoverIn, request: Request, db: Session):
                 spend.append(second[0])
         if not good:
             log.info("Two-step proof refused in a recovery for user %s (%d in a row)", user.id, ticket.failures)
+            if ratelimit.recover_code_strikes.strike(first[0]) >= ratelimit.CODE_TRIES:
+                # 5 wrong second proofs against one found code: it is used up, so it can't be tried against any more
+                users.spend_recovery_code(db, first[0])
+                db.commit()
+                scrub_wal()
+                raise AuthProblem(401, "wrong_recovery", RECOVER_FAILED)
             raise AuthProblem(422, "wrong_code", "That code isn't right. Check it and try again.",
                               field="code" if typed_code else "second_recovery_code")
+        code_ticket.succeed()
     if user.status != "active":
         ticket.refund()
         raise AuthProblem(403, "disabled", "This account is turned off. Ask the person who runs this JobHuntPA.")
@@ -405,18 +420,6 @@ def me(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
         "onboarding_step": db.get(User, user.id).onboarding_step,
         "prefs": account.public_prefs(db, user.id),
     }
-
-
-@router.get("/recovery-codes")
-def recovery_codes(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
-    """The codes can reset the password (``/recover``), so a session that hasn't entered the password lately can't
-    read them. Sign-up, first run and the password dialog all count as recent."""
-    require_recent_auth(user)
-    codes = users.pending_recovery_codes(db, user.id)
-    if codes is None:
-        raise AuthProblem(404, "none_pending", "There are no recovery codes waiting to be saved: you confirmed "
-                                               "saving them already.")
-    return {"codes": codes}
 
 
 @router.post("/recovery-codes/ack")

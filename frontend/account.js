@@ -343,7 +343,8 @@
       if (code && !code.value.trim()) { setFieldError(code, 'Enter a code from your app, or a recovery code.'); return; }
       const body = { password: password.value, ...(code ? codeBody(code.value.trim()) : {}) };
       await guarded(form, $('#acct-rc-new'), { password, code, recovery_code: code }, async () => {
-        await recentWith(password.value, () => post('/api/auth/recovery-codes', body));
+        const made = await recentWith(password.value, () => post('/api/auth/recovery-codes', body));
+        stashRecoveryCodes(made.recovery_codes); // (first-run.html shows them; this tab has them without asking again)
         location.assign('first-run.html'); // shows the new codes once and asks to confirm they're saved
       });
     });

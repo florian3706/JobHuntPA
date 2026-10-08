@@ -454,8 +454,10 @@ def disable_user(user_id: int, body: Optional[DisableIn] = None, admin: AuthUser
     ``subscription`` in the answer says ``still_billing`` for that, or (with ``cancel_subscription_at_period_end``)
     ``cancelled`` or ``failed``; ``none`` when they have no live one. Stripe is only asked after the refusals above.
     Turning off an admin who holds the admin key replaces the key, as demoting does (they keep no copy of anything
-    written afterwards), so it needs your own copy of the key; turning them on again does not share it with them.
-    Recent password required."""
+    written afterwards); turning them on again does not share it with them. Only that replacement needs your own copy
+    of the key: without it they are still turned off and signed out (the emergency brake works for any admin) and their
+    copy is deleted, but the key is not replaced (``apk_rotated`` false, with a note); an admin who has the key replaces
+    it, or ``new-admin-key`` does. Recent password required."""
     require_recent_auth(admin)
     _exclusive(db)
     target = _target(db, user_id)
@@ -464,7 +466,8 @@ def disable_user(user_id: int, body: Optional[DisableIn] = None, admin: AuthUser
     if target.role == "admin" and target.status == "active" and not _active_admins(db, besides=target.id):
         raise _problem(409, "last_admin", "This is the last admin, so their account can't be turned off.")
     holds_key = target.role == "admin" and db.get(AdminKeyGrant, target.id) is not None
-    apk = _need_apk(db, admin) if holds_key else None  # (before Stripe is asked)
+    apk = _open_apk(db, admin) if holds_key else None  # (before Stripe is asked)
+    not_replaced = holds_key and apk is None  # turned off by an admin who has no copy of the key
     subscription = _subscription_after_disable(db, admin, target, bool(body and body.cancel_subscription_at_period_end))
     changed = target.status != "disabled"
     target.status = "disabled"
@@ -473,9 +476,13 @@ def disable_user(user_id: int, body: Optional[DisableIn] = None, admin: AuthUser
     if apk is not None:
         db.flush()
         rotation = admin_key.new_key(db, apk, admin_key.active_admin_ids(db), admin.id)
-    if changed or rotation is not None:
+    elif not_replaced:  # they hold nothing if they are turned on again; the key is replaced by an admin who has it
+        db.query(AdminKeyGrant).filter(AdminKeyGrant.user_id == target.id).delete(synchronize_session=False)
+    if changed or rotation is not None or not_replaced:
         action = "user_disabled" if changed else "admin_key_replaced"  # (a disabled admin who still held a copy)
         detail: dict = {} if subscription == "none" or not changed else {"subscription": subscription}
+        if not_replaced:
+            detail["admin_key_not_replaced"] = True
         if rotation is not None:
             detail.update(apk_version=rotation.apk.version, resealed=rotation.resealed, stale=rotation.stale,
                           dropped=rotation.dropped)
@@ -483,8 +490,12 @@ def disable_user(user_id: int, body: Optional[DisableIn] = None, admin: AuthUser
         else:
             audit(db, admin, action, target.id, detail)
     db.commit()
-    return {"ok": True, "changed": changed, "subscription": subscription, "apk_rotated": rotation is not None,
-            "user": _summaries(db, rotation.apk if rotation else _open_apk(db, admin), [target.id])[0]}
+    out = {"ok": True, "changed": changed, "subscription": subscription, "apk_rotated": rotation is not None,
+           "user": _summaries(db, rotation.apk if rotation else _open_apk(db, admin), [target.id])[0]}
+    if not_replaced:
+        out["note"] = ("They are off, but the admin key was not replaced because you don't have it. Replace it from "
+                       "an admin who has it, or run new-admin-key.")
+    return out
 
 
 @router.post("/users/{user_id}/enable")

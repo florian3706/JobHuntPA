@@ -87,6 +87,13 @@ def client(email: str = ADMIN_EMAIL, password: Optional[str] = None, **kwargs) -
     return SignedInClient(email, password or _passwords[email], **kwargs)
 
 
+def show_codes(c, password: Optional[str] = None, **fields):
+    """The answer of ``POST /api/auth/recovery-codes/show`` for ``c`` (the unsaved recovery codes need the password
+    again, and a code with two-step sign-in on)."""
+    return c.post("/api/auth/recovery-codes/show", json={"password": password or getattr(c, "password", USER_PASSWORD),
+                                                         **fields})
+
+
 def lock_out(account_id: int, source: str = "testclient", failures: int = 5) -> None:
     """Five wrong passwords in a row from ``source`` (the test client's network address by default; a signed-in
     client is a browser the account knows: ``d:<its id>``): that source now waits."""

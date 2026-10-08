@@ -650,7 +650,7 @@ class NoticeTest(AccountMailCase):
     def test_a_reset_with_a_recovery_code_sends_a_notice(self):
         bob = helpers.make_user(password=PASSWORD)
         c = self.signed_in(bob)
-        code = c.get("/api/auth/recovery-codes").json()["codes"][0]
+        code = helpers.show_codes(c).json()["codes"][0]
         r = self.anonymous().post("/api/auth/recover", json={"email": bob.email, "recovery_code": code,
                                                               "new_password": "brand new password"})
         self.assertEqual(r.status_code, 200, r.text)

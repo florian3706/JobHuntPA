@@ -35,7 +35,8 @@ wipe rebuilds ``pii_self`` from, and where the "password changed" notice goes.
 **Reset.**
   * With two-step sign-in on, the app's code (or a recovery code, which is used up) is required: the secret is under
     the server key, so it can be checked here (§3 item 6). Wrong codes count like wrong passwords (5 in a row from
-    one place make that place wait: ``lockout``).
+    one place make that place wait: ``lockout``), and, whoever sends them, about 10 an hour make every place that
+    isn't a known browser of the account wait, and 5 on one link use the link up (410: ask for a new one).
   * With background access the server opens the data key, wraps it under the new password and keeps everything
     (``users.reset_password_keeping_data``) **except the recovery codes**: all eight are replaced, because each opens
     the same data key and the person who held the account before (someone who signed up with this address first)
@@ -77,6 +78,8 @@ RESET_TTL = timedelta(hours=1)
 
 SENT = ("If an account has that address, we've sent a link to it. The link works once and expires in 1 hour. Check "
         "your spam folder, and wait a few minutes before asking again.")
+LINK_USED_UP = ("Too many wrong codes were entered for this link, so it can't be used any more. Ask for a new one on "
+                "the sign-in page.")
 LINK_INVALID = ("This link isn't valid any more: it may have expired or been used already. Ask for a new one on the "
                 "sign-in page.")
 DISABLED = "This account is turned off. Ask the person who runs this JobHuntPA."
@@ -162,8 +165,11 @@ def forgot(body: ForgotIn, db: Session = Depends(get_db)):
     if user is not None and user.status == "active":
         if allowed and ratelimit.RESET_ACCOUNT.hit(user.id) is None:
             send = True
-        elif not _has_live_link(db, user.id):
-            send = True  # the limits are used up, but every link has run out: the owner can always get one
+        elif not _has_live_link(db, user.id) and ratelimit.FORGOT_NO_LINK.hit(user.id) is None:
+            # The limits are used up, but every link has run out: the owner can always get one. Counted here, not
+            # when the job makes the token, so requests in flight together (or queued behind other mail) can't each
+            # send one: at most one such email an hour.
+            send = True
         else:
             log.info("Reset link requests for user %s are being held back by the limits", user.id)
     if send:
@@ -254,7 +260,7 @@ def reset(body: ResetIn, request: Request, db: Session = Depends(get_db)):
         users.check_password(body.new_password)
     except users.AccountError as exc:
         raise AuthProblem(422, "invalid", exc.message, field="new_password") from None
-    _row, user, address = _row_and_user(db, body.token)
+    row, user, address = _row_and_user(db, body.token)
     keeps = users.background_key(db, user.id) is not None
     if not keeps and not body.accept_wipe:  # nothing has changed yet
         raise AuthProblem(409, "wipe_not_accepted", WIPE_NEEDED, field="accept_wipe")
@@ -264,9 +270,19 @@ def reset(body: ResetIn, request: Request, db: Session = Depends(get_db)):
         if bool((body.code or "").strip()) == bool((body.recovery_code or "").strip()):
             raise AuthProblem(422, "second_factor_required", "This account uses two-step sign-in. Enter the code from "
                               "your authenticator app, or a recovery code.", field="code")
-        # Counted per place before the code is looked at (the link is the proof of the mailbox, so no account-wide
-        # ceiling: whoever can read the mailbox can't be shut out by others guessing).
-        check_second_factor(db, user, SecondFactorIn(code=body.code, recovery_code=body.recovery_code), request.scope)
+        # Counted per place before the code is looked at, and against the codes' own ceiling over all places (see
+        # ``check_second_factor``): the link is the proof of the mailbox, but it isn't used up by a wrong code, so
+        # codes guessed from many addresses must run out. The same goes for the link itself: after 5 wrong codes it
+        # is used up and a new one must be asked for (as for a pending sign-in: ``sessions.MFA_ATTEMPTS``).
+        try:
+            check_second_factor(db, user, SecondFactorIn(code=body.code, recovery_code=body.recovery_code),
+                                request.scope)
+        except AuthProblem as problem:
+            if problem.code == "wrong_code" and ratelimit.reset_code_strikes.strike(row.token_hash) >= ratelimit.CODE_TRIES:
+                tokens.consume(db, RESET_KIND, body.token)
+                log.info("Reset link for user %s used up by wrong codes", user.id)
+                raise AuthProblem(410, "link_invalid", LINK_USED_UP) from None
+            raise
     used = tokens.consume(db, RESET_KIND, body.token)  # one request wins when two use the same link
     if used is None:
         raise AuthProblem(410, "link_invalid", LINK_INVALID)

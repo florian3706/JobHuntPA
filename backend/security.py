@@ -9,9 +9,10 @@ resetting with a recovery code are in backend/auth.py.
     POST /api/auth/mfa/enable            {code} (recent sign-in): the code from the app turns two-step sign-in on
     POST /api/auth/mfa/disable           {password, code | recovery_code} (recent sign-in)
     POST /api/auth/recovery-codes        {password, code? | recovery_code?} (recent sign-in; the code is needed with two-step
-                                         sign-in on): eight new codes in place of all the old ones, and a notice by
-                                         email; read them once with GET /api/auth/recovery-codes, confirm with
-                                         POST .../ack (backend/auth.py)
+                                         sign-in on): eight new codes in place of all the old ones, returned once as
+                                         ``recovery_codes``, and a notice by email
+    POST /api/auth/recovery-codes/show   {password, code? | recovery_code?}: the codes not yet confirmed as saved, again
+                                         (a reload, or a return later); confirm with POST .../ack (backend/auth.py)
     POST /api/auth/sessions/end-others   signs out every other browser, keeps this one
 
 Errors are ``{"detail", "code", "field"?}``. A wrong password here is a 422 ``wrong_password`` (not a 401: the page
@@ -184,13 +185,20 @@ def check_second_factor(db: Session, user: User, body: SecondFactorIn, scope, *,
     """Needs the app's code or an unused recovery code (which is used up); AuthProblem otherwise. The try is counted
     before the code is looked at, like a password at sign-in (``lockout.begin``: five wrong ones in a row make this
     browser or address wait, and tries sent at the same moment can't all get past it); a right one clears the count.
-    The ceiling over all of an account's sources isn't applied here: the caller holds a proof only the owner has (the
-    password, a reset link)."""
+    The ceiling over all of an account's sources for passwords isn't applied here: the caller holds a proof only the
+    owner has (the password, a reset link). Codes have their own, lower one (``lockout.begin_code``: about 10 wrong ones
+    an hour from sources that aren't a browser the account signed in from), because a code has only a million values
+    and a proof like a link or a recovery code must not let them be guessed from many addresses."""
     typed_code, typed_recovery = (body.code or "").strip(), (body.recovery_code or "").strip()
     if bool(typed_code) == bool(typed_recovery):
         raise AuthProblem(422, "invalid", "Enter the 6-digit code from your authenticator app, or a recovery code.",
                           field="code")
     ticket = lockout.begin(scope, user, ceiling=False, what=what)
+    try:
+        code_ticket = lockout.begin_code(scope, user, what)
+    except AuthProblem:
+        ticket.refund()  # (this try is refused, not made)
+        raise
     recovery_id: Optional[int] = None
     if typed_code:
         good = users.verify_totp(db, user, typed_code)
@@ -210,6 +218,7 @@ def check_second_factor(db: Session, user: User, body: SecondFactorIn, scope, *,
     if recovery_id is not None:
         scrub_wal()  # its copy of the data key must not linger in the write-ahead log
     ticket.succeed()
+    code_ticket.succeed()
 
 
 @router.post("/mfa/disable")
@@ -248,7 +257,8 @@ def new_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, auth
     code opens the data key and can set a new password, so a session alone (even a recent one: a cookie taken from
     a browser a few minutes after sign-in) must not make them: the request carries the password itself. With
     two-step sign-in on, the app's code (or a recovery code) is needed as well, because the new codes can stand in for
-    it. A notice goes to the account's address."""
+    it. A notice goes to the account's address. The new codes are in the answer (``recovery_codes``): the page shows
+    them at once, and a later look at the unsaved ones needs the password again (``/recovery-codes/show``)."""
     require_recent_auth(auth)
     body = body or NewCodesIn()
     if not body.password:
@@ -259,7 +269,7 @@ def new_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, auth
     if mfa:
         check_second_factor(db, user, body, request.scope, what="passwords or codes")
     try:
-        users.replace_recovery_codes(db, auth.id, crypto.current().dek)
+        codes = users.replace_recovery_codes(db, auth.id, crypto.current().dek)
     except crypto.KeyMismatch:  # the key was replaced under this request (a password reset that deleted the data)
         db.rollback()
         raise AuthProblem(401, "signed_out", "You're signed out. Sign in to continue.") from None
@@ -267,7 +277,33 @@ def new_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, auth
     scrub_wal()  # the old codes' copies of the data key
     log.info("New recovery codes made: user %s", auth.id)
     account_email.notify_in_session(db, auth.id, "recovery_codes_replaced")
-    return {"ok": True, "recovery_codes_left": users.RECOVERY_CODES, "recovery_codes_pending": True}
+    return {"ok": True, "recovery_codes_left": users.RECOVERY_CODES, "recovery_codes_pending": True,
+            "recovery_codes": codes}
+
+
+@router.post("/recovery-codes/show")
+def show_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, auth: AuthUser = Depends(current_user),
+                        db: Session = Depends(get_db)):
+    """The recovery codes not yet confirmed as saved (after sign-up, first run, a reset or new codes), for a page that no
+    longer has them. Each code opens the data key and can set a new password, and a new session counts as recent for
+    15 minutes, so a session alone must not read them (a cookie taken from a browser just after sign-in): the request
+    carries the password, and with two-step sign-in on a code as well, because they can stand in for it."""
+    body = body or NewCodesIn()
+    if users.pending_recovery_codes(db, auth.id) is None:
+        raise AuthProblem(404, "none_pending", "There are no recovery codes waiting to be saved: you confirmed "
+                                               "saving them already.")
+    if not body.password:
+        raise AuthProblem(422, "invalid", "Enter your password to see your recovery codes.", field="password")
+    user = db.get(User, auth.id)
+    mfa = bool(user.mfa_enabled)
+    confirm_password(request, db, auth, body.password, reset=not mfa, what="passwords or codes")
+    if mfa:
+        check_second_factor(db, user, body, request.scope, what="passwords or codes")
+    codes = users.pending_recovery_codes(db, auth.id)  # (read again: a code that was typed may have been a pending one)
+    if codes is None:
+        raise AuthProblem(404, "none_pending", "There are no recovery codes waiting to be saved: you confirmed "
+                                               "saving them already.")
+    return {"codes": codes}
 
 
 @router.post("/sessions/end-others")

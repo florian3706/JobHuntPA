@@ -86,6 +86,7 @@ class Limiter:
 
 
 ACCOUNT_CEILING = (100, 60 * 60)  # wrong tries from any source in an hour, before a browser new to the account waits
+CODE_CEILING = (10, 60 * 60)      # the same for wrong two-step codes, which have far fewer guesses to try than a password
 MAX_SOURCES = 200                 # sources remembered per account; the oldest are forgotten first
 FORGET_AFTER_S = 24 * 60 * 60     # a source's failures in a row are forgotten after a day without a try
 
@@ -132,11 +133,17 @@ class GuessGuard:
     """Wrong passwords and codes, per account and per source (a network address, or a browser that has signed in to
     the account before). A try is counted before the slow check (``begin``, one step under a lock), so tries sent at
     the same moment can't all get past the 5; a right one is given back (``succeed``, ``refund``). Keys are anything
-    hashable: a user id, or the hash of an email address that has no account."""
+    hashable: a user id, or the hash of an email address that has no account. ``ceiling`` is (how many, per seconds)
+    wrong tries from any source before a source new to the account waits (``ACCOUNT_CEILING`` when not given)."""
 
-    def __init__(self):
+    def __init__(self, ceiling: Optional[tuple[int, float]] = None):
+        self._ceiling = ceiling
         self._accounts: "OrderedDict[Hashable, _Account]" = OrderedDict()
         self._lock = threading.Lock()
+
+    @property
+    def ceiling(self) -> tuple[int, float]:
+        return self._ceiling or ACCOUNT_CEILING
 
     def begin(self, account: Hashable, source: str, *, known: bool = False, ceiling: bool = True,
               now: Optional[float] = None) -> Ticket:
@@ -152,7 +159,7 @@ class GuessGuard:
                     state = None
                 if state is not None and state[1] > now:
                     raise Waiting(state[1] - now)
-                limit, window = ACCOUNT_CEILING
+                limit, window = self.ceiling
                 while acct.tries and acct.tries[0] <= now - window:
                     acct.tries.popleft()
                 if ceiling and not known and len(acct.tries) >= limit:
@@ -216,7 +223,7 @@ class GuessGuard:
             if acct is None:
                 return 0.0
             wait = max([s[1] - now for s in acct.sources.values()] + [0.0])
-            limit, window = ACCOUNT_CEILING
+            limit, window = self.ceiling
             recent = [t for t in acct.tries if t > now - window]
             if len(recent) >= limit:
                 wait = max(wait, recent[0] + window - now)
@@ -243,6 +250,52 @@ class GuessGuard:
 # can't tell the two apart).
 guesses = GuessGuard()
 unknown_guesses = GuessGuard()
+# Wrong two-step codes (a reset link, /recover, turning two-step off, an email change, new recovery codes) are also
+# counted here, with a much lower ceiling over all sources: the caller holds a first proof (a link, a recovery code, a
+# password), but a code has only a million values, so guesses spread over many addresses must run out.
+code_guesses = GuessGuard(CODE_CEILING)
+
+
+class Strikes:
+    """Wrong tries counted against one thing (a reset link, a recovery code), whoever sends them. ``strike`` returns how
+    many there have been, this one included; ``clear`` forgets them. The oldest are forgotten first."""
+
+    def __init__(self, keep: float = 2 * 60 * 60):
+        self.keep = keep
+        self._counts: "OrderedDict[Hashable, list]" = OrderedDict()  # key -> [tries, last try]
+        self._lock = threading.Lock()
+
+    def strike(self, key: Hashable, now: Optional[float] = None) -> int:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            state = self._counts.pop(key, None)
+            if state is None or now - state[1] > self.keep:
+                state = [0, now]
+            state[0] += 1
+            state[1] = now
+            self._counts[key] = state
+            while len(self._counts) > MAX_KEYS:
+                self._counts.popitem(last=False)
+            return state[0]
+
+    def clear(self, key: Hashable) -> None:
+        with self._lock:
+            self._counts.pop(key, None)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._counts.clear()
+
+
+def forget_account(account: Hashable) -> None:
+    """The account starts again with no wrong passwords or codes (an admin unlocked it, or its password changed)."""
+    guesses.clear(account)
+    code_guesses.clear(account)
+
+
+CODE_TRIES = 5  # wrong second-proof codes on one reset link (or against one recovery code) before it is used up
+reset_code_strikes = Strikes()
+recover_code_strikes = Strikes()
 
 # The sign-in endpoints (login, first run; later sign-up, forgot, reset and recover), per client address.
 AUTH = Limiter([(10, 5 * 60), (60, 60 * 60)])
@@ -253,6 +306,8 @@ AUTH = Limiter([(10, 5 * 60), (60, 60 * 60)])
 # address hash, a user id.
 FORGOT_ADDRESS = Limiter([(3, 60 * 60), (6, 24 * 60 * 60)])
 RESET_ACCOUNT = Limiter([(3, 60 * 60), (6, 24 * 60 * 60)])    # anonymous requests only
+FORGOT_NO_LINK = Limiter([(1, 60 * 60)])                      # per account: the one extra request an hour that goes out
+                                                               # when the limits above are used up and no link is usable
 RESET_BY_ADMIN = Limiter([(3, 60 * 60), (6, 24 * 60 * 60)])    # the admin's button, per account: its own count
 VERIFY_RESEND = Limiter([(3, 60 * 60), (10, 24 * 60 * 60)])   # per signed-in user
 EMAIL_CHANGE = Limiter([(5, 60 * 60)])                         # per signed-in user
@@ -266,5 +321,8 @@ def reset_all() -> None:
     AUTH.reset()
     guesses.reset()
     unknown_guesses.reset()
-    for limiter in (FORGOT_ADDRESS, RESET_ACCOUNT, RESET_BY_ADMIN, VERIFY_RESEND, EMAIL_CHANGE, EMAIL_TEST, UNSUBSCRIBE):
+    code_guesses.reset()
+    reset_code_strikes.reset()
+    recover_code_strikes.reset()
+    for limiter in (FORGOT_ADDRESS, RESET_ACCOUNT, FORGOT_NO_LINK, RESET_BY_ADMIN, VERIFY_RESEND, EMAIL_CHANGE, EMAIL_TEST, UNSUBSCRIBE):
         limiter.reset()

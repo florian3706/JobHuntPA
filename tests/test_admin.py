@@ -1522,15 +1522,40 @@ class DisabledAdminKeyTest(AdminTestCase):
         self.assertTrue(self.grant_of(frank.id))
         self.assertTrue(self.grant_of(self.admin_id))
 
-    def test_turning_off_an_admin_needs_your_own_copy_of_the_key(self):
+    def test_a_keyless_admin_can_still_turn_off_a_key_holding_admin(self):
+        """The emergency brake: only replacing the key needs the acting admin's copy (demoting still does)."""
         carol = self.make_admin(name="Carol")
         dave = self.make_admin(name="Dave")
         with engine.begin() as conn:  # Carol lost her copy (a password reset without a recovery code does that)
             conn.execute(text("DELETE FROM admin_key_grants WHERE user_id = :i"), {"i": carol.id})
+        dc = self.signed_in(dave)  # (a session of Dave's, to be signed out)
+        self.assertEqual(dc.get("/api/auth/me").status_code, 200)
+        version = apk_version()
         cc = self.signed_in(carol)
         r = cc.post(f"/api/admin/users/{dave.id}/disable")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["changed"], r.json()["apk_rotated"]), (True, False))
+        self.assertIn("admin key was not replaced", r.json()["note"])
+        self.assertEqual(db_rows(lambda s: s.get(User, dave.id).status), "disabled")
+        self.assertEqual(dc.get("/api/auth/me").status_code, 401)
+        self.assertEqual(db_rows(lambda s: s.query(AuthSession).filter(AuthSession.user_id == dave.id).count()), 0)
+        self.assertFalse(self.grant_of(dave.id))
+        self.assertEqual(apk_version(), version)
+        c = self.signed_in()  # an admin who has the key sees what happened
+        entries = [e for e in c.get("/api/admin/audit").json()["entries"] if e["action"] == "user_disabled"]
+        self.assertTrue(any((e.get("detail") or {}).get("admin_key_not_replaced") for e in entries), entries)
+        # Turned on again, Dave holds nothing until an admin shares the key.
+        self.assertEqual(c.post(f"/api/admin/users/{dave.id}/enable").status_code, 200)
+        self.assertFalse(self.grant_of(dave.id))
+
+    def test_demoting_still_needs_your_own_copy_of_the_key(self):
+        carol = self.make_admin(name="Carol")
+        dave = self.make_admin(name="Dave")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM admin_key_grants WHERE user_id = :i"), {"i": carol.id})
+        r = self.signed_in(carol).post(f"/api/admin/users/{dave.id}/role", json={"role": "user"})
         self.assertEqual((r.status_code, r.json()["code"]), (409, "admin_key_missing"))
-        self.assertEqual(db_rows(lambda s: s.get(User, dave.id).status), "active")  # nothing changed
+        self.assertEqual(db_rows(lambda s: s.get(User, dave.id).role), "admin")
         self.assertTrue(self.grant_of(dave.id))
 
 

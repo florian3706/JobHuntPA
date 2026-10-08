@@ -132,7 +132,8 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   in `data/first-run.txt`. Once the account exists the code stops working and the file is deleted.
 - **Recovery codes:** the first-run page then shows 8 recovery codes. Copy, download or print them
   and keep them somewhere safe: if you forget your password, they are how you get back in and keep
-  your data. A reminder stays at the top of the dashboard until you confirm you've saved them.
+  your data. A reminder stays at the top of the dashboard until you confirm you've saved them; to see
+  them again before that, JobHuntPA asks for your password (and a code, with two-step sign-in on).
 - **The setup walkthrough:** once your recovery codes are saved, a new account opens a short
   walkthrough (`welcome.html`) instead of the dashboard. It starts with **choosing a theme**, which
   changes the page as you pick it, then sets up your search a step at a time: job titles; places,
@@ -152,7 +153,8 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   minutes. The wait is for that place only: someone who knows your email address and keeps guessing locks
   out their own address, never you. If guesses come from very many addresses at once (100 wrong tries an
   hour), a browser you have never signed in with is asked to wait a while; the browsers you
-  usually use are not. JobHuntPA remembers a browser you have signed in with in a small cookie
+  usually use are not. Wrong two-step codes have a lower limit of their own (10 an hour from places
+  you haven't signed in from), and a password-reset link is used up by its 5th wrong code: ask for a new one. JobHuntPA remembers a browser you have signed in with in a small cookie
   (`jh_device`); it proves nothing about your password and opens nothing. A password change or reset makes the old
   ones useless. The counts are kept in memory, so restarting JobHuntPA clears them.
 - **Two-step sign-in** (Settings > Two-step sign-in): add an authenticator app (any app that makes 6-digit
@@ -208,7 +210,7 @@ JobHuntPA has accounts, so one copy can serve several people, each with their ow
   company research behind your jobs. Links between the files work offline. It asks for your password
   again if you haven't entered it in the last 15 minutes, and is made in memory, so nothing is written to
   disk on the server (an export is refused above 200 MB of files, and the server makes only a couple at
-  a time: try again in a minute; an export keeps its place until your download has ended, so a slow or abandoned download holds it for up to 10 minutes). **The zip is not encrypted**: keep it somewhere safe. It holds only your own data
+  a time: try again in a minute; an export keeps its place until your download has ended, so a slow or abandoned download holds it for up to 10 minutes, plus the time the zip needs at 100 KB/s). **The zip is not encrypted**: keep it somewhere safe. It holds only your own data
   (admins can't export other people's), and never your password, recovery codes or keys.
 - **What only the admin sees:** the AI provider, model, API key and reasoning levels, the
   commute API keys, the [email](#setting-up-email) settings and the [Stripe](#memberships-and-payments-optional)
@@ -267,7 +269,7 @@ number. `tests/test_log_leaks.py` runs a whole account through the app with ever
 and checks this at the most detailed logging level.
 
 **The limits.** Wrong passwords are counted per place in memory (see *Signing in*), so a restart gives each
-place its five tries back, and a guesser with many addresses is held to 100 wrong tries an hour for the whole account.
+place its five tries back, and a guesser with many addresses is held to 100 wrong passwords an hour (10 wrong two-step codes) for the whole account.
 The AI provider sees what it scores, chats about or writes. The running app holds
 your data in memory while you use it. Someone who changes the app's code on the server could capture
 your password when you next sign in. With **[background access](#background-access)** on, whoever
@@ -399,7 +401,7 @@ reset links, address checks, invitations by email and security notices. Nothing 
 because the form removes spaces and tabs, then saves the password in `.env` as `SMTP_PASSWORD_B64` (base64:
 this lets any standard-keyboard character, quotes and `#` included, survive the file). It is never shown
 again, only whether one is set. Changing the mail server asks for the password again, so a saved password
-can't be sent to another server. Saving any of these settings asks for your own password too (if you haven't typed it in the last 15 minutes), because they decide where reset links point. **Changing the mail server, its port or encryption, or the public address** (once they have been set) also tells the other admins by email, through the old server, before it is saved, and for the next 24 hours **no admin can turn off anyone's two-step sign-in or send them a reset link** (the admin panel says to try again later; the person can use a recovery code). Whoever receives the mail can reset accounts, so this stops an admin from pointing the mail at their own server and taking over an account in one go. An older hand-written `SMTP_PASSWORD=` line keeps working until you save
+can't be sent to another server. Saving any of these settings asks for your own password too (if you haven't typed it in the last 15 minutes), because they decide where reset links point. **Changing the mail server, its port or encryption, or the public address** (once they have been set) also tells the other admins by email, through the old server, before it is saved (an admin who doesn't have the admin key can't make the change, because the others' addresses need it), and for the next 24 hours **no admin can turn off anyone's two-step sign-in or send them a reset link** (the admin panel says to try again later; the person can use a recovery code). Whoever receives the mail can reset accounts, so this stops an admin from pointing the mail at their own server and taking over an account in one go. An older hand-written `SMTP_PASSWORD=` line keeps working until you save
 a new password in the form. Email goes out from one background thread, so a slow mail server never slows a page.
 
 To keep messages out of spam, send through your provider's own SMTP server and set up SPF and DKIM for the From address's domain as your provider describes. SPF says which servers may send for your domain, DKIM signs each message, and DMARC tells other mail servers what to do with a message that fails both. Gmail, Outlook and most hosts explain the three DNS records in their help pages. Use *Use this address* next to the public address to fill in the address you are browsing from.
@@ -798,7 +800,7 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
   says no, wait a minute and reload.
 - **"Download your data" is refused:** over 200 MB the zip is too big to make in one go (delete uploaded files you
   no longer need), "other exports are being made" means try again in a minute, and "still being made" means your
-  last request hasn't finished or its download is still going: wait for it (a download that has not finished after 10 minutes is cut off).
+  last request hasn't finished or its download is still going: wait for it (a download that has not finished after 10 minutes, plus the time the zip needs at 100 KB/s, is cut off).
 - **Lost your authenticator app:** sign in with a recovery code instead of the app's code, then turn
   two-step sign-in off and on again in Settings > Two-step sign-in.
 - **The last admin lost their password and every recovery code:** people can still sign in, but

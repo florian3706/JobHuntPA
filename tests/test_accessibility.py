@@ -261,7 +261,9 @@ class AuthPagesTest(unittest.TestCase):
                     self.assertEqual(inputs[field].get("type"), kind)
                     self.assertEqual(inputs[field].get("autocomplete"), autocomplete)
             passwords = [i for i in inputs.values() if i.get("type") == "password"]
-            self.assertEqual(len(passwords), 1, f"{name}: one password field, no 'confirm password' (3.3.7)")
+            # (first-run.html has a second one for asking again before showing the recovery codes: one step at a time)
+            self.assertEqual(len(passwords), 2 if name == "first-run.html" else 1,
+                             f"{name}: one password field, no 'confirm password' (3.3.7)")
 
     def test_paste_and_password_managers_are_never_blocked(self):
         for name in AUTH_PAGES + ("auth.js", "signup.js", "common.js", "account.js"):
@@ -284,10 +286,12 @@ class AuthPagesTest(unittest.TestCase):
             page = parse(name)
             toggles = [n for n in page.nodes if n["tag"] == "button" and "pw-toggle" in n["attrs"].get("class", "")]
             with self.subTest(page=name):
-                self.assertEqual(len(toggles), 1)
-                self.assertEqual(toggles[0]["attrs"].get("aria-pressed"), "false")
+                self.assertEqual(len(toggles), 2 if name == "first-run.html" else 1)
+                for toggle in toggles:
+                    self.assertEqual(toggle["attrs"].get("aria-pressed"), "false")
+                    self.assertIn(toggle["attrs"].get("aria-controls"), ("password", "show-password"))
+                    self.assertEqual(toggle["attrs"].get("type"), "button")
                 self.assertEqual(toggles[0]["attrs"].get("aria-controls"), "password")
-                self.assertEqual(toggles[0]["attrs"].get("type"), "button")
 
     def test_error_summary_and_help_are_in_the_same_place(self):
         for name in AUTH_PAGES:
@@ -539,6 +543,7 @@ class SignInPagesBehaviourTest(unittest.TestCase):
         cls.common = (FRONTEND / "common.js").read_text(encoding="utf-8")
         cls.account = (FRONTEND / "account.js").read_text(encoding="utf-8")
         cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        cls.signup = (FRONTEND / "signup.js").read_text(encoding="utf-8")
 
     @unittest.skipUnless(shutil.which("node"), "Node is needed to run nextPage()")
     def test_next_stays_on_this_site_whatever_the_url_parser_does_with_it(self):
@@ -591,9 +596,14 @@ class SignInPagesBehaviourTest(unittest.TestCase):
                                         f"{name}:{number} calls {path} without withRecentAuth")
 
     def test_the_recovery_codes_page_asks_for_the_password_when_it_is_needed(self):
+        """The codes are not served to a session alone: the page keeps the ones made in this tab and otherwise asks for
+        the password (and a code with two-step on) before it shows them."""
         shown = self.auth[self.auth.index("async function initFirstRun"):self.auth.index("async function submitSetup")]
-        self.assertIn("reauth_required", shown)
-        self.assertIn("confirmPassword()", shown)
+        self.assertIn("stashedRecoveryCodes()", shown)
+        self.assertIn("askForCodes(", shown)
+        self.assertIn("'/api/auth/recovery-codes/show'", shown)
+        self.assertNotIn("authCall('/api/auth/recovery-codes')", self.auth + self.signup)
+        self.assertIn("stashRecoveryCodes(made.recovery_codes)", self.account)
 
     def test_a_recovery_code_sign_in_says_how_many_are_left(self):
         start = self.auth.index("$('#mfa-form').addEventListener('submit'")
@@ -855,6 +865,7 @@ class AiMembersOnlyNoteTest(unittest.TestCase):
     def setUpClass(cls):
         cls.common = (FRONTEND / "common.js").read_text(encoding="utf-8")
         cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        cls.signup = (FRONTEND / "signup.js").read_text(encoding="utf-8")
         cls.index = (FRONTEND / "index.html").read_text(encoding="utf-8")
         cls.html = parse("index.html")
 

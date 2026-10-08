@@ -457,12 +457,10 @@ class ExportTest(unittest.TestCase):
             asyncio.run(third.background())
             asyncio.run(third.background())  # and twice is harmless
             self.assertNotIn(9003, export._running)
-            for user_id in (9004, 9005):
-                start(user_id)
+            last = [start(user_id) for user_id in (9004, 9005)]
             self.assertEqual(code_of(9006), "export_busy")  # exactly MAX_AT_ONCE slots, none leaked or given twice
-        for user_id in (9004, 9005):
-            export._running.discard(user_id)
-            export._slots.release()
+            for response in last:
+                asyncio.run(response.background())
 
     def test_a_download_too_slow_to_finish_is_cut_off_and_gives_the_place_back(self):
         hold = export._Hold(9100)
@@ -473,6 +471,48 @@ class ExportTest(unittest.TestCase):
             got = list(export._chunks(hold.buffer, hold))
         self.assertEqual(got, [])
         self.assertNotIn(9100, export._running)
+
+    def test_a_reader_that_stops_reading_loses_the_place_when_the_deadline_passes(self):
+        """The deadline can't wait for the generator to be asked for a chunk: a client that holds the connection open and
+        reads nothing never asks. A timer gives the place back."""
+        import asyncio
+        import time
+        from types import SimpleNamespace
+
+        def fake(db, user_id, now=None):
+            return io.BytesIO(b"zip" * 100_000), 1, "x.zip"
+
+        self.assertEqual(export.stream_seconds(0), export.MAX_STREAM_SECONDS)
+        self.assertGreater(export.stream_seconds(export.MAX_EXPORT_BYTES), 2000, "a slow link can finish a big zip")
+        with mock.patch.object(export, "build", side_effect=fake), mock.patch.object(export, "require_recent_auth"), \
+                mock.patch.object(export, "MAX_STREAM_SECONDS", 0.2), mock.patch.object(export, "MIN_RATE", 10**9):
+            response = export.export_data(SimpleNamespace(id=9200), None)  # (never iterated, no background task run)
+            self.assertIn(9200, export._running)
+            deadline = time.monotonic() + 10
+            while 9200 in export._running and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertNotIn(9200, export._running, "the account's mark is free again")
+            # the slot is free too: both can be taken again
+            self.assertTrue(export._slots.acquire(blocking=False))
+            self.assertTrue(export._slots.acquire(blocking=False))
+            export._slots.release()
+            export._slots.release()
+            # a generator that was in the middle of a read gets a closed buffer and ends quietly
+            self.assertEqual(asyncio.run(self._drain(response)), b"")
+
+    @staticmethod
+    async def _drain(response):
+        return b"".join([c async for c in response.body_iterator])
+
+    def test_the_timer_is_cancelled_when_the_download_ends_first(self):
+        hold = export._Hold(9201)
+        export._running.add(9201)
+        self.assertTrue(export._slots.acquire(blocking=False))
+        hold.buffer = io.BytesIO(b"x" * 1000)
+        hold.expire_after(3600)
+        self.assertEqual(len(b"".join(export._chunks(hold.buffer, hold, 3600))), 1000)
+        self.assertNotIn(9201, export._running)
+        self.assertIsNone(hold._timer)
 
     def test_account_details_membership_and_no_secrets(self):
         from datetime import datetime

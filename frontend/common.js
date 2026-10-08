@@ -573,6 +573,24 @@ async function signOut() {
   location.replace('login.html');
 }
 
+/* Recovery codes not yet confirmed as saved, kept for this tab only (sessionStorage) so a reload of the page that shows
+   them, or the "Show my recovery codes" link right after they were made, doesn't need the password again. The server
+   gives them back only for the password (POST /api/auth/recovery-codes/show), because a stolen cookie must not read
+   them. Gone when the tab closes, or when "I've saved them" is pressed. */
+const CODES_KEY = 'jobhunt.codes';
+function stashRecoveryCodes(codes) {
+  try { sessionStorage.setItem(CODES_KEY, JSON.stringify(codes)); } catch { /* private mode: asks for the password instead */ }
+}
+function stashedRecoveryCodes() {
+  try {
+    const codes = JSON.parse(sessionStorage.getItem(CODES_KEY));
+    return Array.isArray(codes) && codes.length && codes.every((c) => typeof c === 'string') ? codes : null;
+  } catch { return null; }
+}
+function forgetRecoveryCodes() {
+  try { sessionStorage.removeItem(CODES_KEY); } catch { /* nothing kept */ }
+}
+
 /* Recovery codes not yet confirmed as saved: a reminder on every page until they are. */
 function remindRecoveryCodes(me) {
   if (!me.recovery_codes_pending) return;

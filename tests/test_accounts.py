@@ -890,10 +890,10 @@ class RecoveryCodeTest(SignInTestCase):
         c.__enter__()
         self.addCleanup(c.__exit__, None, None, None)
         self.assertTrue(c.get("/api/auth/me").json()["recovery_codes_pending"])
-        self.assertEqual(c.get("/api/auth/recovery-codes").json()["codes"], account.recovery_codes)
+        self.assertEqual(helpers.show_codes(c).json()["codes"], account.recovery_codes)
         self.assertEqual(c.post("/api/auth/recovery-codes/ack").status_code, 200)
         self.assertFalse(c.get("/api/auth/me").json()["recovery_codes_pending"])
-        self.assertEqual(c.get("/api/auth/recovery-codes").status_code, 404)
+        self.assertEqual(helpers.show_codes(c).status_code, 404)
 
 
 class KeyScopeTest(SignInTestCase):

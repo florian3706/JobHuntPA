@@ -7,8 +7,10 @@ A POST with the CSRF token (a link or a prefetch must never start an export), an
 files). Only the signed-in account's own workspaces are read (``Workspace.owner_id``); an admin exports their own
 data like anyone else. One export per account at a time (429), and at most ``MAX_AT_ONCE`` in the whole app (503), and
 no more than ``MAX_EXPORT_BYTES`` of files in one zip (413): the zip is held in memory, so the account's place and
-the slot are kept until the download has ended (or ``MAX_STREAM_SECONDS``), not just until the build is done. The log says that user N exported, with the number
-of files and the size, never a name or any content.
+the slot are kept until the download has ended (or ``stream_seconds``: ``MAX_STREAM_SECONDS`` plus the time the zip
+takes at ``MIN_RATE``; a timer gives the place back then even when the client holds the connection open and reads
+nothing), not just until the build is done. The log says that user N exported, with the number of files and the size,
+never a name or any content.
 
 Layout (names are made safe for Windows, macOS and Linux: ``safe_name``)::
 
@@ -80,7 +82,8 @@ router = APIRouter(prefix="/api/account", tags=["account"])
 MAX_PART = 80
 MAX_EXPORT_BYTES = 200 * 1024 * 1024   # of files in one zip, before compression: it is built in memory
 MAX_AT_ONCE = 2                        # exports being made at the same time, for everyone
-MAX_STREAM_SECONDS = 600               # a download is cut off after this long, so a slow reader can't hold a zip in memory
+MAX_STREAM_SECONDS = 600               # a download is cut off after this long (plus size / MIN_RATE), so a slow or
+MIN_RATE = 100 * 1024                  # stalled reader can't hold a zip in memory: bytes a second a download must manage
 STATUS_FOLDER = {"to_review": "To review", "shortlisted": "Shortlisted", "applied": "Applied",
                  "interviewing": "Interviewing", "rejected": "Rejected", "not_interested": "Not interested"}
 HIDDEN_FOLDER = "Hidden"
@@ -782,37 +785,62 @@ _lock = threading.Lock()
 _slots = threading.BoundedSemaphore(MAX_AT_ONCE)
 
 
+def stream_seconds(size: int) -> float:
+    """How long a download of ``size`` bytes may take: the base time, and the time it needs at the slowest rate we serve
+    (a 200 MB zip to a phone over a slow link must be able to finish)."""
+    return MAX_STREAM_SECONDS + size / MIN_RATE
+
+
 class _Hold:
     """An account's place (its one-at-a-time mark and one of the app's slots) for as long as its zip is in memory: from
-    the start of the build until the last byte is sent, the client goes away or ``MAX_STREAM_SECONDS`` pass. Giving
-    the place back at the end of the build would let one account start another export while the earlier buffers were
-    still held by slow readers. ``release`` can run more than once."""
+    the start of the build until the last byte is sent, the client goes away or ``stream_seconds`` pass. Giving the
+    place back at the end of the build would let one account start another export while the earlier buffers were
+    still held by slow readers. A client that keeps the connection open and stops reading never lets the response
+    ask for the next chunk, so the deadline is also a timer (``expire_after``) that releases the place and closes the
+    buffer. ``release`` can run more than once."""
 
     def __init__(self, user_id: int) -> None:
         self.user_id, self.buffer, self._done = user_id, None, False
+        self._timer: Optional[threading.Timer] = None
         self._guard = threading.Lock()
+
+    def expire_after(self, seconds: float) -> None:
+        """Release by itself ``seconds`` from now (unless it has been released already)."""
+        with self._guard:
+            if self._done:
+                return
+            self._timer = threading.Timer(max(0.0, seconds), self.release)
+            self._timer.daemon = True
+            self._timer.start()
 
     def release(self) -> None:
         with self._guard:
             if self._done:
                 return
             self._done = True
+            timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
         if self.buffer is not None:
-            self.buffer.close()
+            self.buffer.close()  # (a generator blocked in the middle of a read gets a ValueError and ends)
         _slots.release()
         with _lock:
             _running.discard(self.user_id)
 
 
-def _chunks(buffer: io.BytesIO, hold: Optional[_Hold] = None):
-    deadline = time.monotonic() + MAX_STREAM_SECONDS
+def _chunks(buffer: io.BytesIO, hold: Optional[_Hold] = None, seconds: Optional[float] = None):
+    seconds = MAX_STREAM_SECONDS if seconds is None else seconds
+    deadline = time.monotonic() + seconds
     try:
         with buffer:
             while chunk := buffer.read(64 * 1024):
                 if time.monotonic() > deadline:  # a reader too slow to matter must not keep the memory for ever
-                    log.warning("an export download was cut off after %d seconds", MAX_STREAM_SECONDS)
+                    log.warning("an export download was cut off after %d seconds", seconds)
                     return
                 yield chunk
+    except ValueError:  # the buffer was closed under us: the deadline's timer released the place
+        if hold is None or not hold._done:
+            raise
     finally:
         if hold is not None:
             hold.release()
@@ -841,7 +869,9 @@ def export_data(user: AuthUser = Depends(current_user), db: Session = Depends(ge
         hold.release()
         raise
     log.info("user %s exported their data: %d files, %d bytes", user.id, files, size)
+    seconds = stream_seconds(size)
+    hold.expire_after(seconds)  # (a client that stops reading never lets the generator run to its own check)
     # The generator gives the place back when it ends; the background task covers a response that is never iterated.
-    return StreamingResponse(_chunks(buffer, hold), media_type="application/zip", background=BackgroundTask(hold.release),
+    return StreamingResponse(_chunks(buffer, hold, seconds), media_type="application/zip", background=BackgroundTask(hold.release),
                              headers={"Content-Disposition": f'attachment; filename="{name}"',
                                       "Content-Length": str(size)})

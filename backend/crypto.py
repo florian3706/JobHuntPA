@@ -57,8 +57,10 @@ so an INSERT that leaves it out still writes the marker.
 
 SQL can't compare ciphertexts, so any operator other than IS NULL / IS NOT NULL raises ``TypeError`` when the query
 is built. The comparator can't see a bare ``order_by(col)``, ``group_by(col)``, ``select(...).distinct()`` or
-``func.x(col)``, so a compile hook (``_refuse_sql_on_sealed``) refuses those with ``SealedSqlError`` the first time
-a statement of that shape is compiled: sort and de-duplicate in Python, or compare a ``blind_index``.
+``func.x(col)``, ``col.over(...)``, ``cast(col, ...)``, ``type_coerce(col, ...)`` or a UNION's ``order_by``, so a compile
+hook (``_refuse_sql_on_sealed``) refuses those with ``SealedSqlError`` the first time a statement of that shape is
+compiled: sort and de-duplicate in Python, or compare a ``blind_index``. (A bare ``literal_column("name")`` in an ORDER BY
+over a UNION is only text to SQLAlchemy and can't be told from a plaintext column: don't write one.)
 
 **The process key.** ``http_cache`` holds listing pages whose URLs carry search terms. Its rows are keyed by
 ``process_index(url)`` and its bodies sealed with ``ProcessSealedText``, both under a random key that exists only in
@@ -96,9 +98,9 @@ from sqlalchemy.exc import DontWrapMixin
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql import operators, visitors
 from sqlalchemy.sql.dml import Delete, Update
-from sqlalchemy.sql.elements import ColumnClause, Null
+from sqlalchemy.sql.elements import Cast, ColumnClause, Null, Over, TypeCoerce
 from sqlalchemy.sql.functions import FunctionElement
-from sqlalchemy.sql.selectable import Select
+from sqlalchemy.sql.selectable import CompoundSelect, Select
 from sqlalchemy.types import TypeDecorator
 
 from backend import config  # noqa: F401  (loads .env first: JOBHUNT_KDF_PROFILE may be set there)
@@ -1058,12 +1060,34 @@ def check_statement(statement: Any) -> None:
             if name:
                 raise SealedSqlError(f"SQL function {getattr(element, 'name', '?')}() over {name}: the column is "
                                      "encrypted. Compute it in Python.")
+        elif isinstance(element, Over):  # row_number() OVER (PARTITION BY ... ORDER BY ...)
+            for what, clause in (("PARTITION BY", element.partition_by), ("ORDER BY", element.order_by)):
+                name = _sealed_in(clause) if clause is not None else None
+                if name:
+                    raise SealedSqlError(f"{what} {name} in a window: the column is encrypted. Sort or group in "
+                                         "Python.")
+        elif isinstance(element, (Cast, TypeCoerce)):  # a retyped column compares as text, and the comparator can't see
+            name = _sealed_in(element.clause)
+            if name:
+                raise SealedSqlError(f"{'CAST' if isinstance(element, Cast) else 'type_coerce'} of {name}: the column "
+                                     "is encrypted. Compute it in Python.")
 
 
 @compiles(Select)
 def _refuse_sql_on_sealed(select: Select, compiler: Any, **kw: Any) -> str:
     check_statement(select)
     return compiler.visit_select(select, **kw)
+
+
+@compiles(CompoundSelect)
+def _refuse_compound_over_sealed(select: CompoundSelect, compiler: Any, **kw: Any) -> str:
+    # (a UNION's own ORDER BY / GROUP BY: its member SELECTs are checked as they compile)
+    for what, clauses in (("ORDER BY", select._order_by_clauses), ("GROUP BY", select._group_by_clauses)):
+        for clause in clauses:
+            name = _sealed_in(clause)
+            if name:
+                raise SealedSqlError(f"{what} {name}: the column is encrypted. Sort or group in Python.")
+    return compiler.visit_compound_select(select, **kw)
 
 
 @compiles(Update)

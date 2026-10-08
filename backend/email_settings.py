@@ -122,13 +122,18 @@ def _announce_route_change(db: Session, admin: AuthUser, updates: dict[str, str]
     """A new mail server or public address decides where every reset link goes, so before it is saved the other
     admins are told, through the old server, and for 24 hours no admin can turn off anyone's two-step sign-in or send
     them a reset link (``mail_route``). Nothing is announced when the route stays as it was or is set up for the
-    first time."""
+    first time. An admin without the admin key is refused (409), because they could not tell the others."""
     old = {name: os.environ.get(name, "") for name in mail_route.ROUTE_VARS}
     new = {**old, **{name: value for name, value in updates.items() if name in old}}
     if not mail_route.is_change(old, new):
         return
     config = mailer.get_config()  # (the old server; None when email was off, and then nothing can be sent)
-    addresses = mail_route.other_admin_addresses(db, admin) if config else []
+    addresses: list[str] = []
+    if config:
+        mail_route.refuse_without_key(db, admin)  # (the other admins' addresses need the key; nothing is saved)
+        addresses, others = mail_route.other_admin_addresses(db, admin), mail_route.other_admins(db, admin)
+        if len(addresses) < others:  # an admin whose details are stale can't be told until they sign in again
+            admin_key.audit(db, admin.id, "mail_route_notice_partial", None, {"admins": others, "told": len(addresses)})
     mail_route.mark_changed(db)  # before the change is saved: a crash in between leaves a hold, never a gap
     if addresses:
         mail_route.notify_admins(addresses, config)

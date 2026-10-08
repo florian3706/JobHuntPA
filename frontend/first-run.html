@@ -81,6 +81,25 @@
         </form>
       </div>
 
+      <div id="show-step" class="auth-step" hidden>
+        <p>Your recovery codes are shown only until you confirm you've saved them. Each one can set a new password, so
+          enter your password to see them again.</p>
+        <form id="show-form" class="auth-form" novalidate>
+          <div class="auth-field">
+            <label for="show-password">Password</label>
+            <div class="pw-row">
+              <input id="show-password" name="show-password" type="password" autocomplete="current-password" spellcheck="false" required />
+              <button class="btn pw-toggle" type="button" aria-controls="show-password" aria-pressed="false">Show password</button>
+            </div>
+          </div>
+          <div id="show-code-field" class="auth-field" hidden>
+            <label for="show-code">Code from your app, or a recovery code</label>
+            <input id="show-code" name="show-code" type="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" />
+          </div>
+          <button id="show-submit" class="btn btn-primary auth-submit" type="submit">Show my recovery codes</button>
+        </form>
+      </div>
+
       <div id="codes-step" class="codes-step" hidden>
         <h2 id="codes-title" tabindex="-1">Save your recovery codes</h2>
         <p>If you ever forget your password, a recovery code is how you get back in and keep your data. Each code

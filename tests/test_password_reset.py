@@ -18,7 +18,9 @@ from tests.mail_helpers import BASE, MailTestCase, html_of, text_of, token_in  #
 
 from sqlalchemy import text  # noqa: E402
 
-from backend import crypto, docs, mail_queue, mailer, tokens, totp, users  # noqa: E402
+from starlette.responses import Response  # noqa: E402
+
+from backend import crypto, docs, lockout, mail_queue, mailer, tokens, totp, users  # noqa: E402
 from backend.db import (  # noqa: E402
     AdminKeyGrant,
     AuthSession,
@@ -291,6 +293,39 @@ class ForgotLimitsTest(ResetCase):
         self.ask(bob.email)
         self.assertEqual(len(self.to(bob.email)), 4)
 
+    def test_a_burst_with_no_usable_link_sends_only_one_extra_email(self):
+        """The exception is counted when the request comes in, not when the mail thread makes the token: requests that
+        arrive together (or while the thread is busy) can't each send one."""
+        bob = self.user()
+        server = users.server_keys()
+        for _ in range(3):  # the limits are used up, and Bob has no link at all
+            helpers.ratelimit.FORGOT_ADDRESS.hit(server.email_hash(bob.email))
+            helpers.ratelimit.RESET_ACCOUNT.hit(bob.id)
+        jobs = []
+        lock = threading.Lock()
+
+        def hold(fn, *args, **kwargs):  # (the mail thread is busy: nothing runs yet)
+            with lock:
+                jobs.append(fn.__name__)
+
+        statuses = []
+
+        def ask(c):
+            statuses.append(c.post("/api/auth/forgot", json={"email": bob.email}).status_code)
+
+        clients = [self.anonymous(client=(f"203.0.113.{n}", 4000)) for n in range(1, 13)]
+        helpers.ratelimit.AUTH.reset()
+        with mock.patch.object(mail_queue, "submit", hold), \
+                mock.patch.object(helpers.ratelimit, "AUTH", helpers.ratelimit.Limiter([(1000, 60)])):
+            threads = [threading.Thread(target=ask, args=(c,)) for c in clients]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(60)
+        self.assertEqual(statuses, [202] * 12)
+        self.assertEqual(jobs.count("_forgot_job"), 1)
+        self.assertEqual(jobs.count("decoy"), 11)
+
     def test_held_back_requests_are_logged_by_account_id_only(self):
         bob = self.user()
         self.burst(bob.email, 3)
@@ -519,7 +554,7 @@ class KeepDataTest(ResetCase):
         """Each recovery code opens the data key. Whoever held the account before (someone who signed up with this
         address first, turned background access on and kept the codes) must not be able to use one afterwards."""
         bob = self.user(background=True, pin="Kept marker")
-        old = self.signed_in(bob).get("/api/auth/recovery-codes").json()["codes"]
+        old = helpers.show_codes(self.signed_in(bob)).json()["codes"]
         self.assertEqual(len(old), 8)
         r = self.reset(self.link(bob))
         self.assertEqual(r.status_code, 200, r.text)
@@ -677,7 +712,7 @@ class WipeTest(ResetCase):
         self.assertEqual(self.count("memberships", "user_id = :u AND billing_self IS NULL", u=bob.id), 1)
         self.assertEqual((keys_after.server_wrapped_dek, after.onboarding_step), (None, 1))
         # new recovery codes, shown on the next page; the old ones are gone
-        self.assertEqual(c.get("/api/auth/recovery-codes").json()["codes"], codes)
+        self.assertEqual(helpers.show_codes(c, NEW_PASSWORD).json()["codes"], codes)
         self.assertEqual(self.count("recovery_codes", "user_id = :u AND wrapped_dek IS NOT NULL", u=bob.id), 8)
         # the password is the new one, and a recovery code of the new set resets it again with the data kept
         self.assertEqual(self.login(bob, PASSWORD)[1].status_code, 401)
@@ -844,12 +879,13 @@ class MfaResetTest(ResetCase):
         r = self.reset(again, recovery_code=codes[0], new_password="a different new password")
         self.assertEqual((r.status_code, r.json()["code"]), (422, "wrong_code"))  # gone
 
-    def test_five_wrong_codes_make_the_account_wait(self):
+    def test_five_wrong_codes_from_one_place_make_that_place_wait(self):
         bob, secret = self.user(background=True, mfa=True)
         token = self.link(bob)
-        statuses = [self.reset(token, code="000000").status_code for _ in range(6)]
-        self.assertEqual(statuses[:5], [422] * 5)
-        r = self.reset(token, code=totp.code_at(secret, self.step()))
+        with mock.patch.object(helpers.ratelimit, "CODE_TRIES", 50):  # (the link's own limit is tested below)
+            statuses = [self.reset(token, code="000000").status_code for _ in range(6)]
+            self.assertEqual(statuses[:5], [422] * 5)
+            r = self.reset(token, code=totp.code_at(secret, self.step()))
         self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
         self.assertIn("Retry-After", r.headers)
 
@@ -859,9 +895,59 @@ class MfaResetTest(ResetCase):
         bob, secret = self.user(background=True, mfa=True)
         token = self.link(bob)
         stranger = self.anonymous(client=("203.0.113.9", 4000))
-        statuses = [self.reset(token, anon=stranger, code="000000").status_code for _ in range(6)]
+        with mock.patch.object(helpers.ratelimit, "CODE_TRIES", 50):
+            statuses = [self.reset(token, anon=stranger, code="000000").status_code for _ in range(6)]
         self.assertEqual(statuses, [422] * 5 + [429])
         owner = self.anonymous(client=("198.51.100.7", 5000))
+        r = self.reset(token, anon=owner, code=totp.code_at(secret, self.step()))
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_five_wrong_codes_on_one_link_use_it_up_whoever_sends_them(self):
+        bob, secret = self.user(background=True, mfa=True)
+        token = self.link(bob)
+        statuses = [self.reset(token, anon=self.anonymous(client=(f"2001:db8::{n:x}", 4000)),
+                               code="000000").status_code for n in range(1, 8)]
+        self.assertEqual(statuses, [422] * 4 + [410] * 3)
+        r = self.reset(token, code=totp.code_at(secret, self.step()))  # not even the right one now
+        self.assertEqual((r.status_code, r.json()["code"]), (410, "link_invalid"))
+        self.assertEqual(self.login(bob, PASSWORD)[1].status_code, 200)  # nothing changed
+        fresh = self.link(bob)  # a new link is a new set of 5
+        self.advance()
+        self.assertEqual(self.reset(fresh, code=totp.code_at(secret, self.step())).status_code, 200)
+
+    def test_codes_guessed_from_many_addresses_across_links_run_out(self):
+        """The reset link isn't used up by a wrong code, so a guesser with many addresses (an IPv6 /64) and a mailbox
+        gets 5 tries per link; the codes' own ceiling over all addresses stops them after about 10 an hour."""
+        bob, secret = self.user(background=True, mfa=True)
+        sent = []
+        for n in range(1, 41):
+            if n % 4 == 1:  # a new link every 4 tries
+                helpers.ratelimit.FORGOT_ADDRESS.reset()
+                helpers.ratelimit.RESET_ACCOUNT.reset()
+                token = self.link(bob)
+            anon = self.anonymous(client=(f"2001:db8::{n:x}", 4000))
+            helpers.ratelimit.AUTH.reset()
+            sent.append(self.reset(token, anon=anon, code="000000").status_code)
+        self.assertEqual(sent.count(422), 10)
+        self.assertEqual(set(sent[10:]), {429})
+        helpers.ratelimit.AUTH.reset()
+        r = self.reset(token, anon=self.anonymous(client=("2001:db8::ffff", 4000)),
+                       code=totp.code_at(secret, self.step()))
+        self.assertEqual(r.status_code, 429)
+
+    def test_a_browser_the_account_signed_in_from_is_not_held_up_by_other_places_wrong_codes(self):
+        bob, secret = self.user(background=True, mfa=True)
+        for n in range(1, 11):  # ten wrong codes from other places: the ceiling is reached
+            helpers.ratelimit.code_guesses.begin(bob.id, f"2001:db8::{n:x}")
+        token = self.link(bob)
+        r = self.reset(token, anon=self.anonymous(client=("2001:db8::ffff", 4000)), code=totp.code_at(secret, self.step()))
+        self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
+        self.assertIn("several places", r.json()["detail"])
+        owner = self.anonymous(client=("2001:db8::fffe", 4000))
+        response = Response()
+        lockout.remember_device(response, {"type": "http", "scheme": "http", "headers": [], "server": ("testserver", 80)},
+                                bob.id)
+        owner.cookies.set("jh_device", response.headers["set-cookie"].split("jh_device=")[1].split(";")[0])
         r = self.reset(token, anon=owner, code=totp.code_at(secret, self.step()))
         self.assertEqual(r.status_code, 200, r.text)
 
@@ -926,7 +1012,7 @@ class StaleLinkTest(ResetCase):
         bob = self.user()
         token = self.link(bob)
         c = self.signed_in(bob)
-        code = c.get("/api/auth/recovery-codes").json()["codes"][0]
+        code = helpers.show_codes(c).json()["codes"][0]
         r = self.anonymous().post("/api/auth/recover", json={"email": bob.email, "recovery_code": code,
                                                               "new_password": "recovered password"})
         self.assertEqual(r.status_code, 200, r.text)

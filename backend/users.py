@@ -656,7 +656,7 @@ def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) ->
     except BaseException:
         db.rollback()
         raise
-    ratelimit.guesses.clear(user_id)
+    ratelimit.forget_account(user_id)
     scrub_wal()  # the old password's and the old recovery codes' copies of the data key
     log.info("user %s: password reset by email; the data was kept (background access) and the recovery codes "
              "replaced", user_id)
@@ -728,7 +728,7 @@ def reset_password_wiping_data(db: Session, user_id: int, new_password: Any, ema
             db.rollback()
             raise
     removed = _remove_uploads(user_id, files)
-    ratelimit.guesses.clear(user_id)
+    ratelimit.forget_account(user_id)
     scrub_wal()  # the old password's, the old recovery codes' and the old key's copies of the data key
     log.info("user %s: password reset by email without a key; the saved data was deleted (%d workspace(s), %d "
              "file(s))", user_id, len(ws_ids), removed)
@@ -797,7 +797,7 @@ def apply_new_password(db: Session, user: User, dek: bytes, new: NewPassword) ->
         raise crypto.KeyMismatch("That isn't this account's data key")
     user.kdf_salt, user.kdf_params, user.pw_verifier = new.salt, new.params.to_json(), new.derived.auth
     row.pw_wrapped_dek = crypto.wrap(new.derived.kek, dek, f"pw|{user.id}")
-    ratelimit.guesses.clear(user.id)  # the account starts again with no wrong tries
+    ratelimit.forget_account(user.id)  # the account starts again with no wrong tries
 
 
 # ---------------------------------------------------------------------------

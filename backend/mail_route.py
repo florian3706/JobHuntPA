@@ -80,6 +80,20 @@ def other_admin_addresses(db: Session, admin: AuthUser) -> list[str]:
     return admin_panel.other_admin_addresses(db, admin)
 
 
+def other_admins(db: Session, admin: AuthUser) -> int:
+    """How many other active admins there are (the ones to tell)."""
+    from backend import admin as admin_panel
+    return len(admin_panel._active_admins(db, besides=admin.id))
+
+
+def refuse_without_key(db: Session, admin: AuthUser) -> None:
+    """409 ``admin_key_missing`` for an admin who can't open the admin details key while other admins are to be told:
+    their addresses are sealed to that key, so the notice would silently go to nobody."""
+    from backend import admin as admin_panel
+    if other_admins(db, admin) and admin_panel._open_apk(db, admin) is None:
+        raise admin_panel._key_missing()
+
+
 def notify_admins(addresses: list[str], config: Optional[mailer.SmtpConfig]) -> int:
     """Queue the change notice to each address, through ``config`` (the settings from before the change). Returns how
     many were queued. Never raises."""
