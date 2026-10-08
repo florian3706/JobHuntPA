@@ -124,6 +124,17 @@ the window, press Enter, then run `./setup.sh` once and `./start.sh` to start.
 
 JobHuntPA has accounts, so one copy can serve several people, each with their own workspaces.
 
+Your account's cards are on the **Settings** tab: password, two-step sign-in, recovery codes and signed-in
+devices, your email address and background access, then job digest emails, download your data and delete account.
+
+<img src="docs/screenshots/settings-account.png" alt="The Settings tab's account cards: password, two-step sign-in, recovery codes, signed-in devices, your email address and background access" width="760">
+
+<img src="docs/screenshots/settings-data.png" alt="The Settings tab's last cards: job digest emails, download your data and delete account" width="760">
+
+The sign-in page, for when you aren't signed in:
+
+<img src="docs/screenshots/sign-in.png" alt="The sign-in page: email address, password, keep me signed in, and the Trouble signing in help" width="400">
+
 - **The first start** opens a page that creates the first account: your email address, an optional
   name and a password of at least 10 characters (a few random words work well; your password manager
   can fill it in). That account is the **admin**. Everything already in JobHuntPA (workspaces, jobs,
@@ -313,6 +324,10 @@ encryption of an older install has finished, so restore the two together.
 
 Admins open the **admin panel** from **Account > Admin** (`admin.html`). It never shows anyone's jobs,
 documents or searches. It has five parts:
+
+<img src="docs/screenshots/admin-people.png" alt="The admin panel: summary and AI use, the people table and the sign-up and invitations settings" width="760">
+
+<img src="docs/screenshots/admin-server.png" alt="The admin panel's Server section: AI provider, model and key, reasoning levels, and the commute keys" width="760">
 
 - **Summary and AI use:** people, admins, how many were active in 7 and 30 days and how many joined
   in 30 days, and the AI service's use for the last 7 to 365 days: requests, tokens in and out, and
@@ -504,6 +519,9 @@ can live in their own **workspaces** (switcher at the top right).
   access): your jobs are encrypted, so while you're signed out the server can only search for you if
   it holds a key. Without it each slot is skipped, and the schedule card says "Scheduled search
   skipped: background access is off".
+
+  <img src="docs/screenshots/search-schedule.png" alt="The Scheduled searches card: run times, days, public holidays and the next search" width="760">
+
 - **Tracking and tidying**: set each job's status (to review, shortlisted, applied, interviewing,
   rejected, not interested). Tick jobs, or filter the list and tick **Select all shown**, to change
   status or **Hide** them in bulk (only jobs on screen are ever affected); hidden jobs stay hidden when a search finds them again, aren't scored or
@@ -515,6 +533,9 @@ can live in their own **workspaces** (switcher at the top right).
   cuts. Press **Why?** on the card, or open the job, to see the signs and what to ask the employer. These are
   signs only and can be wrong: it may be a real job. Nothing is hidden or changed
   unless you tick **Hide possible ghost jobs** in the filters (off by default; the count says how many it hid).
+
+  <img src="docs/screenshots/ghost-job.png" alt="A job card with the Possible ghost job badge and its Why? opened: the ad mentions a talent pool and has been open for 68 days" width="397">
+
 - **Softening the office-days rule**: if you set a maximum number of office days for hybrid roles,
   the Jobs tab's **Office days (temporary)** menu lets you allow extra days (up to 5) for now. Jobs that
   only that rule excluded reappear, marked *shown by temporary +N office days*, and **Score them**
@@ -977,7 +998,10 @@ the Pi to check there).
 **README screenshots:** `python3 tools/readme_screenshots.py` (needs `pip install pillow`) builds a
 throwaway database of made-up data with `tools/demo_data.py`, runs the app on it with fake AI
 settings and no scheduler, and saves `docs/screenshots/*.png`. It never touches `data/` or `.env`.
-Re-run it after changing the UI; `--only jobs,map` retakes just those.
+Re-run it after changing the UI; `--only jobs,map` retakes just those. It signs in once as the demo admin
+(`--only ghost-job,settings-account,settings-data,admin-people,admin-server,sign-in` are the account and
+admin shots). The map and the job page need OpenStreetMap's tiles and OSRM's route, so take those two on a
+machine that reaches them.
 
 **Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme, the colour
 pairs the app uses together and fails on any below WCAG AA (`--all` shows the passing ones too).

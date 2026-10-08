@@ -521,7 +521,7 @@ This is an office-based role in Parramatta. $150,000 – $165,000 plus super."""
         key="gumnut", company="Gumnut Software", title="Technical Product Manager, Integrations",
         location="Remote - Australia", mode="remote", days=None, salary="$150,000 – $170,000 + super",
         source="greenhouse:gumnut-software", src="gumnut", url="https://gumnut-software.example/careers/technical-pm-integrations",
-        age=(21, 6), detail="full", place=None, status="shortlisted",
+        age=(68, 2), detail="full", place=None, status="shortlisted",
         desc="""Gumnut Software makes workflow automation for finance teams, with more than 400 integrations to accounting, payroll and banking systems.
 
 The role
@@ -536,7 +536,7 @@ About you
 - Experience with partner programmes or integration marketplaces
 - Excellent written communication for a remote-first team
 
-Fully remote within Australia.""",
+Fully remote within Australia. Not quite right for this one? Join our talent pool and we will keep your details on file.""",
         fit=(63, [
             ("4+ years in product management on B2B SaaS", True, "b2b"),
             ("Owns a roadmap", True, "roadmap"),
@@ -810,6 +810,7 @@ def _build() -> None:
                             DealbreakerSet, Document, FitResult, GeocodeCache, Job, JobDuplicate, Pin, Posting,
                             SearchRun, SessionLocal, UserProfile, Workspace, company_key, init_db)
     from backend.duplicates import scan
+    from backend.ghost import stamp as stamp_ghost_signs
     from backend.filters import commute_pins, exclusion_reason, load_criteria, parse_salary
     from backend.geo import _geocode_query, classify_work_mode, home_distance, parse_office_days
     from backend.offices import office_queries, office_unknown
@@ -907,6 +908,7 @@ def _build() -> None:
                 industry=spec.get("industry"), first_seen=first_seen, last_listed_at=run_start + timedelta(seconds=30),
                 rev=1,
             )
+            stamp_ghost_signs(posting)  # the signs in the ad's own words (the dates are read when the job is listed)
             job = Job(
                 workspace_id=ws_id, origin="pool", posting=posting, posting_rev=1,  # (the URL is the posting's)
                 source_id=source_rows[spec["src"]].id if spec.get("src") else None,
