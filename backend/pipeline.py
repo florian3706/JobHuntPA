@@ -289,6 +289,7 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
         if own_label and named_by_label:
             job.company = own_label  # the name the user gave the source: this workspace's own
         rep.new += is_new
+        db.flush()  # (a new job has no id until now)
         found.add(job.id)
         posting = job.posting
 
