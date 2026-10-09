@@ -4,7 +4,10 @@ start-up, and the first run. Design: docs/design/accounts.md, sections 1, 4 and 
 **Keys of an account** (all made here, at creation):
   * a random data key (DEK) for all of the user's data, wrapped under the password (``pw|{uid}``) and under each of
     8 recovery codes (``rc|{uid}|{code_id}``); a session wraps it again under its cookie (backend.sessions);
-  * an X25519 key pair, its private half under the DEK, so an admin details key can be shared with this user;
+  * an X25519 key pair, so an admin details key can be shared with this user, and its private half under a second
+    random key, the identity key (IK: ``ik-priv|{uid}``). The IK is wrapped like the DEK, under the password
+    (``pw-ik|{uid}``), each recovery code (``rc-ik|{uid}|{code_id}``) and each session's cookie (backend.sessions),
+    but **never under the server KEK**: background access opens the DEK, not the way to the admin details key;
   * ``pii_self`` ({email, name}) under the DEK, and ``pii_admin`` (the same) sealed to the admin details key (APK),
     which needs only its public half, so no admin has to be signed in;
   * with background access, the DEK under the server KEK as well (``srv|{uid}|{kek_id}``; used from Phase G).
@@ -32,6 +35,7 @@ import os
 import re
 import secrets
 import threading
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -116,9 +120,10 @@ class AlreadySetUp(RuntimeError):
 class NewAccount:
     user_id: int
     dek: bytes
+    ik: bytes
     recovery_codes: list[str]
 
-    def __repr__(self) -> str:  # never the key or the codes
+    def __repr__(self) -> str:  # never the keys or the codes
         return f"<users.NewAccount user_id={self.user_id}>"
 
 
@@ -176,14 +181,45 @@ def normalise_recovery_code(text: Any) -> Optional[str]:
 
 
 def _codes_label(uid: int) -> str:
+    """The label of the unconfirmed codes sealed under the DEK (accounts from before the identity key)."""
     return f"user_keys.pending_codes|{uid}"
 
 
-def pending_recovery_codes(db: Session, user_id: int) -> Optional[list[str]]:
-    """The recovery codes this user hasn't yet confirmed saving, or None. Needs the user's key scope."""
+# Wrap labels of the identity key (IK) and of what is under it (accounts design §1.2, §15).
+def _ik_priv_label(uid: int) -> str:
+    return f"ik-priv|{uid}"
+
+
+def _pw_ik_label(uid: int) -> str:
+    return f"pw-ik|{uid}"
+
+
+def _rc_ik_label(uid: int, code_id: int) -> str:
+    return f"rc-ik|{uid}|{code_id}"
+
+
+def _pending_codes_label(uid: int) -> str:
+    return f"pending-codes|{uid}"
+
+
+def has_pending_recovery_codes(db: Session, user_id: int) -> bool:
+    """Whether this user has recovery codes they haven't yet confirmed saving. Needs no key."""
+    row = db.get(UserKeys, user_id)
+    return row is not None and row.pending_codes_enc is not None
+
+
+def pending_recovery_codes(db: Session, user_id: int, ik: Optional[bytes] = None) -> Optional[list[str]]:
+    """The recovery codes this user hasn't yet confirmed saving, or None. They are kept under the identity key (a code
+    opens it, so the DEK, which the server key can open, must not hold them): pass ``ik``. Codes made before the IK
+    existed are under the DEK instead (the user's key scope)."""
     row = db.get(UserKeys, user_id)
     if row is None or row.pending_codes_enc is None:
         return None
+    if ik is not None:
+        try:
+            return json.loads(crypto.unwrap(ik, row.pending_codes_enc, _pending_codes_label(user_id)))
+        except crypto.CryptoError:
+            pass  # (the older form, below)
     return json.loads(crypto.unseal(row.pending_codes_enc, _codes_label(user_id)))
 
 
@@ -298,6 +334,7 @@ def startup() -> None:
     to this database, clear expired sessions, then either create the admin from the process environment, or write
     the first-run token. Raises keys.KeyFileError (start-up stops) for a missing or wrong key file."""
     global _server_keys, _users_exist
+    keys.hold_key_file()  # for as long as this process runs: a key command can't replace the file under it
     db = SessionLocal()
     try:
         has_users = db.query(User.id).first() is not None
@@ -386,15 +423,18 @@ def _create_user(db: Session, *, email: str, password: str, name: str, role: str
     db.add(user)
     db.flush()
     uid = user.id
+    ik = crypto.new_key()  # the identity key: opens only the X25519 private key, and is never under the server KEK
     priv, pub = crypto.new_keypair()
     codes = [new_recovery_code() for _ in range(RECOVERY_CODES)]
     recovery_salt = crypto.new_salt()
     with crypto.as_user(uid, dek):
         user.pii_self = crypto.seal(_details(email, name), f"users.pii_self|{uid}")
-        user_keys = UserKeys(user_id=uid, dek_kid=crypto.key_id(dek), pw_wrapped_dek=crypto.wrap(derived.kek, dek, f"pw|{uid}"),
-                             x25519_pub=pub, x25519_priv_enc=crypto.seal(priv, f"user_keys.x25519_priv|{uid}"),
-                             recovery_salt=recovery_salt,
-                             pending_codes_enc=crypto.seal(json.dumps(codes).encode("ascii"), _codes_label(uid)))
+    user_keys = UserKeys(user_id=uid, dek_kid=crypto.key_id(dek), pw_wrapped_dek=crypto.wrap(derived.kek, dek, f"pw|{uid}"),
+                         x25519_pub=pub, x25519_priv_enc=crypto.wrap(ik, priv, _ik_priv_label(uid)),
+                         pw_wrapped_ik=crypto.wrap(derived.kek, ik, _pw_ik_label(uid)),
+                         recovery_salt=recovery_salt,
+                         pending_codes_enc=crypto.wrap(ik, json.dumps(codes).encode("ascii"),
+                                                       _pending_codes_label(uid)))
     if background:  # the DEK under the server KEK (scheduled searches run with it)
         _wrap_for_server(user_keys, uid, dek)
     db.add(user_keys)
@@ -402,15 +442,16 @@ def _create_user(db: Session, *, email: str, password: str, name: str, role: str
         row = RecoveryCode(user_id=uid)
         db.add(row)
         db.flush()
-        row.wrapped_dek = crypto.wrap(crypto.recovery_kek(normalise_recovery_code(code), recovery_salt), dek,
-                                      f"rc|{uid}|{row.id}")
+        code_kek = crypto.recovery_kek(normalise_recovery_code(code), recovery_salt)
+        row.wrapped_dek = crypto.wrap(code_kek, dek, f"rc|{uid}|{row.id}")
+        row.wrapped_ik = crypto.wrap(code_kek, ik, _rc_ik_label(uid, row.id))
     apk = admin_public_key(db)
     if apk is not None:
         user.pii_admin = crypto.seal_to(apk[0], _details(email, name), f"users.pii_admin|{uid}")
         user.pii_admin_version = apk[1]
     db.add(Membership(user_id=uid, stripe_ref=secrets.token_urlsafe(16)))
     db.add(EmailPrefs(user_id=uid, unsubscribe_id=secrets.token_urlsafe(16)))
-    return NewAccount(uid, dek, codes)
+    return NewAccount(uid, dek, ik, codes)
 
 
 def create_user(email: str, password: str, *, name: str = "", role: str = "user", created_via: str = "open",
@@ -509,9 +550,21 @@ def dummy_derivation(password: Any) -> None:
     crypto.derive_password(password if isinstance(password, str) else "", _DUMMY_SALT, crypto.kdf_profile())
 
 
-def unlock_with_password(db: Session, user: User, password: Any) -> Optional[bytes]:
-    """The user's DEK if ``password`` is theirs, else None. When the KDF profile has changed since the password was
-    set, it is derived again with the new settings and stored (one extra derivation, this time only)."""
+@dataclass(frozen=True, repr=False)
+class Unlocked:
+    """What a password opens: the data key, and the identity key (None only when an account from before the IK
+    couldn't be given one: ``unlock`` logs why)."""
+    dek: bytes
+    ik: Optional[bytes]
+
+    def __repr__(self) -> str:  # never the keys
+        return "<users.Unlocked>"
+
+
+def unlock(db: Session, user: User, password: Any) -> Optional[Unlocked]:
+    """The user's DEK and IK if ``password`` is theirs, else None. When the KDF profile has changed since the password
+    was set, it is derived again with the new settings and stored (one extra derivation, this time only). An account
+    that has no IK yet (made before it existed) gets one now (``migrate_identity``): the password is what wraps it."""
     if not isinstance(password, str) or not password or len(password) > PASSWORD_MAX:
         dummy_derivation("")
         return None
@@ -521,15 +574,155 @@ def unlock_with_password(db: Session, user: User, password: Any) -> Optional[byt
         return None
     row = db.get(UserKeys, user.id)
     dek = crypto.unwrap(derived.kek, row.pw_wrapped_dek, f"pw|{user.id}")
+    ik = crypto.unwrap(derived.kek, row.pw_wrapped_ik, _pw_ik_label(user.id)) if row.pw_wrapped_ik is not None else None
+    changed = False
+    if ik is None:
+        ik, changed = _give_identity(db, row, user.id, dek, derived.kek)
     current = crypto.kdf_profile()
     if params != current:
         salt = crypto.new_salt()
         again = crypto.derive_password(password, salt, current)
         user.kdf_salt, user.kdf_params, user.pw_verifier = salt, current.to_json(), again.auth
         row.pw_wrapped_dek = crypto.wrap(again.kek, dek, f"pw|{user.id}")
-        db.commit()
+        if ik is not None:
+            row.pw_wrapped_ik = crypto.wrap(again.kek, ik, _pw_ik_label(user.id))
+        changed = True
         log.info("user %s: password key settings updated to the current profile", user.id)
-    return dek
+    if changed:
+        db.commit()
+        scrub_wal()  # the earlier settings' copy of the keys, and the DEK-sealed private key, must not linger in the log
+    return Unlocked(dek, ik)
+
+
+def unlock_with_password(db: Session, user: User, password: Any) -> Optional[bytes]:
+    """The user's DEK if ``password`` is theirs, else None (``unlock`` gives the IK as well)."""
+    opened = unlock(db, user, password)
+    return opened.dek if opened is not None else None
+
+
+def _give_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, password_kek: bytes
+                   ) -> tuple[Optional[bytes], bool]:
+    """``(ik, changed)`` for an account whose password just opened its DEK but not an IK (none is wrapped for the
+    password): another request may have just made one, so the row is read again under the write lock; otherwise
+    ``migrate_identity`` makes it. (None, False) when that fails: signing in goes on without an IK."""
+    try:
+        _write_lock(db)
+        db.refresh(row)
+        if row.pw_wrapped_ik is not None:
+            return crypto.unwrap(password_kek, row.pw_wrapped_ik, _pw_ik_label(user_id)), False
+        ik = migrate_identity(db, row, user_id, dek, password_kek)
+    except (crypto.CryptoError, ValueError):
+        db.rollback()
+        log.warning("user %s: the identity key could not be made; the admin key stays closed until the next sign-in",
+                    user_id)
+        return None, False
+    log.info("user %s: identity key made; the private key moved from the data key to it", user_id)
+    return ik, True
+
+
+def migrate_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, password_kek: bytes) -> bytes:
+    """Gives an account from before the identity key one, in the caller's transaction (not committed): a new IK and a
+    **new X25519 key pair** whose private key is wrapped under the IK (the old private key is not reused: copies of
+    the DEK-sealed form, in a backup or an old file, would still open it), the IK wrapped under ``password_kek`` (the
+    password key) and, unless the server key opens the data key (background access), under each unconfirmed recovery
+    code (their text is in hand here), and those codes moved from the DEK to the IK. An admin's grant of the admin key
+    is opened with the old private key and sealed to the new public key, and the admin key is replaced
+    (``admin_key.new_key``), so a grant in an old copy opens nothing current; a grant that doesn't open is deleted and
+    audited. The DEK-sealed copies are overwritten; the caller scrubs the write-ahead log after committing. Everything
+    is computed before the row changes, and the changes are one savepoint, so a failure leaves them as they were
+    (CryptoError)."""
+    from backend import admin_key
+
+    with crypto.as_user(user_id, dek):
+        old_priv = crypto.unseal(row.x25519_priv_enc, f"user_keys.x25519_priv|{user_id}")
+        pending = crypto.unseal(row.pending_codes_enc, _codes_label(user_id)) if row.pending_codes_enc else None
+    ik = crypto.new_key()
+    priv, pub = crypto.new_keypair()
+    wrapped_priv = crypto.wrap(ik, priv, _ik_priv_label(user_id))
+    wrapped_ik = crypto.wrap(password_kek, ik, _pw_ik_label(user_id))
+    wrapped_pending = crypto.wrap(ik, pending, _pending_codes_label(user_id)) if pending is not None else None
+    # (a code whose text the server key could read, through the data key, must not open the new IK: it stays without)
+    code_iks = _code_iks(db, row, user_id, ik, pending) if row.server_wrapped_dek is None else {}
+    old_apk = admin_key.open_grant(db, user_id, old_priv)
+    grant = db.get(AdminKeyGrant, user_id)
+    with db.begin_nested():
+        row.x25519_pub, row.x25519_priv_enc, row.pw_wrapped_ik = pub, wrapped_priv, wrapped_ik
+        if wrapped_pending is not None:
+            row.pending_codes_enc = wrapped_pending
+        for code_id, wrapped in code_iks.items():
+            db.execute(update(RecoveryCode).where(RecoveryCode.id == code_id).values(wrapped_ik=wrapped))
+        if grant is not None and old_apk is None:  # it doesn't open (or is of an older key): nothing to carry over
+            db.delete(grant)
+            db.flush()
+            admin_key.audit(db, user_id, "admin_key_lost", user_id, {"reason": "identity key made"})
+        elif old_apk is not None:
+            # The new public key gets the grant, and the key is replaced: a grant sealed to the old public key (in a
+            # backup) then opens a key that protects nothing written from now on.
+            rotation = admin_key.new_key(db, old_apk, admin_key.active_admin_ids(db), user_id)
+            admin_key.audit(db, user_id, "admin_key_replaced", user_id,
+                            {"by": "identity key made", "apk_version": rotation.apk.version,
+                             "resealed": rotation.resealed, "stale": rotation.stale, "dropped": rotation.dropped},
+                            public=rotation.apk.public)
+    return ik
+
+
+def _code_iks(db: Session, row: UserKeys, user_id: int, ik: bytes, pending: Optional[bytes]) -> dict[int, bytes]:
+    """``{recovery code id: the IK wrapped under that code}`` for the unused codes whose text is among the
+    unconfirmed ones (``pending``, the JSON list): they carried no IK, and the text is the only thing that can give
+    them one. Codes already confirmed saved are not here, and stay without (``recovery_codes_without_ik``)."""
+    if pending is None:
+        return {}
+    try:
+        typed = json.loads(pending)
+    except ValueError:
+        return {}
+    waiting = list(db.query(RecoveryCode).filter(RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None),
+                                                 RecoveryCode.wrapped_dek.isnot(None),
+                                                 RecoveryCode.wrapped_ik.is_(None)).order_by(RecoveryCode.id))
+    out: dict[int, bytes] = {}
+    for text_ in typed if isinstance(typed, list) else []:
+        code = normalise_recovery_code(text_)
+        if code is None:
+            continue
+        kek = crypto.recovery_kek(code, row.recovery_salt)
+        for rc in waiting:
+            if rc.id in out:
+                continue
+            try:
+                crypto.unwrap(kek, rc.wrapped_dek, f"rc|{user_id}|{rc.id}")
+            except crypto.CryptoError:
+                continue
+            out[rc.id] = crypto.wrap(kek, ik, _rc_ik_label(user_id, rc.id))
+            break
+    return out
+
+
+def open_private_key(row: UserKeys, user_id: int, ik: bytes) -> bytes:
+    """The account's X25519 private key, opened with its identity key (CryptoError when it isn't the account's)."""
+    return crypto.unwrap(ik, row.x25519_priv_enc, _ik_priv_label(user_id))
+
+
+def replace_identity(db: Session, user_id: int, row: UserKeys, password_kek: bytes, reason: str) -> tuple[bytes, bool]:
+    """A new X25519 key pair and a new IK for an account whose old IK can't be opened (a reset by email that keeps
+    the data, a reset with a recovery code made before the IK, or a reset that deletes the data). In the caller's
+    transaction (not committed). The IK is wrapped under ``password_kek``; the caller wraps it under the recovery codes
+    and the session. Whatever was sealed to the old public key is lost to this account: an admin's grant of the admin
+    key is deleted (and audited with ``reason``) so another admin can share it again. The unconfirmed recovery codes
+    (kept under the old IK, which nothing opens now) are dropped: the caller makes new ones or leaves the account's
+    other codes as they are. Returns ``(ik, grant_lost)``."""
+    from backend import admin_key
+
+    ik = crypto.new_key()
+    priv, pub = crypto.new_keypair()
+    row.x25519_pub, row.x25519_priv_enc = pub, crypto.wrap(ik, priv, _ik_priv_label(user_id))
+    row.pw_wrapped_ik = crypto.wrap(password_kek, ik, _pw_ik_label(user_id))
+    row.pending_codes_enc = None  # (under the old IK: it can't be shown again, and would stay "unsaved" for good)
+    # The codes that wrapped the old IK are of no use for it any more (and must not be taken for the new one).
+    db.execute(update(RecoveryCode).where(RecoveryCode.user_id == user_id).values(wrapped_ik=None))
+    lost = db.execute(delete(AdminKeyGrant).where(AdminKeyGrant.user_id == user_id)).rowcount > 0
+    if lost:
+        admin_key.audit(db, user_id, "admin_key_lost", user_id, {"reason": reason})
+    return ik, lost
 
 
 def details(db: Session, user_id: int) -> dict:
@@ -615,12 +808,32 @@ def _clear_skipped(db: Session, user_id: int) -> None:
                                                                               skipped_slot=None))
 
 
-def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) -> bool:
+@dataclass(frozen=True, repr=False)
+class KeptReset:
+    """What ``reset_password_keeping_data`` made: the new recovery codes (shown once), the new identity key (to sign
+    the person in) and whether the account lost its share of the admin details key."""
+    recovery_codes: list[str]
+    ik: bytes
+    admin_key_lost: bool
+
+    def __repr__(self) -> str:  # never the key or the codes
+        return "<users.KeptReset>"
+
+
+def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) -> Optional[KeptReset]:
     """The "keep data" half of a password reset by email (accounts design 6.5, 13 item 1). For an account with
     background access the server unwraps the data key with its KEK and wraps it again under ``new_password`` (new
-    salt, KDF settings and verifier), clears the lockout, and ends every session, in one transaction: True. For an
-    account without it, or whose server key can't be opened, nothing changes: False (the caller then offers the
-    reset that deletes the data). Recovery codes keep working: the data key doesn't change.
+    salt, KDF settings and verifier), forgets the wrong tries, ends every session, and **replaces the recovery
+    codes**, in one transaction. The server can't open the identity key (it is never under the server KEK), so the
+    account gets **a new key pair and a new identity key** (``replace_identity``): an admin loses their share of the
+    admin details key and another admin shares it again. Returns the eight new codes (kept sealed until the person
+    confirms saving them, and shown by the caller once) with the new IK. For an account without background access, or
+    whose server key can't be opened, nothing changes: None (the caller then offers the reset that deletes the data).
+
+    The old codes must go: each one opens the same data key. Whoever held the account before the person who just
+    proved the mailbox (someone who signed up with this address first, who turned background access on and kept the
+    codes) could otherwise use one to set a password of their own and read the data. The two-step secret needs no
+    such care: the reset asked for a code from it, and a setup that was never finished is dropped here.
 
     The caller (password_reset.py) has already checked the reset token and, with two-step sign-in on, the code, and decides
     what to do about a disabled account (this works for one too: it can't sign in afterwards). AccountError for a
@@ -628,37 +841,42 @@ def reset_password_keeping_data(db: Session, user_id: int, new_password: Any) ->
     row = db.get(UserKeys, user_id)
     user = db.get(User, user_id)
     if row is None or user is None or row.server_wrapped_dek is None:
-        return False
+        return None
     new_password = check_password(new_password)
     dek = _server_dek(row, user_id)
     if dek is None:
-        return False
+        return None
     params = crypto.kdf_profile()
     salt = crypto.new_salt()
     derived = crypto.derive_password(new_password, salt, params)
     try:
         user.kdf_salt, user.kdf_params, user.pw_verifier = salt, params.to_json(), derived.auth
         row.pw_wrapped_dek = crypto.wrap(derived.kek, dek, f"pw|{user_id}")
-        user.failed_logins, user.locked_until = 0, None
+        user.totp_pending_enc = None
         db.query(AuthSession).filter(AuthSession.user_id == user_id).delete(synchronize_session=False)
+        ik, lost = replace_identity(db, user_id, row, derived.kek, "password reset by email")
+        codes = replace_recovery_codes(db, user_id, dek, ik)
         db.commit()
     except BaseException:
         db.rollback()
         raise
-    scrub_wal()  # the old password's copy of the data key
-    log.info("user %s: password reset by email; the data was kept (background access)", user_id)
-    return True
+    ratelimit.forget_account(user_id)
+    scrub_wal()  # the old password's and the old recovery codes' copies of the keys
+    log.info("user %s: password reset by email; the data was kept (background access), the recovery codes "
+             "replaced and a new identity key made%s", user_id, " (the admin key share is gone)" if lost else "")
+    return KeptReset(codes, ik, lost)
 
 
 @dataclass(frozen=True, repr=False)
 class WipedReset:
-    """What ``reset_password_wiping_data`` made: the new data key (to sign the person in), the new recovery codes
-    (shown once), and whether the account lost its share of the admin details key."""
+    """What ``reset_password_wiping_data`` made: the new data key and identity key (to sign the person in), the new
+    recovery codes (shown once), and whether the account lost its share of the admin details key."""
     dek: bytes
+    ik: bytes
     recovery_codes: list[str]
     admin_key_lost: bool
 
-    def __repr__(self) -> str:  # never the key or the codes
+    def __repr__(self) -> str:  # never the keys or the codes
         return "<users.WipedReset>"
 
 
@@ -667,7 +885,7 @@ def reset_password_wiping_data(db: Session, user_id: int, new_password: Any, ema
     access): the saved data is locked with the old password and can't be brought back, so it is thrown away and the
     account starts again under the new password. In one transaction: the workspaces and everything in them, the
     sealed upload files (after the commit), the recovery codes and ``billing_self`` go (the same removal as deleting
-    the account, ``_remove_workspace_data``); the account gets a new data key, key pair and eight new recovery codes
+    the account, ``_remove_workspace_data``); the account gets a new data key, identity key, key pair and eight new recovery codes
     (kept sealed until the person confirms saving them), a fresh "My job search" workspace and ``pii_self`` rebuilt
     from ``email`` (the name is lost: only an admin's copy has it). Kept: the account row, ``pii_admin``, the
     membership, email preferences, the two-step secret and the admin role. Every session ends. An admin loses their
@@ -676,12 +894,11 @@ def reset_password_wiping_data(db: Session, user_id: int, new_password: Any, ema
 
     The caller has checked the reset token and, with two-step sign-in on, the code. AccountError for a bad password
     or address, AccountBusy while a run of the account is active, LookupError for an unknown account."""
-    from backend import admin_key, tasks
+    from backend import tasks
 
     new_password, email = check_password(new_password), clean_email(email)
     new = new_password_keys(new_password)  # about a second on a Pi: before the database's write lock
     dek = crypto.new_key()
-    priv, pub = crypto.new_keypair()
     with tasks.start_lock():  # no run can be queued for these workspaces while their rows are removed
         try:
             _write_lock(db)
@@ -693,95 +910,67 @@ def reset_password_wiping_data(db: Session, user_id: int, new_password: Any, ema
             _refuse_active_runs(db, ws_ids)
             files = _remove_workspace_data(db, user_id, ws_ids)
             user.kdf_salt, user.kdf_params, user.pw_verifier = new.salt, new.params.to_json(), new.derived.auth
-            user.failed_logins, user.locked_until = 0, None
+            user.totp_pending_enc = None  # (an authenticator setup the previous holder started, never finished)
             user.prefs_enc = None  # sealed under the old key
             user.onboarding_step = 1  # the search setup is gone: the sign-up walkthrough runs again
             row.dek_kid, row.pw_wrapped_dek = crypto.key_id(dek), crypto.wrap(new.derived.kek, dek, f"pw|{user_id}")
             row.server_wrapped_dek = row.server_kek_id = row.background_since = None  # (a copy of the old key)
-            row.x25519_pub = pub
+            ik, lost = replace_identity(db, user_id, row, new.derived.kek, "password reset by email")
             with crypto.as_user(user_id, dek):
-                row.x25519_priv_enc = crypto.seal(priv, f"user_keys.x25519_priv|{user_id}")
                 user.pii_self = crypto.seal(_details(email, ""), f"users.pii_self|{user_id}")
                 db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=user_id))
-                codes = replace_recovery_codes(db, user_id, dek)  # the old codes and their wraps of the old key go
+                codes = replace_recovery_codes(db, user_id, dek, ik)  # the old codes and their wraps of the old keys go
                 db.flush()
             db.execute(update(Membership).where(Membership.user_id == user_id).values(billing_self=None))
-            lost = db.execute(delete(AdminKeyGrant).where(AdminKeyGrant.user_id == user_id)).rowcount > 0
-            if lost:
-                admin_key.audit(db, user_id, "admin_key_lost", user_id, {"reason": "password reset by email"})
             db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
             db.commit()
         except BaseException:
             db.rollback()
             raise
     removed = _remove_uploads(user_id, files)
+    ratelimit.forget_account(user_id)
     scrub_wal()  # the old password's, the old recovery codes' and the old key's copies of the data key
     log.info("user %s: password reset by email without a key; the saved data was deleted (%d workspace(s), %d "
              "file(s))", user_id, len(ws_ids), removed)
-    return WipedReset(dek, codes, lost)
+    return WipedReset(dek, ik, codes, lost)
 
 
 def workspace_ids(db: Session, user_id: int) -> list[int]:
     return [ws for (ws,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id).order_by(Workspace.id)]
 
 
-def is_locked(user: User, now: Optional[datetime] = None) -> float:
-    """Seconds until this account may try a password again (0 when it may now)."""
-    now = now or utcnow()
-    return max(0.0, (user.locked_until - now).total_seconds()) if user.locked_until else 0.0
-
-
 # ---------------------------------------------------------------------------
-# Checking a signed-in user's password (Phase E): the same failure counts and waits as signing in
+# Wrong passwords: counted per source in memory (backend/lockout.py, backend/ratelimit.py), not in the database
 # ---------------------------------------------------------------------------
 
-class AccountLocked(Exception):
-    """Too many wrong passwords or codes in a row: ``wait`` seconds until the next try."""
-
-    def __init__(self, wait: float):
-        super().__init__("locked")
-        self.wait = wait
+PAD_MARGIN_S = 0.05
+_floors: dict[str, float] = {}
+_floors_lock = threading.Lock()
 
 
-class WrongPassword(Exception):
-    """The password given isn't the account's."""
+def derivation_floor() -> float:
+    """How long a refused sign-in takes at least: the slowest of three password derivations at the current settings,
+    plus a margin. Measured once per setting (``startup`` does it in the background). Padding every refusal to this
+    keeps the answer for an address with no account as slow as for a real one (accounts design §3.6)."""
+    key = crypto.kdf_profile().to_json()
+    with _floors_lock:
+        floor = _floors.get(key)
+    if floor is None:
+        times = []
+        for _ in range(3):
+            began = time.monotonic()
+            dummy_derivation("")
+            times.append(time.monotonic() - began)
+        floor = max(times) + PAD_MARGIN_S
+        with _floors_lock:
+            _floors[key] = floor
+    return floor
 
 
-def record_failed_attempt(db: Session, user: User) -> None:
-    """One more wrong password or code in a row; after 5, the next try must wait (backend.ratelimit.lockout_seconds).
-    Committed at once, so a failed request can't undo it."""
-    db.execute(update(User).where(User.id == user.id).values(failed_logins=User.failed_logins + 1))
-    db.refresh(user)
-    seconds = ratelimit.lockout_seconds(user.failed_logins)
-    if seconds:
-        user.locked_until = utcnow() + timedelta(seconds=seconds)
-    db.commit()
-
-
-def check_signed_in_password(db: Session, user: User, password: Any, *, reset: bool = True) -> bytes:
-    """The user's DEK if ``password`` is theirs. For sensitive actions by someone who is signed in (confirming the
-    password, changing it, turning two-step off, deleting the account): a wrong one counts like a wrong password at
-    sign-in (AccountLocked after 5 in a row, WrongPassword before), so a stolen session can't be used to guess it.
-    A right one clears the count, unless ``reset`` is False: a caller that checks a code as well keeps the count while
-    the code is guessed, and clears it itself once the code is right (``clear_failed_attempts``)."""
-    wait = is_locked(user)
-    if wait:
-        raise AccountLocked(wait)
-    dek = unlock_with_password(db, user, password)
-    if dek is None:
-        record_failed_attempt(db, user)
-        log.info("Password check failed for user %s (%d in a row)", user.id, user.failed_logins)
-        raise WrongPassword()
-    if reset:
-        clear_failed_attempts(db, user)
-    return dek
-
-
-def clear_failed_attempts(db: Session, user: User) -> None:
-    """Back to no wrong tries in a row (committed, when there was anything to clear)."""
-    if user.failed_logins or user.locked_until:
-        user.failed_logins, user.locked_until = 0, None
-        db.commit()
+def pad_failure(began: float) -> None:
+    """Waits until ``derivation_floor()`` seconds have passed since ``began`` (a ``time.monotonic()``): called on
+    every refused sign-in or recovery before the answer goes out."""
+    time.sleep(max(0.0, began + derivation_floor() - time.monotonic()))
 
 
 @dataclass(frozen=True, repr=False)
@@ -800,15 +989,22 @@ def new_password_keys(password: str) -> NewPassword:
     return NewPassword(salt, params, crypto.derive_password(password, salt, params))
 
 
-def apply_new_password(db: Session, user: User, dek: bytes, new: NewPassword) -> None:
-    """The DEK under the new password, in ``db``'s transaction (the caller commits). Nothing is re-encrypted: the
-    data is under the DEK, which doesn't change."""
+def apply_new_password(db: Session, user: User, dek: bytes, ik: Optional[bytes], new: NewPassword) -> None:
+    """The DEK and the IK under the new password, in ``db``'s transaction (the caller commits). Nothing is
+    re-encrypted: the data is under the DEK, which doesn't change. ``ik`` may be None only for an account that has
+    none yet; one that has an IK needs it (KeyMismatch otherwise, and when it isn't the account's), because the old
+    password's wrap of it is replaced and the IK would be lost."""
     row = db.get(UserKeys, user.id)
     if not hmac.compare_digest(crypto.key_id(dek), bytes(row.dek_kid)):
         raise crypto.KeyMismatch("That isn't this account's data key")
+    if row.pw_wrapped_ik is not None:
+        if ik is None:
+            raise crypto.KeyMismatch("That account's identity key is needed to change its password")
+        crypto.unwrap(ik, row.x25519_priv_enc, _ik_priv_label(user.id))  # it must be this account's
+        row.pw_wrapped_ik = crypto.wrap(new.derived.kek, ik, _pw_ik_label(user.id))
     user.kdf_salt, user.kdf_params, user.pw_verifier = new.salt, new.params.to_json(), new.derived.auth
     row.pw_wrapped_dek = crypto.wrap(new.derived.kek, dek, f"pw|{user.id}")
-    user.failed_logins, user.locked_until = 0, None
+    ratelimit.forget_account(user.id)  # the account starts again with no wrong tries
 
 
 # ---------------------------------------------------------------------------
@@ -820,11 +1016,19 @@ def recovery_codes_left(db: Session, user_id: int) -> int:
                                          RecoveryCode.wrapped_dek.isnot(None)).count()
 
 
+def recovery_codes_without_ik(db: Session, user_id: int) -> int:
+    """How many unused codes can't open the identity key: made before it existed. A reset with one keeps the data but
+    gives the account a new key pair, so an admin needs the admin key shared again (Settings suggests new codes)."""
+    return db.query(RecoveryCode).filter(RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None),
+                                         RecoveryCode.wrapped_dek.isnot(None),
+                                         RecoveryCode.wrapped_ik.is_(None)).count()
+
+
 def open_recovery_code(db: Session, user_id: int, typed: Any, *, not_id: Optional[int] = None
-                       ) -> Optional[tuple[int, bytes]]:
-    """``(code id, DEK)`` if ``typed`` is one of this user's unused recovery codes (the code's own wrap opens it, so
-    nothing else is compared), else None. Nothing is used up yet: ``spend_recovery_code`` does that. ``not_id`` skips
-    one code (the first of two typed)."""
+                       ) -> Optional[tuple[int, bytes, Optional[bytes]]]:
+    """``(code id, DEK, IK)`` if ``typed`` is one of this user's unused recovery codes (the code's own wrap opens it, so
+    nothing else is compared), else None. The IK is None for a code made before the identity key existed. Nothing is
+    used up yet: ``spend_recovery_code`` does that. ``not_id`` skips one code (the first of two typed)."""
     code = normalise_recovery_code(typed)
     row = db.get(UserKeys, user_id)
     if code is None or row is None:
@@ -835,30 +1039,42 @@ def open_recovery_code(db: Session, user_id: int, typed: Any, *, not_id: Optiona
         if rc.id == not_id:
             continue
         try:
-            return rc.id, crypto.unwrap(kek, rc.wrapped_dek, f"rc|{user_id}|{rc.id}")
+            dek = crypto.unwrap(kek, rc.wrapped_dek, f"rc|{user_id}|{rc.id}")
         except crypto.CryptoError:
             continue
+        ik = None
+        if rc.wrapped_ik is not None:
+            try:
+                ik = crypto.unwrap(kek, rc.wrapped_ik, _rc_ik_label(user_id, rc.id))
+            except crypto.CryptoError:
+                log.warning("user %s: a recovery code's identity key doesn't open", user_id)
+        return rc.id, dek, ik
     return None
 
 
 def spend_recovery_code(db: Session, code_id: int) -> bool:
-    """Uses a code up (and drops its wrap of the DEK), in ``db``'s transaction. False if someone else just used it
+    """Uses a code up (and drops its wraps of the DEK and the IK), in ``db``'s transaction. False if someone else just used it
     (two requests with the same code: only one gets it)."""
     return db.execute(update(RecoveryCode).where(RecoveryCode.id == code_id, RecoveryCode.used_at.is_(None))
-                      .values(used_at=utcnow(), wrapped_dek=None)).rowcount == 1
+                      .values(used_at=utcnow(), wrapped_dek=None, wrapped_ik=None)).rowcount == 1
 
 
-def replace_recovery_codes(db: Session, user_id: int, dek: bytes) -> list[str]:
-    """Eight new codes in place of all the old ones (used or not), with a new salt, kept sealed in
-    ``pending_codes_enc`` until the person confirms saving them. In ``db``'s transaction; the caller commits.
-    Refuses (``crypto.KeyMismatch``) a key that isn't the account's current one, as ``apply_new_password`` does: a
-    request that held the old key across a wipe reset must not wrap it under new codes. The write lock is taken
-    and the row read again first, so the check can't pass against a copy from before that wipe."""
+def replace_recovery_codes(db: Session, user_id: int, dek: bytes, ik: Optional[bytes]) -> list[str]:
+    """Eight new codes in place of all the old ones (used or not), with a new salt, each wrapping the DEK and the IK,
+    kept under the IK in ``pending_codes_enc`` until the person confirms saving them. In ``db``'s transaction; the
+    caller commits. Refuses (``crypto.KeyMismatch``) a key that isn't the account's current one, as
+    ``apply_new_password`` does: a request that held the old key across a wipe reset must not wrap it under new
+    codes. The write lock is taken and the row read again first, so the check can't pass against a copy from before
+    that wipe. ``ik`` is None only for an account that has no IK yet (its codes then carry none)."""
     _write_lock(db)
     db.flush()  # (a caller's own changes to the row, such as the wipe's new key id, must survive the reload)
     row = db.get(UserKeys, user_id, populate_existing=True)
     if row is None or not hmac.compare_digest(crypto.key_id(dek), bytes(row.dek_kid)):
         raise crypto.KeyMismatch("That isn't this account's data key")
+    if row.pw_wrapped_ik is not None:
+        if ik is None:
+            raise crypto.KeyMismatch("That account's identity key is needed to make recovery codes")
+        crypto.unwrap(ik, row.x25519_priv_enc, _ik_priv_label(user_id))  # it must be this account's
     salt = crypto.new_salt()
     codes = [new_recovery_code() for _ in range(RECOVERY_CODES)]
     db.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
@@ -866,11 +1082,17 @@ def replace_recovery_codes(db: Session, user_id: int, dek: bytes) -> list[str]:
         rc = RecoveryCode(user_id=user_id)
         db.add(rc)
         db.flush()
-        rc.wrapped_dek = crypto.wrap(crypto.recovery_kek(normalise_recovery_code(code), salt), dek,
-                                     f"rc|{user_id}|{rc.id}")
+        code_kek = crypto.recovery_kek(normalise_recovery_code(code), salt)
+        rc.wrapped_dek = crypto.wrap(code_kek, dek, f"rc|{user_id}|{rc.id}")
+        if ik is not None:
+            rc.wrapped_ik = crypto.wrap(code_kek, ik, _rc_ik_label(user_id, rc.id))
     row.recovery_salt = salt
-    with crypto.as_user(user_id, dek):
-        row.pending_codes_enc = crypto.seal(json.dumps(codes).encode("ascii"), _codes_label(user_id))
+    listed = json.dumps(codes).encode("ascii")
+    if ik is not None:  # under the IK: a code opens it, so the DEK (which the server key can open) must not hold them
+        row.pending_codes_enc = crypto.wrap(ik, listed, _pending_codes_label(user_id))
+    else:
+        with crypto.as_user(user_id, dek):
+            row.pending_codes_enc = crypto.seal(listed, _codes_label(user_id))
     return codes
 
 
@@ -1046,7 +1268,8 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
     """The one way an account is removed (a person deleting their own, or an admin deleting someone's): the account
     and everything of theirs, in one transaction (their sealed upload files after it): workspaces with every row in
     them (jobs, scores, cover letters, documents, chats, profile, dealbreakers, pins, sources, schedules, runs, merge
-    decisions), sessions, recovery codes, tokens, keys, membership and grants, email preferences and the admin grant.
+    decisions), sessions, recovery codes, tokens, keys (the data key's and the identity key's wraps with them),
+    membership and grants, email preferences and the admin grant.
     Shared postings, company profiles and the geocode cache stay; so do usage counts (``llm_usage``, no longer tied
     to anyone) and the audit log (its user ids become NULL).
 
@@ -1100,7 +1323,7 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
                 detail["user_id"] = user_id
             public = None
             if was_admin:
-                remaining = [i for (i,) in db.query(User.id).filter(User.role == "admin")]
+                remaining = admin_key.active_admin_ids(db)
                 rotation = admin_key.new_key(db, apk, remaining, actor_id)
                 detail.update(apk_version=rotation.apk.version, resealed=rotation.resealed, stale=rotation.stale,
                               dropped=rotation.dropped)
@@ -1116,6 +1339,7 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
     removed = _remove_uploads(user_id, files)  # after the commit
     scrub_wal()  # the deleted account's key copies and secrets must not linger in the write-ahead log
     sessions._active_on.pop(user_id, None)  # SQLite may give this id to the next account
+    ratelimit.forget_user(user_id)  # ... and must not inherit its wrong tries and email limits
     log.info("Account deleted: user %s (%d workspace(s), %d file(s))", user_id, len(ws_ids), removed)
     out = {"workspaces": len(ws_ids), "files": removed, "apk_rotated": was_admin}
     if subscription != "none":  # only said when Stripe was involved: "cancelled" or "failed"

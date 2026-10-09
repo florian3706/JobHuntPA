@@ -77,8 +77,8 @@ class MailTestCase(unittest.TestCase):
 
     # -- clients --------------------------------------------------------------------------------------------------
 
-    def anonymous(self) -> TestClient:
-        c = TestClient(app)
+    def anonymous(self, **kwargs) -> TestClient:
+        c = TestClient(app, **kwargs)
         c.__enter__()
         self.addCleanup(c.__exit__, None, None, None)
         return c

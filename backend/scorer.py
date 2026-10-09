@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -34,7 +35,7 @@ import httpx  # noqa: F401  (tests patch scorer.httpx; the requests are made in 
 from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env)
-from backend import llm_providers
+from backend import ghost, llm_providers
 from backend.db import Document, FitResult, Job, SessionLocal
 from backend.employment import normalise_employment_type
 from backend.llm_providers import MAX_RETRIES, ScorerError  # noqa: F401  (ScorerError is imported from here everywhere)
@@ -158,7 +159,8 @@ Return ONLY a JSON object, no markdown, with exactly this shape:
   "gaps": ["string"],
   "summary": "string",
   "office_location": "string",
-  "employment_type": "string"
+  "employment_type": "string",
+  "ghost_signs": ["string"]
 }
 
 Rules:
@@ -172,7 +174,8 @@ Rules:
 8. If the job text is only a short listing summary, assess what is stated and say in the summary that the full description was not available.
 9. "office_location": where the candidate would work, as stated in the job posting: a street address or suburb (e.g. "1 Denison St, North Sydney" or "Macquarie Park"). Empty if the posting names only a city or no place. Not head office elsewhere, other offices or clients' sites.
 11. "employment_type": one of full_time, part_time, contract, casual, temporary, internship, as the posting states. Empty if it doesn't say.
-10. The CANDIDATE PREFERENCES section, if present, says what the candidate wants from a job (pay, place, work mode, hours, sector, kind of role, employers to avoid). It is never evidence of skills or experience: don't use it to match requirements and don't mention it in "requirements", "evidence" or "gaps". It doesn't change the score, which measures how well the documents evidence the job's requirements. If the job conflicts with a stated preference, say so in the summary (e.g. "Conflicts with the stated preference for fully remote work.")."""
+10. The CANDIDATE PREFERENCES section, if present, says what the candidate wants from a job (pay, place, work mode, hours, sector, kind of role, employers to avoid). It is never evidence of skills or experience: don't use it to match requirements and don't mention it in "requirements", "evidence" or "gaps". It doesn't change the score, which measures how well the documents evidence the job's requirements. If the job conflicts with a stated preference, say so in the summary (e.g. "Conflicts with the stated preference for fully remote work.").
+12. "ghost_signs": usually []. At most 3 short quotes (under 12 words each), copied word for word from THIS posting, of wording that says it isn't a current vacancy or that it collects resumes for future roles (for example "we are building a talent pool"). Only when the full description is given. A missing team, start date or detail is not a sign. Never from the employer's name, the pay or the candidate's documents, and never your own opinion of the employer. It never changes the score."""
 
 
 def build_job_text(job: Job) -> str:
@@ -231,37 +234,48 @@ def parse_json(raw: str) -> dict:
         raise ScorerError(f"model did not return JSON: {raw[:300]}")
     try:
         obj = json.loads(re.sub(r",\s*([}\]])", r"\1", text[start:end + 1]))
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:  # (RecursionError: an answer nested thousands of levels deep)
         raise ScorerError(f"invalid JSON from model: {exc}") from exc
     if not isinstance(obj, dict):
         raise ScorerError(f"model did not return a JSON object: {raw[:300]}")
     return obj
 
 
+def _list(value: Any) -> list:
+    """``value`` when the model sent a list there, else nothing: an answer can put any JSON value anywhere."""
+    return value if isinstance(value, list) else []
+
+
 def parse_result(raw: str) -> dict:
+    """The model's answer as a result dict. Raises ScorerError, and nothing else, for an answer that can't be used
+    (whatever JSON it holds: a bad answer for one job must never end the whole run)."""
     obj = parse_json(raw)
     try:
-        score = max(0, min(100, int(round(float(obj.get("score", 0))))))
-    except (TypeError, ValueError):
+        number = float(obj.get("score", 0))
+        if not math.isfinite(number):
+            raise ValueError("not a finite number")
+        score = max(0, min(100, int(round(number))))
+    except (TypeError, ValueError, OverflowError):
         raise ScorerError(f"no numeric score in model output: {str(obj)[:300]}")
     reqs = []
-    for r in obj.get("requirements") or []:
+    for r in _list(obj.get("requirements")):
         if not isinstance(r, dict) or not str(r.get("point", "")).strip():
             continue
         matched = r.get("matched") is True or str(r.get("matched")).lower() == "true"
         evidence = []
         if matched:
-            for e in r.get("evidence") or []:
+            for e in _list(r.get("evidence")):
                 if isinstance(e, dict) and str(e.get("bullet", "")).strip():
-                    subs = e.get("sub_bullets") if isinstance(e.get("sub_bullets"), list) else []
+                    subs = _list(e.get("sub_bullets"))
                     evidence.append({"bullet": str(e["bullet"]).strip(),
                                      "sub_bullets": [str(s).strip() for s in subs if str(s).strip()]})
         reqs.append({"point": str(r["point"]).strip(), "must_have": r.get("must_have") is not False,
                      "matched": matched, "evidence": evidence})
-    gaps = [str(g).strip() for g in obj.get("gaps") or [] if str(g).strip()]
+    gaps = [str(g).strip() for g in _list(obj.get("gaps")) if str(g).strip()]
     return {"score": score, "requirements": reqs, "gaps": gaps, "summary": str(obj.get("summary") or "").strip(),
             "office_location": str(obj.get("office_location") or "").strip(),
-            "employment_type": normalise_employment_type(obj.get("employment_type"))}
+            "employment_type": normalise_employment_type(obj.get("employment_type")),
+            "ghost_signs": ghost.clean_phrases(obj.get("ghost_signs")) if "ghost_signs" in obj else None}
 
 
 # --------------------------------------------------------------------------
@@ -289,19 +303,26 @@ def _store(db: Session, job_id: int, *, result: Optional[dict] = None, error: Op
 
 
 def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> dict:
-    """Score a single job and persist the outcome. Raises ScorerError on auth failure."""
+    """Score a single job and persist the outcome. Raises ScorerError when the job couldn't be scored (the error is
+    stored on its fit result); nothing else is raised for the model's answer."""
     db = SessionLocal()
     try:
         job = db.get(Job, job_id)
         if job is None:
             raise ScorerError(f"job {job_id} not found")
         try:
-            result = parse_result(call_model(build_messages(job, profile_text), cfg))
+            try:
+                result = parse_result(call_model(build_messages(job, profile_text), cfg))
+            except ScorerError:
+                raise
+            except Exception as exc:  # noqa: BLE001  (an answer we didn't expect is this job's error, not the run's)
+                raise ScorerError(f"unexpected model answer ({exc.__class__.__name__})") from exc
         except ScorerError as exc:
             _store(db, job_id, error=llm_providers.user_message(exc))
             raise
         office = result.pop("office_location", "")
         ad_employment = result.pop("employment_type", None)
+        ghost_signs = result.pop("ghost_signs", None)
         _store(db, job_id, result=result, profile_hash=profile_hash, model=cfg["model"])
         if ad_employment and not job.employment_type:  # adapter data wins
             from backend.pool import share_ad_fact
@@ -312,16 +333,26 @@ def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> d
             from backend.offices import from_ad
 
             from_ad(db, job, office)
+            if ghost_signs is not None:  # a summary is too little to judge (and the prompt says so)
+                from backend.pool import share_ad_fact
+
+                # Only the ad's own words: it is shared, and the model also saw the candidate's documents.
+                ghost_signs = ghost.clean_phrases(ghost_signs, job.description or "")
+                share_ad_fact(job, "ad_ghost_json", json.dumps(ghost_signs))  # public ad: for everyone (§14.4)
             db.commit()
         return result
     finally:
         db.close()
 
 
-def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack: int = 0) -> list[int]:
+def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack: int = 0,
+                only: Optional[set] = None, extra: int = 0) -> list[int]:
     """Job ids to score. mode: pending (never scored or errored) | stale (+ scored
     against older documents) | all (every eligible job). ``office_slack`` also
-    counts jobs a temporarily softened office-days limit lets through."""
+    counts jobs a temporarily softened office-days limit lets through. ``only`` limits the result to these ids;
+    ``extra`` adds ``extra`` other jobs that would be selected (a free search's waiting jobs: picked
+    after the checks above, so each one really gets scored; never-scored ones first, then ones whose last scoring
+    failed, each newest first, so jobs that keep failing don't take the slots every time)."""
     from backend.filters import softened_job_ids
     from backend.pool import job_states
 
@@ -331,15 +362,21 @@ def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack
     fits = {job_id: (status, phash, score) for job_id, status, phash, score in
             db.query(FitResult.job_id, FitResult.status, FitResult.profile_hash, FitResult.score)
             .join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws)}
-    out = []
+    out, others = [], []
     for job_id, hidden, reason, closed, detail in job_states(db, ws):
+        outside = only is not None and job_id not in only
+        if outside and extra <= 0:
+            continue
         if (reason and job_id not in softened) or hidden or closed or detail not in ("full", "summary"):
             continue
         status, phash, score = fits.get(job_id, (None, None, None))
         unscored = status is None or score is None
         if mode == "all" or unscored or (mode == "stale" and phash != profile_hash):
-            out.append(job_id)
-    return out
+            if outside:
+                others.append((status is not None, -job_id))  # (tried before: after the never-scored ones)
+            else:
+                out.append(job_id)
+    return out + [-neg for _, neg in sorted(others)[:extra]]
 
 
 def _duplicate_groups(job_ids: list[int]) -> dict[int, list[int]]:

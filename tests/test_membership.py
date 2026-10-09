@@ -14,6 +14,7 @@ import logging
 import os
 import time
 import unittest
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -27,7 +28,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import access, billing, crypto, membership, ratelimit, schedule, tasks  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import (  # noqa: E402
-    Membership, MembershipGrant, SearchRun, SessionLocal, User, UserKeys, utcnow,
+    FitResult, Job, Membership, MembershipGrant, SearchRun, SessionLocal, User, UserKeys, utcnow,
 )
 from backend.sessions import require_admin  # noqa: E402
 
@@ -115,6 +116,8 @@ class Base(unittest.TestCase):
         return acct, c
 
     def set_membership(self, user_id, **fields):
+        if fields.get("stripe_status"):
+            fields.setdefault("stripe_mode", "test")  # (setUp runs on a test key)
         db = SessionLocal()
         try:
             db.query(Membership).filter(Membership.user_id == user_id).update(fields)
@@ -263,17 +266,41 @@ class GateAtTheEndpoints(Base):
         for key, r in self.answers(c).items():
             self.assertNotEqual(r.status_code, 402, f"{key} {msg} {r.text}")
 
-    def assertRefused(self, c, msg=""):
+    def assertRefused(self, c, msg="", search_left=False):
+        """Every gated endpoint says 402: the AI features always with ai_members_only, a search with
+        free_searches_used (or, with ``search_left``, a search is let through: the account has free searches)."""
         for key, r in self.answers(c).items():
+            if search_left and GATED[key] == access.SEARCH:
+                self.assertNotEqual(r.status_code, 402, f"{key} {msg} {r.text}")
+                continue
             self.assertEqual(r.status_code, 402, f"{key} {msg} {r.text}")
             body = r.json()
             self.assertEqual(body["code"], "membership_required")
             self.assertTrue(body["detail"])
-            self.assertEqual(body["reason"], "free_searches_used")
+            ai = GATED[key] != access.SEARCH
+            self.assertEqual(body["reason"], "ai_members_only" if ai else "free_searches_used", f"{key} {msg}")
+            self.assertEqual("AI features are for members" in body["detail"], ai, f"{key} {msg} {body['detail']}")
 
-    def test_a_new_account_has_free_searches_for_everything(self):
+    def test_a_trial_account_may_search_but_every_ai_feature_is_refused(self):
         acct, c = self.user()
-        self.assertAllowed(c, "(trial)")
+        self.assertRefused(c, "(trial)", search_left=True)
+        self.assertEqual(self.member(acct.id).free_searches_used, 1, "only the search used a free search")
+
+    def test_the_ai_refusal_is_the_same_whatever_is_left_of_the_free_searches(self):
+        for used in (0, 2, 3):
+            acct, c = self.user(free_searches_used=used)
+            for key, r in self.answers(c).items():
+                if GATED[key] != access.SEARCH:
+                    self.assertEqual((r.status_code, r.json()["reason"]), (402, "ai_members_only"), (used, key))
+
+    def test_a_failed_ai_request_uses_no_free_search_and_starts_nothing(self):
+        acct, c = self.user()
+        for key, (path, body) in REQUESTS.items():
+            if GATED[key] != access.SEARCH:
+                c.post(path, json=body) if body is not None else c.post(path)
+        self.assertEqual(self.member(acct.id).free_searches_used, 0)
+        self.assertEqual(c.get("/api/runs/latest").json(), None)
+        self.score.assert_not_called()
 
     def test_when_the_free_searches_are_used_every_paid_feature_is_refused_but_viewing_stays(self):
         acct, c = self.user(free_searches_used=3)
@@ -383,6 +410,32 @@ class FreeSearches(Base):
         self.assertEqual(self.member(acct.id).free_searches_used, 0)
         self.assertFalse(c.get(f"/api/runs/{run['id']}").json()["free_search"])
 
+    def test_a_run_that_fails_after_the_search_stage_keeps_the_free_search_used(self):
+        """An answer built to break the scoring must not turn every search into a free one: the search had run (and
+        fetched the sources) by then."""
+        for where, patch in (("scoring", mock.patch("backend.app._score", side_effect=RuntimeError("bad answer"))),
+                             ("duplicates", mock.patch("backend.duplicates.scan_workspace", side_effect=RuntimeError("x")))):
+            acct, c = self.user()
+            with patch:
+                run, done = self.run_and_wait(c)
+            self.assertEqual(done["state"], "failed", where)
+            self.assertEqual(self.member(acct.id).free_searches_used, 1, where)
+            self.assertFalse(done["free_search"], "the mark is cleared so nothing can refund it later")
+            tasks.mark_interrupted()
+            self.assertEqual(self.member(acct.id).free_searches_used, 1, where)
+
+    def test_the_free_search_is_marked_while_the_search_runs_and_kept_once_it_is_over(self):
+        acct, c = self.user()
+        seen = {}
+
+        def search_then_stop(ws, progress):
+            seen["during"] = c.get("/api/runs/latest").json()["free_search"]
+            return {"job_ids": []}
+        with mock.patch("backend.pipeline.run_search", side_effect=search_then_stop):
+            self.run_and_wait(c)
+        self.assertTrue(seen["during"], "marked while the search runs")
+        self.assertEqual(self.member(acct.id).free_searches_used, 1)
+
     def test_a_failure_is_refunded_once_only(self):
         acct, c = self.user(free_searches_used=2)
         run, _ = self.run_and_wait(c)  # uses the 3rd
@@ -464,6 +517,77 @@ class FreeSearches(Base):
         self.assertEqual((again.status_code, again.json()["code"]), (402, "membership_required"))
         self.assertEqual(self.member(acct.id).free_searches_used, 3)
 
+    def test_a_free_search_scores_the_jobs_it_found_and_a_few_waiting_ones_but_a_members_search_scores_every_pending_one(self):
+        acct, c = self.user()
+        with mock.patch("backend.pipeline.run_search", return_value={"job_ids": [7, 8]}):
+            self.run_and_wait(c)
+        self.assertEqual(self.score.call_args.kwargs["only"], {7, 8})
+        self.assertEqual(self.score.call_args.kwargs["extra"], access.FREE_SEARCH_EXTRA_SCORES)
+        member, mc = self.user(exempt=True)
+        with mock.patch("backend.pipeline.run_search", return_value={"job_ids": [7, 8]}):
+            self.run_and_wait(mc)
+        self.assertIsNone(self.score.call_args.kwargs["only"])
+        self.assertEqual(self.score.call_args.kwargs["extra"], 0)
+
+    def test_select_jobs_adds_the_newest_other_ones_when_asked(self):
+        from backend.scorer import select_jobs
+        states = [(i, False, None, False, "full") for i in range(1, 9)]
+        states[5] = (6, True, None, False, "full")  # hidden: no use
+        with mock.patch("backend.pool.job_states", return_value=states), \
+                mock.patch("backend.filters.softened_job_ids", return_value=set()):
+            db = mock.MagicMock()
+            db.query.return_value.join.return_value.filter.return_value = []
+            self.assertEqual(select_jobs(db, "pending", "h", 1, only={2}, extra=3), [2, 8, 7, 5])
+            self.assertEqual(select_jobs(db, "pending", "h", 1, only={2}), [2])
+            self.assertEqual(select_jobs(db, "pending", "h", 1, extra=3), list(range(1, 6)) + [7, 8])  # (no limit: all)
+            db.query.return_value.join.return_value.filter.return_value = [(8, "error", "h", None), (7, "error", "h", None)]
+            self.assertEqual(select_jobs(db, "pending", "h", 1, only={2}, extra=5), [2, 5, 4, 3, 1, 8])  # (never scored first)
+
+    def test_select_jobs_can_be_limited_to_some_ids(self):
+        from backend.scorer import select_jobs
+        with mock.patch("backend.pool.job_states", return_value=[(1, False, None, False, "full"),
+                                                                 (2, False, None, False, "full")]), \
+                mock.patch("backend.filters.softened_job_ids", return_value=set()):
+            db = mock.MagicMock()
+            db.query.return_value.join.return_value.filter.return_value = []
+            self.assertEqual(select_jobs(db, "pending", "h", 1), [1, 2])
+            self.assertEqual(select_jobs(db, "pending", "h", 1, only={2}), [2])
+
+    def test_a_free_search_run_scores_through_the_real_scoring_code_with_no_membership(self):
+        """The run's own scoring is not behind the gate: a trial account's run reaches the model for its jobs
+        (the model call is the only thing replaced), while rescoring by hand is refused."""
+        self.scored.stop()  # the real backend.app._score
+        self.addCleanup(self.scored.start)
+        acct, c = self.user()
+        with mock.patch("backend.scorer.select_jobs", return_value=[4242]), \
+                mock.patch("backend.scorer._duplicate_groups", return_value={4242: []}), \
+                mock.patch("backend.scorer.score_one", return_value={"score": 77}) as score_one:
+            run, done = self.run_and_wait(c)
+            self.assertEqual(done["state"], "done", done)
+            score_one.assert_called_once()
+            self.assertEqual(score_one.call_args.args[0], 4242)
+            self.assertEqual(done["summary"]["scoring"]["scored"], 1)
+            self.assertFalse(done["summary"]["scoring"].get("aborted"))
+            self.assertEqual(c.post("/api/score/run", json={"mode": "pending"}).status_code, 402)
+            self.assertEqual(c.post("/api/score/4242").status_code, 402)
+            score_one.assert_called_once()  # the refused requests scored nothing
+
+    def test_the_wizards_title_step_works_for_a_trial_account_without_the_ai(self):
+        """The sign-up wizard only saves typed titles (PUT /api/profile): a trial account can finish it. Title
+        suggestions are refused with the members-only reason, and the wizard never calls them."""
+        acct, c = self.user()
+        r = c.post("/api/documents/suggest-titles")
+        self.assertEqual((r.status_code, r.json()["reason"]), (402, "ai_members_only"))
+        profile = c.get("/api/profile")
+        self.assertEqual(profile.status_code, 200)
+        saved = c.put("/api/profile", json={**profile.json(), "titles": ["Product Manager", "Business Analyst"]})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(c.get("/api/profile").json()["titles"], ["Product Manager", "Business Analyst"])
+        wizard = (Path(__file__).resolve().parent.parent / "frontend" / "welcome.js").read_text(encoding="utf-8")
+        for path in ("suggest-titles", "/api/score", "/api/chats", "cover-letter", "companies/research", "/concise",
+                     "documents/summary"):
+            self.assertNotIn(path, wizard)
+
     def test_two_runs_cannot_both_take_the_last_free_search(self):
         """The gate said yes to both; the guarded update lets only one through."""
         acct, c = self.user(free_searches_used=2)
@@ -497,6 +621,7 @@ class FreeSearches(Base):
 
     def test_scoring_and_the_rest_dont_use_free_searches(self):
         acct, c = self.user()
+        self.subscribe(acct.id)  # the AI features are for members
         for url, body in (("/api/score/run", {"mode": "pending"}), ("/api/companies/research", {})):
             r = c.post(url, json=body)
             self.assertIn(r.status_code, (200, 202), f"{url}: {r.text}")
@@ -525,6 +650,100 @@ class FreeSearches(Base):
         self.assertFalse(run["free_search"])
         self.assertEqual(self.runs(acct.workspace_id), [("search", False)])
         self.assertEqual(self.member(acct.id).free_searches_used, 0)
+
+
+class FreeSearchWaitingJobs(Base):
+    """Besides the jobs it found, a free search scores up to ``access.FREE_SEARCH_EXTRA_SCORES`` other jobs waiting for a
+    first score (the user's decision, 2026-10-09: "allow 5"), such as pages the person imported."""
+
+    def setUp(self):
+        super().setUp()
+        self.scored.stop()  # the real backend.app._score, so the real selection runs (the model's scoring is replaced)
+        self.addCleanup(self.scored.start)  # (Base's cleanup stops it again)
+
+    def waiting_job(self, acct, *, ws=None, scored=False, errored=False, **fields) -> int:
+        """A job the person imported from a saved page: private, with a full ad, in no run (first_run_id is NULL)."""
+        with helpers.as_account(acct):
+            db = SessionLocal()
+            try:
+                content = dict(description="Build things.", detail_status="full")
+                content.update(fields)
+                job = Job(workspace_id=ws or acct.workspace_id, origin="private", status="to_review",
+                          url=f"https://example.invalid/job/{time.monotonic_ns()}", title="Engineer", company="Acme",
+                          **content)
+                db.add(job)
+                db.flush()
+                if scored or errored:
+                    db.add(FitResult(job_id=job.id, status="error" if errored else "ok", score=None if errored else 80))
+                db.commit()
+                return job.id
+            finally:
+                db.close()
+
+    def scored_ids(self, c, found=()):
+        """The ids a search that finds ``found`` sends to be scored."""
+        with mock.patch("backend.pipeline.run_search", return_value={"job_ids": list(found)}), \
+                mock.patch("backend.scorer.score_jobs", return_value={"scored": 0}) as score_jobs:
+            run, done = self.run_and_wait(c)
+        self.assertEqual(done["state"], "done", done)
+        score_jobs.assert_called_once()
+        return sorted(score_jobs.call_args.args[1])
+
+    def test_a_free_search_scores_the_five_newest_waiting_jobs_and_not_the_others(self):
+        acct, c = self.user()
+        waiting = [self.waiting_job(acct) for _ in range(7)]
+        found = self.waiting_job(acct)  # (found by the search itself: scored on top of the five)
+        self.assertEqual(self.scored_ids(c, [found]), sorted(waiting[2:] + [found]))
+
+    def test_the_five_are_picked_after_the_checks_so_a_job_that_will_not_be_scored_uses_none_up(self):
+        acct, c = self.user()
+        good = [self.waiting_job(acct) for _ in range(5)]
+        self.waiting_job(acct, hidden=True)
+        self.waiting_job(acct, excluded_reason="salary below your minimum")
+        self.waiting_job(acct, description=None, detail_status="none")  # no ad to score
+        self.waiting_job(acct, scored=True)  # already has a score: not waiting
+        self.assertEqual(self.scored_ids(c), good)
+
+    def test_a_job_whose_last_scoring_failed_is_waiting_too(self):
+        acct, c = self.user()
+        failed = self.waiting_job(acct, errored=True)
+        self.assertEqual(self.scored_ids(c), [failed])
+
+    def test_jobs_that_keep_failing_do_not_take_all_five_places(self):
+        acct, c = self.user()
+        never = self.waiting_job(acct)  # (older than the failed ones)
+        failed = [self.waiting_job(acct, errored=True) for _ in range(5)]
+        self.assertEqual(self.scored_ids(c), sorted([never] + failed[1:]))
+
+    def test_a_merged_duplicate_never_counts(self):
+        acct, c = self.user()
+        original = self.waiting_job(acct)
+        copy = self.waiting_job(acct, duplicate_of=original)
+        others = [self.waiting_job(acct) for _ in range(4)]
+        self.assertEqual(self.scored_ids(c), sorted([original] + others))
+        self.assertNotIn(copy, self.scored_ids(c))
+
+    def test_another_workspaces_waiting_jobs_are_never_scored_by_a_free_search(self):
+        acct, c = self.user()
+        mine = self.waiting_job(acct)
+        other = helpers.make_user()
+        theirs = self.waiting_job(other)
+        elsewhere = self.waiting_job(acct, ws=helpers.new_workspace("Another search", acct.id))
+        self.assertEqual(self.scored_ids(c), [mine])
+        self.assertNotIn(theirs, self.scored_ids(c))
+        self.assertNotIn(elsewhere, self.scored_ids(c))
+
+    def test_a_members_search_still_scores_every_waiting_job(self):
+        member, mc = self.user(exempt=True)
+        waiting = [self.waiting_job(member) for _ in range(7)]
+        self.assertEqual(self.scored_ids(mc), waiting)
+
+    def test_the_numbers_on_the_pages_match_the_server(self):
+        n = str(access.FREE_SEARCH_EXTRA_SCORES)
+        self.assertEqual(access.FREE_SEARCH_EXTRA_SCORES, 5)  # the user's decision (2026-10-09): "allow 5"
+        self.assertIn(f"up to {n} other jobs waiting", (Path(__file__).parent.parent / "frontend/billing.html").read_text())
+        acct, c = self.user()
+        self.assertEqual(c.get("/api/billing/status").json()["me"]["free_search_extra_scores"], access.FREE_SEARCH_EXTRA_SCORES)
 
 
 class ScheduledSearches(Base):
@@ -615,7 +834,7 @@ class AccountsWithoutAMembershipRow(Base):
         acct, c = self.user()
         self.drop_row(acct.id)
         self.assertIsNone(c.get("/api/billing/status").json()["me"]["stripe_status"])
-        self.assertNotEqual(c.post("/api/documents/summary").status_code, 402)
+        self.assertEqual(c.post("/api/documents/summary").json()["reason"], "ai_members_only")  # a trial account
         run, _ = self.run_and_wait(c)
         m = self.member(acct.id)
         self.assertEqual(m.free_searches_used, 1)
@@ -755,6 +974,10 @@ def missing(what="customer"):
     return stripe.InvalidRequestError(f"No such {what}: 'cus_123'", what, code="resource_missing")
 
 
+def person_member(db, user_id) -> bool:
+    return membership.person_state(db, user_id, "user")["member"]
+
+
 class StaleStripeState(Base):
     """What a membership row holds from a Stripe account or mode the app no longer talks to (a test key swapped
     for a live one), and a subscription that has ended while its row still says so."""
@@ -802,6 +1025,43 @@ class StaleStripeState(Base):
         r = c.post("/api/score/run", json={"mode": "pending"})
         self.assertEqual((r.status_code, r.json()["code"]), (402, "membership_required"))
         self.assertIsNone(self.member(acct.id).stripe_status)
+
+    def test_a_test_mode_subscription_gives_no_access_under_a_live_key(self):
+        """The yearly plan paid with Stripe's test card, then the operator saves a live key: the row says active for a
+        year, and nothing would ask Stripe before then."""
+        acct, c, ref = self.paying(current_period_end=utcnow() + timedelta(days=360), stripe_synced_at=utcnow())
+        self.assertEqual(self.member(acct.id).stripe_mode, "test")
+        self.assertEqual(c.post("/api/score/run", json={"mode": "pending"}).status_code, 200)  # (a member under the test key)
+        self.stripe.v1.subscriptions.list.side_effect = missing()
+        self.stripe.v1.subscriptions.search.return_value = {"data": []}
+        with mock.patch.dict(os.environ, {"STRIPE_SECRET_KEY": LIVE}):
+            billing.clear_price_cache()
+            r = c.post("/api/score/run", json={"mode": "pending"})
+            self.assertEqual((r.status_code, r.json()["code"]), (402, "membership_required"))
+            self.assertIsNone(self.member(acct.id).stripe_status, "Stripe doesn't know the customer: forgotten")
+            self.assertIsNone(self.member(acct.id).stripe_mode)
+            me = c.get("/api/billing/status").json()["me"]
+            self.assertEqual((me["member"], me["stripe_status"], me["plan"]), (False, None, None))
+
+    def test_a_test_mode_row_is_left_out_even_before_stripe_has_been_asked(self):
+        acct, c, ref = self.paying(current_period_end=utcnow() + timedelta(days=360), stripe_synced_at=utcnow())
+        with mock.patch.dict(os.environ, {"STRIPE_SECRET_KEY": LIVE}):
+            with SessionLocal() as db:
+                state = membership.load_state(db, acct.id, "user")
+                self.assertIsNone(state.stripe_status)
+                self.assertIsNotNone(membership.scheduled_block(db, acct.id), "the scheduler can't run it either")
+                self.assertFalse(person_member(db, acct.id))
+
+    def test_a_subscription_the_live_account_does_have_is_kept_and_marked_live(self):
+        acct, c, ref = self.paying()
+        self.set_membership(acct.id, stripe_mode=None)  # a row from before the mode was stored
+        membership._tried.clear()
+        self.stripe.v1.subscriptions.list.return_value = {"data": [stripe_sub(ref)]}
+        with mock.patch.dict(os.environ, {"STRIPE_SECRET_KEY": LIVE}):
+            r = c.post("/api/score/run", json={"mode": "pending"})
+            self.assertEqual(r.status_code, 200, r.text)
+            m = self.member(acct.id)
+            self.assertEqual((m.stripe_status, m.stripe_mode), ("active", "live"))
 
     def test_a_customer_with_no_subscriptions_at_all_is_dropped_too(self):
         acct, c, ref = self.paying()
@@ -1024,6 +1284,26 @@ class Portal(Base):
         self.assertEqual(self.stripe.v1.billing_portal.sessions.create.call_args.kwargs["params"]["customer"],
                          "cus_456")
         self.assertEqual(self.sealed_ids(acct), {"customer": "cus_456"})  # remembered, sealed
+
+    def test_the_portal_needs_the_password_entered_recently(self):
+        """A stolen session cookie must not open the portal: it shows the billing address and card and can cancel."""
+        from backend.db import AuthSession
+        acct, c = self.user()
+        self.stripe.v1.customers.search.return_value = {"data": [{"id": "cus_456"}]}
+        self.stripe.v1.billing_portal.sessions.create.return_value = {"url": "https://portal.stripe.test/p"}
+        db = SessionLocal()
+        try:
+            db.query(AuthSession).filter(AuthSession.user_id == acct.id).update(
+                {AuthSession.reauth_at: utcnow() - timedelta(minutes=20)})
+            db.commit()
+        finally:
+            db.close()
+        r = c.post("/api/billing/portal")
+        self.assertEqual((r.status_code, r.json()["code"]), (403, "reauth_required"))
+        self.stripe.v1.billing_portal.sessions.create.assert_not_called()
+        self.stripe.v1.customers.search.assert_not_called()
+        self.assertEqual(c.post("/api/auth/reauth", json={"password": helpers.USER_PASSWORD}).status_code, 200)
+        self.assertEqual(c.post("/api/billing/portal").status_code, 200)
 
     def test_no_customer_at_all(self):
         acct, c = self.user()
@@ -1274,6 +1554,19 @@ class Sync(Base):
         self.assertEqual(schedule.billing_sync_tick(t0 + timedelta(hours=6)), 0)             # due
         self.assertEqual(self.stripe.v1.subscriptions.list.call_count, 2)
 
+    def test_the_loop_syncs_before_it_looks_for_due_searches(self):
+        """A member's row from before ``stripe_mode`` is not paying until synced: the first tick must not skip their slot."""
+        order: list = []
+        with mock.patch.object(schedule.threading, "Thread") as thread, \
+                mock.patch.object(schedule._stop, "wait", side_effect=[False, True]), \
+                mock.patch.object(schedule, "tick", side_effect=lambda *a: order.append("tick")), \
+                mock.patch.object(schedule, "housekeeping"), mock.patch.object(schedule, "digest_tick"), \
+                mock.patch.object(schedule, "billing_sync_tick", side_effect=lambda *a: order.append("sync")), \
+                mock.patch.dict(os.environ, {"JOBHUNT_SCHEDULER": "on"}):
+            schedule.start_scheduler(lambda ws: {})
+            thread.call_args.kwargs["target"]()
+        self.assertEqual(order, ["sync", "tick"])
+
     def test_the_scheduler_thread_is_off_with_the_scheduler(self):
         with mock.patch.dict(os.environ, {"JOBHUNT_SCHEDULER": "off"}), \
                 mock.patch.object(schedule.threading, "Thread") as thread:
@@ -1404,7 +1697,8 @@ class AdminSide(Base):
         self.admin.delete(f"/api/admin/users/{acct.id}/grants/{r.json()['grant']['id']}")
         self.assertEqual(c.post("/api/documents/summary").status_code, 402)
         self.admin.put(f"/api/admin/users/{acct.id}/membership", json={"free_searches_used": 0})
-        self.assertNotEqual(c.post("/api/documents/summary").status_code, 402)
+        self.assertEqual(c.post("/api/documents/summary").status_code, 402)  # free searches don't open the AI
+        self.assertNotEqual(c.post("/api/search/run").status_code, 402)
 
     def test_a_free_period_for_someone_who_pays_moves_their_next_payment(self):
         acct, c, ref = self.subscriber()

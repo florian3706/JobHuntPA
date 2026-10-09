@@ -2,7 +2,8 @@
    reset-password.html#token=…. The token is in the #fragment, so it never reaches a server log or a Referer header;
    it is read once and taken out of the address bar.
 
-   - With background access the data is kept. Without it the data is locked with the old password: the page says so,
+   - With background access the data is kept, and the recovery codes are replaced (the page shows the new ones, as after
+     a wipe). Without it the data is locked with the old password: the page says so,
      points to the recovery-code page, and asks for "I understand my saved data will be deleted" before it sends
      anything. A wipe ends with the new recovery codes, in the same step as first run (auth.js showCodes).
    - The link is checked first (reset/info; this doesn't use it up), so the page shows only what applies.
@@ -46,9 +47,18 @@ async function initReset() {
   }
 }
 
-function showResetForm({ keeps_data: keeps, mfa_required: mfa }) {
+// What an admin loses by resetting with the email link (a recovery code keeps the admin key), said before and after.
+const ADMIN_KEY_LAST = 'No other admin has the admin key. Whoever runs this JobHuntPA must run "python -m backend.keys new-admin-key --email <your address>" to give you a new one.';
+const ADMIN_KEY_OTHERS = 'Ask another admin to share it with you again.';
+
+function showResetForm({ keeps_data: keeps, mfa_required: mfa, admin_key_will_be_lost: keyLost, last_key_holder: lastHolder }) {
   mfaRequired = Boolean(mfa);
   status('');
+  const keyNote = $('#admin-key-note');
+  if (keyLost) {
+    keyNote.textContent = `Resetting by email removes your copy of the admin key. A recovery code keeps it. ${lastHolder ? ADMIN_KEY_LAST : ADMIN_KEY_OTHERS}`;
+  }
+  keyNote.hidden = !keyLost;
   $('#keeps-note').hidden = !keeps;
   $('#wipe-warning').hidden = keeps;
   $('#wipe-field').hidden = keeps;
@@ -101,7 +111,12 @@ function showResetDone(data) {
   $('#setup-step').hidden = true;
   announce('Password changed. You are signed in.');
   if (Array.isArray(data.recovery_codes) && data.recovery_codes.length) {
-    $('#admin-key-lost').hidden = !data.admin_key_lost;
+    const lost = $('#admin-key-lost');
+    lost.textContent = `You no longer have the admin key. ${data.admin_key_last_holder ? ADMIN_KEY_LAST : ADMIN_KEY_OTHERS}`;
+    lost.hidden = !data.admin_key_lost;
+    if (data.kept_data) {
+      $('#codes-why').textContent = 'Your data is kept, and your old recovery codes no longer work, so these are new ones. If you ever forget your password, a recovery code is how you get back in and keep your data. Each code works once. Keep them somewhere safe, such as your password manager or a printed copy: JobHuntPA shows them only until you confirm you\'ve saved them.';
+    }
     showCodes(data.recovery_codes, data.csrf); // the same step as first run: Copy, Download, Print, "I've saved them"
     return;
   }

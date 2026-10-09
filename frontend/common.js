@@ -440,6 +440,34 @@ function pageNotice(kind, html) {
   return el;
 }
 
+/* Whether this person is on a trial: billing is on and they aren't a member. The AI features (rescoring, chat, cover
+   letters, company research and Fill missing info, title ideas, shorter versions and summaries of documents) are for
+   members; a free search still finds and scores jobs (and up to freeExtraScores waiting ones). Pages call
+   loadAiAccess() once at start; a failure counts as "not locked" (the server decides anyway, and answers 402). */
+const AI_NOTE = 'AI features are for members. Your free searches still find and score jobs.';
+let aiLockedNow = false;
+let freeSearchLeft = true; // whether a free search can still be run (the server's can_search; true until loaded)
+let freeExtraScores = 5; // waiting jobs a free search scores besides the ones it finds (the server's number, once loaded)
+async function loadAiAccess() {
+  try {
+    const st = await api('/api/billing/status');
+    aiLockedNow = !!(st.billing.enabled && !st.me.member);
+    freeSearchLeft = st.me.can_search !== false;
+    freeExtraScores = st.me.free_search_extra_scores ?? freeExtraScores;
+  } catch { aiLockedNow = false; freeSearchLeft = true; }
+  showAiNotes();
+  return aiLockedNow;
+}
+const aiNoteHtml = () => (aiLockedNow ? `<p class="hint ai-note">${esc(AI_NOTE)} <a href="billing.html">See membership options</a></p>` : '');
+/* Fills the static <p class="hint ai-note" hidden> elements of a page. */
+function showAiNotes() {
+  document.querySelectorAll('.ai-note[hidden]').forEach((el) => {
+    if (!aiLockedNow) return;
+    el.innerHTML = `${esc(AI_NOTE)} <a href="billing.html">See membership options</a>`;
+    el.hidden = false;
+  });
+}
+
 /* 402: a membership is needed for this (Phase I); 423: the data is being encrypted (Phase D). */
 function showAccessNotice(kind, data) {
   if (kind === 'membership') {
@@ -508,7 +536,7 @@ async function remindLeftovers(me) {
   const files = status?.leftovers || [];
   if (status?.state !== 'done' || !files.length) return;
   pageNotice('leftovers', `<p><strong>Your data is encrypted now.</strong> ${files.length === 1 ? 'A file' : `${files.length} files`} from before still
-      ${files.length === 1 ? 'holds' : 'hold'} it unencrypted. <a href="admin.html#server">See them in the admin panel</a>, where you can delete them.</p>`);
+      ${files.length === 1 ? 'holds' : 'hold'} it unencrypted, with old keys. <a href="admin.html#server">See them in the admin panel</a> and delete the <code>.bak-*</code> files you don't need.</p>`);
 }
 
 /* ---------- the account menu in the header ----------
@@ -549,6 +577,24 @@ async function signOut() {
   location.replace('login.html');
 }
 
+/* Recovery codes not yet confirmed as saved, kept for this tab only (sessionStorage) so a reload of the page that shows
+   them, or the "Show my recovery codes" link right after they were made, doesn't need the password again. The server
+   gives them back only for the password (POST /api/auth/recovery-codes/show), because a stolen cookie must not read
+   them. Gone when the tab closes, or when "I've saved them" is pressed. */
+const CODES_KEY = 'jobhunt.codes';
+function stashRecoveryCodes(codes) {
+  try { sessionStorage.setItem(CODES_KEY, JSON.stringify(codes)); } catch { /* private mode: asks for the password instead */ }
+}
+function stashedRecoveryCodes() {
+  try {
+    const codes = JSON.parse(sessionStorage.getItem(CODES_KEY));
+    return Array.isArray(codes) && codes.length && codes.every((c) => typeof c === 'string') ? codes : null;
+  } catch { return null; }
+}
+function forgetRecoveryCodes() {
+  try { sessionStorage.removeItem(CODES_KEY); } catch { /* nothing kept */ }
+}
+
 /* Recovery codes not yet confirmed as saved: a reminder on every page until they are. */
 function remindRecoveryCodes(me) {
   if (!me.recovery_codes_pending) return;
@@ -569,6 +615,21 @@ const EMPLOYMENT_LABEL = { full_time: 'Full-time', part_time: 'Part-time', contr
 function employmentBadge(job) {
   const label = EMPLOYMENT_LABEL[job.employment_type];
   return label ? `<span class="badge soft"><span class="visually-hidden">Employment type: </span>${label}</span>` : '';
+}
+// "Possible ghost job" badge: the icon and the words say it (colour only repeats it); never an accusation.
+const GHOST_STRENGTH = { likely: 'several signs', possible: 'some signs' };
+function ghostBadge(job) {
+  const level = job.ghost?.level;
+  if (!level) return '';
+  return `<span class="badge ghost ghost-${level}"><span aria-hidden="true">⚠ </span>Possible ghost job<span class="ghost-strength">: ${GHOST_STRENGTH[level]}</span></span>`;
+}
+// The "Why?" disclosure on a job card: the signs that raised the flag.
+function ghostWhy(job) {
+  const g = job.ghost;
+  if (!g?.level || !(g.signals || []).length) return '';
+  return `<details class="ghost-why" data-section="ghost"><summary>Why?<span class="visually-hidden"> This job is flagged as a possible ghost job</span></summary>
+    <ul class="ghost-signs">${g.signals.map((s) => `<li>${esc(s.text)}</li>`).join('')}</ul>
+    <p class="hint">This may still be a real job. Ask the employer whether the role is open now.</p></details>`;
 }
 function modeOf(job) { return ['remote', 'hybrid', 'onsite'].includes(job.work_mode) ? job.work_mode : 'unknown'; }
 
@@ -733,7 +794,7 @@ const RESEARCHED = ['done', 'error', 'skipped'];
 /* Company profile body (info modal and job page). Has a #company-research button. */
 function companyProfileHtml(p, name) {
   if (p && !RESEARCHED.includes(p.status)) p = null; // only offices known so far
-  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>`;
+  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>${aiNoteHtml()}`;
   if (!p) {
     return `<p class="modal-links">${glassdoorLink(p, name)}</p>
       <p class="muted">Not researched yet. <strong>Fill missing info</strong> researches every company in your list, or research just this one:</p>${researchBtn}`;

@@ -17,8 +17,8 @@ from tests.mail_helpers import MailTestCase, html_of, text_of  # noqa: E402
 
 from sqlalchemy import text  # noqa: E402
 
-from backend import config, email_settings, mail_queue, mailer  # noqa: E402
-from backend.db import engine, utcnow  # noqa: E402
+from backend import config, email_settings, mail_queue, mail_route, mailer  # noqa: E402
+from backend.db import SessionLocal, engine, utcnow  # noqa: E402
 
 GOOD = {"host": "smtp.example.org", "port": "465", "security": "ssl", "user": "me@example.org",
         "password": "hunter2-hunter2", "from_address": "jobs@example.org", "public_base_url": "https://jobs.example.org"}
@@ -43,8 +43,16 @@ class SettingsCase(MailTestCase):
                 path.write_text(before, encoding="utf-8")
 
         self.addCleanup(restore)
+        self.clear_hold()
+        self.addCleanup(self.clear_hold)
         self.admin = self.signed_in()
         email_settings._tests.clear()
+
+    @staticmethod
+    def clear_hold():
+        """The hold after a change of route (mail_route) is a row in the shared test database: no test leaves one."""
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM app_settings WHERE key = 'mail_route_changed_at'"))
 
     def put(self, client=None, **fields):
         return (client or self.admin).put("/api/settings/email", json=fields)
@@ -484,3 +492,141 @@ class MailThreadTest(MailTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouteChangeTest(SettingsCase):
+    """A new mail server or public address decides where every reset link goes (accounts design §2.5)."""
+
+    def setUp(self):
+        super().setUp()
+        # (no second admin account: one would stay in the shared test database and end "the last admin" for other tests)
+        self.other = helpers.make_user()
+        self.others = [self.other.id]
+        patcher = mock.patch("backend.admin._active_admins", side_effect=lambda db, besides=None: list(self.others))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.bob = helpers.make_user()
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE users SET mfa_enabled = 1 WHERE id = :i"), {"i": self.bob.id})
+
+    def hold(self):
+        db = SessionLocal()
+        try:
+            return mail_route.hold_until(db)
+        finally:
+            db.close()
+
+    def admin_actions(self):
+        return (self.admin.post(f"/api/admin/users/{self.bob.id}/mfa/disable"),
+                self.admin.post(f"/api/admin/users/{self.bob.id}/reset-email"))
+
+    def test_setting_mail_up_for_the_first_time_changes_nothing_else(self):
+        self.assertEqual(self.put(**GOOD).status_code, 200)
+        self.assertIsNone(self.hold())
+        self.assertEqual([m["To"] for m in self.sent], [])
+        for r in self.admin_actions():
+            self.assertNotEqual(r.status_code, 409, r.text)
+
+    def test_a_new_mail_server_tells_the_other_admins_through_the_old_one_and_holds_the_risky_actions(self):
+        self.put(**GOOD)
+        old = mailer.get_config()
+        self.assertIsNotNone(old)
+        with mock.patch.object(mail_queue, "send", wraps=mail_queue.send) as send:
+            r = self.put(host="relay.evil.example", password="their-own-password")
+            self.assertEqual(r.status_code, 200, r.text)
+        mail_queue.drain()
+        notices = [c for c in send.call_args_list if c.args[1][0].startswith("The mail server")]
+        self.assertEqual(len(notices), 1, "one other admin")
+        self.assertEqual(notices[0].args[0], self.other.email)
+        self.assertEqual(notices[0].kwargs["config"].host, "smtp.example.org", "through the old server")
+        self.assertTrue(notices[0].kwargs["priority"])
+        self.assertIn(self.other.email, [m["To"] for m in self.sent])
+        self.assertNotIn(self.admin_email(), [m["To"] for m in self.sent], "the admin who made it knows")
+        self.assertEqual(mailer.get_config().host, "relay.evil.example")
+        self.assertIsNotNone(self.hold())
+        before = len(self.sent)
+        for r in self.admin_actions():
+            self.assertEqual((r.status_code, r.json()["code"]), (409, "mail_changed_recently"), r.text)
+            self.assertIn("recovery code", r.json()["detail"])
+        mail_queue.drain()
+        self.assertEqual(len(self.sent), before, "nothing was sent to the person")
+        with engine.begin() as conn:
+            self.assertTrue(conn.execute(text("SELECT mfa_enabled FROM users WHERE id = :i"), {"i": self.bob.id}).scalar())
+
+    def admin_email(self):
+        return helpers.ADMIN_EMAIL
+
+    def test_the_public_address_counts_too(self):
+        self.put(**GOOD)
+        self.assertEqual(self.put(public_base_url="https://phish.example").status_code, 200)
+        self.assertIsNotNone(self.hold())
+        self.assertEqual(self.admin_actions()[1].json()["code"], "mail_changed_recently")
+
+    def test_saving_the_same_route_again_or_other_fields_starts_no_hold(self):
+        self.put(**GOOD)
+        for fields in (dict(GOOD), {"port": "465"}, {"host": "SMTP.example.org"}, {"user": "someone@example.org"},
+                       {"from_address": "other@example.org"}, {"password": "another-password-1"}):
+            self.assertEqual(self.put(**fields).status_code, 200, fields)
+            self.assertIsNone(self.hold(), fields)
+        self.assertEqual([m["To"] for m in self.sent], [])
+
+    def test_the_hold_ends_after_24_hours_and_other_people_are_never_held(self):
+        self.put(**GOOD)
+        self.put(host="relay.example.net", password="new-relay-password")
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE app_settings SET value_json = :v WHERE key = 'mail_route_changed_at'"),
+                         {"v": f'"{(utcnow() - timedelta(hours=23)).isoformat()}"'})
+        self.assertEqual(self.admin_actions()[0].status_code, 409)
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE app_settings SET value_json = :v WHERE key = 'mail_route_changed_at'"),
+                         {"v": f'"{(utcnow() - timedelta(hours=25)).isoformat()}"'})
+        self.assertEqual([r.status_code for r in self.admin_actions()], [200, 200])
+
+    def test_an_admin_without_the_admin_key_cannot_change_the_route_while_others_are_to_be_told(self):
+        """Their addresses are sealed to the key: without it the notice would go to nobody, and the change would
+        still be saved."""
+        self.put(**GOOD)
+        admin_id = helpers.admin_id()
+        with engine.begin() as conn:  # this admin's copy is gone (a password reset without background access)
+            grant = conn.execute(text("SELECT user_id, apk_version, sealed_priv, granted_by, granted_at "
+                                      "FROM admin_key_grants WHERE user_id = :i"), {"i": admin_id}).mappings().one()
+            conn.execute(text("DELETE FROM admin_key_grants WHERE user_id = :i"), {"i": admin_id})
+
+        def put_back():  # (the grant is shared with the other tests)
+            with engine.begin() as conn:
+                conn.execute(text("INSERT INTO admin_key_grants (user_id, apk_version, sealed_priv, granted_by, "
+                                  "granted_at) VALUES (:user_id, :apk_version, :sealed_priv, :granted_by, :granted_at)"),
+                             dict(grant))
+
+        self.addCleanup(put_back)
+        before = self.snapshot()
+        for fields in ({"host": "relay.evil.example", "password": "their-own-password"},
+                       {"public_base_url": "https://phish.example"}):
+            r = self.put(**fields)
+            self.assertEqual((r.status_code, r.json()["code"]), (409, "admin_key_missing"), r.text)
+        self.assertEqual(self.snapshot(), before, "nothing was saved")
+        self.assertIsNone(self.hold(), "and no hold was started")
+        mail_queue.drain()
+        self.assertEqual([m["To"] for m in self.sent], [])
+        # Changes that don't move the route are not held up by the missing key.
+        self.assertEqual(self.put(user="someone@example.org").status_code, 200)
+
+    def test_a_notice_that_could_not_reach_every_admin_is_recorded(self):
+        self.put(**GOOD)
+        third = helpers.make_user()
+        self.others.append(third.id)
+        with engine.begin() as conn:  # (a stale address: sealed to an older key)
+            conn.execute(text("UPDATE users SET pii_admin_version = 0 WHERE id = :i"), {"i": third.id})
+        self.assertEqual(self.put(host="relay.example.net", password="new-relay-password").status_code, 200)
+        mail_queue.drain()
+        self.assertEqual([m["To"] for m in self.sent], [self.other.email])
+        actions = [e["action"] for e in self.admin.get("/api/admin/audit").json()["entries"]]
+        self.assertIn("mail_route_notice_partial", actions)
+
+    def test_a_lone_admin_does_not_block_the_change(self):
+        self.put(**GOOD)
+        self.others = []  # no other admin who is turned on
+        self.assertEqual(self.put(host="relay.example.net", password="new-relay-password").status_code, 200)
+        self.assertIsNotNone(self.hold(), "the hold doesn't depend on anyone being told")
+        mail_queue.drain()
+        self.assertEqual([m["To"] for m in self.sent], [])

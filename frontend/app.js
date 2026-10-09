@@ -11,7 +11,7 @@ const state = {
   loadedOmit: 'excluded,hidden', // what the loaded list left out ("Show excluded"/"Show hidden" fetch them)
   omittedCount: 0, // how many jobs it left out
   details: new Map(), // job id -> full job (with description)
-  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
+  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, hideGhost: false, status: 'all', sort: 'score' },
   selected: new Set(),
   profile: null,
   pins: [],
@@ -195,13 +195,14 @@ async function loadJobs() {
   loadDuplicates();
 }
 
-function visibleJobs() {
+function visibleJobs(keepGhost = false) {
   const f = state.filter;
   const q = f.q.trim().toLowerCase();
   const list = state.jobs.filter((j) => {
     if (!f.showExcluded && j.excluded_reason) return false;
     if (!f.showClosed && j.closed) return false;
     if (!f.showHidden && j.hidden) return false;
+    if (f.hideGhost && !keepGhost && j.ghost?.level) return false;
     if (f.status !== 'all' && j.status !== f.status) return false;
     if (f.minScore > 0 && (scoreOf(j) ?? -1) < f.minScore) return false;
     if (f.mode !== 'all' && modeOf(j) !== f.mode) return false;
@@ -226,7 +227,8 @@ function renderStatusChips() {
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   box.innerHTML = '';
   const base = state.jobs.filter((j) => (state.filter.showExcluded || !j.excluded_reason)
-    && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden));
+    && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden)
+    && !(state.filter.hideGhost && j.ghost?.level));
   [['all', 'all'], ...STATUSES.map((s) => [s, STATUS_LABEL[s]])].forEach(([val, label]) => {
     const n = val === 'all' ? base.length : base.filter((j) => j.status === val).length;
     const b = document.createElement('button');
@@ -301,7 +303,8 @@ function renderJobs() {
   list.innerHTML = '';
   $('#jobs-empty').hidden = jobs.length !== 0;
   const hidden = state.jobs.length - jobs.length + state.omittedCount;
-  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
+  const ghosts = state.filter.hideGhost ? visibleJobs(true).length - jobs.length : 0;
+  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters${ghosts ? ` (${ghosts} of them possible ghost job${ghosts === 1 ? '' : 's'})` : ''}` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
   jobs.forEach((job) => list.appendChild(renderJobCard(job)));
   if (focusBack) (focusBack() || $('#tab-jobs')).focus({ preventScroll: true });
   renderBulkBar();
@@ -340,8 +343,9 @@ function renderJobCard(job) {
         <h3 class="job-title" id="${titleId}"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
         <div class="job-meta">
           <span>${esc(job.location_text || 'location unknown')}</span>
-          <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${employmentBadge(job)}${dist}${flags}
+          <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${employmentBadge(job)}${dist}${flags}${ghostBadge(job)}
         </div>
+        ${ghostWhy(job)}
       </div>
       ${scoreBadge(job)}
     </div>
@@ -466,7 +470,13 @@ function showUploadAd(job) {
         Object.assign(job, await api(`/api/score/${job.id}${slackQuery()}`, { method: 'POST' }));
         status.textContent = `Updated and rescored: ${job.fit?.score ?? '?'}.`;
       } catch (err) {
-        status.textContent = `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
+        status.textContent = err.status === 402
+          ? (job.fit?.status === 'ok'
+            ? 'Updated with the full ad. Rescoring is for members, so the old score stays until you become one.'
+            : freeSearchLeft
+              ? `Updated with the full ad. Scoring a job by hand is for members; each free search also scores up to ${freeExtraScores} jobs waiting for a score, newest first.`
+              : 'Updated with the full ad. Scoring a job by hand is for members.')
+          : `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
       }
       renderJobs();
     } catch (err) {
@@ -532,6 +542,7 @@ function initJobs() {
     state.filter.showHidden = e.target.checked;
     if (e.target.checked && state.loadedOmit.includes('hidden')) loadJobs(); else renderJobs();
   });
+  $('#filter-hide-ghost').addEventListener('change', (e) => { state.filter.hideGhost = e.target.checked; renderJobs(); });
   $('#bulk-hide').addEventListener('click', () => {
     const ids = Array.from(state.selected);
     if (ids.length > 20 && !confirm(`Hide ${ids.length} jobs?`)) return;
@@ -716,8 +727,10 @@ function companyIcon(job) {
   else if (p?.status === 'skipped') { cls = 'none'; title = 'Not a researchable company'; }
   const n = p?.status === 'done' ? p.controversies.length : 0;
   const count = n ? `<sup>${n}</sup>` : '';
-  const label = `Company info: ${job.company}`; // the title says what's known, and is read as the description
-  return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}" aria-label="${esc(label)}"><span aria-hidden="true">ⓘ${count}</span></button>`;
+  // The name is hidden text beside the symbol, not an aria-label: the symbol and count ("ⓘ1") would not be part of an
+  // aria-label (WCAG 2.5.3 Label in Name). The title says what's known, and is read as the description.
+  const label = `Company info: ${job.company}${n ? `, ${n} controversy ${n === 1 ? 'item' : 'items'}` : ''}`;
+  return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}"><span aria-hidden="true">ⓘ${count}</span><span class="visually-hidden">${esc(label)}</span></button>`;
 }
 
 function showCompany(job) {
@@ -753,6 +766,7 @@ async function showCoverLetter(job) {
       </div>
       <p class="hint">Drafts use only facts from your documents, but always check them before sending.
         Upload earlier cover letters as "Cover letter" documents and drafts will follow your style.</p>
+      ${aiNoteHtml()}
     </div>`);
   const meta = (l) => {
     if (!l) return '';
@@ -1364,7 +1378,8 @@ async function importPages(e) {
       total = { imported: total.imported + r.imported, new: total.new + r.new, kept: total.kept + r.kept };
     } catch (err) { toast(`${f.name}: ${err.message}`, 'err', 8000); }
   }
-  status.textContent = `Imported ${total.imported} job(s): ${total.new} new, ${total.kept} pass your filters`;
+  status.textContent = `Imported ${total.imported} job(s): ${total.new} new, ${total.kept} pass your filters`
+    + (aiLockedNow && freeSearchLeft && total.new ? `. Your next free search scores up to ${freeExtraScores} jobs waiting for a score.` : '');
   $('#import-input').value = '';
   loadJobs();
 }
@@ -2197,7 +2212,7 @@ function renderMapLegend() {
   $('#map-legend').innerHTML = `<span class="visually-hidden">Key: </span>
     <span class="dot" aria-hidden="true"></span> job you'd consider (filled)
     <span class="dot hollow" aria-hidden="true"></span> excluded (hollow, dashed)
-    ${PIN_KINDS.map((k) => `<span class="ring ring-${k}" style="--c:var(--${PIN_HUE[k]})" aria-hidden="true"></span> ${k} pin (${{ home: 'solid', hybrid: 'dashed', onsite: 'dotted' }[k]} ring)`).join(' ')}
+    ${PIN_KINDS.map((k) => `<span class="ring ring-${k} hue-${PIN_HUE[k]}" aria-hidden="true"></span> ${k} pin (${{ home: 'solid', hybrid: 'dashed', onsite: 'dotted' }[k]} ring)`).join(' ')}
     · ${onMap} of ${all} filtered job${all === 1 ? '' : 's'} on the map${all > onMap ? ` (${all - onMap} remote or without a location)` : ''}`;
 }
 
@@ -2221,7 +2236,7 @@ function renderMapJobs() {
         <div><a class="map-job-title" id="mapjob-${j.id}-title" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Open the full page in a new tab">${esc(j.title || '—')}<span class="visually-hidden"> (opens in a new tab)</span></a>
           <span class="muted">· ${esc(j.company || '—')}</span></div>
         <div class="muted">${esc(j.location_text || '')}${j.office_unknown ? ' · office unknown' : ''}${j.distance_km !== null ? ` · <span aria-hidden="true">📍 </span><span class="visually-hidden">distance </span>${j.distance_km} km` : ''}
-          · <span class="badge ${modeOf(j)}">${modeOf(j)}</span> · ${esc(STATUS_LABEL[j.status] || j.status)}${j.excluded_reason ? ` · excluded: ${esc(j.excluded_reason)}` : ''}</div>
+          · <span class="badge ${modeOf(j)}">${modeOf(j)}</span>${ghostBadge(j)} · ${esc(STATUS_LABEL[j.status] || j.status)}${j.excluded_reason ? ` · excluded: ${esc(j.excluded_reason)}` : ''}</div>
       </div>
       <button class="btn btn-ghost btn-sm" type="button" id="mapjob-${j.id}-show" data-act="show" title="Show it on the map">Show<span class="visually-hidden"> ${esc(j.title || 'job')} on the map</span></button>
       <a class="btn btn-ghost btn-sm" id="mapjob-${j.id}-open" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener">Open<span class="visually-hidden"> ${esc(j.title || 'job')}</span>${NEW_TAB}</a>
@@ -2349,7 +2364,7 @@ function renderPinsList() {
     const name = esc(p.label);
     const huge = p.radius_km >= 1000 ? '<span class="err-text" title="Ignored by the location filter: a radius this large covers everywhere. Remote roles are handled by the Remote toggles in Search setup."><span aria-hidden="true">⚠ </span>ignored by location filter (radius ≥ 1000 km)</span>' : '';
     row.innerHTML = `
-      <span class="pin-kind pin-kind-${esc(p.kind)}" style="--c:var(--${PIN_HUE[p.kind] || 'border'})">${esc(p.kind)}</span>
+      <span class="pin-kind pin-kind-${esc(p.kind)} hue-${PIN_HUE[p.kind] || 'border'}">${esc(p.kind)}</span>
       <strong id="${id}-name">${name}</strong>
       <span class="muted"><span class="visually-hidden">at </span>${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>
       <span class="pin-radius"><label for="${id}-radius">Radius</label> <input id="${id}-radius" type="number" min="0.1" step="0.5" inputmode="decimal" value="${p.radius_km}" aria-describedby="${id}-name" /> <span aria-hidden="true">km</span><span class="visually-hidden">kilometres</span></span>
@@ -2519,6 +2534,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try { me = await loadSession(); } // signed out: goes to the sign-in page and never returns
   catch (e) { toast(e.message, 'err', 15000); return; }
   applyAccount(me);
+  await loadAiAccess(); // trial accounts get a note beside the AI features
   state.ws = storedWorkspace();
   try { await loadWorkspaces(); } catch (e) { toast(`Could not load workspaces: ${e.message}`, 'err'); }
   initWorkspaces();

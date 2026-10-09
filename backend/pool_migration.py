@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +25,7 @@ from typing import Optional
 
 from sqlalchemy import text
 
-from backend.db import DB_PATH, DETAIL_RANK, JOB_CONTENT, encryption_done, engine
+from backend.db import DB_PATH, DETAIL_RANK, JOB_CONTENT, encryption_done, engine, online_backup
 
 log = logging.getLogger(__name__)
 
@@ -63,18 +62,7 @@ def _backup() -> Optional[Path]:
     target = backup_path()
     if target.exists():
         return target
-    tmp = target.with_name(target.name + ".tmp")
-    raw = engine.raw_connection()
-    try:
-        dst = sqlite3.connect(str(tmp))
-        try:
-            raw.driver_connection.backup(dst)
-        finally:
-            dst.close()
-    finally:
-        raw.close()
-    tmp.replace(target)
-    return target
+    return online_backup(target)
 
 
 def _kind(row) -> str:

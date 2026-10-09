@@ -73,7 +73,7 @@ class SignedInClient(TestClient):
         return self
 
     def sign_in(self) -> dict:
-        ratelimit.reset_all()  # every test signs in from the same address
+        ratelimit.AUTH.reset()  # every test signs in from the same address
         r = self.post("/api/auth/login", json={"email": self.email, "password": self.password,
                                                 "remember": self.remember})
         if r.status_code != 200:
@@ -85,6 +85,28 @@ class SignedInClient(TestClient):
 def client(email: str = ADMIN_EMAIL, password: Optional[str] = None, **kwargs) -> SignedInClient:
     """A client signed in as ``email`` (the admin by default) once started."""
     return SignedInClient(email, password or _passwords[email], **kwargs)
+
+
+def show_codes(c, password: Optional[str] = None, **fields):
+    """The answer of ``POST /api/auth/recovery-codes/show`` for ``c`` (the unsaved recovery codes need the password
+    again, and a code with two-step sign-in on)."""
+    return c.post("/api/auth/recovery-codes/show", json={"password": password or getattr(c, "password", USER_PASSWORD),
+                                                         **fields})
+
+
+def lock_out(account_id: int, source: str = "testclient", failures: int = 5) -> None:
+    """Five wrong passwords in a row from ``source`` (the test client's network address by default; a signed-in
+    client is a browser the account knows: ``d:<its id>``): that source now waits."""
+    for _ in range(failures):
+        try:
+            ratelimit.guesses.begin(account_id, source, ceiling=False)
+        except ratelimit.Waiting:
+            pass
+
+
+def wrong_tries(account_id: int) -> int:
+    """Wrong tries in a row, all sources together."""
+    return sum(ratelimit.guesses.failures(account_id).values())
 
 
 @dataclass(frozen=True)
@@ -103,6 +125,7 @@ def make_user(email: Optional[str] = None, password: str = USER_PASSWORD, *, rol
     account = users.create_user(email, password, name=name, role=role, created_via="open")
     _passwords[email] = password
     _keys[email] = (account.user_id, account.dek)
+    _iks[email] = account.ik
     db = SessionLocal()
     try:
         ws = db.query(Workspace.id).filter(Workspace.owner_id == account.user_id).scalar()
@@ -133,6 +156,7 @@ def admin_id() -> int:
 
 
 _keys: dict[str, tuple[int, bytes]] = {}
+_iks: dict[str, bytes] = {}
 
 
 def key_of(email: str = ADMIN_EMAIL) -> tuple[int, bytes]:
@@ -142,20 +166,43 @@ def key_of(email: str = ADMIN_EMAIL) -> tuple[int, bytes]:
     return _keys[email]
 
 
+def ik_of(email: str = ADMIN_EMAIL) -> bytes:
+    """The identity key of an account, opened with its password once per test run."""
+    if email not in _iks:
+        started()
+        db = SessionLocal()
+        try:
+            _iks[email] = users.unlock(db, users.find_by_email(db, email), _passwords[email]).ik
+        finally:
+            db.close()
+    return _iks[email]
+
+
 @contextlib.contextmanager
 def as_admin() -> Iterator[crypto.Scope]:
-    """The admin's key scope, for writing and reading rows (sealed columns) directly in a test."""
+    """The admin's key scope, for writing and reading rows (sealed columns) directly in a test. Like a signed-in
+    request's, it can open the identity key (so ``admin_key.open_apk`` works); a background run's can't."""
     uid, dek = key_of()
-    with crypto.as_user(uid, dek) as scope:
+    with crypto.as_user(uid, dek, lambda: ik_of()) as scope:
         yield scope
 
 
 @contextlib.contextmanager
 def as_account(account: "Account") -> Iterator[crypto.Scope]:
-    """``account``'s key scope."""
+    """``account``'s key scope (with its identity key, as a signed-in request's)."""
     uid, dek = key_of(account.email)
-    with crypto.as_user(uid, dek) as scope:
+    with crypto.as_user(uid, dek, lambda: ik_of(account.email)) as scope:
         yield scope
+
+
+def pending_codes(account: "Account") -> list[str]:
+    """The recovery codes ``account`` hasn't confirmed saving (a new account's first eight)."""
+    db = SessionLocal()
+    try:
+        with as_account(account):
+            return users.pending_recovery_codes(db, account.id, ik_of(account.email))
+    finally:
+        db.close()
 
 
 _module_scopes: list = []
@@ -218,13 +265,8 @@ def remove_scratch_folders() -> None:
         shutil.rmtree(_FOLDERS.pop(), ignore_errors=True)
 
 
-def scenario(code: str, folder: Optional[str] = None, env: Optional[dict] = None, *,
-             returncode: Optional[int] = 0) -> dict:
-    """Run ``code`` in a fresh Python process on a throwaway data folder, database, .env and key file in
-    ``folder`` (a new one by default; pass the same folder again to "restart"). ``code`` sets ``out``, which comes
-    back as a dict. The admin variables from tests/__init__.py are left out unless ``env`` sets them.
-    ``returncode``: the exit status expected (None: any, for a process that is made to crash)."""
-    folder = folder or scratch_folder()
+def scenario_env(folder: str, env: Optional[dict] = None) -> dict:
+    """The environment of a fresh process on the throwaway data folder ``folder`` (see ``scenario``)."""
     run_env = {k: v for k, v in os.environ.items() if not k.startswith("JOBHUNT_ADMIN_")}
     run_env.update({"JOBHUNT_DATA_DIR": folder, "JOBHUNT_DB_PATH": os.path.join(folder, "jobhunt.db"),
                     "JOBHUNT_ENV_PATH": os.path.join(folder, ".env"),
@@ -232,6 +274,17 @@ def scenario(code: str, folder: Optional[str] = None, env: Optional[dict] = None
                     "JOBHUNT_TESTING": "1", "JOBHUNT_KDF_PROFILE": "test", "PYTHONPATH": str(ROOT)})
     run_env.pop("DATABASE_URL", None)
     run_env.update(env or {})
+    return run_env
+
+
+def scenario(code: str, folder: Optional[str] = None, env: Optional[dict] = None, *,
+             returncode: Optional[int] = 0) -> dict:
+    """Run ``code`` in a fresh Python process on a throwaway data folder, database, .env and key file in
+    ``folder`` (a new one by default; pass the same folder again to "restart"). ``code`` sets ``out``, which comes
+    back as a dict. The admin variables from tests/__init__.py are left out unless ``env`` sets them.
+    ``returncode``: the exit status expected (None: any, for a process that is made to crash)."""
+    folder = folder or scratch_folder()
+    run_env = scenario_env(folder, env)
     program = "import json, os\nout = {}\nFOLDER = %r\n%s\nprint('RESULT ' + json.dumps(out, default=str))\n" % (
         folder, textwrap.dedent(code))
     done = subprocess.run([sys.executable, "-c", program], cwd=folder, env=run_env, capture_output=True, text=True,

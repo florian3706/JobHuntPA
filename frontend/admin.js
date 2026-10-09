@@ -70,7 +70,10 @@ function renderWarnings() {
     parts.push(`<p><strong>You are the only admin.</strong> If you lose your password and your recovery codes, nobody can
       open people's details or run the admin panel. Make a second person an admin (People, then "Make admin").</p>`);
   }
-  if (data && !data.admin_key_available) {
+  if (data && !data.admin_key_available && data.admin_key_needs_sign_in) {
+    parts.push(`<p><strong>Sign in again to open people's details.</strong> This browser signed in before the admin key got
+      its own protection. Names and emails stay hidden, and roles can't be changed, until you sign out and sign in again.</p>`);
+  } else if (data && !data.admin_key_available) {
     parts.push(`<p><strong>You can't open people's details right now.</strong> Names and emails are hidden and roles can't be
       changed. Ask another admin to share the admin key with you again (People, then "Share the admin key again"). Signing in
       again may also fix it.</p>`);
@@ -161,9 +164,9 @@ function actionButtons(u, data) {
   const btn = (act, text, name, extra = '') => `<button class="btn btn-sm" type="button" data-act="${act}" data-id="${u.id}" aria-label="${esc(name)}"${extra}>${esc(text)}</button>`;
   const out = [btn('membership', 'Membership', `Edit membership of ${l}`)];
   out.push(u.role === 'admin'
-    ? btn('role-user', 'Make regular user', `Make ${l} a regular user`, canRole ? '' : ' disabled')
-    : btn('role-admin', 'Make admin', `Make ${l} an admin`, canRole && u.status === 'active' ? '' : ' disabled'));
-  if (u.role === 'admin' && !u.admin_key_shared && canRole) out.push(btn('regrant', 'Share the admin key again', `Share the admin key with ${l} again`));
+    ? btn('role-user', 'Make regular user', `Make regular user: ${l}`, canRole ? '' : ' disabled')
+    : btn('role-admin', 'Make admin', `Make admin: ${l}`, canRole && u.status === 'active' ? '' : ' disabled'));
+  if (u.role === 'admin' && !u.admin_key_shared && canRole) out.push(btn('regrant', 'Share the admin key again', `Share the admin key again: ${l}`));
   if (!self) out.push(u.status === 'active' ? btn('disable', 'Disable', `Disable ${l}`) : btn('enable', 'Enable', `Enable ${l}`));
   if (u.locked && u.status === 'active' && !self) out.push(btn('unlock', 'Unlock', `Unlock ${l}, who must wait after wrong passwords`));
   if (u.mfa && !self) out.push(btn('mfa-off', 'Turn off two-step sign-in', `Turn off two-step sign-in for ${l}`));
@@ -248,8 +251,8 @@ async function personAction(act, id, btn) {
     await run('Sharing the admin key', () => reauth(() => post(`/api/admin/users/${id}/regrant`)), () => `Shared the admin key with ${l}.`);
   } else if (act === 'disable') {
     if (!(await confirmDialog({ title: `Disable ${l}?`, ok: 'Disable', returnTo: back,
-      text: `They are signed out everywhere and can't sign in until you enable them again. Their data is kept.${LIVE_SUB.includes(u.membership.stripe_status) ? ' They pay by subscription, which keeps renewing while they are off, and they can\'t cancel it themselves.' : ''}` }))) return;
-    await run('Disabling', () => post(`/api/admin/users/${id}/disable`), (r) => `${l} is disabled and signed out.${r?.subscription === 'still_billing' ? ' Their subscription is still active and they are still charged. Open Membership to exempt them and end it at the period end, or cancel it in Stripe.' : ''}`);
+      text: `They are signed out everywhere and can't sign in until you enable them again. Their data is kept.${LIVE_SUB.includes(u.membership.stripe_status) ? ' They pay by subscription, which keeps renewing while they are off, and they can\'t cancel it themselves.' : ''}${u.role === 'admin' ? ' They are an admin, so the admin key is replaced, and they are not given the new one. If you enable them again, share the admin key with them again.' : ''} You will be asked for your password.` }))) return;
+    await run('Disabling', () => reauth(() => post(`/api/admin/users/${id}/disable`)), (r) => `${l} is disabled and signed out.${r?.subscription === 'still_billing' ? ' Their subscription is still active and they are still charged. Open Membership to exempt them and end it at the period end, or cancel it in Stripe.' : ''}${r?.note ? ' ' + r.note : ''}`);
   } else if (act === 'enable') {
     await run('Enabling', () => post(`/api/admin/users/${id}/enable`), () => `${l} can sign in again.`);
   } else if (act === 'unlock') {
@@ -289,7 +292,7 @@ function renderGrants() {
     const when = `${fmtDay(g.starts_at)} to ${fmtDay(g.ends_at)}`;
     const buttons = g.revoked_at ? '' : `<div class="row-actions">
       <button class="btn btn-sm" type="button" data-grant-edit="${g.id}" aria-label="Change the ${esc(GRANT_KIND[g.kind] || g.kind).toLowerCase()} ${esc(when)}">Change</button>
-      <button class="btn btn-sm" type="button" data-grant-end="${g.id}" aria-label="End the ${esc(GRANT_KIND[g.kind] || g.kind).toLowerCase()} ${esc(when)} now">End now</button></div>`;
+      <button class="btn btn-sm" type="button" data-grant-end="${g.id}" aria-label="End now: the ${esc(GRANT_KIND[g.kind] || g.kind).toLowerCase()} ${esc(when)}">End now</button></div>`;
     return [`${esc(GRANT_KIND[g.kind] || g.kind)}`, esc(fmtDay(g.starts_at)), esc(fmtDay(g.ends_at)), esc(grantState(g)),
       g.note ? esc(g.note) : '<span class="muted">–</span>', buttons];
   });
@@ -359,6 +362,7 @@ function openMembership(id, opener) {
       <p id="mem-error" class="error" role="alert" hidden></p>
     </form>
     <h3>Free periods and extensions</h3>
+    <p class="hint">Saving a payment setting or changing a free period asks for your password if you haven't entered it in the last 15 minutes.</p>
     <p class="hint">Dates are in UTC. A free period begins at the start of its first day and "Or ends on" includes that whole day. It gives full access until it ends; "End now" keeps it in the history.${LIVE_SUB.includes(m.stripe_status) ? ' This person pays, so a free period also moves their next payment to when it ends.' : ''}</p>
     <p id="grants-count" class="muted" role="status"></p>
     <p id="grants-error" class="error" role="alert" hidden></p>
@@ -416,7 +420,7 @@ async function saveMembership(e) {
   try {
     const body = { exempt: $('#mem-exempt').checked, free_searches_used: n };
     if (body.exempt && $('#mem-cancel').checked) body.cancel_subscription_at_period_end = true;
-    const r = await api(`/api/admin/users/${memberId}/membership`, { method: 'PUT', body: JSON.stringify(body) });
+    const r = await reauth(() => api(`/api/admin/users/${memberId}/membership`, { method: 'PUT', body: JSON.stringify(body) }));
     say($('#mem-status'), r.subscription_ending ? 'Saved. Their subscription ends when the period they paid for is over.' : 'Saved.');
     await loadUsers();
   } catch (err) { say($('#mem-status'), ''); dialogError('mem-error', failure(err)); }
@@ -444,8 +448,8 @@ async function saveGrant(e) {
   setBusy(btn, true);
   say($('#grant-status'), 'Saving…');
   try {
-    const r = editingGrant ? await api(`/api/admin/users/${memberId}/grants/${editingGrant}`, { method: 'PATCH', body: JSON.stringify(body) })
-      : await post(`/api/admin/users/${memberId}/grants`, { kind: $('#grant-kind').value, ...body });
+    const r = await reauth(() => (editingGrant ? api(`/api/admin/users/${memberId}/grants/${editingGrant}`, { method: 'PATCH', body: JSON.stringify(body) })
+      : post(`/api/admin/users/${memberId}/grants`, { kind: $('#grant-kind').value, ...body })));
     const moved = r?.stripe?.extended ? (r.stripe.trial_end ? ` Their next payment moves to ${fmtDay(r.stripe.trial_end)}.` : ' They are charged again now.') : '';
     say($('#grant-status'), `${editingGrant ? 'Changed.' : 'Added.'}${moved}`);
     announce(`${editingGrant ? 'Free period changed.' : 'Free period added.'}${moved}`);
@@ -481,7 +485,7 @@ async function onGrantClick(e) {
     setBusy(endBtn, true);
     clearDialogError('grants-error');
     try {
-      const r = await api(`/api/admin/users/${memberId}/grants/${endBtn.dataset.grantEnd}`, { method: 'DELETE' });
+      const r = await reauth(() => del(`/api/admin/users/${memberId}/grants/${endBtn.dataset.grantEnd}`));
       const billed = r?.stripe?.extended ? (r.stripe.trial_end ? ` Their next payment moves to ${fmtDay(r.stripe.trial_end)}.` : ' They are charged again now.') : '';
       announce(`Free period ended.${billed}`);
       await loadUsers();
@@ -622,7 +626,7 @@ async function loadPlaintext() {
   if (cols.length) parts.push(`<h4>Values that aren't encrypted</h4><ul>${cols.map(([k, n]) => `<li><code>${esc(k)}</code>: ${num(n)}</li>`).join('')}</ul>`);
   if (p.files.length) parts.push(`<p>${num(p.files.length)} uploaded ${p.files.length === 1 ? 'file isn\'t' : 'files aren\'t'} encrypted.</p>`);
   if (p.leftovers.length) {
-    parts.push(`<h4>Old files that still hold data unencrypted</h4><p class="hint">Backups made before encryption and the old page cache. You only need the backup to go back to an older version of JobHuntPA.</p>
+    parts.push(`<h4>Old files that still hold data unencrypted</h4><p class="hint">Backups made before encryption and the old page cache. You only need the backup to go back to an older version of JobHuntPA. Delete the <code>.bak-*</code> files you don't need: they also hold keys from before, and anyone who gets them with the key file can read what they held.</p>
       <ul class="leftover-files">${p.leftovers.map((f) => `<li><code>${esc(f.path)}</code> (${esc(fmtBytes(f.bytes))})</li>`).join('')}</ul>`);
   }
   $('#plain-details').innerHTML = parts.join('');

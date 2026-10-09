@@ -261,7 +261,9 @@ class AuthPagesTest(unittest.TestCase):
                     self.assertEqual(inputs[field].get("type"), kind)
                     self.assertEqual(inputs[field].get("autocomplete"), autocomplete)
             passwords = [i for i in inputs.values() if i.get("type") == "password"]
-            self.assertEqual(len(passwords), 1, f"{name}: one password field, no 'confirm password' (3.3.7)")
+            # (first-run.html has a second one for asking again before showing the recovery codes: one step at a time)
+            self.assertEqual(len(passwords), 2 if name == "first-run.html" else 1,
+                             f"{name}: one password field, no 'confirm password' (3.3.7)")
 
     def test_paste_and_password_managers_are_never_blocked(self):
         for name in AUTH_PAGES + ("auth.js", "signup.js", "common.js", "account.js"):
@@ -284,10 +286,12 @@ class AuthPagesTest(unittest.TestCase):
             page = parse(name)
             toggles = [n for n in page.nodes if n["tag"] == "button" and "pw-toggle" in n["attrs"].get("class", "")]
             with self.subTest(page=name):
-                self.assertEqual(len(toggles), 1)
-                self.assertEqual(toggles[0]["attrs"].get("aria-pressed"), "false")
+                self.assertEqual(len(toggles), 2 if name == "first-run.html" else 1)
+                for toggle in toggles:
+                    self.assertEqual(toggle["attrs"].get("aria-pressed"), "false")
+                    self.assertIn(toggle["attrs"].get("aria-controls"), ("password", "show-password"))
+                    self.assertEqual(toggle["attrs"].get("type"), "button")
                 self.assertEqual(toggles[0]["attrs"].get("aria-controls"), "password")
-                self.assertEqual(toggles[0]["attrs"].get("type"), "button")
 
     def test_error_summary_and_help_are_in_the_same_place(self):
         for name in AUTH_PAGES:
@@ -539,6 +543,7 @@ class SignInPagesBehaviourTest(unittest.TestCase):
         cls.common = (FRONTEND / "common.js").read_text(encoding="utf-8")
         cls.account = (FRONTEND / "account.js").read_text(encoding="utf-8")
         cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        cls.signup = (FRONTEND / "signup.js").read_text(encoding="utf-8")
 
     @unittest.skipUnless(shutil.which("node"), "Node is needed to run nextPage()")
     def test_next_stays_on_this_site_whatever_the_url_parser_does_with_it(self):
@@ -549,10 +554,11 @@ class SignInPagesBehaviourTest(unittest.TestCase):
                   " out[next] = nextPage(); }\nconsole.log(JSON.stringify(out));")
         cases = ["/\t/evil.example/x", "/\n/evil.example", "//evil.example", "/\\evil.example",
                  "https://evil.example", "javascript:alert(1)", "/login.html", "/recover.html?x=1", "/first-run.html",
-                 "/job.html?id=3#notes", "/", "", "/signup.html?invite=x"]
+                 "/job.html?id=3#notes", "/", "", "/signup.html?invite=x",
+                 "/.//evil.example/phish", "/..//evil.example", "/a/..//evil.example", "/./\\evil.example"]
         done = subprocess.run(["node", "-e", script, json.dumps(cases)], capture_output=True, text=True, check=True)
         out = json.loads(done.stdout)
-        for bad in cases[:8] + [""]:
+        for bad in cases[:8] + [""] + cases[13:]:
             self.assertEqual(out[bad], "./", repr(bad))
         self.assertEqual(out["/job.html?id=3#notes"], "/job.html?id=3#notes")
         self.assertEqual(out["/"], "/")
@@ -590,9 +596,14 @@ class SignInPagesBehaviourTest(unittest.TestCase):
                                         f"{name}:{number} calls {path} without withRecentAuth")
 
     def test_the_recovery_codes_page_asks_for_the_password_when_it_is_needed(self):
+        """The codes are not served to a session alone: the page keeps the ones made in this tab and otherwise asks for
+        the password (and a code with two-step on) before it shows them."""
         shown = self.auth[self.auth.index("async function initFirstRun"):self.auth.index("async function submitSetup")]
-        self.assertIn("reauth_required", shown)
-        self.assertIn("confirmPassword()", shown)
+        self.assertIn("stashedRecoveryCodes()", shown)
+        self.assertIn("askForCodes(", shown)
+        self.assertIn("'/api/auth/recovery-codes/show'", shown)
+        self.assertNotIn("authCall('/api/auth/recovery-codes')", self.auth + self.signup)
+        self.assertIn("stashRecoveryCodes(made.recovery_codes)", self.account)
 
     def test_a_recovery_code_sign_in_says_how_many_are_left(self):
         start = self.auth.index("$('#mfa-form').addEventListener('submit'")
@@ -623,7 +634,8 @@ class SignInPagesBehaviourTest(unittest.TestCase):
         card = self.account[self.account.index("function renderCodes"):self.account.index("/* ---------- sign out")]
         self.assertIn('id="acct-rc-code"', card)
         self.assertIn("codeBody(code.value.trim())", card)
-        self.assertIn("withRecentAuth(() => post('/api/auth/recovery-codes', body))", card)
+        self.assertIn("recentWith(password.value, () => post('/api/auth/recovery-codes', body))", card)
+        self.assertIn("pwField('acct-rc-password', 'Your password', 'current-password')", card)
 
 
 class SignupPageTest(unittest.TestCase):
@@ -719,15 +731,21 @@ class AdminPageTest(unittest.TestCase):
         self.assertEqual(self.js.count("role=\"table\""), 1, "one table builder, so every table is built the same way")
 
     def test_action_buttons_name_their_person(self):
-        for phrase in ("Send reset email to ${l}", "Edit membership of ${l}", "Make ${l} an admin", "Disable ${l}",
-                       "Enable ${l}", "Turn off two-step sign-in for ${l}", "Share the admin key with ${l} again",
-                       "Make ${l} a regular user", "Delete the account of ${l}", "Unlock ${l}"):
+        for phrase in ("Send reset email to ${l}", "Edit membership of ${l}", "Make admin: ${l}", "Disable ${l}",
+                       "Enable ${l}", "Turn off two-step sign-in for ${l}", "Share the admin key again: ${l}",
+                       "Make regular user: ${l}", "Delete the account of ${l}", "Unlock ${l}"):
             self.assertIn(phrase, self.js)
         self.assertIn('aria-label="${esc(name)}"', self.js, "names go through esc()")
-        # The visible text starts the accessible name (WCAG 2.5.3)
-        for visible, name in (("Send reset email", "Send reset email to"), ("Disable", "Disable ${l}"),
-                              ("Make admin", "Make ${l} an admin")):
-            self.assertRegex(self.js, r"'%s', `%s" % (re.escape(visible), re.escape(name)))
+
+    def test_visible_text_is_inside_the_accessible_name(self):
+        """WCAG 2.5.3 (Label in Name; axe's label-content-name-mismatch): a button's visible words are in its aria-label,
+        in that order, so speech control ("click Make admin") finds it. Checks the admin panel's row buttons."""
+        calls = re.findall(r"btn\('[\w-]+', '([^']+)', `([^`]+)`", self.js)
+        self.assertGreaterEqual(len(calls), 8)
+        for visible, name in calls:
+            self.assertIn(visible.lower(), name.lower(), f"the button '{visible}' is named '{name}'")
+        self.assertIn('aria-label="End now: the', self.js)
+        self.assertIn('aria-label="Change the', self.js)
 
     def test_other_peoples_text_only_goes_in_escaped(self):
         # Names and emails are chosen by their owners: never into innerHTML except through esc().
@@ -813,6 +831,7 @@ class BillingPageTest(unittest.TestCase):
         self.assertIn("/api/billing/checkout", self.js)
         self.assertIn("/api/billing/verify", self.js)
         self.assertIn("/api/billing/portal", self.js)
+        self.assertRegex(self.js, r"withRecentAuth\(\(\) => api\('/api/billing/portal'", "the portal asks for the password again")
         self.assertIn("session_id", self.js)
         self.assertIn("cancelled", self.js)
         self.assertIn("Nothing was charged", self.js)
@@ -821,7 +840,7 @@ class BillingPageTest(unittest.TestCase):
         self.assertIn("Manage payment and plan", self.ids["portal-btn"]["text"])
         self.assertIn("doesn't charge", self.ids["off-title"]["text"])
         text = self.ids["without-card"]["text"]
-        for word in ("stays", "searches", "chat", "cover letters", "research"):
+        for word in ("stays", "searches", "chat", "cover letters", "research", "AI features are for members"):
             self.assertIn(word, text)
 
     def test_plan_buttons_name_their_plan_and_start_with_their_visible_text(self):
@@ -843,6 +862,45 @@ class BillingPageTest(unittest.TestCase):
         self.assertIn("esc(k)", self.js)
         self.assertRegex(self.css, r"\.billing-card \.btn \{[^}]*min-height: 44px")
         self.assertRegex(self.css, r"@media \(max-width: 480px\) \{ \.billing-facts \{ grid-template-columns: 1fr")  # 320 px
+
+
+class AiMembersOnlyNoteTest(unittest.TestCase):
+    """Trial accounts are told, next to the AI features, that they are for members (common.js loadAiAccess)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        cls.signup = (FRONTEND / "signup.js").read_text(encoding="utf-8")
+        cls.index = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        cls.html = parse("index.html")
+
+    def test_the_static_notes_start_hidden_and_are_plain_text_with_a_link(self):
+        notes = [n for n in self.html.nodes if "ai-note" in n["attrs"].get("class", "").split()]
+        self.assertGreaterEqual(len(notes), 2, "the chat panel and the Documents tab")
+        for n in notes:
+            self.assertEqual(n["tag"], "p")
+            self.assertIn("hidden", n["attrs"])
+            self.assertNotIn("role", n["attrs"], "a note that is there from the start isn't announced")
+        self.assertIn("AI features are for members", self.common)
+        self.assertIn('<a href="billing.html">See membership options</a>', self.common)
+
+    def test_nothing_is_hidden_or_disabled_without_saying_why(self):
+        self.assertIn("const aiNoteHtml", self.common)
+        self.assertIn("await loadAiAccess()", self.app)
+        for button in ("score-pending", "fill-info", "suggest-titles", "summary-make"):
+            node = next(n for n in self.html.nodes if n["attrs"].get("id") == button)
+            self.assertNotIn("disabled", node["attrs"], f"{button}: a click shows the membership notice instead")
+
+    def test_the_dynamic_places_carry_the_note_too(self):
+        self.assertIn("${aiNoteHtml()}", self.app, "the cover letter dialog")
+        self.assertIn("${aiNoteHtml()}", self.common, "the company profile (info dialog and job page)")
+        job = (FRONTEND / "job.js").read_text(encoding="utf-8")
+        self.assertIn("await loadAiAccess()", job)
+        self.assertRegex(job, r"await loadAiAccess\(\);[^\n]*\n  loadCompany\(\);")
+
+    def test_a_refused_rescore_after_importing_an_ad_says_so(self):
+        self.assertIn("err.status === 402", self.app)
 
 
 class FreeSearchNoteTest(unittest.TestCase):
@@ -1160,8 +1218,14 @@ class EmailPagesTest(unittest.TestCase):
         for ident in ("codes-step", "codes-list", "codes-copy", "codes-download", "codes-print", "codes-saved",
                       "codes-continue", "codes-status", "setup-step"):
             self.by_id(self.reset, ident)
-        self.assertIn("You no longer have the admin key. Ask another admin to share it with you again.", self.reset_src)
+        self.by_id(self.reset, "admin-key-lost")
+        self.by_id(self.reset, "admin-key-note")
+        self.assertIn("You no longer have the admin key.", self.reset_js)
+        self.assertIn("Ask another admin to share it with you again.", self.reset_js)
+        self.assertIn("python -m backend.keys new-admin-key --email", self.reset_js)  # said when nobody else has it
         self.assertIn("admin_key_lost", self.reset_js)
+        self.assertIn("admin_key_last_holder", self.reset_js)
+        self.assertIn("last_key_holder", self.reset_js)
 
     def test_every_refusal_is_said_in_words_and_the_second_factor_is_asked_for(self):
         for code in ("link_invalid", "disabled", "second_factor_required"):
@@ -1170,6 +1234,25 @@ class EmailPagesTest(unittest.TestCase):
         self.assertIn("announce(", self.reset_js)
         self.assertIn("link_invalid", self.verify_js)
         self.assertIn("email_taken", self.verify_js)
+
+    def test_the_verify_page_asks_before_it_confirms(self):
+        """A page that confirmed on load would let a mail scanner or a stray click put an account on someone's
+        address. It reads what the link is for, shows the address, and waits for the button."""
+        ask = self.by_id(self.verify, "verify-ask")
+        self.assertIn("hidden", ask["attrs"])
+        button = self.by_id(self.verify, "verify-confirm")
+        self.assertEqual((button["tag"], button["attrs"].get("type")), ("button", "button"))
+        self.by_id(self.verify, "verify-address")
+        self.by_id(self.verify, "verify-note")
+        start = self.verify_js.index("async function initVerify")
+        self.assertIn("'/api/auth/verify-email/info'", self.verify_js[start:])
+        self.assertNotIn("'/api/auth/verify-email'", self.verify_js[start:])
+        confirm = self.verify_js[self.verify_js.index("async function confirmAddress"):start]
+        self.assertIn("'/api/auth/verify-email'", confirm)
+        self.assertIn("setBusy(btn, true)", confirm)
+        self.assertIn("announce(", self.verify_js)
+        self.assertIn("$('#page-title').focus()", self.verify_js)
+        self.assertIn("Press the button only if that was you", self.verify_js)
 
     def test_email_me_a_link_is_offered_only_when_email_is_on_and_reuses_the_typed_address(self):
         for src in (self.login_src, self.recover_src):
@@ -1189,13 +1272,16 @@ class EmailPagesTest(unittest.TestCase):
         self.assertIn("getElementById('account-address-slot')", self.card_js)
         self.assertIn('<h3 id="acct-addr-heading" tabindex="-1">Your email address', self.card_js)
         self.assertIn('role="status"', self.card_js)
-        self.assertIn("withRecentAuth(() => post('/api/auth/email/change'", self.card_js)
+        self.assertIn("recentWith(password.value, () => post('/api/auth/email/change', body))", self.card_js)
+        self.assertIn('<label for="acct-addr-password">Your password</label>', self.card_js)
+        self.assertIn('autocomplete="current-password"', self.card_js)
+        self.assertIn('aria-controls="acct-addr-password" aria-pressed="false">Show password', self.card_js)
         self.assertIn("Send the confirmation again", self.card_js)
         self.assertIn("Change email address", self.card_js)
         self.assertIn('<label for="acct-addr-new">New email address</label>', self.card_js)
         self.assertIn('autocomplete="email"', self.card_js)
         self.assertIn('aria-expanded', self.card_js)
-        self.assertIn("setFieldError(input, e.message)", self.card_js)
+        self.assertIn("setFieldError(field, e.message)", self.card_js)
 
     def test_the_admin_email_card_has_labelled_fields_and_its_buttons(self):
         for ident, label in (("email-host", "Mail server"), ("email-port", "Port"), ("email-security", "Encryption"),
@@ -1349,6 +1435,157 @@ class DigestPagesTest(unittest.TestCase):
         for src in (self.js, self.welcome):
             ids = re.findall(r'\bid="((?:digest|wz-digest)[a-z-]*)"', src)
             self.assertEqual(len(ids), len(set(ids)), ids)
+
+
+class GhostJobPagesTest(unittest.TestCase):
+    """The possible-ghost-job badge, its Why? disclosure, the Jobs filter and the job page section."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.common, cls.app, cls.job = read("common.js"), read("app.js"), read("job.js")
+        cls.index, cls.job_html, cls.css = read("index.html"), read("job.html"), read("styles.css")
+
+    def test_badge_has_an_icon_and_text(self):
+        badge = self.common[self.common.index("function ghostBadge"):self.common.index("function ghostWhy")]
+        self.assertIn("Possible ghost job", badge)
+        self.assertIn('<span aria-hidden="true">⚠ </span>', badge)
+        self.assertIn("several signs", self.common)
+        self.assertIn("some signs", self.common)
+        self.assertIn("if (!level) return ''", badge)
+
+    def test_badge_on_cards_compact_cards_and_job_page(self):
+        self.assertIn("${ghostBadge(job)}", self.app)
+        self.assertIn("${ghostBadge(j)}", self.app)
+        self.assertIn("ghostBadge(job)", self.job)
+
+    def test_why_disclosure_is_a_native_details_with_a_full_name_and_escaped_text(self):
+        why = self.common[self.common.index("function ghostWhy"):self.common.index("function modeOf")]
+        self.assertIn("<details", why)
+        self.assertIn("<summary>Why?<span class=\"visually-hidden\">", why)
+        self.assertIn("esc(s.text)", why)
+        self.assertIn("This may still be a real job", why)
+        self.assertIn("${ghostWhy(job)}", self.app)
+
+    def test_filter_is_off_by_default_labelled_and_counted_in_words(self):
+        self.assertIn('<input id="filter-hide-ghost" type="checkbox" /> <span>Hide possible ghost jobs</span>', self.index)
+        self.assertIn("hideGhost: false", self.app)
+        self.assertIn("f.hideGhost && !keepGhost && j.ghost?.level", self.app)
+        # (the ghost jobs are part of the "hidden by filters" number: worded as a share of it, not a second count)
+        self.assertIn("hidden by filters${ghosts ? ` (${ghosts} of them possible ghost job${ghosts === 1 ? '' : 's'})` : ''}", self.app)
+        self.assertNotIn("possible ghost job${ghosts === 1 ? '' : 's'} hidden", self.app)
+        self.assertIn("$('#filter-hide-ghost').addEventListener('change'", self.app)
+
+    def test_job_page_section_is_named_and_hidden_unless_flagged(self):
+        self.assertRegex(self.job_html, r'<section id="job-ghost-section"[^>]*aria-labelledby="ghost-title"[^>]*hidden>')
+        self.assertIn('<h2 id="ghost-title">Is this a real vacancy?</h2>', self.job_html)
+        fn = self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]
+        self.assertIn("box.hidden = !g?.level", fn)
+        self.assertIn("may well be a real job", fn)
+        for ask in ("Is the role open now", "when do they need someone to start", "Why was the ad posted again"):
+            self.assertIn(ask.lower(), fn.lower())
+        self.assertIn("esc(s.text)", fn)
+        self.assertIn("esc(s.detail)", fn)
+
+    def test_the_last_question_follows_the_signs(self):
+        fn = self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]
+        self.assertIn("s.code === 'evergreen_wording' || s.code === 'ad_signs'", fn)
+        self.assertIn("building a list of candidates", fn)
+        self.assertIn("Has the closing date or the number of openings changed?", fn)
+
+    def test_why_summary_is_a_44px_target_on_touch_screens(self):
+        start = self.css.index("@media (pointer: coarse) {\n")
+        coarse = self.css[start:self.css.index("\n}", start)]  # (the whole media block)
+        rule = re.search(r"[^{}]*\.ghost-why summary[^{}]*\{([^}]*)\}", coarse)
+        self.assertIsNotNone(rule)
+        self.assertIn("min-height: 44px", rule.group(1))
+
+    def test_no_inline_styles_or_handlers_and_meaning_is_not_colour_alone(self):
+        for src in (self.common[self.common.index("function ghostBadge"):self.common.index("function modeOf")],
+                    self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]):
+            self.assertNotRegex(src, r'style=|\bon[a-z]+=')
+        self.assertIn(".badge.ghost", self.css)
+        self.assertIn(".ghost-signs", self.css)
+
+
+class BrowserAuditRegressionsTest(unittest.TestCase):
+    """Things the browser audit (tools/a11y_audit.py: axe-core, reflow, text spacing, keyboard) found or watches, kept
+    as static checks so they can't creep back without a browser."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+
+    def test_the_company_icon_is_named_by_hidden_text_not_an_aria_label(self):
+        """WCAG 2.5.3 (axe label-content-name-mismatch): the button shows "ⓘ" and a count; an aria-label would not
+        contain what is shown. The name is visually hidden text, and it says how many controversies there are."""
+        start = self.app.index("function companyIcon")
+        body = self.app[start:self.app.index("function showCompany")]
+        button = re.search(r'return `<button[^`]*`', body).group(0)
+        self.assertNotIn("aria-label", button)
+        self.assertIn('<span class="visually-hidden">${esc(label)}</span>', button)
+        self.assertIn("controversy ${n === 1 ? 'item' : 'items'}", body)
+
+    def test_the_jobs_tab_check_boxes_are_full_size_targets_on_a_phone(self):
+        """WCAG 2.5.8: Show excluded / closed / hidden wrap into rows close together at 320 px."""
+        self.assertRegex(self.css, r"@media \(max-width: 480px\) \{ \.check-field input \{ width: 24px; height: 24px; \} \}")
+        for ident in ("filter-show-excluded", "filter-show-closed", "filter-show-hidden"):
+            self.assertRegex((FRONTEND / "index.html").read_text(encoding="utf-8"),
+                             r'<label class="field check-field"><input id="%s" type="checkbox" />' % ident)
+
+    def test_theme_miniatures_grow_instead_of_cutting_text_off(self):
+        """WCAG 1.4.12: with wider text spacing the miniature's text must not be clipped by a fixed-size box."""
+        for rule in (".tp-title", ".tp-muted"):
+            line = next(l for l in self.css.splitlines() if l.startswith(rule + " {"))
+            self.assertNotIn("nowrap", line)
+            self.assertNotIn("overflow: hidden", line)
+        self.assertRegex(self.css, r"\.theme-preview \{[^}]*min-height: 92px")
+        self.assertNotRegex(self.css, r"\.tp-card \{[^}]*overflow: hidden")
+        # (the audit's text-spacing check found these: the page part kept its content's height, and the row of
+        # badge, score and button wrapped instead of running out of the narrow box)
+        self.assertRegex(self.css, r"\.tp-page \{ flex: 1 0 auto;")
+        self.assertRegex(self.css, r"\.tp-row \{[^}]*flex-wrap: wrap")
+        self.assertRegex(self.css, r"\.tp-badge, \.tp-score, \.tp-btn \{ overflow-wrap: anywhere; \}")
+
+    def test_no_orientation_lock(self):
+        """WCAG 1.3.4: nothing may work in one orientation only."""
+        for name in ("styles.css", "themes.css"):
+            self.assertNotRegex((FRONTEND / name).read_text(encoding="utf-8"), r"orientation\s*:", name)
+        for page in PAGES:
+            self.assertNotIn("orientation", (FRONTEND / page).read_text(encoding="utf-8"), page)
+
+    def test_every_dialog_is_labelled_and_closes_with_escape(self):
+        """Every <dialog> is a native one (Escape closes it, focus is kept inside) with an accessible name."""
+        for page in PAGES:
+            html = (FRONTEND / page).read_text(encoding="utf-8")
+            for tag in re.findall(r"<dialog\b[^>]*>", html):
+                self.assertRegex(tag, r'aria-labelledby="[\w-]+"', f"{page}: {tag}")
+        common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        self.assertIn("document.createElement('dialog')", common)
+        self.assertRegex(common, r"dlg\.setAttribute\('aria-labelledby'|aria-labelledby")
+
+    def test_the_audit_tool_is_a_standalone_developer_script(self):
+        """tools/a11y_audit.py: documented in the README, importable only for its own sake, needing nothing new."""
+        tool = ROOT / "tools" / "a11y_audit.py"
+        self.assertTrue(tool.is_file())
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("tools/a11y_audit.py", readme)
+        for folder in ("backend", "tests", "installer"):
+            for src in (ROOT / folder).rglob("*.py"):
+                if src.name == Path(__file__).name:
+                    continue
+                self.assertNotIn("a11y_audit", src.read_text(encoding="utf-8"), f"{src} must not use the audit tool")
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
+        self.assertNotIn("axe", requirements, "axe-core is a developer-only npm install, not an app dependency")
+        done = subprocess.run([sys.executable, str(tool), "--list"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for group in ("index", "auth", "links", "wizard", "job", "billing", "admin", "settings", "keyboard"):
+            self.assertIn(group + ":", done.stdout)
+        source = tool.read_text(encoding="utf-8")
+        # the audit must reach the ghost-job pages (it fails a run that can't), and ignore a visually hidden clip
+        self.assertIn("#job-ghost-section:not([hidden]) .ghost-signs", source)
+        self.assertIn("r.width <= 2 || r.height <= 2", source)
 
 
 if __name__ == "__main__":

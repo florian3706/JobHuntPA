@@ -211,6 +211,18 @@ class SharedPoolTest(PoolTestCase):
         db.close()
 
 
+class RunJobIdsTest(PoolTestCase):
+    def test_a_search_with_known_and_new_ads_lists_every_job_it_found(self):
+        a = self.workspace()
+        urls = [f"https://jobs.pool.example/ids-{n}" for n in (1, 2, 3)]
+        first = search(a, FakeAdapter("workable:idsco", [self.ad(40, url=urls[0]), self.ad(41, url=urls[1])]))
+        self.assertEqual(len(first["job_ids"]), 2)
+        ads = [self.ad(n, url=u) for n, u in zip((40, 41, 42), urls)]
+        second = search(a, FakeAdapter("workable:idsco", ads))  # two known ads and a new one
+        self.assertEqual(second["job_ids"], sorted(j["id"] for j in self.jobs(a, "excluded,hidden").values()))
+        self.assertEqual(len(second["job_ids"]), 3)
+
+
 class PoolMatchTest(PoolTestCase):
     def test_b_gets_a_posting_found_by_as_search(self):
         a = self.workspace()
@@ -411,7 +423,7 @@ class JobJsonShapeTest(PoolTestCase):
             "employment_type", "office_days", "salary_text", "salary_min", "salary_max", "url", "distance_km",
             "status", "excluded_reason", "detail_status", "posted_at", "first_seen", "last_seen", "closed", "hidden",
             "fit", "has_cover_letter", "office_text", "office_source", "office_placed", "office_unknown",
-            "location_verdict", "recruiter", "also_on"}
+            "location_verdict", "recruiter", "ghost", "also_on"}
 
     def test_list_jobs_shape_unchanged(self):
         ws = self.workspace()

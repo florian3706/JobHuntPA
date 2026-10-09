@@ -283,8 +283,10 @@ their module docstrings and the notes in their tests.
 - Admins need no membership.
 - Admins can add free periods or exempt someone entirely.
 - New users get **3 free searches**.
-- After those run out, jobs already found stay visible. New searches, rescoring, chat, cover letters, research and
-  the document AI features wait for a membership.
+- Jobs already found stay visible. New searches wait for a membership once the free searches run out. The AI
+  features (rescoring, chat, cover letters, research, Fill missing info, title suggestions, document concise
+  versions and summary) are members-only from the start; each free search run still scores its own jobs
+  and up to 5 other waiting ones.
 - Scheduled searches need a membership (and background access).
 - A free search is given back if its run fails.
 - Card numbers are never stored.
@@ -296,7 +298,7 @@ their module docstrings and the notes in their tests.
 - **Free searches:**
   - Use one when a run is queued, and set `search_runs.free_search`.
   - Give it back when the run fails or is interrupted.
-  - The run that uses the last free search still scores its own jobs.
+  - Every free search run scores its own jobs inside the run.
 - **Stripe pages and endpoints:**
   - `billing.html`
   - checkout
@@ -377,7 +379,7 @@ CLAUDE.md's workspace and `duplicate_of` rules.
   `Content-Disposition: attachment; filename="JobHuntPA-export-YYYY-MM-DD.zip"`.
   - A POST with the CSRF token, not a GET: a link or a prefetch must never start an export.
   - It needs recent sign-in (`sessions.require_recent_auth`), and the page calls it through `withRecentAuth`.
-  - One export at a time per account (429 while one is being built).
+  - One export at a time per account (429 while one is being built or its download is still going: the place is kept until the last byte is sent, the client leaves, or 10 minutes plus the zip's size at 100 KB/s pass, because the zip stays in memory until then).
   - It is built in memory (`BytesIO`) inside the request's key scope. Plaintext never touches the disk: no temporary
     files, no `SpooledTemporaryFile`.
   - Only the account's own workspaces (`owner_id`), never anyone else's. Admins can't export other people's data.
@@ -485,3 +487,8 @@ CLAUDE.md's workspace and `duplicate_of` rules.
 - **Before releasing accounts,** test on the Pi's test instance (port 8001) first. Back up its database with SQLite's
   backup API, sign up as the first admin, check that the existing data was claimed and encrypted, and only then touch
   the live app on 8040.
+- **Pi test instance and the sign-in cookie:** browsers keep cookies per host name and ignore the port, so the live app
+  (8040) and the test instance (8001) on one host name would have shared one cookie name and signed each other out. The
+  cookie names now carry the port (`jh_session_8001`, `jh_session_8040`), so they coexist. Other apps on the same host
+  name still receive the cookie, so give JobHuntPA a host name of its own (its own Tailscale name, for example) rather than
+  the Pi's shared one.

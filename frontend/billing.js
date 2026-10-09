@@ -41,8 +41,8 @@ function renderMe(st) {
     summary = "Your last payment didn't go through, and the time to fix it is over. Update your payment method to get your membership back.";
   } else {
     summary = me.free_searches_left > 0
-      ? `You're not a member yet. You have ${me.free_searches_left} of ${me.free_searches_limit} free searches left.`
-      : "You're not a member yet, and your free searches are used up.";
+      ? `You're not a member yet. You have ${me.free_searches_left} of ${me.free_searches_limit} free searches left. A search finds jobs and scores them, and scores up to ${me.free_search_extra_scores ?? 5} other jobs waiting for a score; the other AI features are for members.`
+      : "You're not a member yet, and your free searches are used up. The AI features are for members.";
   }
   if (me.member && me.free_searches_left > 0 && !['admin', 'exempt', 'billing_off'].includes(me.reason)) {
     lines.push(['Free searches left', `${me.free_searches_left} of ${me.free_searches_limit}`]);
@@ -150,7 +150,7 @@ async function openPortal() {
   setBusy(btn, true);
   setText($('#portal-status'), 'Taking you to Stripe…');
   try {
-    const r = await api('/api/billing/portal', { method: 'POST', body: '{}' });
+    const r = await withRecentAuth(() => api('/api/billing/portal', { method: 'POST', body: '{}' }));
     location.assign(r.url);
     return;
   } catch (e) {

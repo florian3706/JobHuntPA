@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import access, crypto, llm_providers, membership, migrate_encryption, schedule, tasks, users
+from backend import access, crypto, ghost, hosts, llm_providers, membership, migrate_encryption, schedule, tasks, users
 from backend.account import router as account_router
 from backend.account_email import router as account_email_router
 from backend.admin import router as admin_router
@@ -30,8 +31,9 @@ from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
 from backend.auth import router as auth_router
 from backend.security import router as security_router
+from backend.security_headers import install as install_security_headers
 from backend.background import router as background_router
-from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db
+from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db, scrub_wal
 from backend.cover_letters import router as cover_letters_router
 from backend.digest import public_router as unsubscribe_router
 from backend.digest import router as digest_router
@@ -55,10 +57,30 @@ from backend.workspaces import router as workspaces_router
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
 
-# Log hygiene: URLs and queries can hold search terms, place names and (later) tokens.
-for _name in ("httpx", "httpcore", "httpx2", "httpcore2"):  # they log every request URL at INFO (the anthropic SDK's
-    # client is httpx2)
-    logging.getLogger(_name).setLevel(logging.WARNING)
+# Log hygiene: URLs, queries and file contents can hold search terms, place names, tokens and a person's documents.
+# Libraries that log them are held at a level that keeps them out, whatever the root logger is set to.
+QUIET_LOGGERS = {
+    # httpx logs every request URL at INFO (the anthropic SDK's client is httpx2)
+    "httpx": logging.WARNING, "httpcore": logging.WARNING, "httpx2": logging.WARNING, "httpcore2": logging.WARNING,
+    # the Claude SDK logs each request's options, the whole prompt included, at DEBUG
+    "anthropic": logging.WARNING,
+    # pypdf warns with a piece of the file it can't read ("invalid pdf header: b'...'"), at WARNING
+    "pypdf": logging.CRITICAL,
+}
+for _name, _level in QUIET_LOGGERS.items():
+    logging.getLogger(_name).setLevel(_level)
+
+
+class SqlAtWarning(logging.Filter):
+    """Nothing below WARNING from SQLAlchemy's engine, whatever level the logger is given. At INFO and DEBUG it logs
+    every statement and every row it reads (plaintext tables such as job ads and settings, and the key material of
+    the sessions, users and keys tables), which hide_parameters doesn't cover."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.WARNING
+
+
+logging.getLogger("sqlalchemy.engine.Engine").addFilter(SqlAtWarning())
 
 
 class StripQueryString(logging.Filter):
@@ -106,9 +128,12 @@ Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejecte
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    threading.Thread(target=hosts.machine_names, daemon=True).start()  # this computer's names (it may ask the network)
     # The server key file, then the first admin from the environment or the first-run token (backend.users).
     # A missing or wrong key file stops start-up here, with what to do.
     users.startup()
+    scrub_wal()  # (a key copy deleted just before the last stop may still sit in the log)
+    threading.Thread(target=users.derivation_floor, daemon=True).start()  # how long a refused sign-in takes at least
     # An encryption run the last process left running waits for its admin's next sign-in; after it, strict mode.
     migrate_encryption.at_startup()
     tasks.mark_interrupted()
@@ -117,13 +142,17 @@ async def lifespan(app: FastAPI):
     schedule.stop_scheduler()
 
 
-app = FastAPI(title="JobHuntPA", lifespan=lifespan)
+# No /docs, /redoc or /openapi.json: they list every route to anyone who can reach the server, and Swagger's page
+# needs scripts from another site, which the Content-Security-Policy refuses.
+app = FastAPI(title="JobHuntPA", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 # The job list is several MB of JSON; compressed it is about a seventh of that (slow links, the Pi).
 app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=5)
 # Sign-in, CSRF, same-site checks and the request's key scope (backend/sessions.py); inside NoStoreApi, so its
 # refusals aren't cached either.
 app.add_middleware(AuthMiddleware)
 app.add_middleware(NoStoreApi)
+# The Host allowlist and the security headers go around all of it (backend/hosts.py, backend/security_headers.py).
+install_security_headers(app, FRONTEND_DIR)
 app.include_router(auth_router)
 app.include_router(security_router)
 app.include_router(password_reset_router)
@@ -202,7 +231,7 @@ def _fit_dict(fit: Optional[FitResult], profile_hash: str) -> Optional[dict]:
 
 
 def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: bool = False,
-                has_letter: bool = False, recruiter: bool = False) -> dict:
+                has_letter: bool = False, recruiter: bool = False, signs: Optional[dict] = None) -> dict:
     out = {
         "id": job.id,
         "source": job.source,
@@ -237,10 +266,20 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "office_unknown": office_unknown(job),
         "location_verdict": job.location_verdict,
         "recruiter": recruiter,
+        # Signs that the ad may not be a current vacancy (backend/ghost.py): level "likely" | "possible" | null, and
+        # the reasons (the list page gets code and text; the job page also a sentence of detail). Never hides a job.
+        "ghost": _ghost_dict(signs, full),
     }
     if full:
         out["description"] = job.description or ""
     return out
+
+
+def _ghost_dict(signs: Optional[dict], full: bool) -> dict:
+    if not signs:
+        return {"level": None, "signals": []}
+    keep = ("code", "text", "detail") if full else ("code", "text")
+    return {"level": signs["level"], "signals": [{k: s[k] for k in keep if k in s} for s in signs["signals"]]}
 
 
 def _profile_hash(db: Session, ws: int) -> str:
@@ -306,10 +345,12 @@ def list_jobs(office_slack: int = OfficeSlack,
     letters = {j for (j,) in db.query(CoverLetter.job_id).join(Job, Job.id == CoverLetter.job_id)
                .filter(Job.workspace_id == ws)}
     profiles = {p.key: p for p in db.query(CompanyProfile).all()}
+    signs = ghost.assess_jobs(db, [job for job, _ in listed], profiles)
     # Plain JSON values already: skip FastAPI's per-field encoder, which took most of the time for
     # thousands of jobs on a Raspberry Pi.
     return JSONResponse([_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
-                                                         recruiter=looks_like_recruiter(job.company or "", profiles)),
+                                                         recruiter=looks_like_recruiter(job.company or "", profiles),
+                                                         signs=signs[job.id]),
                                               softened),
                                       copies.get(job.id, []))
                          for job, fit in listed],
@@ -325,8 +366,9 @@ def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(
     fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
     profiles = {p.key: p for p in db.query(CompanyProfile).filter(CompanyProfile.key == company_key(job.company or ""))}
     letter = db.query(CoverLetter.id).filter(CoverLetter.job_id == job_id).first() is not None
+    signs = ghost.assess_jobs(db, [job], profiles)[job.id]
     out = _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True, has_letter=letter,
-                              recruiter=looks_like_recruiter(job.company or "", profiles)),
+                              recruiter=looks_like_recruiter(job.company or "", profiles), signs=signs),
                   softened_job_ids(db, ws, office_slack))
     out["office_candidates"] = candidates(db, job) if out["office_unknown"] or job.office_source == "company" else []
     return _with_copies(out, db.query(Job).filter(Job.duplicate_of == job_id).all())
@@ -386,18 +428,27 @@ def refilter_jobs(db: Session = Depends(get_db), ws: int = Depends(current_works
 # Background runs
 # ---------------------------------------------------------------------------
 
-def _score(ws: int, mode: str, progress, office_slack: int = 0) -> dict:
+def _score(ws: int, mode: str, progress, office_slack: int = 0, only: Optional[set] = None, extra: int = 0) -> dict:
     from backend.scorer import ScorerError, build_profile, score_jobs, select_jobs
 
     db = SessionLocal()
     try:
-        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws, office_slack)
+        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws, office_slack, only, extra)
     finally:
         db.close()
     try:
         return score_jobs(ws, ids, progress)
     except ScorerError as exc:
         return {"aborted": llm_providers.user_message(exc)}
+
+
+def _run_was_free() -> bool:
+    """Whether the running search used one of the owner's free searches."""
+    db = SessionLocal()
+    try:
+        return bool(db.query(SearchRun.free_search).filter(SearchRun.id == tasks.current_run_id.get()).scalar())
+    finally:
+        db.close()
 
 
 def start_search_run(ws: int, scheduled: bool = False) -> dict:
@@ -409,11 +460,28 @@ def start_search_run(ws: int, scheduled: bool = False) -> dict:
     def job(progress):
         from backend.duplicates import scan_workspace
 
+        run_id = tasks.current_run_id.get()
+        free = _run_was_free()
         summary = {"search": run_search(ws, progress)}
+        if free:
+            # The search itself is done and cost something (the sources were fetched). From here a failure, or a
+            # restart, no longer gives the free search back: otherwise an answer built to break the scoring would
+            # make every search free.
+            tasks._update(run_id, free_search=False)
+        found = set(summary["search"].pop("job_ids", ()))
         # Before scoring, so the same ad on two sites is scored once.
         progress("checking for duplicate ads", {})
         summary["duplicates"] = scan_workspace(ws)
-        summary["scoring"] = {"skipped": config_problem()} if config_problem() else _score(ws, "pending", progress)
+        only, extra = None, 0
+        if free:  # a free search scores the jobs it found and a few waiting ones (imported pages), not everything
+            db = SessionLocal()
+            try:
+                found |= {i for (i,) in db.query(Job.id).filter(Job.workspace_id == ws, Job.first_run_id == run_id)}
+            finally:
+                db.close()
+            only, extra = found, access.FREE_SEARCH_EXTRA_SCORES
+        summary["scoring"] = ({"skipped": config_problem()} if config_problem()
+                              else _score(ws, "pending", progress, only=only, extra=extra))
         return summary
 
     return tasks.start("search", job, ws, scheduled=scheduled, charge=membership.charge_search)

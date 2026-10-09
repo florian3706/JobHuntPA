@@ -28,11 +28,9 @@ async function initSignup() {
   if (state.status !== 200) { status(''); showErrors(answerProblem(state, "JobHuntPA isn't answering. Check that it's running, then reload this page.")); return; }
   if (state.data.setup_required) { location.replace('first-run.html'); return; }
   if (state.data.signed_in) {
-    // Signed in already: only the recovery codes of a brand-new account are left to show.
-    const codes = await authCall('/api/auth/recovery-codes');
-    if (codes.status !== 200) { location.replace('./'); return; }
-    const me = await authCall('/api/auth/me');
-    showCodes(codes.data.codes, me.data.csrf);
+    // Signed in already: only the recovery codes of a brand-new account are left to show (first-run.html asks for the
+    // password again when this tab doesn't have them).
+    location.replace('first-run.html');
     return;
   }
   const signup = state.data.signup;

@@ -23,7 +23,11 @@ fetches Leaflet (unpkg.com), map tiles (openstreetmap.org) and, for the Dyslexia
 Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide):
     jobs, run-report, job-page, map (light theme), search-setup, company-sources, settings, search-schedule
     (the Scheduled searches card, on the Settings tab), theme-picker (the first rows of the Theme card on the
-    Settings tab), themes, chat, cover-letter
+    Settings tab), themes, chat, cover-letter, ghost-job (a job card with the ghost-job badge and its
+    "Why?" opened), settings-account (the account cards on the Settings tab: password, two-step sign-in,
+    recovery codes, signed-in devices, email address, background access), settings-data (the digest, download
+    your data and delete account cards), admin-people (the admin panel: summary, people, sign-up), admin-server
+    (the admin panel's Server section: AI provider, email and payments), sign-in (the sign-in page, signed out)
 """
 from __future__ import annotations
 
@@ -63,7 +67,8 @@ DEMO_EMAIL, DEMO_PASSWORD = "demo@example.invalid", "demo-password-not-real"
 # theme id -> shown in themes.png, in this order
 MONTAGE_THEMES = ["light", "catppuccin-mocha", "catppuccin-latte", "dyslexia", "deuteranomaly-dark", "monochromacy"]
 ALL_SHOTS = ["jobs", "run-report", "job-page", "map", "search-setup", "company-sources", "settings", "search-schedule",
-             "theme-picker", "themes", "chat", "cover-letter"]
+             "theme-picker", "themes", "chat", "cover-letter", "ghost-job", "settings-account", "settings-data",
+             "admin-people", "admin-server", "sign-in"]
 
 
 # --------------------------------------------------------------------------
@@ -167,16 +172,25 @@ class Shooter:
         self.hosts: set[str] = set()
         self.problems: list[str] = []
         self.sizes: dict[str, int] = {}
+        self.session = None  # the browser state of the one sign-in, shared by every profile (sign-ins are rate limited)
 
-    def context(self, theme: str = "dark", viewport: dict | None = None):
+    def context(self, theme: str = "dark", viewport: dict | None = None, signed_in: bool = True):
         """A fresh browser profile. The theme and workspace are set in localStorage before any page
         script runs, so the page starts in them (setting them afterwards would race its start-up)."""
         ctx = self.browser.new_context(viewport=viewport or VIEWPORT, device_scale_factor=1, locale="en-AU",
-                                       timezone_id="Australia/Sydney")
+                                       timezone_id="Australia/Sydney", storage_state=self.session if signed_in else None)
         ctx.add_init_script(
             "try { localStorage.setItem('jobhunt.theme', %s); localStorage.setItem('jobhunt.ws', %s);"
             " localStorage.setItem('jobhunt.mapMode', 'jobs'); } catch (e) {}" % (json.dumps(theme), json.dumps(str(self.ws_id))))
         ctx.on("request", lambda r: self.hosts.add(urlsplit(r.url).netloc))
+        if not signed_in or self.session:
+            return ctx
+        # Signed in as the demo admin, once: the session cookie lands in this browser profile and is reused.
+        r = ctx.request.post(f"{self.base}/api/auth/login", data={"email": DEMO_EMAIL, "password": DEMO_PASSWORD})
+        if not r.ok:
+            sys.exit(f"Signing in to the demo server failed: {r.status} {r.text()[:200]}")
+        self.session = ctx.storage_state()
+        return ctx
         # Signed in as the demo admin: the session cookie lands in this browser profile.
         r = ctx.request.post(f"{self.base}/api/auth/login", data={"email": DEMO_EMAIL, "password": DEMO_PASSWORD})
         if not r.ok:
@@ -249,6 +263,19 @@ class Shooter:
         print(f"  {name}.png  {img.width}x{img.height}  {size / 1024:.0f} KB")
 
 
+def launch_browser(p):
+    """Playwright's own Chromium; or, when its version doesn't match the installed one, any Chromium that is."""
+    try:
+        return p.chromium.launch()
+    except Exception as exc:
+        home = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or Path.home() / ".cache" / "ms-playwright")
+        found = sorted(home.glob("chromium*/chrome-linux*/headless_shell")) + sorted(home.glob("chromium*/chrome-linux*/chrome"))
+        if not found:
+            raise exc
+        print(f"  (using {found[0]}: Playwright's own Chromium is not installed)")
+        return p.chromium.launch(executable_path=str(found[0]))
+
+
 # --------------------------------------------------------------------------
 # The screenshots
 # --------------------------------------------------------------------------
@@ -285,7 +312,7 @@ def shot_job_page(s: Shooter) -> None:
     page = s.page(ctx)
     page.goto(f"{s.base}/job.html?id=1&ws={s.ws_id}")
     page.wait_for_selector("#job-company dl.profile")
-    page.wait_for_function("!document.querySelector('#job-commute').textContent.includes('Working out')", timeout=45000)
+    page.wait_for_function("() => !document.querySelector('#job-commute').textContent.includes('Working out')", timeout=45000)
     s.settle(page)
     s.wait_tiles(page)
     height = page.evaluate("document.documentElement.scrollHeight")
@@ -318,7 +345,7 @@ def shot_search(s: Shooter) -> None:
     page = s.page(ctx)
     page.goto(f"{s.base}/#search")
     page.wait_for_selector("#sources-list .source-row")
-    page.wait_for_function("document.querySelector('#commute-keys').textContent.includes('Public transport')")
+    page.wait_for_function("() => document.querySelector('#commute-keys').textContent.includes('Public transport')")
     s.settle(page)
     form = s.rect(page, "#search-form")
     s.save("search-setup", s.grab(page, (CONTENT_X, 0, CONTENT_W, int(form["y"] + form["h"]) + 14)))
@@ -335,8 +362,8 @@ def shot_settings(s: Shooter) -> None:
     ctx = s.context()
     page = s.page(ctx)
     page.goto(f"{s.base}/#settings")
-    page.wait_for_function("document.querySelector('#sched-status').textContent.includes('Next search')")
-    page.wait_for_function("!document.querySelector('#scorer-info').textContent.includes('(LLM_MODEL not set)') "
+    page.wait_for_function("() => document.querySelector('#sched-status').textContent.includes('Next search')")
+    page.wait_for_function("() => !document.querySelector('#scorer-info').textContent.includes('(LLM_MODEL not set)') "
                            "&& document.querySelector('#scorer-info').textContent.length > 0")
     s.settle(page)
     top = s.rect(page, "#schedule-card")
@@ -371,12 +398,95 @@ def shot_cover_letter(s: Shooter) -> None:
     page.goto(f"{s.base}/#jobs")
     s.wait_dashboard(page)
     page.click('.job-card:first-of-type [data-act="letter"]')
-    page.wait_for_function("document.querySelector('#cl-text') && document.querySelector('#cl-text').value.length > 100")
+    page.wait_for_function("() => document.querySelector('#cl-text') && document.querySelector('#cl-text').value.length > 100")
     page.mouse.move(5, 5)
     s.settle(page)
     box = s.rect(page, ".modal-box")
     pad = 18
     s.save("cover-letter", s.grab(page, (int(box["x"]) - pad, int(box["y"]) - pad, int(box["w"]) + 2 * pad, int(box["h"]) + 2 * pad)))
+    ctx.close()
+
+
+def shot_ghost_job(s: Shooter) -> None:
+    """The job card with the possible-ghost-job badge, with its "Why?" opened."""
+    ctx = s.context()
+    page = s.page(ctx)
+    page.goto(f"{s.base}/#jobs")
+    s.wait_dashboard(page)
+    page.click(".job-card .ghost-why summary")
+    page.mouse.move(5, 5)
+    s.settle(page, 300)
+    card = page.evaluate("""() => { const c = document.querySelector('.job-card .ghost-why').closest('.job-card');
+        const r = c.getBoundingClientRect(); return { x: r.left + scrollX, y: r.top + scrollY, w: r.width, h: r.height }; }""")
+    s.save("ghost-job", s.grab(page, (int(card["x"]) - 10, int(card["y"]) - 10, int(card["w"]) + 20, int(card["h"]) + 20)))
+    ctx.close()
+
+
+def settings_page(s: Shooter):
+    ctx = s.context()
+    # Every shot above signed in once more; the card would say "signed in on 2 other devices" (the shots only).
+    csrf = ctx.request.get(f"{s.base}/api/auth/me").json()["csrf"]
+    ctx.request.post(f"{s.base}/api/auth/sessions/end-others", headers={"X-CSRF-Token": csrf}, data={})
+    page = s.page(ctx)
+    page.goto(f"{s.base}/#settings")
+    page.wait_for_selector("#acct-pw-card")
+    page.wait_for_function("() => document.querySelector('#background-switch') && !document.querySelector('#background-switch').disabled")
+    page.wait_for_function("() => !document.querySelector('#background-explain').textContent.includes('Loading')")
+    s.settle(page, 800)
+    return ctx, page
+
+
+def span(s: Shooter, page, first: str, last: str) -> tuple[int, int, int, int]:
+    """Page coordinates of the area from the top of one element to the bottom of another, across the content column."""
+    a, b = s.rect(page, first), s.rect(page, last)
+    return CONTENT_X, int(a["y"]) - 10, CONTENT_W, int(b["y"] + b["h"] - a["y"]) + 24
+
+
+def shot_settings_account(s: Shooter) -> None:
+    ctx, page = settings_page(s)
+    s.save("settings-account", s.grab(page, span(s, page, "#acct-pw-card", "#background-card")))
+    ctx.close()
+
+
+def shot_settings_data(s: Shooter) -> None:
+    ctx, page = settings_page(s)
+    page.wait_for_selector("#account-email-slot .card, #account-export-slot .card")
+    s.settle(page)
+    s.save("settings-data", s.grab(page, span(s, page, "#account-email-slot .card", "#acct-del-card")))
+    ctx.close()
+
+
+def admin_page(s: Shooter, hash_: str, wait: str):
+    ctx = s.context()
+    page = s.page(ctx)
+    page.goto(f"{s.base}/admin.html{hash_}")
+    page.wait_for_selector(wait)
+    s.settle(page, 800)
+    return ctx, page
+
+
+def shot_admin_people(s: Shooter) -> None:
+    ctx, page = admin_page(s, "", "#users table tr, #users .person-card, #users li")
+    s.save("admin-people", s.grab(page, span(s, page, "#usage", "#signup")))
+    ctx.close()
+
+
+def shot_admin_server(s: Shooter) -> None:
+    ctx, page = admin_page(s, "#server", "#llm-card")
+    s.save("admin-server", s.grab(page, span(s, page, "#llm-card", "#commute-keys-card")))
+    ctx.close()
+
+
+def shot_sign_in(s: Shooter) -> None:
+    """The sign-in page, signed out (no session cookie in this profile)."""
+    ctx = s.context(signed_in=False, viewport={"width": 1440, "height": 900})
+    page = s.page(ctx)
+    page.goto(f"{s.base}/login.html")
+    page.wait_for_selector("#login-form")
+    s.settle(page)
+    card, help_ = s.rect(page, ".auth-card"), s.rect(page, ".auth-help")
+    s.save("sign-in", s.grab(page, (int(card["x"]) - 40, int(card["y"]) - 30, int(card["w"]) + 80,
+                                    int(help_["y"] + help_["h"] - card["y"]) + 60)))
     ctx.close()
 
 
@@ -391,7 +501,7 @@ def shot_themes(s: Shooter) -> None:
         page.goto(f"{s.base}/#jobs")
         s.wait_dashboard(page)
         if theme.startswith("dyslexia"):
-            page.wait_for_function("[...document.fonts].some(f => f.family.includes('Atkinson') && f.status === 'loaded')", timeout=20000)
+            page.wait_for_function("() => [...document.fonts].some(f => f.family.includes('Atkinson') && f.status === 'loaded')", timeout=20000)
         # Same crop every time: scroll so the status chips sit just under the (sticky) header.
         page.evaluate("""() => { const head = document.querySelector('.app-header').getBoundingClientRect().height;
             window.scrollTo(0, document.querySelector('#status-chips').getBoundingClientRect().top + scrollY - head - 10); }""")
@@ -425,7 +535,9 @@ def shot_themes(s: Shooter) -> None:
 
 
 SHOTS = {"jobs": shot_jobs, "run-report": shot_run_report, "job-page": shot_job_page, "map": shot_map, "search": shot_search,
-         "settings": shot_settings, "chat": shot_chat, "cover-letter": shot_cover_letter, "themes": shot_themes}
+         "settings": shot_settings, "chat": shot_chat, "cover-letter": shot_cover_letter, "themes": shot_themes,
+         "ghost-job": shot_ghost_job, "settings-account": shot_settings_account, "settings-data": shot_settings_data,
+         "admin-people": shot_admin_people, "admin-server": shot_admin_server, "sign-in": shot_sign_in}
 GROUP = {"search-setup": "search", "company-sources": "search", "search-schedule": "settings", "theme-picker": "settings"}
 
 
@@ -471,6 +583,9 @@ def main() -> None:
         # The demo admin's recovery codes count as saved, so the pages show no reminder about them.
         opener.open(urllib.request.Request(f"{base}/api/auth/recovery-codes/ack", method="POST", data=b"{}",
                                            headers={"Content-Type": "application/json", "X-CSRF-Token": signed_in["csrf"]}))
+        # ... and the setup walkthrough is finished, so the dashboard opens instead of welcome.html.
+        opener.open(urllib.request.Request(f"{base}/api/account/onboarding", method="PUT", data=b'{"done": true}',
+                                           headers={"Content-Type": "application/json", "X-CSRF-Token": signed_in["csrf"]}))
         workspaces = json.load(opener.open(f"{base}/api/workspaces"))
         ws = next((w for w in workspaces if w["name"] == "Dummy workspace"), None)
         if ws is None or len(workspaces) != 1:
@@ -481,7 +596,7 @@ def main() -> None:
         print(f"Server on {base}, workspace {ws['id']} ({ws['jobs']} jobs, no commute keys). Taking screenshots ...")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = launch_browser(p)
             shooter = Shooter(browser, base, ws["id"], args.out)
             done = set()
             for name in wanted:

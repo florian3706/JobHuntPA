@@ -43,7 +43,7 @@ from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
 from backend import account_email, admin_key, app_settings, billing, email_templates, key_rotation, keys, mail_queue
-from backend import mailer, membership, migrate_encryption, password_reset, ratelimit, signup, tokens, users
+from backend import crypto, lockout, mail_route, mailer, membership, migrate_encryption, password_reset, ratelimit, signup, tokens, users
 from backend.admin_key import Apk, ApkUnavailable
 from backend.db import (
     AdminAudit,
@@ -106,7 +106,25 @@ def _open_apk(db: Session, admin: AuthUser) -> Optional[Apk]:
         return None
 
 
+def other_admin_addresses(db: Session, admin: AuthUser) -> list[str]:
+    """The email addresses of the other active admins, from their details sealed to the admin key (this admin's key
+    opens them). An admin whose address can't be read is left out."""
+    apk = _open_apk(db, admin)
+    out = []
+    for admin_id in _active_admins(db, besides=admin.id):
+        row = db.get(User, admin_id)
+        info = _details_of(row, apk) if row is not None else None
+        if info and isinstance(info.get("email"), str) and info["email"]:
+            out.append(info["email"])
+    return out
+
+
+SIGN_IN_AGAIN = "Sign in again to open people's details."
+
+
 def _key_missing() -> AuthProblem:
+    if not crypto.has_ik():  # a session from before the identity key: signing in again is the fix
+        return _problem(409, "admin_key_missing", SIGN_IN_AGAIN)
     return _problem(409, "admin_key_missing", "You don't have the admin key, so this can't be done. Ask another "
                                               "admin to share it with you again.")
 
@@ -224,7 +242,7 @@ def _summaries(db: Session, apk: Optional[Apk], only: Optional[list[int]] = None
             "created_via": user.created_via,
             "last_active_on": user.last_active_on.isoformat() if user.last_active_on else None,
             "email_verified": bool(user.email_verified),
-            "locked": bool(user.locked_until and user.locked_until > now),  # waiting after wrong passwords
+            "locked": lockout.waiting(user.id) > 0,  # some place waits after wrong passwords (backend/lockout.py)
             "mfa": bool(user.mfa_enabled),
             "background": user.id in background,
             "workspaces": workspaces.get(user.id, 0),
@@ -328,6 +346,7 @@ def list_users(admin: AuthUser = Depends(current_user), db: Session = Depends(ge
     return {
         "users": people,
         "admin_key_available": apk is not None,  # false: this admin can't open details (ask for a re-grant)
+        "admin_key_needs_sign_in": apk is None and not crypto.has_ik(),  # ... or this session has no identity key
         "admins": sum(1 for p in people if p["role"] == "admin"),
         "only_one_admin": sum(1 for p in people if p["role"] == "admin" and p["status"] == "active") <= 1,
         "details_unavailable": sum(1 for p in people if not p["details_available"]),
@@ -337,6 +356,9 @@ def list_users(admin: AuthUser = Depends(current_user), db: Session = Depends(ge
 # ---------------------------------------------------------------------------
 # Roles and the admin key
 # ---------------------------------------------------------------------------
+
+NEEDS_SIGN_IN = "Ask them to sign in once first, then share the key."
+
 
 class RoleIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -360,6 +382,8 @@ def set_role(user_id: int, body: RoleIn, admin: AuthUser = Depends(current_user)
             raise _problem(409, "disabled", "Turn this account on before making it an admin.")
         try:
             admin_key.grant_to(db, apk, target.id, admin.id)
+        except admin_key.NeedsSignIn:
+            raise _problem(409, "needs_sign_in", NEEDS_SIGN_IN) from None
         except ApkUnavailable:
             raise _problem(409, "no_keys", "This account has no keys, so it can't be made an admin.") from None
         target.role = "admin"
@@ -371,12 +395,13 @@ def set_role(user_id: int, body: RoleIn, admin: AuthUser = Depends(current_user)
                                           "someone else an admin first.")
     target.role = "user"
     db.flush()
-    remaining = [i for (i,) in db.query(User.id).filter(User.role == "admin")]
+    remaining = admin_key.active_admin_ids(db)
     rotation = admin_key.new_key(db, apk, remaining, admin.id)
     audit_detail = {"from": "admin", "to": "user", "apk_version": rotation.apk.version,
                     "resealed": rotation.resealed, "stale": rotation.stale, "dropped": rotation.dropped}
     admin_key.audit(db, admin.id, "role_changed", target.id, audit_detail, public=rotation.apk.public)
     db.commit()
+    scrub_wal()  # the old key's grants must not linger in the write-ahead log
     keep = rotation.apk if admin.id in remaining else None
     return {"ok": True, "changed": True, "apk_rotated": True, "user": _summaries(db, keep, [target.id])[0]}
 
@@ -390,9 +415,13 @@ def regrant(user_id: int, admin: AuthUser = Depends(current_user), db: Session =
     target = _target(db, user_id)
     if target.role != "admin":
         raise _problem(409, "not_admin", "Only an admin holds the admin key. Make them an admin first.")
+    if target.status != "active":
+        raise _problem(409, "disabled", "Turn this account on before sharing the admin key with it.")
     apk = _need_apk(db, admin)
     try:
         admin_key.grant_to(db, apk, target.id, admin.id)
+    except admin_key.NeedsSignIn:
+        raise _problem(409, "needs_sign_in", NEEDS_SIGN_IN) from None
     except ApkUnavailable:
         raise _problem(409, "no_keys", "This account has no keys.") from None
     audit(db, admin, "admin_key_shared", target.id, {"apk_version": apk.version})
@@ -437,22 +466,55 @@ def disable_user(user_id: int, body: Optional[DisableIn] = None, admin: AuthUser
     """Turn an account off: they are signed out everywhere and can't sign in. Not your own account, and not the last
     admin. A subscription they pay for keeps renewing, and they can't reach the billing page to end it:
     ``subscription`` in the answer says ``still_billing`` for that, or (with ``cancel_subscription_at_period_end``)
-    ``cancelled`` or ``failed``; ``none`` when they have no live one. Stripe is only asked after the refusals above."""
+    ``cancelled`` or ``failed``; ``none`` when they have no live one. Stripe is only asked after the refusals above.
+    Turning off an admin who holds the admin key replaces the key, as demoting does (they keep no copy of anything
+    written afterwards); turning them on again does not share it with them. Only that replacement needs your own copy
+    of the key: without it they are still turned off and signed out (the emergency brake works for any admin) and their
+    copy is deleted, but the key is not replaced (``apk_rotated`` false, with a note); an admin who has the key replaces
+    it, or ``new-admin-key`` does. Recent password required."""
+    require_recent_auth(admin)
     _exclusive(db)
     target = _target(db, user_id)
     if target.id == admin.id:
         raise _problem(409, "self", "You can't turn off your own account.")
     if target.role == "admin" and target.status == "active" and not _active_admins(db, besides=target.id):
         raise _problem(409, "last_admin", "This is the last admin, so their account can't be turned off.")
+    holds_key = target.role == "admin" and db.get(AdminKeyGrant, target.id) is not None
+    apk = _open_apk(db, admin) if holds_key else None  # (before Stripe is asked)
+    not_replaced = holds_key and apk is None  # turned off by an admin who has no copy of the key
     subscription = _subscription_after_disable(db, admin, target, bool(body and body.cancel_subscription_at_period_end))
     changed = target.status != "disabled"
     target.status = "disabled"
     db.query(AuthSession).filter(AuthSession.user_id == target.id).delete(synchronize_session=False)
-    if changed:
-        audit(db, admin, "user_disabled", target.id, {} if subscription == "none" else {"subscription": subscription})
+    rotation = None
+    if apk is not None:
+        db.flush()
+        rotation = admin_key.new_key(db, apk, admin_key.active_admin_ids(db), admin.id)
+    elif not_replaced:  # they hold nothing if they are turned on again; the key is replaced by an admin who has it
+        db.query(AdminKeyGrant).filter(AdminKeyGrant.user_id == target.id).delete(synchronize_session=False)
+    if changed or rotation is not None or not_replaced:
+        action = "user_disabled" if changed else "admin_key_replaced"  # (a disabled admin who still held a copy)
+        detail: dict = {} if subscription == "none" or not changed else {"subscription": subscription}
+        if not_replaced:
+            detail["admin_key_not_replaced"] = True
+        if rotation is not None:
+            detail.update(apk_version=rotation.apk.version, resealed=rotation.resealed, stale=rotation.stale,
+                          dropped=rotation.dropped)
+            admin_key.audit(db, admin.id, action, target.id, detail, public=rotation.apk.public)
+        else:
+            audit(db, admin, action, target.id, detail)
     db.commit()
-    return {"ok": True, "changed": changed, "subscription": subscription,
-            "user": _summaries(db, _open_apk(db, admin), [target.id])[0]}
+    if rotation is not None or not_replaced:
+        scrub_wal()  # the old key's grants must not linger in the write-ahead log
+    out = {"ok": True, "changed": changed, "subscription": subscription, "apk_rotated": rotation is not None,
+           "user": _summaries(db, rotation.apk if rotation else _open_apk(db, admin), [target.id])[0]}
+    if not_replaced and not crypto.has_ik():  # a session from before the identity key: signing in again is the fix
+        out["note"] = ("They are off, but the admin key was not replaced because this session can't open it. Sign in "
+                       "again, then replace it from an admin who has it, or run new-admin-key.")
+    elif not_replaced:
+        out["note"] = ("They are off, but the admin key was not replaced because you don't have it. Replace it from "
+                       "an admin who has it, or run new-admin-key.")
+    return out
 
 
 @router.post("/users/{user_id}/enable")
@@ -460,9 +522,9 @@ def enable_user(user_id: int, admin: AuthUser = Depends(current_user), db: Sessi
     """Turn an account on again, or end the wrong-password wait of an account that is on (unlock)."""
     target = _target(db, user_id)
     changed = target.status != "active"
-    was_locked = bool(target.locked_until and target.locked_until > utcnow())
+    was_locked = lockout.waiting(target.id) > 0
     target.status = "active"
-    target.failed_logins, target.locked_until = 0, None
+    lockout.forget(target.id)
     if changed:
         audit(db, admin, "user_enabled", target.id)
     elif was_locked:
@@ -513,6 +575,7 @@ def disable_mfa(user_id: int, admin: AuthUser = Depends(current_user), db: Sessi
     target = _target(db, user_id)
     if target.id == admin.id:
         raise _problem(409, "self", "Turn off your own two-step sign-in in Settings, which asks for a code.")
+    mail_route.refuse_during_hold(db, "turn off two-step sign-in")
     changed = bool(target.mfa_enabled or target.totp_secret_enc or target.totp_pending_enc)
     target.mfa_enabled = False
     target.totp_secret_enc = target.totp_pending_enc = target.totp_last_step = None
@@ -540,7 +603,9 @@ NO_ADDRESS = ("This person's email address can't be read right now (their detail
 
 def send_reset_email(db: Session, admin: AuthUser, target: User, apk: Optional[Apk]) -> None:
     """Makes a reset link for ``target`` (the same one the forgot-password form makes: 1 hour, single use) and sends
-    it in the background to the address in their ``pii_admin``. Admins never set anyone's password."""
+    it in the background to the address in their ``pii_admin``. Admins never set anyone's password. Refused for 24
+    hours after the mail server or public address changed (``mail_route``)."""
+    mail_route.refuse_during_hold(db, "send a reset link")
     if not mail_queue.enabled():
         raise _problem(409, "email_not_set_up", EMAIL_NOT_SET_UP)
     if target.status != "active":
@@ -549,7 +614,7 @@ def send_reset_email(db: Session, admin: AuthUser, target: User, apk: Optional[A
     address = info.get("email") if info else None
     if not address:
         raise _problem(409, "details_unavailable", NO_ADDRESS)
-    wait = ratelimit.RESET_ACCOUNT.hit(target.id)
+    wait = ratelimit.RESET_BY_ADMIN.hit(target.id)
     if wait is not None:
         raise AuthProblem(429, "rate_limited", f"A reset link was sent to this person a moment ago. Try again in "
                                                f"{ratelimit.wait_text(wait)}.",
@@ -590,7 +655,9 @@ def put_membership(user_id: int, body: MembershipIn, admin: AuthUser = Depends(c
     """Exempt someone from payment, or set how many free searches they have used. Exempting someone who pays can
     also end their subscription when the period they paid for is over (``cancel_subscription_at_period_end``, only
     when asked; Stripe is changed first, so a Stripe failure changes nothing: 502). ``subscription_ending`` in the
-    answer says whether a subscription was set to end."""
+    answer says whether a subscription was set to end. Recent password required (free access is what a stolen
+    session would give itself)."""
+    require_recent_auth(admin)
     target = _target(db, user_id)
     if body.exempt is None and body.free_searches_used is None and body.cancel_subscription_at_period_end is None:
         raise _problem(422, "invalid", "Send exempt, free_searches_used or cancel_subscription_at_period_end.")
@@ -651,7 +718,8 @@ def _set_note(row: MembershipGrant, public: bytes, note: str) -> None:
 @router.post("/users/{user_id}/grants", status_code=201)
 def add_grant(user_id: int, body: GrantIn, admin: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
     """A free period (or a manual extension) for one person: from ``starts_at`` (now when left out) to ``ends_at``,
-    or for ``days`` days. The note is sealed to the admin key."""
+    or for ``days`` days. The note is sealed to the admin key. Recent password required."""
+    require_recent_auth(admin)
     _exclusive(db)  # before reading the key: a demotion can't replace it between the read and this commit
     target = _target(db, user_id)
     public = _public(db)
@@ -676,7 +744,8 @@ def add_grant(user_id: int, body: GrantIn, admin: AuthUser = Depends(current_use
 def change_grant(user_id: int, grant_id: int, body: GrantPatch, admin: AuthUser = Depends(current_user),
                  db: Session = Depends(get_db)):
     """Change a free period's dates or note. ``days`` counts from the start. An ended-by-admin period can't be
-    changed."""
+    changed. Recent password required."""
+    require_recent_auth(admin)
     _exclusive(db)  # before reading the key (see add_grant)
     _target(db, user_id)
     row = _grant(db, user_id, grant_id)
@@ -711,7 +780,9 @@ def change_grant(user_id: int, grant_id: int, body: GrantPatch, admin: AuthUser 
 
 @router.delete("/users/{user_id}/grants/{grant_id}")
 def end_grant(user_id: int, grant_id: int, admin: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
-    """End a free period now. It stays in the person's history (``revoked_at``) and no longer counts."""
+    """End a free period now. It stays in the person's history (``revoked_at``) and no longer counts. Recent password
+    required."""
+    require_recent_auth(admin)
     _target(db, user_id)
     row = _grant(db, user_id, grant_id)
     stripe = {"extended": False, "trial_end": None, "problem": None}
@@ -865,11 +936,19 @@ def _invite_status(row: AuthToken, now: datetime) -> str:
     return "used" if row.used_at else "expired" if row.expires_at <= now else "pending"
 
 
+def _invite_job(to: str, template: tuple, admin_id: int, token_id: int, token: str) -> None:
+    """On the mail thread: send the invitation, and only if the mail server took it, record that it was emailed to
+    this address (the invited person's address then counts as verified: backend/signup.py)."""
+    if mail_queue.deliver_now(to, template, admin_id).ok:
+        signup.mark_emailed(token_id, token, to)
+
+
 @router.post("/invites", status_code=201)
 def create_invite(body: InviteIn, request: Request, admin: AuthUser = Depends(current_user),
                   db: Session = Depends(get_db)):
     """An invitation link, good for 7 days and one sign-up. Only the link's hash is stored, so this is the one
-    time it can be shown. ``email`` (optional) pre-fills the sign-up form; it counts as verified if used. With an
+    time it can be shown. ``email`` (optional) pre-fills the sign-up form; it counts as verified if used, but only when
+    the invitation was really emailed to it (the mail server took it), not when the admin copied the link. With an
     address (and ``send`` not false) the link is also emailed in the background when email is set up
     (``emailed`` and ``email_status`` say what happened: queued, not_set_up, no_address, busy or off); the link is
     returned either way, to copy. ``send: true`` while email is off is a 409."""
@@ -893,7 +972,7 @@ def create_invite(body: InviteIn, request: Request, admin: AuthUser = Depends(cu
         except users.AccountError as exc:
             raise _problem(422, "invalid", exc.message, "email") from None
     token, row = tokens.create(db, signup.INVITE_KIND, ttl=signup.INVITE_TTL, created_by=admin.id,
-                               payload={"email": email or ""})
+                               payload={"email": email or "", "emailed": False})  # (set once the mail is sent)
     status = "off" if body.send is False else "no_address" if not email else "queued" if mail_queue.enabled() \
         else "not_set_up"
     inviter = users.details(db, admin.id).get("name") or None if status == "queued" else None  # the name, never the address
@@ -901,7 +980,7 @@ def create_invite(body: InviteIn, request: Request, admin: AuthUser = Depends(cu
     db.commit()
     if status == "queued":  # after the commit: the link must work by the time the email arrives
         template = email_templates.invite(token, inviter=inviter, expires=row.expires_at.replace(tzinfo=timezone.utc))
-        if mail_queue.send(email, template, user_id=admin.id) is None:
+        if mail_queue.submit(_invite_job, email, template, admin.id, row.id, token) is None:
             status = "busy"
     return {"ok": True, "id": row.id, "link": f"{_base_url(request)}/signup.html?invite={token}",
             "email": email, "expires_at": _iso(row.expires_at), "emailed": status == "queued",

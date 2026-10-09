@@ -328,6 +328,65 @@ class ScorerParseTest(unittest.TestCase):
         with self.assertRaises(ScorerError):
             parse_result("I cannot help with that.")
 
+    def test_an_answer_with_the_wrong_kind_of_value_is_a_scorer_error_or_is_tolerated_never_another_error(self):
+        """The model's answer can hold any JSON anywhere (a posting can steer it). 1e999 is infinity, 5 is not a list."""
+        for raw in ('{"score": 1e999}', '{"score": -1e999}', '{"score": NaN}', '{"score": "high"}', '{"score": [1]}',
+                    '{"score": 1' + "0" * 400 + '}', '{"a":' + "[" * 100000 + "]" * 100000 + "}"):
+            with self.assertRaises(ScorerError, msg=raw[:40]):
+                parse_result(raw)
+        for field in ("gaps", "requirements", "ghost_signs"):
+            for bad in (5, "text", {"a": 1}, True, None):
+                r = parse_result(json.dumps({"score": 5, field: bad}))
+                self.assertEqual((r["score"], r["gaps"], r["requirements"]), (5, [], []), (field, bad))
+        r = parse_result(json.dumps({"score": 5, "requirements": [
+            {"point": "A", "matched": True, "evidence": 5},
+            {"point": "B", "matched": True, "evidence": [{"bullet": "x", "sub_bullets": 7}, 3, None]},
+            {"point": "C", "matched": True, "evidence": "text"}, 4, None, "x"]}))
+        self.assertEqual([q["point"] for q in r["requirements"]], ["A", "B", "C"])
+        self.assertEqual(r["requirements"][0]["evidence"], [])
+        self.assertEqual(r["requirements"][1]["evidence"], [{"bullet": "x", "sub_bullets": []}])
+
+    def test_one_bad_answer_is_that_jobs_error_and_never_ends_the_run(self):
+        from unittest import mock
+        from backend.db import FitResult, Job, SessionLocal
+        import backend.scorer as sc
+
+        db = SessionLocal()
+        job = Job(workspace_id=1, url="https://scorer.example/bad-answer", title="PM", company="Acme", status="to_review",
+                  detail_status="full", description="A role.")
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        try:
+            for reply in ('{"score": 1e999}', '{"score": "high"}', "no json here"):
+                with mock.patch.object(sc, "call_model", return_value=reply):
+                    with self.assertRaises(ScorerError):
+                        sc.score_one(job_id, "cv", "h", {"model": "m"})
+            with mock.patch.object(sc, "call_model", side_effect=RuntimeError("the client library broke")):
+                with self.assertRaises(ScorerError):
+                    sc.score_one(job_id, "cv", "h", {"model": "m"})
+            db.expire_all()
+            fit = db.query(FitResult).filter(FitResult.job_id == job_id).one()
+            self.assertEqual(fit.status, "error")
+            self.assertTrue(fit.error)
+            with mock.patch.object(sc, "call_model", return_value='{"score":5,"gaps":5,"requirements":5}'):
+                self.assertEqual(sc.score_one(job_id, "cv", "h", {"model": "m"})["score"], 5)
+            # and through the batch: the job counts as an error, the run goes on
+            second = Job(workspace_id=1, url="https://scorer.example/bad-answer-2", title="PM 2", company="Acme",
+                         status="to_review", detail_status="full", description="Another role.")
+            db.add(second)
+            db.commit()
+            answers = iter(['{"score": 1e999}', '{"score": 40}'])
+            with mock.patch.object(sc, "call_model", side_effect=lambda *a, **k: next(answers)), \
+                    mock.patch.object(sc, "get_config", return_value={"model": "m", "concurrency": 1}), \
+                    mock.patch.object(sc, "config_problem", return_value=None), \
+                    mock.patch.object(sc, "build_profile", return_value=("cv", "h")), \
+                    mock.patch.object(sc, "_duplicate_groups", side_effect=lambda ids: {i: [] for i in ids}):
+                out = sc.score_jobs(1, [job_id, second.id])
+            self.assertEqual((out["scored"], out["errors"], out["aborted"]), (1, 1, None))
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

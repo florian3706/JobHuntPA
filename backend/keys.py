@@ -5,7 +5,8 @@ Design: docs/design/accounts.md, section 1.3.
      "kek":     {"current": "k1", "keys": {"k1": "<base64>"}},
      "pepper":  {"current": "p1", "keys": {"p1": "<base64>"}},
      "signing": {"current": "s1", "keys": {"s1": "<base64>"}, "retired": {"s0": <unix time>}},
-     "created_at": "2026-10-05T00:00:00Z"}
+     "created_at": "2026-10-05T00:00:00Z",
+     "encryption_done_at": "2026-10-05T00:00:00Z"}     (optional: see below)
 
 * **kek** wraps what the server must open with nobody signed in: the DEKs of users who turned on background access
   (``srv|{uid}``) and TOTP secrets (``totp|{uid}``). The wrap's label always ends in ``|{kek_id}``, and the envelope's
@@ -13,6 +14,10 @@ Design: docs/design/accounts.md, section 1.3.
 * **pepper** keys ``email_hash = HMAC-SHA256(pepper, normalised email)``, so an account is found by email without
   decrypting anything. It isn't a decryption key: leaking it only lets someone confirm guessed addresses.
 * **signing** signs tokens such as unsubscribe links. A retired key keeps verifying for 30 days.
+* **encryption_done_at** is written once, when the one-time encryption of the data from before accounts has finished
+  (backend/migrate_encryption.py), and never removed. It turns strict mode on at every start whatever the database
+  says: someone who can only write the database can't turn it off by editing the migration's state there, which would
+  make the next run seal planted plaintext as if it were real.
 
 The file is owner-only (0600) and only ever replaced atomically (crypto.write_private). It lives in ``data/``, so the
 uninstaller's backup includes it and the Windows setup keeps it on update. It is created only while the database has
@@ -29,6 +34,12 @@ A crash anywhere leaves a file with every KEK still in use; at start-up, ``kek_r
 again. (The design sets the new KEK current after step 2; setting it in step 1 is as safe and means a wrap made
 after step 1 is under the new key.) A wrap made *before* step 1 but stored after step 2 would be left under a dropped
 key, so whoever wraps holds ``wrapping()`` from the wrap until the row is committed: a rotation waits for it.
+
+**One process at a time.** The app takes an exclusive lock on ``server-keys.json.lock`` (``hold_key_file``) when it
+starts and keeps it until it stops; the commands below take it too and refuse while someone else holds it. (The
+launcher's ``running.json`` only knows about apps it started itself, so it can't be the check.) A command that
+replaced the key file under a running app would leave it wrapping with the retired key. Besides that, ``kek_wrap``
+refuses when the file on disk is no longer the one this process loaded.
 
 Command line (run with the app stopped; the commands refuse while it is running)::
 
@@ -142,6 +153,8 @@ class ServerKeys:
         self.created_now = False  # True when load_or_create just made the file: store its fingerprint
         self._lock = threading.RLock()
         self._sections, self._retired, self.created_at = _parse(doc, self.path)
+        done = doc.get("encryption_done_at") if isinstance(doc, dict) else None
+        self.encryption_done_at: Optional[str] = done if isinstance(done, str) and done else None
 
     def __repr__(self) -> str:  # never the keys
         return f"<keys.ServerKeys {self.path.name}>"
@@ -198,6 +211,8 @@ class ServerKeys:
             doc[name] = {"current": sec["current"], "keys": {k: _b64(v) for k, v in sec["keys"].items()}}
         doc["signing"]["retired"] = dict(retired)
         doc["created_at"] = self.created_at
+        if self.encryption_done_at:
+            doc["encryption_done_at"] = self.encryption_done_at
         return (json.dumps(doc, indent=2) + "\n").encode("utf-8")
 
     def _check_unchanged(self) -> None:
@@ -218,6 +233,21 @@ class ServerKeys:
         self._check_unchanged()
         crypto.write_private(self.path, self._dump(sections, retired))
         self._sections, self._retired = sections, retired
+
+    def mark_encryption_done(self) -> bool:
+        """Records in the file that the one-time encryption has finished (it is never taken back). True when this call
+        wrote it. Refuses (KeyFileError) when the file isn't what this process loaded."""
+        with self._lock:
+            if self.encryption_done_at:
+                return False
+            self._check_unchanged()
+            self.encryption_done_at = _now_iso()
+            try:
+                crypto.write_private(self.path, self._dump(self._sections, self._retired))
+            except BaseException:
+                self.encryption_done_at = None
+                raise
+            return True
 
     def _current(self, name: str) -> tuple[str, bytes]:
         sec = self._sections[name]
@@ -267,7 +297,13 @@ class ServerKeys:
 
     def kek_wrap(self, secret: bytes, label: str) -> tuple[str, bytes]:
         """``secret`` wrapped under the current KEK, labelled ``{label}|{kek_id}``: ``(kek_id, blob)``. Store the
-        kek_id beside the blob where there is a column for it (``user_keys.server_kek_id``)."""
+        kek_id beside the blob where there is a column for it (``user_keys.server_kek_id``). KeyFileError when the file
+        was changed by another process since this one loaded it (the KEK here may be one it has retired: a value
+        wrapped under it would not open after the next restart)."""
+        self._check_unchanged()
+        return self._wrap_unchecked(secret, label)
+
+    def _wrap_unchecked(self, secret: bytes, label: str) -> tuple[str, bytes]:
         kek_id, kek = self._current("kek")
         return kek_id, crypto.wrap(kek, secret, f"{label}|{kek_id}")
 
@@ -328,7 +364,7 @@ class ServerKeys:
                 except crypto.CryptoError:
                     failed.append(row.ref)
                     continue
-                todo.append((row.ref, *self.kek_wrap(secret, row.label)))
+                todo.append((row.ref, *self._wrap_unchecked(secret, row.label)))
             if todo:
                 store(todo)
             if failed:
@@ -455,6 +491,66 @@ class ServerKeys:
                     sec["keys"].pop(key_id, None)
             self._commit(sections, retired)
             return new_id
+
+
+_held_locks: dict[str, Any] = {}  # lock file -> the open file holding the lock (kept open until the process ends)
+
+
+def lock_file_path(path: Optional[Union[str, Path]] = None) -> Path:
+    path = Path(path) if path else key_file_path()
+    return path.with_name(path.name + ".lock")
+
+
+def _try_lock(handle) -> bool:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+        else:
+            import fcntl
+
+            fcntl.lockf(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def hold_key_file(path: Optional[Union[str, Path]] = None) -> None:
+    """Takes the exclusive lock on the key file for the rest of this process (the app at start-up, a key command
+    before it changes anything). KeyFileError when another process holds it: the app, or another key command. The
+    operating system lets go of it when the process ends, however it ends; asking again in a process that holds it
+    is fine."""
+    lock = lock_file_path(path)
+    name = str(lock)
+    if name in _held_locks:
+        return
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    handle = os.fdopen(fd, "r+b")
+    if not _try_lock(handle):
+        handle.close()
+        raise KeyFileError("JobHuntPA, or one of its key commands (rotate-kek, new-admin-key, recover-lost), is using "
+                           "the key file. Stop it first, then try again.")
+    try:
+        handle.seek(0)
+        handle.write(f"{os.getpid()}\n".encode("ascii"))
+        handle.truncate()
+        handle.flush()
+    except OSError:
+        pass  # (the pid is only a hint for people)
+    _held_locks[name] = handle
+
+
+def encryption_marked(path: Optional[Union[str, Path]] = None) -> bool:
+    """Whether the key file says the one-time encryption has finished. Reads the file itself (a start-up step that
+    needs nothing else loaded); False when the file is missing or damaged."""
+    try:
+        doc = json.loads(Path(path or key_file_path()).read_bytes())
+    except (OSError, ValueError):
+        return False
+    return isinstance(doc, dict) and bool(doc.get("encryption_done_at"))
 
 
 def _b64(key: bytes) -> str:

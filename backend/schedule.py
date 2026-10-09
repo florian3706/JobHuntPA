@@ -40,7 +40,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend import crypto, tasks
-from backend.db import CompanySource, SearchRun, SearchSchedule, SessionLocal, Workspace, get_db
+from backend.db import CompanySource, SearchRun, SearchSchedule, SessionLocal, Workspace, get_db, scrub_wal_again
 from backend.workspaces import current_workspace
 
 log = logging.getLogger(__name__)
@@ -273,16 +273,16 @@ def start_scheduler(start_search: Callable[[int], dict]) -> None:
 
     def loop() -> None:
         while not _stop.wait(TICK_SECONDS):
+            try:  # before the searches: a member's row from before ``stripe_mode`` is not paying until it is synced
+                billing_sync_tick()
+            except Exception:
+                log.exception("membership sync failed")
             try:
                 tick(start_search)
             except Exception:
                 log.exception("scheduled search check failed")
             housekeeping()
             digest_tick()
-            try:
-                billing_sync_tick()
-            except Exception:
-                log.exception("membership sync failed")
 
     threading.Thread(target=loop, name="jobhunt-scheduler", daemon=True).start()
 
@@ -293,7 +293,8 @@ _last_cleanup: Optional[datetime] = None
 
 def housekeeping(now: Optional[datetime] = None) -> bool:
     """Every 10 minutes, with the scheduler's loop (so off with JOBHUNT_SCHEDULER=off): delete expired sessions and
-    links that can't be used any more (``auth.cleanup_tick``). True when it ran. Never raises."""
+    links that can't be used any more (``auth.cleanup_tick``), and empty the write-ahead log again when a scrub after
+    deleting a key copy was blocked (``db.scrub_wal_again``). True when it ran. Never raises."""
     global _last_cleanup
     now = now or datetime.now(timezone.utc)
     if _last_cleanup is not None and now - _last_cleanup < CLEANUP_EVERY:
@@ -305,6 +306,7 @@ def housekeeping(now: Optional[datetime] = None) -> bool:
         auth.cleanup_tick()
     except Exception as exc:  # noqa: BLE001
         log.warning("Clean-up of expired sessions and links failed: %s", exc.__class__.__name__)
+    scrub_wal_again()
     return True
 
 

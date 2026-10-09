@@ -60,9 +60,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from backend import crypto, email_templates, mail_queue, membership, ratelimit, schedule, users
-from backend.db import (EmailPrefs, FitResult, Job, SearchRun, SessionLocal, User, UserKeys, Workspace, get_db,
-                        utcnow)
+from backend import crypto, email_templates, ghost, mail_queue, membership, ratelimit, schedule, users
+from backend.db import (CompanyProfile, EmailPrefs, FitResult, Job, SearchRun, SessionLocal, User, UserKeys, Workspace,
+                        company_key, get_db, utcnow)
 from backend.pool import jobs_query
 from backend.sessions import AuthUser, client_address, current_user
 
@@ -262,6 +262,9 @@ def cards(db: Session, jobs: list[Job]) -> tuple[list[dict], int]:
     fits: dict[int, FitResult] = {}
     for chunk in _chunks([j.id for j in shown]):
         fits.update({f.job_id: f for f in db.query(FitResult).filter(FitResult.job_id.in_(chunk))})
+    keys = sorted({company_key(j.company or "") for j in shown} - {""})
+    profiles = {p.key: p for chunk in _chunks(keys) for p in db.query(CompanyProfile).filter(CompanyProfile.key.in_(chunk))}
+    signs = ghost.assess_jobs(db, shown, profiles)
     workspaces = sorted({j.workspace_id for j in shown})
     names = {}
     if len(workspaces) > 1:  # which search a job came from matters only when there are several
@@ -277,7 +280,7 @@ def cards(db: Session, jobs: list[Job]) -> tuple[list[dict], int]:
                 "office_days": job.office_days, "work_mode": job.work_mode, "employment_type": job.employment_type,
                 "fit_score": scores.get(job.id), "fit_summary": evidence.get("summary"),
                 "gap_count": gap_count(evidence) if job.id in fits and scores.get(job.id) is not None else None,
-                "url": job.url, "source": job.source,
+                "url": job.url, "source": job.source, "ghost_reason": ghost.first_reason(signs[job.id]),
             })
     return out, more
 

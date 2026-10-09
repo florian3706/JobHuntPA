@@ -226,6 +226,8 @@
           Use your email provider's own mail server (SMTP). The settings are saved in the <code>.env</code> file on this computer and work
           straight away. The password is never shown again. To keep messages out of spam, set up SPF, DKIM and DMARC for the From address's
           domain as your provider describes.</p>
+        <p class="hint">Changing the mail server or the public address tells the other admins, through the old server. For the next 24 hours
+          no admin can turn off someone's two-step sign-in or send them a reset link, because whoever receives the mail can reset accounts.</p>
         <form id="email-form" class="admin-form" autocomplete="off" novalidate>
           <div class="form-grid">
             <div class="field">

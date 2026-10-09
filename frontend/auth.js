@@ -32,13 +32,15 @@ async function authCall(path, { method = 'GET', body = null, csrf = null } = {})
 
 /* Where to go after signing in: the page that sent people here (?next=), if it is a path on this site. The value is
    resolved the way the browser will (which drops tabs and newlines, so "/<tab>/evil.example" means "//evil.example")
-   and must stay on this origin. */
+   and must stay on this origin. A path can stay on the origin and still start with two slashes once the dots are
+   resolved ("/.//evil.example" has the path "//evil.example"), which the browser reads as another site. */
 function nextPage() {
   const next = new URLSearchParams(location.search).get('next') || '';
   if (!next.startsWith('/')) return './';
   let url;
   try { url = new URL(next, location.origin); } catch { return './'; }
   if (url.origin !== location.origin || /^\/(login|first-run|recover|signup)\.html/.test(url.pathname)) return './';
+  if (/^\/[\/\\]/.test(url.pathname)) return './'; // "//host" or "/\host" is a link to another site
   return url.pathname + url.search + url.hash;
 }
 
@@ -264,7 +266,7 @@ function initRecover() {
     const res = await authCall('/api/auth/recover', { method: 'POST', body });
     setBusy(btn, false);
     status('');
-    if (res.status === 200) { showRecovered(res.data.recovery_codes_left); return; }
+    if (res.status === 200) { showRecovered(res.data.recovery_codes_left, res.data.admin_key_lost); return; }
     if (res.data.code === 'second_factor_required') {
       $('#code-field').hidden = false;
       showErrors([{ field: 'code', message: 'Your account uses two-step sign-in. Enter the code from your app, or a second recovery code.' }]);
@@ -274,14 +276,15 @@ function initRecover() {
   });
 }
 
-function showRecovered(left) {
+function showRecovered(left, adminKeyLost) {
   clearErrors();
   $('#recover-form').hidden = true;
   document.title = 'Password changed · JobHuntPA';
   $('#page-title').textContent = 'Password changed';
   const note = typeof left === 'number' ? ` ${recoveryLeftText(left)}` : '';
+  const lost = adminKeyLost ? ' You no longer have the admin key. Ask another admin to share it with you again.' : '';
   const done = $('#recover-done');
-  done.querySelector('p').textContent = `You're signed in, your data is kept and other browsers are signed out.${note}`;
+  done.querySelector('p').textContent = `You're signed in, your data is kept and other browsers are signed out.${note}${lost}`;
   done.hidden = false;
   $('#recover-continue').href = nextPage();
   $('#page-title').focus();
@@ -306,18 +309,12 @@ async function initFirstRun() {
   if (state.status !== 200) { status(''); showErrors(answerProblem(state, "JobHuntPA isn't answering. Check that it's running, then reload this page.")); return; }
   if (!state.data.setup_required) {
     if (!state.data.signed_in) { location.replace('login.html'); return; }
-    let codes = await authCall('/api/auth/recovery-codes');
-    if (codes.status === 403 && codes.data.code === 'reauth_required') {
-      // The codes can reset the password, so they are shown only after the password was entered in the last 15 minutes.
-      if (!(await confirmPassword())) {
-        showErrors([{ field: null, message: 'Your recovery codes are shown once you confirm your password. Reload this page to try again.' }]);
-        return;
-      }
-      codes = await authCall('/api/auth/recovery-codes');
-    }
-    if (codes.status !== 200) { location.replace('./'); return; } // already saved: nothing to do here
+    // Only the codes of an account that hasn't confirmed saving them are left to show.
     const me = await authCall('/api/auth/me');
-    showCodes(codes.data.codes, me.data.csrf);
+    if (me.status !== 200 || !me.data.recovery_codes_pending) { forgetRecoveryCodes(); location.replace('./'); return; }
+    const kept = stashedRecoveryCodes(); // (made or shown in this tab)
+    if (kept) { showCodes(kept, me.data.csrf); return; }
+    await askForCodes(me.data.csrf);
     return;
   }
   status('');
@@ -329,6 +326,48 @@ async function initFirstRun() {
   window.addEventListener('hashchange', () => {
     readToken();
     if (setupToken) $('#token-field').hidden = true;
+  });
+}
+
+/* Each recovery code opens the data key and can set a new password, so a session alone doesn't get to read them: the
+   password (and, with two-step sign-in on, a code) is asked for again. */
+async function askForCodes(csrf) {
+  const security = await authCall('/api/auth/security');
+  const mfa = security.status === 200 && Boolean(security.data.mfa_enabled);
+  status('');
+  document.title = 'Your recovery codes · JobHuntPA';
+  $('#page-title').textContent = 'Your recovery codes';
+  $('#setup-step').hidden = true;
+  $('#show-code-field').hidden = !mfa;
+  $('#show-step').hidden = false;
+  $('#show-password').focus();
+  $('#show-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const password = $('#show-password').value;
+    const code = $('#show-code').value.trim();
+    const problems = [];
+    if (!password) problems.push({ field: 'show-password', message: 'Enter your password.' });
+    if (mfa && !code) problems.push({ field: 'show-code', message: 'Enter a code from your authenticator app, or a recovery code.' });
+    if (problems.length) { showErrors(problems); return; }
+    const btn = $('#show-submit');
+    setBusy(btn, true);
+    hidePasswords();
+    const body = { password };
+    if (mfa) body[/^\d{6}$/.test(code.replace(/[\s-]/g, '')) ? 'code' : 'recovery_code'] = code;
+    const res = await authCall('/api/auth/recovery-codes/show', { method: 'POST', body, csrf });
+    setBusy(btn, false);
+    if (res.status === 200) {
+      $('#show-password').value = '';
+      $('#show-code').value = '';
+      $('#show-step').hidden = true;
+      stashRecoveryCodes(res.data.codes);
+      showCodes(res.data.codes, csrf);
+      return;
+    }
+    if (res.status === 404 || res.status === 401) { location.replace('./'); return; } // saved already, or signed out
+    const errors = answerProblem(res, `That didn't work (error ${res.status}). Try again.`);
+    errors[0].field = errors[0].field === 'password' ? 'show-password' : errors[0].field ? 'show-code' : null;
+    showErrors(errors);
   });
 }
 
@@ -375,6 +414,7 @@ function codesText(codes) {
 function showCodes(codes, csrf) {
   clearErrors();
   status('');
+  stashRecoveryCodes(codes); // for a reload before they are confirmed
   document.title = 'Your recovery codes · JobHuntPA';
   $('#page-title').textContent = 'Your recovery codes';
   $('#setup-step').hidden = true;
@@ -406,7 +446,7 @@ function showCodes(codes, csrf) {
     setBusy(btn, true);
     const res = await authCall('/api/auth/recovery-codes/ack', { method: 'POST', body: {}, csrf });
     setBusy(btn, false);
-    if (res.status === 200 || res.status === 401) { location.replace('./'); return; }
+    if (res.status === 200 || res.status === 401) { forgetRecoveryCodes(); location.replace('./'); return; }
     showErrors(answerProblem(res, `That didn't work (error ${res.status}). Try again.`));
   });
 }

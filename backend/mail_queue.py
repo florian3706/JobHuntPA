@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Optional
 
@@ -25,9 +27,13 @@ NOTICE_RESERVE = 50  # the last of those places are for security notices (``prio
 OFF_TEXT = ("Email isn't set up on this JobHuntPA yet. An admin sets it up in the admin panel (Server): the mail "
             "server and the public address.")
 
+DEFAULT_SEND_S = 0.3  # what a decoy job lasts until some real sends have been timed
+MAX_DECOY_S = 10.0
+
 _lock = threading.Lock()
 _executor: Optional[ThreadPoolExecutor] = None
 _waiting: set[Future] = set()
+_send_times: deque = deque(maxlen=20)  # how long the last real sends took (seconds)
 
 
 def missing() -> list[str]:
@@ -93,22 +99,42 @@ def _forget(future: Future) -> None:
         _waiting.discard(future)
 
 
-def deliver_now(to: str, template: tuple, user_id: Optional[int] = None) -> mailer.SendResult:
+def deliver_now(to: str, template: tuple, user_id: Optional[int] = None, *,
+                config: Optional[mailer.SmtpConfig] = None) -> mailer.SendResult:
     """Send now, on the calling thread: for work already running on the mail thread (``submit``). Request code uses
-    ``send``."""
+    ``send``. ``config``: send through those mail server settings rather than the current ones."""
     subject, text, html, headers = template
-    result = mailer.send(to, subject, text, html, headers)
+    began = time.monotonic()
+    result = mailer.send(to, subject, text, html, headers, config=config)
+    with _lock:
+        _send_times.append(time.monotonic() - began)
     log.info("Email %s%s", result.status, f" for user {user_id}" if user_id is not None else "")
     return result
 
 
-def send(to: str, template: tuple, *, user_id: Optional[int] = None, priority: bool = False) -> Optional[Future]:
+def typical_send_seconds() -> float:
+    """The average of the last 20 sends (``DEFAULT_SEND_S`` before there are any), at most ``MAX_DECOY_S``."""
+    with _lock:
+        times = list(_send_times)
+    return min(MAX_DECOY_S, sum(times) / len(times)) if times else DEFAULT_SEND_S
+
+
+def decoy() -> None:
+    """A job that keeps the mail thread busy as long as a typical send. The forgot-password form queues one for an
+    address that has no account (or that no link is sent to), because a real link takes the thread for a send: with
+    nothing queued, the next email to anyone would come sooner, and timing it would show which addresses have an
+    account (accounts design §2.5)."""
+    time.sleep(typical_send_seconds())
+
+
+def send(to: str, template: tuple, *, user_id: Optional[int] = None, priority: bool = False,
+         config: Optional[mailer.SmtpConfig] = None) -> Optional[Future]:
     """Queue one message (``template`` is what ``backend.email_templates`` returns). The Future's result is a
     ``mailer.SendResult``. None when email is off or too much is waiting: the caller decides whether that matters.
-    ``priority`` is for security notices (see ``submit``)."""
+    ``priority`` is for security notices (see ``submit``). ``config``: see ``deliver_now``."""
     if not enabled():
         return None
-    return submit(deliver_now, to, template, user_id, priority=priority)
+    return submit(deliver_now, to, template, user_id, priority=priority, config=config)
 
 
 def drain(timeout: float = 15.0) -> bool:

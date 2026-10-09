@@ -6,8 +6,11 @@ A POST with the CSRF token (a link or a prefetch must never start an export), an
 15 minutes. The zip is built in memory inside the request's key scope: no plaintext touches the disk (no temporary
 files). Only the signed-in account's own workspaces are read (``Workspace.owner_id``); an admin exports their own
 data like anyone else. One export per account at a time (429), and at most ``MAX_AT_ONCE`` in the whole app (503), and
-no more than ``MAX_EXPORT_BYTES`` of files in one zip (413): the zip is held in memory. The log says that user N exported, with the number
-of files and the size, never a name or any content.
+no more than ``MAX_EXPORT_BYTES`` of files in one zip (413): the zip is held in memory, so the account's place and
+the slot are kept until the download has ended (or ``stream_seconds``: ``MAX_STREAM_SECONDS`` plus the time the zip
+takes at ``MIN_RATE``; a timer gives the place back then even when the client holds the connection open and reads
+nothing), not just until the build is done. The log says that user N exported, with the number of files and the size,
+never a name or any content.
 
 Layout (names are made safe for Windows, macOS and Linux: ``safe_name``)::
 
@@ -33,6 +36,7 @@ import os
 import posixpath
 import re
 import threading
+import time
 import unicodedata
 import zipfile
 from datetime import date, datetime
@@ -41,9 +45,10 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 
-from backend import account, crypto, docs, schedule, users
+from backend import account, crypto, docs, ghost, schedule, users
 from backend.db import (
     UPLOAD_DIR,
     ChatMessage,
@@ -77,6 +82,8 @@ router = APIRouter(prefix="/api/account", tags=["account"])
 MAX_PART = 80
 MAX_EXPORT_BYTES = 200 * 1024 * 1024   # of files in one zip, before compression: it is built in memory
 MAX_AT_ONCE = 2                        # exports being made at the same time, for everyone
+MAX_STREAM_SECONDS = 600               # a download is cut off after this long (plus size / MIN_RATE), so a slow or
+MIN_RATE = 100 * 1024                  # stalled reader can't hold a zip in memory: bytes a second a download must manage
 STATUS_FOLDER = {"to_review": "To review", "shortlisted": "Shortlisted", "applied": "Applied",
                  "interviewing": "Interviewing", "rejected": "Rejected", "not_interested": "Not interested"}
 HIDDEN_FOLDER = "Hidden"
@@ -489,6 +496,7 @@ class JobEntry:
         self.main: Optional[int] = None  # a merged copy: the job it was merged into
         self.url = ""
         self.reason = ""
+        self.ghost: Optional[dict] = None  # backend.ghost: signs that the ad may not be a current vacancy (flagged only)
 
 
 def _job_label(e: JobEntry) -> str:
@@ -528,6 +536,12 @@ def _plan_jobs(db: Session, ws: Workspace, base: str) -> tuple[dict[int, JobEntr
     for job in jobs:
         if job.duplicate_of is not None and job.duplicate_of in entries:
             entries[job.duplicate_of].copies.append(job.id)
+    filed = [j for j in jobs if entries[j.id].path]
+    keys = sorted({company_key(j.company or "") for j in filed} - {""})
+    profiles = {p.key: p for start in range(0, len(keys), 400)
+                for p in db.query(CompanyProfile).filter(CompanyProfile.key.in_(keys[start:start + 400]))}
+    for job_id, signs in ghost.assess_jobs(db, filed, profiles).items():
+        entries[job_id].ghost = signs if signs["level"] else None
     return entries, filtered
 
 
@@ -578,6 +592,14 @@ def _job_md(job: Job, entry: JobEntry, fit: Optional[FitResult], entries: dict[i
             out.append("\n### Gaps\n\n" + bullets(data["gaps"]))
     elif fit is not None and fit.error:
         out.append(f"\n## How well you fit\n\nScoring failed: {line(fit.error)}\n")
+    if entry.ghost:
+        out.append("\n## Is this a real vacancy?\n\n")
+        out.append(f"{'Several signs' if entry.ghost['level'] == 'likely' else 'Some signs'} suggest this ad may not be "
+                   "a current vacancy:\n\n")
+        for sign in entry.ghost["signals"]:
+            out.append(f"- {line(sign['text'])}{': ' + line(sign['detail']) if sign.get('detail') else ''}\n")
+        out.append("\nThese are only signs, and the job may well be real. You could ask the employer whether the role "
+                   "is open now and when they need someone to start.\n")
     out.append(f"\n## Description\n\n{text(job.description) if (job.description or '').strip() else '(no description saved)'}\n")
     others = [entries[c] for c in entry.copies if c in entries]
     if others:
@@ -611,7 +633,7 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
     if filtered:
         out.append(f"\nAnother {len(filtered)} job(s) the search filters left out are in {rel_link('Filtered out', index, f'{base}/Jobs/Filtered out.md')}.\n")
     if with_files:
-        out.append("\n| Job | Company | Status | Fit | Closed |\n|---|---|---|---|---|\n")
+        out.append("\n| Job | Company | Status | Fit | Closed | Ghost job? |\n|---|---|---|---|---|---|\n")
         folders = [*STATUS_FOLDER.values(), HIDDEN_FOLDER]   # the order of the folders, Hidden last
 
         def folder(e: JobEntry) -> str:
@@ -619,7 +641,7 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
         for e in sorted(with_files, key=lambda e: (folders.index(folder(e)), _job_label(e).casefold())):
             status = folder(e)
             name = rel_link(e.title or "Job", index, e.path)
-            out.append(f"| {esc_pipe(name)} | {cell(e.company)} | {cell(status)} | {cell(e.fit)} | {'yes' if e.closed else ''} |\n")
+            out.append(f"| {esc_pipe(name)} | {cell(e.company)} | {cell(status)} | {cell(e.fit)} | {'yes' if e.closed else ''} | {e.ghost['level'].capitalize() if e.ghost else ''} |\n")
     arc.add(index, "".join(out))
     out = ["# Filtered out\n", "\nJobs the search filters left out. They have no file of their own.\n"]
     if filtered:
@@ -763,33 +785,93 @@ _lock = threading.Lock()
 _slots = threading.BoundedSemaphore(MAX_AT_ONCE)
 
 
-def _chunks(buffer: io.BytesIO):
-    with buffer:
-        while chunk := buffer.read(64 * 1024):
-            yield chunk
+def stream_seconds(size: int) -> float:
+    """How long a download of ``size`` bytes may take: the base time, and the time it needs at the slowest rate we serve
+    (a 200 MB zip to a phone over a slow link must be able to finish)."""
+    return MAX_STREAM_SECONDS + size / MIN_RATE
+
+
+class _Hold:
+    """An account's place (its one-at-a-time mark and one of the app's slots) for as long as its zip is in memory: from
+    the start of the build until the last byte is sent, the client goes away or ``stream_seconds`` pass. Giving the
+    place back at the end of the build would let one account start another export while the earlier buffers were
+    still held by slow readers. A client that keeps the connection open and stops reading never lets the response
+    ask for the next chunk, so the deadline is also a timer (``expire_after``) that releases the place and closes the
+    buffer. ``release`` can run more than once."""
+
+    def __init__(self, user_id: int) -> None:
+        self.user_id, self.buffer, self._done = user_id, None, False
+        self._timer: Optional[threading.Timer] = None
+        self._guard = threading.Lock()
+
+    def expire_after(self, seconds: float) -> None:
+        """Release by itself ``seconds`` from now (unless it has been released already)."""
+        with self._guard:
+            if self._done:
+                return
+            self._timer = threading.Timer(max(0.0, seconds), self.release)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def release(self) -> None:
+        with self._guard:
+            if self._done:
+                return
+            self._done = True
+            timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+        if self.buffer is not None:
+            self.buffer.close()  # (a generator blocked in the middle of a read gets a ValueError and ends)
+        _slots.release()
+        with _lock:
+            _running.discard(self.user_id)
+
+
+def _chunks(buffer: io.BytesIO, hold: Optional[_Hold] = None, seconds: Optional[float] = None):
+    seconds = MAX_STREAM_SECONDS if seconds is None else seconds
+    deadline = time.monotonic() + seconds
+    try:
+        with buffer:
+            while chunk := buffer.read(64 * 1024):
+                if time.monotonic() > deadline:  # a reader too slow to matter must not keep the memory for ever
+                    log.warning("an export download was cut off after %d seconds", seconds)
+                    return
+                yield chunk
+    except ValueError:  # the buffer was closed under us: the deadline's timer released the place
+        if hold is None or not hold._done:
+            raise
+    finally:
+        if hold is not None:
+            hold.release()
 
 
 @router.post("/export")
 def export_data(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
-    """The account's data as a zip of Markdown files. Recent password required; one at a time per account."""
+    """The account's data as a zip of Markdown files. Recent password required; one at a time per account, and the
+    place is kept until the download has finished (the zip stays in memory until then)."""
     require_recent_auth(user)
     with _lock:
         if user.id in _running:
             raise AuthProblem(429, "export_running", "Your export is still being made. Wait for it to finish.")
         _running.add(user.id)
-    try:
-        if not _slots.acquire(blocking=False):
-            raise AuthProblem(503, "export_busy", "Other exports are being made. Try again in a minute.")
-        try:
-            buffer, files, name = build(db, user.id)
-        finally:
-            _slots.release()
-    finally:
+    if not _slots.acquire(blocking=False):
         with _lock:
             _running.discard(user.id)
-    size = buffer.seek(0, os.SEEK_END)
-    buffer.seek(0)
+        raise AuthProblem(503, "export_busy", "Other exports are being made. Try again in a minute.")
+    hold = _Hold(user.id)
+    try:
+        buffer, files, name = build(db, user.id)
+        hold.buffer = buffer
+        size = buffer.seek(0, os.SEEK_END)
+        buffer.seek(0)
+    except BaseException:
+        hold.release()
+        raise
     log.info("user %s exported their data: %d files, %d bytes", user.id, files, size)
-    return StreamingResponse(_chunks(buffer), media_type="application/zip",
+    seconds = stream_seconds(size)
+    hold.expire_after(seconds)  # (a client that stops reading never lets the generator run to its own check)
+    # The generator gives the place back when it ends; the background task covers a response that is never iterated.
+    return StreamingResponse(_chunks(buffer, hold, seconds), media_type="application/zip", background=BackgroundTask(hold.release),
                              headers={"Content-Disposition": f'attachment; filename="{name}"',
                                       "Content-Length": str(size)})

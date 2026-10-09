@@ -9,7 +9,9 @@ people can also unlock with their passwords or recovery codes. So:
   1. An admin proves who they are: the password is checked against the admin accounts (the email can't be used to
      look one up: that needs the lost pepper) and the account's own copy of its details must name ``--admin-email``. A turned-off admin is refused like any
      other mismatch.
-  2. Their key opens their copy of the admin details key (APK), which opens every account's ``pii_admin``.
+  2. Their password opens their identity key, which opens their X25519 private key, which opens their copy of the
+     admin details key (APK), which opens every account's ``pii_admin``. (An admin who hasn't signed in since the
+     identity key was introduced still has the private key under the data key: that form is read too.)
   3. A new key file is made. Every ``email_hash`` is computed again with the new pepper from the decrypted email
      address, every ``server_wrapped_dek`` is deleted (background access is off until each person turns it on
      again) and every two-step secret is deleted (two-step sign-in is off until each person enrols again), in one
@@ -32,8 +34,9 @@ from typing import Callable, Optional
 
 from sqlalchemy import func, update
 
-from backend import crypto, key_rotation, keys
-from backend.db import DB_PATH, AdminKeyGrant, AppSetting, SessionLocal, User, UserKeys, scrub_wal
+from backend import crypto, key_rotation, keys, users
+from backend.db import (DB_PATH, AdminKeyGrant, AppSetting, SessionLocal, User, UserKeys, encryption_done,
+                        scrub_wal)
 
 log = logging.getLogger(__name__)
 
@@ -44,9 +47,10 @@ class RecoveryError(Exception):
     """The recovery can't go ahead; the message says why (and that nothing was changed)."""
 
 
-def _find_admin(db, admin_email: str, password: str) -> tuple[User, bytes]:
+def _find_admin(db, admin_email: str, password: str) -> tuple[User, bytes, Optional[bytes]]:
     """The admin row whose password this is and whose own copy of its details names ``admin_email``, with its data
-    key. The password is checked against every admin row (there are few), then the email against the match."""
+    key and identity key (None before the account had one). The password is checked against every admin row (there
+    are few), then the email against the match."""
     wanted = keys.normalise_email(admin_email)
     for user in db.query(User).filter(User.role == "admin", User.status == "active").order_by(User.id):
         derived = crypto.derive_password(password, user.kdf_salt, crypto.KdfParams.from_json(user.kdf_params))
@@ -55,17 +59,19 @@ def _find_admin(db, admin_email: str, password: str) -> tuple[User, bytes]:
         row = db.get(UserKeys, user.id)
         try:
             dek = crypto.unwrap(derived.kek, row.pw_wrapped_dek, f"pw|{user.id}")
+            ik = crypto.unwrap(derived.kek, row.pw_wrapped_ik, f"pw-ik|{user.id}") if row.pw_wrapped_ik is not None \
+                else None
             with crypto.as_user(user.id, dek):
                 details = json.loads(crypto.unseal(user.pii_self, f"users.pii_self|{user.id}"))
         except (crypto.CryptoError, ValueError, TypeError):
             continue
         email = details.get("email") if isinstance(details, dict) else None
         if isinstance(email, str) and keys.normalise_email(email) == wanted:
-            return user, dek
+            return user, dek, ik
     raise RecoveryError(NO_MATCH)
 
 
-def _admin_details_key(db, admin: User, dek: bytes) -> bytes:
+def _admin_details_key(db, admin: User, dek: bytes, ik: Optional[bytes]) -> bytes:
     """The admin details key's private half, opened through this admin's grant of it."""
     grant = db.get(AdminKeyGrant, admin.id)
     if grant is None:
@@ -73,8 +79,11 @@ def _admin_details_key(db, admin: User, dek: bytes) -> bytes:
                             "again. Try another admin. Nothing was changed.")
     row = db.get(UserKeys, admin.id)
     try:
-        with crypto.as_user(admin.id, dek):
-            private = crypto.unseal(row.x25519_priv_enc, f"user_keys.x25519_priv|{admin.id}")
+        if ik is not None:
+            private = users.open_private_key(row, admin.id, ik)
+        else:  # an account from before the identity key
+            with crypto.as_user(admin.id, dek):
+                private = crypto.unseal(row.x25519_priv_enc, f"user_keys.x25519_priv|{admin.id}")
         return crypto.open_sealed(private, grant.sealed_priv, f"grant|{admin.id}|{grant.apk_version}")
     except crypto.CryptoError:
         raise RecoveryError("This admin's copy of the admin details key can't be opened. Try another admin. "
@@ -133,14 +142,16 @@ def _recover(admin_email: str, ask_password: Callable[[str], str], out, path: Pa
         password = ask_password(f"Password of the admin account {admin_email}: ")
         if not isinstance(password, str) or not password:
             raise RecoveryError("No password was entered. Nothing was changed.")
-        admin, dek = _find_admin(db, admin_email, password)
-        apk_private = _admin_details_key(db, admin, dek)
+        admin, dek, ik = _find_admin(db, admin_email, password)
+        apk_private = _admin_details_key(db, admin, dek, ik)
 
         # The new key file is written beside the final one and moved into place after the database has changed.
         staged = path.with_name(path.name + ".new")
         staged.unlink(missing_ok=True)  # left by an earlier try that stopped half way: never adopted
         new = keys.ServerKeys.create(staged)
         try:
+            if encryption_done(db.connection()):  # the new file must keep saying so (strict mode stays on)
+                new.mark_encryption_done()
             hashes, missing = _new_hashes(db, apk_private, new, admin, admin_email)
             background = db.query(func.count()).select_from(UserKeys).filter(
                 UserKeys.server_wrapped_dek.isnot(None)).scalar()

@@ -4,8 +4,11 @@
 module is what joins them to the database and the API:
 
 **The gate.** ``gate(feature)`` is a FastAPI dependency for every endpoint that starts a paid feature; a refusal is
-402 ``{"code": "membership_required", "detail": ..., "reason": ...}`` (``reason`` is access.py's reason code, e.g.
-``free_searches_used``). ``load_state`` builds the ``AccessState`` from the account's membership row, its unrevoked
+402 ``{"code": "membership_required", "detail": ..., "reason": ...}`` (``reason`` is access.py's reason code:
+``ai_members_only`` for the AI features, ``free_searches_used`` for a search, ``membership_required`` for a scheduled
+search). Only members use the AI features; a trial account gets its free searches (each still scores the jobs it
+finds, and up to ``access.FREE_SEARCH_EXTRA_SCORES`` other jobs waiting for a first score, such as imported pages;
+all inside the run) and nothing else. ``load_state`` builds the ``AccessState`` from the account's membership row, its unrevoked
 grants, its role and the admin's free-search allowance (``signup.free_searches``); with billing off (no Stripe key,
 or no price in Stripe, ``billing.enabled()``) every account counts as a member, which keeps local installs as they
 were. When the gate sees a subscription whose period has passed it asks Stripe once (at most hourly per person).
@@ -13,7 +16,9 @@ were. When the gate sees a subscription whose period has passed it asks Stripe o
 **Free searches.** ``charge_search`` runs inside ``tasks.start``'s transaction: it uses one free search and marks the
 run (``search_runs.free_search``) in the same commit as the run's row. ``refund_runs`` gives it back when the run ends
 failed or is interrupted (``tasks``); it is idempotent, because it only refunds a run whose flag it clears.
-Members, admins, exempt accounts and anyone in a free period are never charged.
+Members, admins, exempt accounts and anyone in a free period are never charged. The run scores its own jobs
+without asking the gate (see ``app.start_search_run``: the jobs it found and the newest waiting ones, never a merged
+duplicate or another workspace's job), so a free search is worth having even though rescoring needs a membership.
 
 **Endpoints** (all need a signed-in user; none is gated: billing must work when you have no access):
 
@@ -59,13 +64,14 @@ from backend.db import (
     get_db,
 )
 from backend.ratelimit import Limiter, retry_after, wait_text
-from backend.sessions import AuthProblem, AuthUser, current_user
+from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 
 SYNC_EVERY = timedelta(hours=1)        # on-demand syncs per person
+RECHECK_EVERY = timedelta(minutes=5)   # ... for a subscription stored under another kind of Stripe key (see _foreign)
 MAX_WEBHOOK_BYTES = 512 * 1024         # Stripe's events are a few KB
 LIVE_STATUSES = ("active", "trialing", "past_due")
 # Checkout, verify and portal calls cost Stripe API calls: per person and kind, 30 an hour is plenty.
@@ -111,16 +117,28 @@ def membership_row(db: Session, user_id: int) -> Membership:
 # The gate
 # ---------------------------------------------------------------------------
 
+def _foreign(m: Optional[Membership]) -> bool:
+    """True when the stored subscription came from another kind of Stripe key than the one in use: a test-mode
+    payment (Stripe's test card) kept after the operator switched to a live key. It must not count: nothing would
+    ever ask Stripe about it before its period ran out. A row stored before ``stripe_mode`` existed counts too, until
+    one sync with the current key confirms it."""
+    mode = billing.status()["mode"]
+    return bool(m and m.stripe_status is not None and mode is not None and m.stripe_mode != mode)
+
+
 def load_state(db: Session, user_id: int, role: str) -> access.AccessState:
-    """The ``AccessState`` of one account. An admin needs no membership, so Stripe isn't asked for them."""
+    """The ``AccessState`` of one account. An admin needs no membership, so Stripe isn't asked for them. A
+    subscription stored under another kind of Stripe key (``_foreign``) is left out."""
     m = db.get(Membership, user_id)
+    paying = m if m and not _foreign(m) else None  # (the free-search count and the exemption stay either way)
     grants = tuple((g.starts_at, g.ends_at) for g in db.query(MembershipGrant).filter(
         MembershipGrant.user_id == user_id, MembershipGrant.revoked_at.is_(None)))
     return access.AccessState(
         role=role, exempt=bool(m and m.exempt), grants=grants,
         free_searches_used=m.free_searches_used if m else 0, free_searches_limit=signup.free_searches(db),
-        stripe_status=m.stripe_status if m else None, current_period_end=m.current_period_end if m else None,
-        grace_until=m.grace_until if m else None,
+        stripe_status=paying.stripe_status if paying else None,
+        current_period_end=paying.current_period_end if paying else None,
+        grace_until=paying.grace_until if paying else None,
         billing_enabled=True if role == "admin" else billing.enabled())
 
 
@@ -128,7 +146,7 @@ def decide(db: Session, user_id: int, role: str, feature: str, now: Optional[dat
     """access.decide for this account, after asking Stripe once (at most hourly) when the subscription looks stale."""
     now = now or _now()
     decision = access.decide(feature, load_state(db, user_id, role), now)
-    if decision.needs_sync and sync_user(db, user_id, now):
+    if (decision.needs_sync or _foreign(db.get(Membership, user_id))) and sync_user(db, user_id, now):
         decision = access.decide(feature, load_state(db, user_id, role), now)
     return decision
 
@@ -247,6 +265,7 @@ def apply_update(db: Session, m: Membership, upd: billing.MembershipUpdate, now:
     m.cancel_at_period_end = upd.cancel_at_period_end
     m.grace_until = _naive(upd.grace_until)
     m.stripe_synced_at = _naive(now or _now())
+    m.stripe_mode = billing.status()["mode"]
     ids = {"customer": upd.customer_id, "subscription": upd.subscription_id}
     public = admin_key.current_public(db)
     if public is not None:  # no admin has to be signed in: sealed to the admin key's public half
@@ -269,12 +288,14 @@ def sync_user(db: Session, user_id: int, now: Optional[datetime] = None, *, forc
     m = db.get(Membership, user_id)
     if m is None or not billing.status()["configured"]:
         return False
+    foreign = _foreign(m)
+    every = RECHECK_EVERY if foreign else SYNC_EVERY  # (a doubtful subscription is looked at sooner)
     with _tried_lock:
         last = _tried.get(user_id)
-        if not force and last is not None and now - last < SYNC_EVERY:
+        if not force and last is not None and now - last < every:
             return False
         synced = m.stripe_synced_at.replace(tzinfo=timezone.utc) if m.stripe_synced_at else None
-        if not force and synced is not None and now - synced < SYNC_EVERY:
+        if not force and not foreign and synced is not None and now - synced < every:  # (it was synced under the other key)
             return False
         _tried[user_id] = now
     gone = False  # Stripe has nothing under the stored customer (another account or mode, or deleted)
@@ -292,7 +313,7 @@ def sync_user(db: Session, user_id: int, now: Optional[datetime] = None, *, forc
     except billing.BillingError:
         return False
     if found is None:
-        if gone:
+        if gone or foreign:
             _forget_stripe(m)  # what it says can't be true any more: it would keep access going and block checkout
         m.stripe_synced_at = _naive(now)
     else:
@@ -308,6 +329,7 @@ def _forget_stripe(m: Membership) -> None:
     one): the subscription's state and the sealed ids. Free searches, grants and the exemption stay."""
     m.stripe_status = m.plan = m.current_period_end = m.grace_until = None
     m.cancel_at_period_end = False
+    m.stripe_mode = None
     m.billing_self = m.billing_admin = None
 
 
@@ -531,6 +553,8 @@ def person_state(db: Session, user_id: int, role: str, now: Optional[datetime] =
     now = now or _now()
     state = load_state(db, user_id, role)
     m = db.get(Membership, user_id)
+    if _foreign(m):
+        m = None  # (a test-mode payment under a live key shows as no subscription; the sync on opening the page sorts it out)
     reason = access.member_reason(state, now)
     searching = access.decide(access.SEARCH, state, now)
     grants_end = [g[1] for g in state.grants if access._utc(g[0]) <= access._utc(now) < access._utc(g[1])]
@@ -539,6 +563,7 @@ def person_state(db: Session, user_id: int, role: str, now: Optional[datetime] =
         "reason": reason,                      # admin, exempt, billing_off, grant, subscribed, grace, or null
         "free_searches_left": access.free_searches_left(state),
         "free_searches_limit": state.free_searches_limit,
+        "free_search_extra_scores": access.FREE_SEARCH_EXTRA_SCORES,  # waiting jobs a free search scores besides its own
         "can_search": searching.allowed,
         "message": None if searching.allowed else searching.message,
         "plan": m.plan if m else None,
@@ -684,8 +709,11 @@ def verify(body: VerifyIn, user: AuthUser = Depends(current_user), db: Session =
 @router.post("/portal")
 def portal(request: Request, user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
     """Stripe's customer portal (change card, cancel): ``{url}``. The customer is the one in ``billing_self``, or,
-    after a reset wiped it, the one found again by the person's reference."""
+    after a reset wiped it, the one found again by the person's reference. Needs the password entered in the last 15
+    minutes: the portal shows the billing name, address and card, and cancels or changes the plan, so a stolen
+    session cookie must not open it."""
     _need_billing()
+    require_recent_auth(user)
     _throttle(user.id, "portal")
     m = membership_row(db, user.id)
     customer = stored_ids(m).get("customer")

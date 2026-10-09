@@ -140,6 +140,8 @@ input[type="range"] { accent-color: var(--accent); min-height: 24px; }
 .field-error { color: var(--danger); font-size: 13px; margin: 4px 0 0; }
 .check-field, .check { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 14px; min-height: 24px; }
 .check-field input, .check input { width: 18px; height: 18px; margin: 0; flex: none; accent-color: var(--accent); }
+/* On a phone-sized window the Jobs tab's filter boxes wrap into rows a few pixels apart: full-size targets (WCAG 2.5.8). */
+@media (max-width: 480px) { .check-field input { width: 24px; height: 24px; } }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 
 /* Jobs toolbar */
@@ -334,6 +336,15 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 .pin-kind-hybrid { border-style: dashed; }
 .pin-kind-onsite { border-style: dotted; }
+/* A theme slot as --c, for the pin kinds, the map key and the commute legs (a class, because the page's policy
+   refuses style attributes in markup: backend/security_headers.py). */
+.hue-accent { --c: var(--accent); }
+.hue-border { --c: var(--border); }
+.hue-info { --c: var(--info); }
+.hue-ok { --c: var(--ok); }
+.hue-quiet { --c: var(--quiet); }
+.hue-special { --c: var(--special); }
+.hue-warn { --c: var(--warn); }
 .pin-radius { display: inline-flex; align-items: center; gap: 6px; }
 .pin-radius input { width: 6.5em; }
 .pin-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
@@ -700,30 +711,32 @@ a.btn { text-decoration: none; display: inline-block; }
 .theme-split { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 
 .theme-preview {
-  display: flex; flex-direction: column; height: 92px; overflow: hidden; border-radius: 6px;
+  display: flex; flex-direction: column; min-height: 92px; overflow: hidden; border-radius: 6px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
   font-family: var(--font-ui); letter-spacing: var(--tracking); word-spacing: var(--word-spacing); line-height: 1.25;
 }
 .tp-bar { display: flex; gap: 4px; align-items: center; padding: 4px 6px; background: var(--panel); border-bottom: 1px solid var(--border); }
 .tp-tab { width: 26px; height: 8px; border-radius: 999px; background: var(--accent); }
 .tp-tab.tp-off { width: 20px; background: var(--border-strong); }
-.tp-page { flex: 1; padding: 6px; min-height: 0; }
+.tp-page { flex: 1 0 auto; padding: 6px; }
 .tp-card {
-  display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; height: 100%; overflow: hidden;
+  display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; min-height: 100%; box-sizing: border-box;
   background: var(--card); border: 1px solid var(--border); border-radius: 5px;
 }
-.tp-title { font-size: 10.5px; font-weight: 700; white-space: nowrap; overflow: hidden; }
-.tp-muted { font-size: 9.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
-.tp-row { display: flex; gap: 4px; align-items: center; margin-top: auto; }
+/* The miniature's text wraps and the box grows rather than cutting it off (WCAG 1.4.12 text spacing). */
+.tp-title { font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; }
+.tp-muted { font-size: 9.5px; color: var(--muted); overflow-wrap: anywhere; }
+.tp-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: auto; }
+.tp-badge, .tp-score, .tp-btn { overflow-wrap: anywhere; }
 .tp-badge { font-size: 9px; padding: 0 5px; border-radius: 999px; color: var(--ok);
   background: color-mix(in srgb, var(--ok) 15%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 55%, transparent); }
 .tp-score { font-size: 9.5px; font-weight: 700; padding: 0 4px; border-radius: 4px; color: var(--ok); background: var(--field); border: 1px solid var(--border); }
 .tp-btn { margin-left: auto; font-size: 9px; padding: 1px 6px; border-radius: 4px; background: var(--accent); color: var(--on-accent); }
-.theme-split .theme-preview { height: 92px; }
+.theme-split .theme-preview { min-height: 92px; }
 @media (pointer: coarse) { .theme-card input[type="radio"] { width: 24px; height: 24px; } }
 @media (max-width: 480px) { /* two cards a row on phones, so the list isn't endless */
   .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .theme-preview, .theme-split .theme-preview { height: 76px; }
+  .theme-preview, .theme-split .theme-preview { min-height: 76px; }
   .tp-muted { display: none; }
   .theme-card { padding: 6px; }
   .theme-card:has(input:checked) { padding: 4px; }
@@ -796,7 +809,7 @@ summary { cursor: pointer; min-height: 24px; }
   .btn, .btn-sm, .tab, .chip, .seg-btn, .chat-job, .toast-close, .chat-close,
   input[type="text"], input[type="search"], input[type="number"], input[type="password"], input[type="url"],
   input[type="email"], input[type="time"], select { min-height: 44px; }
-  .check, .check-field, .run-report summary, .reqs summary, .trip summary, .dupe-side summary { min-height: 44px; }
+  .check, .check-field, .run-report summary, .reqs summary, .trip summary, .dupe-side summary, .ghost-why summary { min-height: 44px; }
   .check input, .check-field input, .job-top input[type="checkbox"], .title-row input { width: 24px; height: 24px; }
   .tag button, .info-btn, .link, .help-link { min-width: 36px; min-height: 36px; }
   .leaflet-touch .leaflet-bar a { width: 44px; height: 44px; line-height: 44px; }
@@ -851,6 +864,7 @@ summary { cursor: pointer; min-height: 24px; }
 .auth-card #auth-status:empty { display: none; }
 .auth-form { display: flex; flex-direction: column; gap: 18px; }
 .auth-step { display: flex; flex-direction: column; gap: 18px; }
+.verify-address { font-size: 18px; overflow-wrap: anywhere; }
 .auth-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .auth-field > label:not(.check) { font-weight: 600; font-size: 15px; }
 .auth-field .hint { margin: 0; font-size: 13.5px; }
@@ -1052,3 +1066,12 @@ dialog.admin-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 .billing-main #billing-result[hidden], .billing-main #billing-error[hidden] { display: none; }
 @media (max-width: 480px) { .billing-facts { grid-template-columns: 1fr; } .billing-facts dd { margin-bottom: 6px; } }
 .check[hidden] { display: none; }
+
+/* Possible ghost jobs: the icon and words carry the meaning, the colour only repeats it. */
+.badge.ghost { text-transform: none; color: var(--warn); border-color: color-mix(in srgb, var(--warn) 60%, transparent); }
+.badge.ghost-likely { border-width: 2px; padding: 1px 8px; }
+.ghost-why { margin-top: 6px; font-size: 13.5px; }
+.ghost-why summary { cursor: pointer; color: var(--accent-text); }
+.ghost-signs, .ghost-ask { margin: 6px 0 0; padding-left: 18px; }
+.ghost-signs li, .ghost-ask li { margin-bottom: 4px; overflow-wrap: anywhere; }
+.ghost-section .badge { white-space: normal; }

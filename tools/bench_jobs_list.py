@@ -153,7 +153,8 @@ def main() -> None:
         from backend.app import app
 
         out = {"jobs": args.jobs, "listed_share": args.listed}
-        with TestClient(app) as client:  # start-up makes the admin and encrypts the (empty) database
+        # An address as the Host (backend/hosts.py allows any); start-up makes the admin and encrypts the empty database.
+        with TestClient(app, base_url="http://127.0.0.1") as client:
             t0 = time.perf_counter()
             ws = seed(args.jobs, args.listed)
             out["seed_s"] = round(time.perf_counter() - t0, 1)

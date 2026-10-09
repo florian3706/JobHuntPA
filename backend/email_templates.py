@@ -143,15 +143,20 @@ def invite(token: str, *, inviter: Optional[str] = None, expires: Any = None, ba
     return "You are invited to JobHuntPA", text, html, {"Auto-Submitted": "auto-generated"}
 
 
-def verify_email(token: str, *, expires: Any = None, base_url: Optional[str] = None) -> Template:
-    """Confirm an email address (new account or a change of address)."""
+def verify_email(token: str, *, expires: Any = None, change: bool = False, base_url: Optional[str] = None) -> Template:
+    """Confirm an email address (new account, or with ``change`` a change of address: someone signed in to an account
+    asked to use this address for it). The link opens a page that asks before it confirms anything."""
     url = f"{_base(base_url)}/verify-email.html#token={quote(token, safe='')}"
     after = [f"The link expires {_when(expires)}."] if expires else []
-    after.append("If you did not create or change a JobHuntPA account with this address, ignore this email.")
-    text, html = _simple(
-        "Confirm your email address",
-        "Confirm this address so JobHuntPA can send you password resets and your job digest.",
-        (url, "Confirm my email address"), after)
+    if change:
+        intro = ("Someone signed in to a JobHuntPA account asked to use this email address for it, instead of the "
+                 "address it has now. If that was you, open the link and confirm.")
+        after.append("If you did not ask for this, ignore this email. Nothing changes unless you open the link and "
+                     "confirm.")
+    else:
+        intro = "Confirm this address so JobHuntPA can send you password resets and your job digest."
+        after.append("If you did not create or change a JobHuntPA account with this address, ignore this email.")
+    text, html = _simple("Confirm your email address", intro, (url, "Confirm my email address"), after)
     return "Confirm your email address for JobHuntPA", text, html, {"Auto-Submitted": "auto-generated"}
 
 
@@ -162,6 +167,20 @@ SECURITY_EVENTS = {
     "mfa_disabled_by_admin": ("Two-step sign-in was turned off on your JobHuntPA account",
                               "An administrator turned off two-step sign-in (MFA) for your JobHuntPA account.",
                               "You can turn it on again in your account settings."),
+    "recovery_codes_replaced": ("New recovery codes were made for your JobHuntPA account",
+                               "New recovery codes were just made for your JobHuntPA account. The old ones no "
+                               "longer work.",
+                               "If you made them, nothing more is needed."),
+    "email_change_started": ("A change of email address was started on your JobHuntPA account",
+                             "Someone signed in to your JobHuntPA account asked to change its email address to "
+                             "another one. Nothing has changed yet: it changes only when the link sent to the new "
+                             "address is opened.",
+                             "If you asked for this, nothing more is needed."),
+    "mail_route_changed": ("The mail server or public address of your JobHuntPA was changed",
+                          "An admin changed where JobHuntPA sends its email: the mail server or the public address "
+                          "the links in emails point to. This notice went through the old server. For the next 24 "
+                          "hours no admin can turn off anyone's two-step sign-in or send them a reset link.",
+                          "If you or another admin made this change, nothing more is needed."),
     "email_changed": ("The email address on your JobHuntPA account was changed",
                       "The email address of your JobHuntPA account was just changed to a different one. This notice "
                       "goes to the old address.",
@@ -170,7 +189,7 @@ SECURITY_EVENTS = {
 
 
 def security_notice(event: str, *, when: Any = None, base_url: Optional[str] = None) -> Template:
-    """A security notice. ``event`` is "password_changed", "mfa_disabled_by_admin" or "email_changed"."""
+    """A security notice. ``event`` is one of ``SECURITY_EVENTS``."""
     if event not in SECURITY_EVENTS:
         raise ValueError(f"Unknown security event: {event}")
     subject, intro, note = SECURITY_EVENTS[event]
@@ -307,6 +326,7 @@ def digest_card(job: dict, base: str) -> dict:
         "original_url": _http_url(job.get("url")),
         "source": source_label(job.get("source")),
         "workspace": _clean(job.get("workspace_name"), 100),
+        "ghost": f"Possible ghost job: {reason}" if (reason := _clean(job.get("ghost_reason"), 160)) else None,
     }
 
 
@@ -318,7 +338,9 @@ def job_digest(jobs: list[dict], *, keys: ServerKeys, unsubscribe_id: str, every
                more_count: int = 0, name: Optional[str] = None, base_url: Optional[str] = None) -> Template:
     """The job digest. ``jobs`` are plain dicts with the keys id, title, company, salary_min, salary_max,
     salary_text, office_text, location_text, office_days, work_mode, employment_type, fit_score, fit_summary,
-    gap_count (or gaps: a list or a number), url, and workspace_id (optional). Any may be missing.
+    gap_count (or gaps: a list or a number), url, ghost_reason (the first sign that the ad may not be a current
+    vacancy, backend/ghost.py; a line "Possible ghost job: ..." is added when set), and workspace_id (optional).
+    Any may be missing.
     ``unsubscribe_id`` (letters, digits, - and _) is signed with ``keys``; ``more_count`` says how many more jobs
     were left out ("and 23 more in JobHuntPA")."""
     base = _base(base_url)
@@ -365,6 +387,8 @@ def _card_parts(c: dict) -> tuple[list[str], str]:
     lines = [c["title"]] + [f"{k}: {v}" for k, v in meta]
     if c["summary"]:
         lines += ["", c["summary"]]
+    if c["ghost"]:
+        lines += ["", c["ghost"]]
     if c["open_url"]:
         lines += ["", f"Open in JobHuntPA: {c['open_url']}"]
     if c["original_url"]:
@@ -389,6 +413,7 @@ def _card_parts(c: dict) -> tuple[list[str], str]:
         + (f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 8px 0;">'
            f'{rows}</table>' if rows else '')
         + (f'<p style="margin:0 0 12px 0;">{_e(c["summary"])}</p>' if c["summary"] else '')
+        + (f'<p style="margin:0 0 12px 0;">{_e(c["ghost"])}</p>' if c["ghost"] else '')
         + "".join(f'<p style="margin:0 0 4px 0;">{x}</p>' for x in links)
         + '</td></tr></table>')
     return lines, html

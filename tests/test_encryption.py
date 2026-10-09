@@ -21,7 +21,7 @@ from unittest import mock
 
 from tests import helpers  # noqa: E402  (sets the test environment first)
 
-from sqlalchemy import func, select, text  # noqa: E402
+from sqlalchemy import String, cast, func, select, text, type_coerce, union  # noqa: E402
 
 from backend import crypto, db as db_module, migrate_encryption  # noqa: E402
 from backend.db import (CommuteCache, Document, FitResult, HttpCache, Job, Pin, SessionLocal, Workspace,  # noqa: E402
@@ -610,6 +610,28 @@ class SqlGuardTest(unittest.TestCase):
             # Plaintext columns are fine, and so is counting rows.
             conn.execute(select(Job.id).order_by(Job.first_seen, Job.id).distinct())
             conn.execute(select(func.count()).select_from(Job))
+
+    def test_windows_casts_type_coercions_and_union_ordering_are_refused_too(self):
+        """Shapes that compiled and ran silently against ciphertext (Phase L review): the guard sees OVER, CAST,
+        type_coerce and a UNION's ORDER BY as well."""
+        statements = {
+            "OVER ORDER BY": select(func.row_number().over(order_by=Pin.label)),
+            "OVER PARTITION BY": select(func.count().over(partition_by=Job.status)),
+            "CAST": select(Pin.id).where(cast(Pin.label, String) == "x"),
+            "type_coerce": select(Pin.id).where(type_coerce(Pin.label, String).like("%x%")),
+            "UNION ORDER BY": union(select(Pin.label), select(Pin.label)).order_by(Pin.label),
+            "UNION GROUP BY": union(select(Pin.label), select(Pin.label)).group_by(Pin.label),
+        }
+        helpers.started()
+        with engine.connect() as conn:
+            for shape, statement in statements.items():
+                with self.subTest(shape):
+                    with self.assertRaises(crypto.SealedSqlError):
+                        conn.execute(statement)
+            # Plaintext columns are fine in the same shapes.
+            conn.execute(select(func.row_number().over(order_by=Job.first_seen, partition_by=Job.workspace_id)))
+            conn.execute(select(Pin.id).where(cast(Pin.id, String) == "1"))
+            conn.execute(union(select(Job.id), select(Job.id)).order_by(Job.id))
 
     def test_sealed_columns_have_no_server_default_and_always_sealed_ones_always_write(self):
         for table in db_module.Base.metadata.sorted_tables:

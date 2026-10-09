@@ -170,6 +170,9 @@ def delete_my_account(body: DeleteAccountIn, request: Request, user: AuthUser = 
     except users.AccountProtected:
         raise _last_admin() from None
     except admin_key.ApkUnavailable:
+        if not crypto.has_ik():  # a session from before the identity key
+            raise AuthProblem(409, "admin_key_missing", "Sign in again to open people's details, then delete your "
+                                                        "account.") from None
         raise AuthProblem(409, "admin_key_missing", "You don't have the admin key, so you can't delete your account "
                                                     "yourself. Ask another admin to delete it, or to share the key "
                                                     "with you again.") from None

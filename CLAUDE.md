@@ -33,4 +33,17 @@ working and be reflected in them**:
   else calls `llm_providers.chat` / `web_search`; never build provider requests elsewhere.
 - `.env` is written only through `backend/app_settings.py`, which allows a fixed list of names and
   validates every value (the app can be reachable from other devices).
+- Sealed (encrypted) columns, `backend/crypto.py` and `docs/design/accounts.md` §2: never filter, sort,
+  group, `DISTINCT` or run an SQL function on one (decide in Python, or use a blind index); give none a
+  `server_default`; check ownership through the plaintext `workspace_id` before loading a sealed row;
+  start thread-pool work with `backend.threads.submit` (or `crypto.submit`), never `pool.submit`.
+- Never log user data (emails, names, job text, documents, chats, tokens, keys); log the kind of failure
+  and an id. `tests/test_log_leaks.py` gets a step when a feature handles personal text.
+- Anything that adds, replaces or drops a key (recovery codes, background access, admin key, server key)
+  changes everything in one transaction, then calls `db.scrub_wal()` after the commit.
+- Every new endpoint states who may call it (open, signed in, admin, recent sign-in, membership) and gets a
+  test for that access, including the refusal.
+- Pages keep the Content-Security-Policy: no inline scripts, event-handler attributes, `<style>` or
+  `style="..."` (use classes, `addEventListener`, `element.style`); a new outside script or stylesheet goes
+  into `backend/security_headers.py`.
 - Tests: `python3 -m unittest discover -s tests -t .`

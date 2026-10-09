@@ -2,7 +2,7 @@
 
 **Base.** `main` at 48fb435, plus Phase 1 of the documents work (d8eea88 on branch `worktree-agent-a3d7c32a94762a7dd`). Phase 1 adds notes and summaries as `Document` rows (`filetype` "note"/"summary"), `concise_text`, `use_concise`, `summary_of`, `updated_at`, the "preferences" kind and `llm_usage`. Rebase every phase below on it.
 
-**Threat model.** The goal is that someone holding only the database, its backups or the `data/` folder cannot read a user's searches, documents, jobs or personal details. This holds even if that person is the operator browsing with `sqlite3`, as long as the user has not opted in to background access.
+**Threat model.** The goal is that someone holding only the database, its backups or the `data/` folder cannot read a user's searches, documents, jobs or personal details. This holds even if that person is the operator browsing with `sqlite3`, as long as the user has not opted in to background access. Personal and billing details of other people (the admin details key, §1.4) stay closed even to someone who holds the database **and** the key file, because the key that opens them is never reachable through the server key (the identity key, §1.2).
 
 It does not protect against an operator who changes the running code or reads process memory, and nothing at rest can. Section 2.5 says this plainly, and the user-facing text in section 6 says it too.
 
@@ -27,7 +27,7 @@ New dependencies: `cryptography` and `argon2-cffi`.
 | Deriving a key from the password | argon2id raw output (`argon2.low_level.hash_secret_raw`) gives a 32-byte master value. HKDF-SHA256 splits it into `auth` and `kek`. One argon2 run per login does both jobs, which halves the cost on a Pi. |
 | Sub-keys | HKDF-SHA256 with labelled `info` strings, for example `b"jh index v1"`. |
 | Admin personal details | X25519 sealed boxes: ephemeral X25519, then HKDF over the shared secret and both public keys, then AES-GCM. |
-| Associated data (AAD) | Columns use `b"jh/" + table.column`, set automatically by an `after_parent_attach` event so values can't be swapped between columns. Key wraps use their own labels, for example `pw\|{uid}`, `rc\|{uid}\|{code_id}`, `sess\|{sid}`, `srv\|{uid}\|{kek_id}`, `grant\|{uid}\|{apk_ver}`, `totp\|{uid}` and `file\|{stored_name}`. |
+| Associated data (AAD) | Columns use `b"jh/" + table.column`, set automatically by an `after_parent_attach` event so values can't be swapped between columns. Key wraps use their own labels, for example `pw\|{uid}`, `rc\|{uid}\|{code_id}`, `sess\|{sid}`, `srv\|{uid}\|{kek_id}`, `grant\|{uid}\|{apk_ver}`, `totp\|{uid}` and `file\|{stored_name}`; the identity key's (§1.2): `pw-ik\|{uid}`, `rc-ik\|{uid}\|{code_id}`, `sess-ik\|{sid}`, `pend-ik\|{sid}`, `ik-priv\|{uid}` and `pending-codes\|{uid}`. |
 
 ### 1.2 Hierarchy
 ```
@@ -37,19 +37,34 @@ recovery code i (80-bit, 8 codes) ─HKDF(user salt)─► KEK_rc_i ──wraps�
 session cookie secret (256-bit) ─HKDF─► KEK_sess ──wraps──► DEK            (one wrap per session row)
 server KEK (key file) ──wraps──► DEK                                       (background opt-in users only)
 DEK ──► AES-GCM for columns and uploaded files
-    ├HKDF "index"──► blind-index key (jobs.url_index, company_sources.careers_url_index, commute cache keys)
-    └encrypts──► the user's X25519 private key
+    └HKDF "index"──► blind-index key (jobs.url_index, company_sources.careers_url_index, commute cache keys)
+
+identity key IK (32 random bytes per user; protects ONLY the X25519 private key and the unconfirmed recovery codes):
+    KEK_pw ──wraps──► IK                       (pw-ik|{uid})
+    KEK_rc_i ──wraps──► IK                     (rc-ik|{uid}|{code_id}, one per code made after the IK existed)
+    KEK_sess ──wraps──► IK                     (sess-ik|{sid}; pend-ik|{sid} while pending_mfa)
+    server KEK ──✗──► IK                       (never: background access does not open the IK)
+IK ──wraps──► the user's X25519 private key    (ik-priv|{uid})
 Admin PII key pair (APK): public key in app_settings; private key sealed to each admin's X25519 public key
 key file: pepper ─► email_hash = HMAC-SHA256(pepper, normalised email)
           signing ─► unsubscribe tokens
 process-only random key (never on disk) ─► http_cache
 ```
 
+**The identity key (IK).** A second random key per user, made with the account, whose only job is to protect the X25519 private key (the one that opens an admin's grant of the APK, §1.4) and the recovery codes shown once and not yet confirmed (`pending_codes_enc`, because a code opens the IK).
+- **Why.** The server KEK opens the DEK of every background-access account. If the private key were sealed under the DEK, anyone with `data/` (the database and `server-keys.json`: exactly the uninstaller's backup) could go server KEK → DEK → private key → grant → APK and read every user's personal and billing details. The IK has no wrap the server can open, so that chain stops at the private key. Everything the server does while nobody is signed in (scheduled searches, digests, Stripe sync, sign-ups) needs the DEK or only public keys, never the IK.
+- **Where it is wrapped:** under the password key (`user_keys.pw_wrapped_ik`), under each recovery code's key (`recovery_codes.wrapped_ik`) and under each session's cookie-derived key (`sessions.wrapped_ik`, also while `pending_mfa`). **Never under the server KEK.** A password change re-wraps it with the DEK; a recovery-code reset opens it with the code.
+- **Use.** A signed-in request's key scope carries a way to open its session's wrap (`crypto.as_user(..., ik_opener)`); `crypto.open_ik()` opens it afresh each time and nothing keeps the result. Only `admin_key.open_apk` asks for it. A background run's scope has none (`NoIdentityKey`): `tasks.start` builds the worker's scope again without the request's opener, so a run queued by a signed-in admin can't open the IK after the request ends.
+- **A reset that can't open it makes a new one.** A reset by email that keeps the data (background access) can open the DEK but not the IK, so the person gets a new key pair and a new IK; an admin loses their grant (audited as `admin_key_lost`, and the page says so) and another admin shares the key again with the usual "Share the admin key again". A reset that wipes the data always makes new keys, as before.
+- **Accounts from before the IK** have the private key sealed under the DEK (`pw_wrapped_ik` is NULL). There is no start-up step, because the IK is wrapped under the password: at the account's next password sign-in (or recovery-code reset, or any check of the password: changing it, making new codes) `users.unlock` makes an IK, re-wraps the private key and the unconfirmed codes under it, wraps it under the password key, overwrites the DEK-sealed copies and scrubs the write-ahead log. Until then an admin's arrangement is the old one, and nothing new is sealed to it: promoting such an account, sharing the key with it again, or a new key skips it (its private key is under the DEK, which an old copy of `data/` may open with the server key, and nothing records whether background access was ever on): `admin_key.NeedsSignIn`, a 409 "Ask them to sign in once first, then share the key.", and `admin_key_not_shared` in the audit log. **The migration makes a new key pair** (`users.migrate_identity`; it does not reuse the private key, because a copy of the DEK-sealed form in a backup, with the DEK from the server key, would still open it): the new private key is wrapped under the IK, an admin's grant is opened with the old private key and the key is **replaced** (`admin_key.new_key`, audited as `admin_key_replaced`: everything sealed to it is moved, every admin who can be given it is, the rest wait for a share), so a grant in an old copy opens a key that protects nothing written from then on. A grant that doesn't open is deleted (`admin_key_lost`). All of it is one transaction with the row changes. The recovery codes the account has not yet confirmed saving are in hand at that point (`pending_codes_enc`), so they get the IK too (`recovery_codes.wrapped_ik`), unless the account has background access: the server key opens the DEK that holds their text, so a code that opened the new IK would let an old copy of `data/` reach it, and those codes stay without (like the confirmed ones). Turning background access on is refused (409 `needs_sign_in`) until the account has an IK. The codes already confirmed can't (the plaintext is gone): a reset with such a code keeps the data but gives the account a new key pair (an admin needs the key shared again; `replace_identity` also drops unconfirmed codes still under the old IK, which nothing could open), and Settings suggests making new codes to admins whose unused codes predate the IK (`recovery_codes_old` in `GET /api/auth/security`). A reset with one of those codes by an account that has no IK yet loses nothing: the code opens the DEK, which still opens the private key. Sessions made before the IK have none; the admin panel then says "Sign in again to open people's details" (`admin_key_needs_sign_in`), until a password check in that session (`security.confirm_password`: confirming it, changing it) hands the IK it just opened to the session (`sessions.give_ik`).
+
 **DEK lifetime.** The DEK is never rotated in place, because that would mean re-encrypting every row. It is replaced only when a password reset wipes the data. Random-nonce limits are not a concern: one user would need billions of encryptions to approach them. The `kid` and version byte would allow lazy re-encryption if it were ever needed.
 
 ### 1.3 The server key file, `data/server-keys.json`
 - **Format.** Mode 0600, written atomically (temp file in the same folder, then `os.replace`, the same approach as `app_settings._replace_file`). `JOBHUNT_KEY_FILE` can point elsewhere, mainly for tests. Contents:
-  `{"version":1,"kek":{"current":"k1","keys":{"k1":b64}},"pepper":{"current":"p1","keys":{"p1":b64}},"signing":{"current":"s1","keys":{"s1":b64}},"created_at":…}`.
+  `{"version":1,"kek":{"current":"k1","keys":{"k1":b64}},"pepper":{"current":"p1","keys":{"p1":b64}},"signing":{"current":"s1","keys":{"s1":b64}},"created_at":…}`, plus `"encryption_done_at"` once the one-time encryption of the data from before accounts has finished (written once, never removed).
+- **`encryption_done_at` and strict mode.** Strict mode (§2.1, refusing plaintext in a sealed column) turns on at every start when the key file says the encryption is done, or the database does (`backend/migrate_encryption.is_done`; `db.encryption_done` reads both). The file is the one that counts: the database's `app_settings["encryption_migration"]` could be set back to `pending` by someone who can only write the database, and the next run would then seal whatever plaintext they planted as if it were real. With the marker set, a run is refused (`MigrationError`), start-up puts the database's state right, and the planted value stays plaintext, which strict mode refuses to read. An install from before the marker gets it at its next start (the database says done). `recover-lost` carries it into the new file. Restore the key file and the database as a pair: an older database with a newer key file is read as encrypted and its plaintext is refused.
+- **One process at a time.** The app takes an exclusive lock on `data/server-keys.json.lock` at start-up (`keys.hold_key_file`: `fcntl.lockf`, `msvcrt.locking` on Windows) and keeps it until it stops; `rotate-kek`, `new-admin-key` and `recover-lost` take it before they change anything and refuse while someone else holds it, and the app refuses to start under a running command. This holds however the app was started; `data/running.json`, which only the launcher writes, stays as a second check. A command that replaced the file under a running app would leave it wrapping with a retired key (every two-step sign-in and background search failing until a restart). `ServerKeys.kek_wrap` also compares the file on disk with what the process loaded and refuses when they differ. The lock file is left out of the uninstaller's backup.
 - **Why a file in `data/` and not `.env`.**
   - The uninstaller backs up `data/`, and the Windows setup keeps `data/` on update.
   - `.env` holds settings that the app edits.
@@ -85,9 +100,9 @@ process-only random key (never on disk) ─► http_cache
 ### 1.4 Admin PII key (APK)
 - **Creation.** An X25519 key pair is created when the first admin is created. The public key and its `apk_version` live in `app_settings`. The private key is stored in `admin_key_grants` (one row per admin), sealed to that admin's X25519 public key.
 - **Writing personal details needs only the public key.** Sign-ups, email changes and the Stripe sync can all write `users.pii_admin`, `memberships.billing_admin`, `membership_grants.note_admin` and `admin_audit.detail_admin` with no admin logged in.
-- **Reading.** In an admin request: admin DEK → their X25519 private key → open their grant → APK private key. This is repeated for each request; nothing stays in memory.
+- **Reading.** In an admin request: the session's identity key (§1.2) → their X25519 private key → open their grant → APK private key. This is repeated for each request; nothing stays in memory. The admin's DEK does not open the private key, and the server KEK opens only the DEK, so **the key that opens the APK is usable only while that admin is signed in**, however their background access is set. `recover-lost` runs the same chain with the password (password → IK → private key → grant), and reads the older DEK-sealed form for an admin who hasn't signed in since the IK was introduced.
 - **Making someone an admin.** The promoting admin (logged in, so they have the APK private key) seals it to the new admin's public key. Every user gets a key pair at sign-up, so this works without the new admin being present.
-- **Demoting or deleting an admin.** The APK is rotated automatically: a new key pair is made, every admin-sealed value is decrypted and re-sealed to the new public key, and the remaining admins get new grants. This is cheap at this scale.
+- **Demoting, deleting or turning off an admin.** The APK is rotated automatically: a new key pair is made, every admin-sealed value is decrypted and re-sealed to the new public key, and the remaining *active* admins get new grants (`admin_key.active_admin_ids`). An admin who is turned off is no longer trusted with what is written from now on, so turning one off rotates the key like demoting does, and they are given no grant of any later key. Only the rotation needs the acting admin's own copy: an admin without one can still turn the other off (the emergency brake: they are signed out and their grant deleted), and the answer says the key was not replaced (`apk_rotated` false, audited as `admin_key_not_replaced`); an admin who has the key then replaces it, or `new-admin-key` does. Turning them on again shares nothing: another admin uses "Share the admin key again" (`POST …/regrant`, refused for an account that is off). A database from before this rule may still hold a disabled admin's grant; the next rotation drops it, as does turning them off again.
 - **The last admin loses both their password and every recovery code.**
   - Personal details become unreadable.
   - Users can still sign in, because `email_hash` doesn't need the APK, and membership gating keeps working because its fields are plaintext.
@@ -220,11 +235,36 @@ Notes:
 
 **An operator who changes the code**, proxies traffic before TLS terminates, or reads process memory can capture passwords and data at the next login. Encryption at rest cannot prevent this.
 
-**Users with background access:** the operator can decrypt their data using the key file.
+**Users with background access:** the operator can decrypt their data (searches, documents, jobs, `pii_self`) using the key file. What this does **not** reach is the admin details key: the private key that opens an admin's grant is under their identity key, which has no wrap the key file opens (§1.2). So the personal and billing details of all users (`pii_admin`, `billing_admin`, grant notes, audit details) stay closed to someone with `data/`, even when an admin has background access, until an admin signs in. What remains: an admin who has not yet signed in since the identity key was introduced still has the private key under their DEK (migration, §1.2; nothing new is sealed to such an account, and the migration replaces the key pair and the admin key); **old copies and leftover files**: a backup from before the migration (`*.bak-before-encryption`, `*.bak-before-job-pool`, the uninstaller's zips) holds the old DEK-sealed private key and grant, which with the DEK from the key file open the admin key *as it was then* (and everything written before the key was replaced), never what was written after; the README and the Server section tell admins to delete them; and an operator who changes the code or reads process memory can take the key from a signed-in admin's requests; the recovery codes an admin has not yet confirmed saving are under the IK, not the DEK.
 
 **Third parties:**
 - The email provider sees digest contents (job titles, companies and fit summaries).
 - Stripe sees the email address and payment details.
+
+**Sign-in timing and the mail thread.** Refused sign-ins are held to a floor (§3.6), so an unknown address and a wrong password take the same time to within a few milliseconds. "Forgot password" answers 202 either way and queues the same kind of job on the mail thread, a decoy as long as a typical send for an address with no account, so the delay of the next email shows nothing either. What remains: the delay is an average, so a very long or very short real send can still show, and sign-up answers "already exists" for an existing address anyway, so this is hardening of an already-open door.
+
+**Wrong tries are forgotten on restart and spread over many addresses.** They are counted in memory (§3.6). Restarting the server (or a power cut) gives every source its five tries back. A guesser with many network addresses gets 5 tries per address up to the account-wide ceiling of 100 an hour; IPv6 addresses count one by one, so a whole /64 can rotate through the ceiling. The owner's usual browsers are exempt from the ceiling, a brand-new device is not. Wrong two-step codes have their own, lower ceiling (10 an hour from sources that aren't a known browser) and, on a reset link, 5 per link (§6.5).
+
+**What someone who can WRITE the database can do (not only read a copy).** These columns are not authenticated by any key the writer lacks:
+- The plaintext lookup and state columns: `email_hash`, `mfa_enabled`, `role`, `status`.
+- The public keys: `user_keys.x25519_pub` and `app_settings.apk_public`/`apk_version`.
+
+A writer can therefore:
+- **Redirect a password link** by rewriting a victim's `email_hash` to their own address and asking for a link. For an account **with background access** this does not work: the reset keeps the data, so it checks that the link's address is the one in the account's own sealed details (`pii_self`, which a writer can't forge without the account's key) and refuses with 410 `link_invalid`. For an account **without** background access the reset deletes the data (the owner accepted that) and the writer ends up with an emptied account: their data is lost, never disclosed.
+- **Not mint a link out of nothing.** A reset token carries the server key's signature of itself and the account id (`password_reset.link_token`), so a row added by hand, or a real link moved to another account, has no token that verifies (tests/test_password_reset.py `WriterTest`). Other single-use links (email checks, address changes, invitations) are not signed and are covered only by this section: a writer can mint them.
+- **Receive the admin details key** by replacing an admin's `x25519_pub` (or `apk_public`) and then waiting for a promotion, regrant, rotation or sign-up, which seals the key (or new details) to the swapped public key. That exposes only admin-visible personal details (names, emails, notes, billing details), never searches, documents or jobs. Hardening for later: a `pub_mac` under HKDF(signing key, "jh pubkey v1") checked in `grant_to`, `admin_public_key` and `heal_details`.
+- Set an account's `role`, `status` or `mfa_enabled`, or give it a membership (`memberships.stripe_status`, `stripe_mode`, `current_period_end`, `exempt`: the gate reads them in plaintext and nothing authenticates them); turning two-step off for an account whose secret is in the file lets them past that step but not past the password.
+
+This is the same class as the plaintext-swap limit in §15 and needs write access to the database file or SQL, which none of a signed-in user, a stolen session, a read-only backup or an outsider has. Someone with both the database and the key file can do anything the server can.
+
+**Who controls the mail route.** The mail server and the public address decide where every reset link goes, so whoever sets them receives the links. An admin who points them at their own server could therefore reset any account that has no two-step sign-in (and, with background access, keep its data) without the person seeing an email, and could first turn two-step off for one that has it. Guarded, not removed:
+- Saving a change to `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY` or `PUBLIC_BASE_URL` (once mail was set; the first set-up is not a change) sends a priority notice to every other active admin **through the old server** (`mail_route.notify_admins`, with the old `SmtpConfig`, before the new settings are saved), and records the time (`app_settings.mail_route_changed_at`). Their addresses are sealed to the admin key, so an admin without a copy of it is refused (409 `admin_key_missing`) while other active admins exist, and nothing is saved: the one detection step can't be skipped. An admin whose own details are stale (sealed to an older key) can't be read and gets no notice; that is recorded in the audit log (`mail_route_notice_partial`), not refused, so settings stay editable until they sign in again.
+- For 24 hours after that, `POST /api/admin/users/{id}/mfa/disable` and `.../reset-email` answer 409 `mail_changed_recently`, for every admin. The person can still use a recovery code.
+- Not covered: the anonymous "forgot password" form, which an admin can drive with any address. For an account with two-step sign-in the code is still needed (the hold stops the admin turning it off). For one without, the operator who controls the mail can take the account; that is the same trust as the operator of §2.5's "An operator who changes the code". Turn on two-step sign-in to close it.
+
+**The write-ahead log.** `secure_delete` zeroes freed pages in the main file; the log (`-wal`) keeps old page images until a checkpoint truncates it. `scrub_wal()` runs after each commit that drops a key copy (a spent recovery code included) but a reader open at that moment blocks it. A blocked scrub is remembered and tried again at start-up and by the clean-up tick (`scrub_wal_again`, every 10 minutes), and `PRAGMA journal_size_limit=0` cuts the log file whenever SQLite resets it. Until one of those happens the old key copy can sit in the log, as it can on flash storage.
+
+**Who can read the files.** The data folder is made 0700 and the database with its `-wal` and `-shm` 0600 (`db.owner_only`, at every start; an existing install is tightened), the plaintext backups (`*.bak-before-encryption`, `*.bak-before-job-pool`) are created 0600 before the first byte is written, and the key file and the uninstaller's zip were already 0600. Other accounts on the same computer can't copy the wrapped keys and password verifiers to guess passwords offline. On Windows this relies on the folder's permissions. Root and the owner can still read everything.
 
 **Logs must never contain plaintext.** Today they do in three places:
 - httpx logs every request URL at INFO, which includes SEEK search terms, Nominatim queries and station names. Set the `httpx` and `httpcore` loggers to WARNING.
@@ -247,9 +287,11 @@ Notes:
    - No key stays in memory between requests. Restarting the server logs nobody out. The database alone cannot unwrap a key.
    - Background runs hold the key for as long as the run lasts, even if the user logs out meanwhile.
    - Background-access keys are unwrapped with the KEK each time they are needed, and never cached.
+   - The row also holds `wrapped_ik` (label `sess-ik|{sid}`, `pend-ik|{sid}` while pending). The middleware does not open it: it gives the request's scope a function that does (`crypto.session_ik_opener`), and only the admin details chain calls it, once per use (§1.2). A session without one asks the admin to sign in again.
 2. **Cookie:**
-   - Name `__Host-jh_session` with `Secure` when the request is HTTPS. HTTPS means `request.url.scheme` after uvicorn's proxy headers (`--forwarded-allow-ips 127.0.0.1` is the default, and Tailscale serve connects from loopback), or a Host matching an `https` `PUBLIC_BASE_URL`.
-   - On plain `http://127.0.0.1` (local installs; Safari rejects Secure cookies there) the name is `jh_session`.
+   - Name `__Host-jh_session` with `Secure` when the request is HTTPS, and with `_<port>` after it when the Host has a port (`__Host-jh_session_8443`). Browsers keep cookies per host name and ignore the port, so a test instance on `:8001` next to the live app on `:8040` would otherwise overwrite each other's cookie and sign each other out. A port in the name stops that; it does not stop another app on the same host name from receiving the cookie, so JobHuntPA should have a host name of its own. HTTPS means `request.url.scheme` after uvicorn's proxy headers (`--forwarded-allow-ips 127.0.0.1` is the default, and Tailscale serve connects from loopback), or a Host matching an `https` `PUBLIC_BASE_URL`.
+   - On plain `http://127.0.0.1` (local installs; Safari rejects Secure cookies there) the name is `jh_session` (`jh_session_8040` with the port). Existing sessions end once when this changes, and people sign in again.
+   - A second cookie, `jh_device`, marks a browser that has signed in to an account (item 6). Same naming rules; `SameSite=Strict`, one year.
    - Always HttpOnly, `SameSite=Lax` (so the "Open" link in a digest email arrives signed in) and `Path=/`.
    - `Max-Age` is set only when "Keep me signed in" is ticked.
 3. **CSRF:**
@@ -272,13 +314,18 @@ Notes:
    - Deletes the row, expires the cookie and sends `Clear-Site-Data: "cache"`. The JS clears `jobhunt.ws`.
    - "Sign out everywhere" deletes all of the user's sessions.
    - Password change, a reset, disabling the account and deleting it also delete every session.
-6. **Rate limiting and lockout** (`backend/ratelimit.py`, in memory; the app is a single uvicorn process):
-   - **Per IP** (the client address from X-Forwarded-For on loopback): auth endpoints allow 10 requests per 5 minutes and 60 per hour. Unsubscribe allows 30 per minute.
-   - **Per account:**
-     - After 5 failures in a row, wait 30 s, doubling up to 15 minutes (`users.locked_until`). There is no permanent lockout, which would be a denial-of-service vector. Admins can unlock.
-     - 5 wrong MFA codes drop the pending session.
+6. **Rate limiting and lockout** (`backend/ratelimit.py`, `backend/lockout.py`; in memory, the app is a single uvicorn process):
+   - **Per IP** (the client address from X-Forwarded-For on loopback): auth endpoints allow 10 requests per 5 minutes and 60 per hour. Unsubscribe allows 30 per minute. This is only as good as the proxy's header: `tailscale serve` and other proxies on this computer **append** the real client address, which uvicorn then reads; a proxy that passed a client's own `X-Forwarded-For` through unchanged would let anyone pick their address. Behind the Host allowlist (§18) a web page on another site can't reach the server to forge one, so only programs on this computer can.
+   - **Wrong passwords and codes** are counted per account **and per source**, never for the account as a whole:
+     - A source is the client address, or, for a browser that has signed in to the account before, that browser (the signed `jh_device` cookie, bound to the account and to its password salt, so a password change or reset makes every copy useless).
+     - After 5 failures in a row from one source, that source waits 30 s, doubling with each further failure up to 15 minutes. There is no permanent lockout. Failures are forgotten after a day without a try or at the next right password from that source.
+     - The try is **counted before the slow password check** (one step under a lock) and given back if the password was right, so tries sent at the same moment can't all slip past the 5: of 10 parallel wrong passwords, 5 get "wrong password" and 5 get "wait". A right password at the password step of an account with two-step sign-in gives its try back; wrong codes at the next step are counted on their own.
+     - Why per source: a lock for the whole account lets anyone who knows an address keep its owner out (4 requests an hour was enough, and the way out, recovery and reset, was locked too). Now an outsider locks only their own address.
+     - **Account-wide ceiling:** 100 wrong tries an hour from any source slows a guesser who rotates addresses. It holds up browsers new to the account, with a plain message; it never holds up a browser that has signed in to the account (so someone with a botnet can keep strangers' *first* sign-in on a new device waiting, but not the owner's usual browsers). It does not apply at the steps that need a proof only the owner has: the code after the password, a recovery code, the code during a reset by email (the link is the proof of the mailbox). Those steps do have the **code ceiling** (`ratelimit.code_guesses`, `lockout.begin_code`): 10 wrong codes an hour from sources that are not a browser the account signed in from, whatever the number of addresses, because a code has only a million values and a link or a recovery code is not used up by a wrong guess. It covers the code on a reset link, the second proof in `/recover`, and turning two-step off, changing the address and making new codes. A reset link is also used up (410) by its 5th wrong code, and a recovery code typed first in `/recover` is used up by its 5th wrong second proof, so the person asks for a new link. The app's code at sign-in has the code ceiling too (a recovery code typed there does not), and each pending session allows 5 tries (`sessions.MFA_ATTEMPTS`).
+     - Wrong tries are no longer written to the database (`users.failed_logins` and `locked_until` are unused; a restart forgets them). That also removes the extra database write only real accounts made on a wrong password, which showed in the timing.
+     - An admin's "unlock" forgets all of an account's counts; a password change or reset does too. The admin list shows "waiting after wrong passwords" while any source of an account waits.
    - Responses are 429 with `Retry-After` and a plain message.
-   - Unknown emails still run a dummy argon2 derivation, so responses can't be used to tell which accounts exist.
+   - Email addresses with no account are counted the same way (a separate store, so made-up addresses can't push real accounts out), so answers can't tell the two apart. Unknown emails still run a dummy argon2 derivation, and **every refused sign-in or recovery waits for a floor**: the slowest of three password derivations measured at start-up for the KDF settings in use, plus 50 ms. A real account's work (stored KDF settings that differ from the profile, a lookup that rewrites the email hash) can't then be told from an unknown address by its time.
    - No CAPTCHA (WCAG 3.3.8).
    - TOTP secrets are encrypted under the server KEK, not the DEK. This is deliberate: the TOTP code can then be checked during an email reset, so someone who controls a user's mailbox cannot wipe an MFA user's locked data.
 7. **argon2id settings:**
@@ -303,12 +350,12 @@ Notes:
 **user_keys** (1:1 with users, ON DELETE CASCADE):
 - `dek_kid`, `pw_wrapped_dek`.
 - `server_wrapped_dek NULL`, `server_kek_id NULL`, `background_since NULL`.
-- `x25519_pub`, `x25519_priv_enc` (DEK).
-- `recovery_salt`, `pending_codes_enc NULL` (DEK: recovery codes still to be shown once).
+- `x25519_pub`, `x25519_priv_enc` (the private key wrapped under the IK, `ik-priv|{uid}`; sealed under the DEK in accounts from before the IK), `pw_wrapped_ik NULL` (NULL: no IK yet).
+- `recovery_salt`, `pending_codes_enc NULL` (IK: recovery codes still to be shown once; DEK in accounts from before the IK).
 
-**recovery_codes:** `id`, `user_id` (CASCADE), `wrapped_dek`, `created_at`, `used_at NULL`. Eight codes.
+**recovery_codes:** `id`, `user_id` (CASCADE), `wrapped_dek`, `wrapped_ik NULL` (NULL for a code made before the IK), `created_at`, `used_at NULL`. Eight codes.
 
-**sessions:** `id TEXT PK` (sid), `user_id` (CASCADE), `state` ('pending_mfa'|'active'), `wrapped_dek`, `persistent`, `created_at`, `last_seen_at`, `idle_expires_at`, `absolute_expires_at`, `reauth_at`.
+**sessions:** `id TEXT PK` (sid), `user_id` (CASCADE), `state` ('pending_mfa'|'active'), `wrapped_dek`, `wrapped_ik NULL` (NULL for a session made before the IK), `persistent`, `created_at`, `last_seen_at`, `idle_expires_at`, `absolute_expires_at`, `reauth_at`.
 
 **auth_tokens:** `id`, `kind` ('reset'|'invite'|'verify_email'|'email_change'), `token_hash UNIQUE`, `user_id NULL`, `created_by NULL`, `created_at`, `expires_at`, `used_at`, `payload_enc` (sealed with `HKDF(token)`. For example, a reset token carries the email address so the reset can rebuild `pii_self`; an invite carries the address to pre-fill).
 
@@ -415,8 +462,8 @@ WCAG notes that apply to every auth page:
 1. `signup.html?invite=…`: `GET /api/auth/state` returns the sign-up mode and whether the invite is valid. The fields are email, password, an optional name and "Keep me signed in".
 2. `POST /api/auth/signup`:
    - Applies rate limits and checks the mode or invite. An existing address gets "An account with this email already exists. Sign in or reset your password."
-   - Creates the user, DEK and wraps, key pair, 8 recovery codes in `pending_codes_enc`, membership (3 free searches when payments are on), email_prefs (off), the workspace and a session.
-   - If the invite was emailed to this same address, the email counts as verified. Otherwise a verification email is sent when SMTP is set up; digests require a verified address.
+   - Creates the user, DEK and IK and their wraps, key pair, 8 recovery codes (each wrapping the DEK and the IK) in `pending_codes_enc` (under the IK), membership (3 free searches when payments are on), email_prefs (off), the workspace and a session.
+   - If the invite was **actually emailed** to this same address (the mail server took it; the mail job records `emailed` in the invitation's sealed payload), the email counts as verified. An invitation the admin copied, one made while email was off or the queue was full, and one the mail server refused, prove nothing about the mailbox, so those sign-ups get a verification email when SMTP is set up. Digests require a verified address.
 3. `welcome.html`: each step has an `<h2 tabindex=-1>` that receives focus, "Step n of 6" as text, Back/Next and, where it makes sense, "Skip for now". Each step saves through the existing APIs (`/api/profile`, `/api/pins`, `/api/schedule`, `/api/documents`, `/api/documents/suggest-titles`), and `onboarding_step` records progress.
    1. **Theme.** A radio group in a fieldset. Each card previews its theme by carrying `data-theme` on the card itself, which works because themes.css uses attribute selectors. Choosing applies the theme to the page at once and saves it with `PUT /api/account/prefs`.
    2. **Job titles,** with an optional resume upload and "Suggest titles".
@@ -425,7 +472,7 @@ WCAG notes that apply to every auth page:
    5. **Scheduled searches and emails:** the background-access switch with its explanation, and the digest switch with "every n days". When an option isn't available it explains why (needs a membership, or email isn't set up).
    6. **Recovery codes,** shown once:
       - Copy all, Download .txt and Print.
-      - "I've saved my recovery codes" (a checkbox), then `POST /api/auth/recovery-codes/ack` wipes `pending_codes_enc`.
+      - "I've saved my recovery codes" (a checkbox), then `POST /api/auth/recovery-codes/ack` wipes `pending_codes_enc`. The page keeps the codes in `sessionStorage` (this tab only) until then; a later visit asks for the password (`POST /api/auth/recovery-codes/show`, below).
       - Then "Run my first search (uses 1 of your 3 free searches)".
 
    If someone leaves before step 6, a banner stays up until the codes are acknowledged.
@@ -451,30 +498,32 @@ WCAG notes that apply to every auth page:
 - **At the MFA step:** see 6.2.
 - **Forgot password, with a code (keeps your data):**
   - `forgot.html` offers "I have a recovery code" or "Email me a link". The email typed on the login page is carried over (3.3.7).
-  - `POST /api/auth/recover {email, recovery_code, new_password, code | second_recovery_code}`. The code unwraps the DEK. With MFA on, the person also needs the TOTP code or a second recovery code.
-  - The DEK is re-wrapped under the new password, the code is used up, other sessions are signed out and the person is logged in.
+  - `POST /api/auth/recover {email, recovery_code, new_password, code | second_recovery_code}`. The code unwraps the DEK and the IK. With MFA on, the person also needs the TOTP code or a second recovery code.
+  - The DEK and the IK are re-wrapped under the new password, the code is used up, other sessions are signed out and the person is logged in. A code made before the IK can't open it: an account that has no IK yet gets one now (nothing lost); one that has an IK gets a new key pair and IK, an admin loses their grant (`admin_key_lost: true` in the answer, audited) and keeps their data.
   - This path needs no SMTP, so it works on local installs.
-- **Regenerate:** re-authenticate, then `POST /api/auth/recovery-codes` replaces all eight wraps and shows the new codes once.
+- **Regenerate:** `POST /api/auth/recovery-codes {password, code?}` replaces all eight wraps and shows the new codes once. The request carries the password itself (and a code from the app or a recovery code with MFA on), not just a recent sign-in: every code opens the data key and can set a new password, so a cookie taken from a browser a few minutes after sign-in must not be able to mint them. The account's address gets a "new recovery codes were made" notice. The codes are in the answer of the request that made them (and of sign-up, first run and a reset). Reading codes not yet confirmed as saved again, after a reload or on a later visit, is `POST /api/auth/recovery-codes/show {password, code?}`: the password (and with two-step on a code or recovery code) is checked like the regenerate request, because a new session counts as recent for 15 minutes and a cookie taken in that window must not read eight working codes. There is no `GET`.
 
 **6.5 Forgot password by email, and a reset sent by an admin**
 1. `POST /api/auth/forgot {email}` always answers 202 "If an account exists, we've sent a link".
    - In the background: look up `email_hash` and create a token (32 bytes, 1 hour, single use, `payload_enc` holding the email).
+   - Limits: 3 an hour and 6 a day per address and per account, for anonymous requests only (the admin's button has its own, so strangers can't use up an admin's). A request over the limits still goes out when the account has no link that can be used, so whoever keeps the limits used up can't leave the owner without one (at most one extra email an hour: it is counted when the request comes in, `ratelimit.FORGOT_NO_LINK`, so requests in flight together or queued behind other mail can't each send one). Held-back requests are logged by account id.
+   - Every request puts one job on the single mail thread: the real send, or for an address with no account (or one the limits hold back) a pause as long as a typical send (average of the last 20), so timing the next email can't show which addresses have accounts.
    - Send `${PUBLIC_URL}/reset-password.html#token=…`, with the token in the fragment.
 2. `reset-password.html` calls `POST /api/auth/reset/info {token}`, which returns `{keeps_data, mfa_required}`.
    - **With background access (`keeps_data`):** "Your data will be kept."
    - **Locked:** the page shows the warning text from "Copy for users" below, a link to the recovery-code path, a required checkbox "I understand my saved data will be deleted" and the new-password field.
 3. `POST /api/auth/reset {token, new_password, code?, accept_wipe}`. If MFA is on, the TOTP code is required, because the secret is under the KEK.
-   - **With background access:** unwrap the DEK with the KEK and re-wrap it under the new password. The data is kept.
+   - **With background access:** unwrap the DEK with the KEK and re-wrap it under the new password. The data is kept. **The recovery codes are replaced** (each opens the same DEK, and whoever held the account before, for example someone who signed up with this address first and kept the codes, could set a password of their own with one) and shown on the next page like after a wipe; a never-finished authenticator setup is dropped. The server key can't open the IK, so the account also gets **a new key pair and IK** (`users.replace_identity`): an admin loses their grant (`admin_key_lost: true`, audited as `admin_key_lost`) and another admin shares the key again. `POST /api/auth/reset/info` (read-only) says beforehand whether this happens (`admin_key_will_be_lost`) and whether nobody else holds the key (`last_key_holder`); the page then says that a recovery code keeps the key and, for the last holder, that the server's operator must run `python -m backend.keys new-admin-key --email ...`, and the answer to the reset says the same (`admin_key_last_holder`). A reset by email leaves nothing the previous holder could use: no recovery codes, no sessions, no pending address-change or reset links, and the device cookies are bound to the old password salt.
    - **Locked:**
      - Delete the user's workspaces (cascade), sealed files, recovery codes and `billing_self`.
-     - Create a new DEK, a new key pair and new recovery codes (shown on the next page), plus a fresh workspace.
+     - Create a new DEK, a new IK, a new key pair and new recovery codes (shown on the next page), plus a fresh workspace.
      - Rebuild `pii_self` from the token's email; `pii_admin` is unchanged.
      - Memberships stay.
      - An admin who loses their grant this way gets a warning, and other admins see "Share the admin key again".
    - Either way: all sessions are deleted and a "Your password was changed" notice is sent.
 4. **Sent by an admin:** in the admin panel, "Send password reset email" decrypts `pii_admin.email` and goes through the same token flow. Admins never set passwords.
 
-**6.6 Change password.** `POST /api/auth/password {current_password, new_password, sign_out_others=true}`. The DEK is re-wrapped and nothing is re-encrypted.
+**6.6 Change password.** `POST /api/auth/password {current_password, new_password, sign_out_others=true}`. The DEK and the IK are re-wrapped and nothing is re-encrypted.
 
 **6.7 Background access on and off.** Settings → Account → "Background access" (shown as a switch).
 - **On:** re-authenticate, then wrap the DEK with the current KEK.
@@ -487,7 +536,7 @@ WCAG notes that apply to every auth page:
 4. Set `llm_usage.user_id` to NULL.
 5. If the user was an admin, rotate the APK. The last admin can't delete their account.
 
-**6.9 Change of email address.** A verification link goes to the new address. Confirming updates `email_hash`, `pii_self` and `pii_admin` (sealed to the APK public key).
+**6.9 Change of email address.** Asking needs a recent sign-in **and the password in the request** (with MFA on, a code too): otherwise a session cookie taken in the 15 minutes after sign-in could move the account to another mailbox, and "forgot password" there would hand it over. The old address gets a notice when the change starts (a password change or reset ends a pending change). A verification link goes to the new address and says what it is for. Opening it only shows the address and a button (`POST /api/auth/verify-email/info`, which uses nothing up); the button sends the confirmation. A page that confirmed on load would let a mail scanner that runs scripts, or one stray click, put one account on another person's address. Confirming updates `email_hash`, `pii_self` and `pii_admin` (sealed to the APK public key).
 
 **Copy for users (keep it short):**
 - **Sign-up and first run:** "Your searches, documents and jobs are encrypted with a key that only your password or a recovery code can unlock. Not even the person who runs this server can read them from the database. Save your recovery codes: if you forget your password, a recovery code is the only way to keep your data. Resetting your password by email without one gives you a fresh, empty account."
@@ -508,14 +557,14 @@ Admin routes never use `current_workspace` and never read sealed DEK columns. Th
 - **User actions**
   - `POST /api/admin/users/{id}/reset-email`
   - `POST …/{id}/mfa/disable`
-  - `POST …/{id}/disable|enable`
+  - `POST …/{id}/disable`†: also replaces the admin key when the account is an admin who holds it; only the replacement needs the acting admin's own copy, so without one they are still turned off and their grant deleted (§1.4). `POST …/{id}/enable` shares nothing.
   - `DELETE …/{id}`†
 - **Roles**
   - `POST …/{id}/role {role}`†: makes a grant, or rotates the APK.
-  - `POST …/{id}/regrant`: shares the admin key again with an admin who lost it.
+  - `POST …/{id}/regrant`†: shares the admin key again with an active admin who lost it, or was turned off and on.
 - **Membership**
-  - `PUT …/{id}/membership {exempt?, free_searches_used?}`
-  - `POST …/{id}/grants {kind, starts_at, ends_at | days, note}`, `PATCH|DELETE …/grants/{gid}`
+  - `PUT …/{id}/membership {exempt?, free_searches_used?}`†
+  - `POST …/{id}/grants {kind, starts_at, ends_at | days, note}`†, `PATCH|DELETE …/grants/{gid}`† (free access outlives a stolen session, so these ask for the password again like the Stripe settings; the dialog's `reauth()` asks for it and repeats the save)
   - `POST /api/admin/billing/sync`
 - **Sign-up and invites**
   - `GET|PUT /api/admin/signup {mode, free_searches}`
@@ -577,7 +626,7 @@ The panel also shows the cache hit rate (cached tokens ÷ input tokens). Users a
 - **Return check:**
   - `POST /api/billing/verify {session_id}` retrieves the session (expanding the subscription and its default payment method) and checks that `client_reference_id` matches. It then calls `apply_subscription(sub)`, stores `billing_self` and sets the customer's `metadata.jh_ref`.
   - `apply_subscription` finds the membership by `metadata.jh_ref` and updates `stripe_status`, `plan` (from the price's lookup key), `current_period_end` (taken from the subscription item, where recent API versions keep it), `cancel_at_period_end` and `billing_admin` (sealed to the APK public key, so no admin is needed).
-- **Portal:** `POST /api/billing/portal` creates a portal session for `billing_self.customer`, with return URL `billing.html`. Plan changes, card updates and cancellation are configured in the Stripe dashboard. If `billing_self` was lost in a wipe, it is found again by searching Stripe customers by `jh_ref`.
+- **Portal:** `POST /api/billing/portal` needs the password entered in the last 15 minutes (`require_recent_auth`; the page calls it through `withRecentAuth`), because the portal shows the billing name, address and card and can cancel or change the plan. It creates a portal session for `billing_self.customer`, with return URL `billing.html`. Plan changes, card updates and cancellation are configured in the Stripe dashboard. If `billing_self` was lost in a wipe, it is found again by searching Stripe customers by `jh_ref`.
 - **Keeping status current without webhooks:**
   - The scheduler loop runs `billing.sync_tick()` every 6 hours: `subscriptions.list(status="all")`, auto-paginated, then `apply_subscription` for each one that has a `jh_ref`.
   - Each user is also synced on demand: when they open the billing page, or when the gate finds `current_period_end` has passed while the status is active or past_due. That happens at most once an hour, using `subscriptions.list(customer=…)` in their session.
@@ -594,13 +643,14 @@ The panel also shows the cache hit rate (cached tokens ÷ input tokens). Users a
   | Viewing data, statuses, notes, uploads, pins, settings, account, billing, deleting the account | Always |
   | Run search (manual) | Member, or trial. A trial search uses one free search. |
   | Scheduled searches (and so digests) | Member and background access on. Free searches are for Run search only, so the default schedule doesn't use them up on day one. |
-  | LLM features (score or rescore, chat, cover letters, title suggestions, research or Fill missing info, concise versions, summary) | Member, or trial. The run that uses the last free search still finishes its own scoring. |
+  | AI features (rescore and Score pending, chat, cover letters, title suggestions, research or Fill missing info, concise versions, summary) | Members only (reason `ai_members_only`), whatever is left of the free searches (§13 item 5). A free search run still scores the jobs it finds, and up to `access.FREE_SEARCH_EXTRA_SCORES` (5) other jobs waiting for a first score (§13 item 6): that scoring happens inside the run and doesn't ask the gate. |
 
-  - **What counts as a "search":** one search run (Run search or a scheduled search), counted when it is queued (`search_runs.free_search=1`). A run that ends `failed` or is interrupted gives it back. Rescoring, research, chat, cover letters, title suggestions and importing saved pages don't count.
+  - **What counts as a "search":** one search run (Run search or a scheduled search), counted when it is queued (`search_runs.free_search=1`). A run that ends `failed` or is interrupted **while it is still searching** gives it back. When `run_search` returns, `app.start_search_run` clears the mark (the search is paid for: the sources were fetched), so a failure in the duplicate check or the scoring, or a restart during them, keeps it used. Otherwise an answer built to break the scoring would make every search free. Rescoring, research, chat, cover letters, title suggestions and importing saved pages don't count (the AI features are refused to trial accounts, so they never reach a count).
   - **Free periods and free searches:** free searches are not used up during a free period.
   - **Free period for someone already paying:** an admin grant also pushes back their next payment, with `subscriptions.update(sub, trial_end=grant_end, proration_behavior="none")`.
   - **Exempting someone who pays:** the admin is offered "Cancel their subscription at period end".
   - **Refusals:** blocked endpoints answer 402 `{"code":"membership_required"}`, and the frontend shows a banner linking to `billing.html`.
+- **Test mode and live mode:** `memberships.stripe_mode` (`test` or `live`, from the key in use when `apply_update` stored the state) says which kind of key the stored subscription came from. When it differs from the current key (a test-card payment kept after the operator saved a live key, or a row stored before the column existed), `membership._foreign` is true: `load_state` leaves the subscription out, so it gives no access, and the gate syncs with Stripe (at most every 5 minutes) and either stores the live account's answer or forgets the row (`_forget_stripe`). Without this nothing asked Stripe until the stored period ran out, up to a year. The same account switched to another live Stripe account is not detected until the period ends (the key's prefix is all the row records).
 - **Test mode:** an `sk_test_` key shows a "Test mode" badge in the admin panel and on the billing page. Stripe test clocks can simulate renewals. Unit tests mock `StripeClient` and never use the network.
 
 ---
@@ -758,12 +808,12 @@ Every phase must leave `python3 -m unittest discover -s tests -t .` passing, kee
 ## 12. Open questions (only these three) and the defaults I chose
 
 **Questions:**
-1. **Email resets for users with background access keep their data,** because the server holds their key. With MFA on, the TOTP code is still required. A strict reading of "a reset without the recovery code wipes" would wipe these users too. Default: keep the data.
+1. **Email resets for users with background access keep their data,** because the server holds their key. With MFA on, the TOTP code is still required. A strict reading of "a reset without the recovery code wipes" would wipe these users too. Default: keep the data. (The server can't open the identity key, so an admin who resets this way loses their share of the admin key, §1.2.)
 2. **What the digest cards show:**
    - **Work type:** default is remote, hybrid or onsite. Employment type (full-time or contract) isn't stored today; it would need changes to the adapters.
    - **Job title:** default is to show it as the card heading, although your list didn't name it.
    - **Score:** default is to leave it out.
-3. **LLM features after the free searches run out:** default is that rescoring, chat and cover letters are blocked until the person becomes a member. The jobs found stay visible.
+3. **LLM features after the free searches run out:** default is that rescoring, chat and cover letters are blocked until the person becomes a member. The jobs found stay visible. (Item 5 in section 13 later made the AI features members-only from the start.)
 
 **Defaults I chose without asking:**
 - Sign-up is invite-only, as an admin setting (invite, open or closed).
@@ -798,8 +848,10 @@ New modules: `backend/crypto.py`, `backend/keys.py`, `backend/sessions.py`, `bac
    - every field the user listed; "work type" is remote, hybrid or onsite
    - the fit score (0–100)
    - the **employment type** (full-time, part-time, contract, casual). Jobs don't record this yet, so it needs a new `jobs.employment_type` column, sealed in Phase D, filled by the adapters (SEEK's work type; ATS fields where they exist). The main job cards show it too, so the digest mirrors the app.
-3. **After the 3 free searches:** jobs already found stay visible. New searches, rescoring, chat and cover letters are blocked until the person becomes a member.
+3. **After the 3 free searches:** jobs already found stay visible. New searches, rescoring, chat and cover letters are blocked until the person becomes a member. (Item 5 later made the AI features members-only from the start.)
 4. **Release timing:** Phase 1 and the WCAG/mobile pass ship together in one release; no push before then.
+5. **AI features are for members only (2026-10-08).** A security review pointed out that a trial account could use the AI features as much as it liked without spending a free search. The user's decision: trial accounts get their free searches, and each free search run still scores the jobs it finds (inside the run, not through a gated endpoint), but rescoring, chat, cover letters, company research and Fill missing info, title suggestions, and the concise versions and summary of documents wait until the person becomes a member. With billing off nothing is gated. Admins, exempt accounts, active free periods and paying members are members, as before. Built as: `access.decide` refuses every feature except `view_jobs` and `search` without a membership; the AI features get the reason `ai_members_only` and the message "AI features are for members. Your free searches still find and score jobs. ..." (a search keeps `free_searches_used`, a scheduled search `membership_required`). The pages show the usual 402 notice and a short note beside the AI actions for trial accounts. The sign-up walkthrough has no AI step: titles are typed, so a trial account can finish it.
+6. **A free search also scores up to 5 waiting jobs (2026-10-09).** Under item 5 a free search scored only the jobs it found, so a job the person imported from a saved page (`POST /api/import/page`: no `first_run_id`) or completed with an uploaded full ad was never scored: rescoring and Score pending are for members. The user's decision: "allow 5". Each free search run scores the jobs it found plus up to 5 of the workspace's other jobs that are waiting for a first score (never scored, or the last scoring failed; and eligible: not excluded, hidden, closed or without a description), newest first (highest `jobs.id`), jobs never scored before jobs whose last scoring failed (so jobs that keep failing don't take the slots every time). Members, and anything that isn't a free search, are unchanged: every pending job. Built as: `access.FREE_SEARCH_EXTRA_SCORES = 5`; `app.start_search_run` passes it as `extra` to `scorer.select_jobs`, which picks the 5 in Python after the eligibility checks (so they are 5 jobs that really get scored, and none is a job the search found), from `pool.job_states` (this workspace's listed jobs only: merged duplicates are skipped), sorting by the plaintext id. The Jobs tab note, the membership page, the "full ad" message and the import result say so for trial accounts that still have a free search (`me.can_search`; with none left the pages say only that scoring by hand is for members) (`/api/billing/status` `me.free_search_extra_scores` carries the number).
 
 ## 14. Shared job pool and company-profile cache (2026-10-05)
 
@@ -986,7 +1038,7 @@ A posting missing from one user's query results says nothing about whether it cl
 - **Phase C** gates the endpoints (read and write) and hides the two cards from non-admins. **Phase F** moves the cards into the admin panel.
 
 ## 15. Notes from the Phase B review (these bind Phases C and D)
-- **The comparator guard has blind spots.** It doesn't see a bare `order_by(col)`, `group_by(col)`, `select().distinct()` or `func.*(col)`. Phase D adds a test that greps for these on sealed columns, or adds a statement hook that refuses them.
+- **The comparator guard has blind spots.** It doesn't see a bare `order_by(col)`, `group_by(col)`, `select().distinct()` or `func.*(col)`. Phase D adds a test that greps for these on sealed columns, or adds a statement hook that refuses them. The hook (`crypto.check_statement`, run when a statement is compiled) refuses ORDER BY, GROUP BY, DISTINCT, SQL functions, `OVER (PARTITION BY / ORDER BY)`, `cast`, `type_coerce` and a UNION's own ORDER BY / GROUP BY over a sealed column. It can't see a bare `literal_column("name")` in the ORDER BY of a union (that is only text to SQLAlchemy), so don't write one.
 - **Legacy plaintext is a downgrade path.**
   - Someone with write access could swap a ciphertext for plaintext, and it would be accepted.
   - Once migration state is `done`, turn on a strict mode that refuses plaintext in sealed columns.
@@ -1000,6 +1052,7 @@ A posting missing from one user's query results says nothing about whether it cl
   - KEK wrap labels always end in `|{kek_id}`, e.g. `totp|{uid}|{kek_id}`.
   - Each use has its own AAD prefix (`jh-wrap|`, `jh-file|`, `jh-value|`, `jh-box|`), and columns use `jh/<table>.<column>`.
   - The 5-byte envelope header is part of the AAD.
+- **Identity key (added after the final security review).** Wrap labels of the IK: `pw-ik|{uid}`, `rc-ik|{uid}|{code_id}`, `sess-ik|{sid}`, `pend-ik|{sid}`, `ik-priv|{uid}` (the private key under the IK) and `pending-codes|{uid}`; each names its row and user. The IK is never wrapped under the server KEK and never cached; multi-row key changes (migration, password change, new codes, resets) are one transaction followed by `scrub_wal()`.
 - **Dependencies.** `requirements.txt` pins older `cryptography` and `argon2-cffi-bindings` on Intel Macs through environment markers, because the newest versions have no x86_64 wheels there. Keep those markers when you bump versions.
 
 ## 16. Notes from the email-core review (they bind Phases H and J)
@@ -1047,3 +1100,28 @@ A posting missing from one user's query results says nothing about whether it cl
 - **The cutoff is the later of `last_sent_at` and `opted_in_at`** (not `last_sent_at or opted_in_at`), so opting in again after a pause doesn't send what turned up during it. The due date counts from the same time.
 - **A failed send records nothing**, so the next tick (10 minutes later) tries again; a tick stops after 3 failed sends (the mail server is probably down). A check also waits while a scheduled run of the user's is queued or running, so a late run's jobs aren't skipped by the next cutoff.
 - **Cards:** a card shows the workspace's name when the email holds jobs of several workspaces, and the original-posting link names the source ("... on SEEK", `email_templates.source_label`, the same rule as `sourceLabel` in `common.js`).
+
+## 18. Notes from Phase L (headers, Host allowlist, log hygiene)
+- **Where the code is:** `backend/hosts.py` (the allowlist), `backend/security_headers.py` (the headers and the policy), both put around the whole app by `security_headers.install` (it wraps the finished middleware stack, so even an unexpected 500 and the 400 for a bad Host carry the headers). Tests: `tests/test_security_headers.py`, `tests/test_log_leaks.py`.
+- **The policy has no `'unsafe-inline'`.** The pages had three `style="--c:var(--...)"` attributes in markup built by scripts; they are now `hue-*` classes (`styles.css`). Scripts still set sizes and positions with `element.style`, which a policy doesn't restrict. The hashes of the inline theme script are computed from `frontend/*.html` at start-up (CRLF folded to LF first, as the browser does). Anything new loaded from another site must be added to `security_headers.py`; the test fails until it is.
+- **`Referrer-Policy: same-origin`, not `no-referrer`:** with `no-referrer` a browser sends `Origin: null` on same-site POSTs, and `sessions.same_site` would refuse every save. `same-origin` still keeps a page's address (an invitation token in `signup.html?invite=`, a job id) from every other site. The unsubscribe pages keep their own `no-referrer`, because they don't use the same-site check.
+- **Host allowlist:** any IP address, `localhost`/`*.localhost`, the machine's own names, the host of `PUBLIC_BASE_URL`, `JOBHUNT_ALLOWED_HOSTS` (`.env` only: it is a security boundary, so the app's Settings don't edit it), and `testserver` while `JOBHUNT_TESTING=1`. Names only, ports ignored. A site that reaches the app through `tailscale serve` needs its name in the public address or in `JOBHUNT_ALLOWED_HOSTS` after this phase.
+- **`/docs`, `/redoc` and `/openapi.json` are off:** they listed every route to anyone who could reach the server, and Swagger's page needs scripts the policy refuses.
+- **Leaks the log test found and fixed:** (1) SQLAlchemy at DEBUG logs each row it reads *after* the sealed types have opened it (a search profile, in plaintext), plus the sessions and users rows; `SqlAtWarning` in `backend/app.py` drops everything below WARNING from its engine logger whatever the level. (2) pypdf warned with the first bytes of a file it couldn't read. (3) The Claude SDK logs whole request bodies at DEBUG. (2) and (3) join httpx in `QUIET_LOGGERS`. Everything the app itself logs was already free of personal data. Not covered: uvicorn's traceback for an unhandled exception (a bug, and the message could hold data), and the first-run token, which is printed on purpose.
+- **Sign-in, sessions, resets and email (the Phase L review):** the lockout is per account and source with an account-wide ceiling and a `jh_device` cookie (§3.6); wrong tries are counted before the slow check; refusals wait for a floor; the session cookie carries the port; an email reset that keeps the data replaces the recovery codes; new recovery codes and an address change need the password in the request; the confirmation page asks first; anonymous "forgot" requests have their own limits and put a decoy on the mail thread; an invitation counts the address as verified only if it was emailed to it. A second review closed three more gaps: wrong two-step codes have their own account-wide ceiling and a reset link is used up by its 5th wrong code (§3.6), the one extra "forgot" email an hour is counted at the request, and unsaved recovery codes are read again only with the password (§6.4). `nextPage()` in `frontend/auth.js` refuses a path that starts with `//` or `/\` once resolved (`/.//evil.example` keeps the origin and still means another site). The Host allowlist closes the DNS-rebinding route to the sign-in endpoints, where forged `X-Forwarded-For` values had given every request its own rate-limit bucket; `tests/test_security_headers.py` replays that attack.
+- **Keys, storage and admin actions (the Phase L review, second group):**
+  - An admin who is turned off keeps no grant and is given none (§1.4); turning an admin off, changing a membership or a free period, and sharing the key ask for the password again.
+  - Strict mode is switched on by the key file as well as the database (§1.3). A key file written by an earlier version gets the marker at its next start.
+  - The key file has an exclusive lock for the app's lifetime, and the key commands take it (§1.3). `kek_wrap` refuses when the file changed under the process.
+  - The data folder, the database, its log and the plaintext backups are owner-only (§2.5). `db.online_backup` is the one place a backup is made.
+  - A blocked `scrub_wal()` is tried again (§2.5); a spent recovery code (at the second step of sign-in and when turning two-step off) and the password-key upgrade at sign-in now scrub too.
+  - Reset links are signed with the server key and the account id, and with background access must name the address in `pii_self` (§2.5). The unauthenticated columns and public keys a database writer can change are listed there; the pubkey MAC is left as a later hardening.
+  - Tests: `tests/test_storage_security.py`, `DisabledAdminKeyTest` and `RecentPasswordForMembershipTest` in `tests/test_admin.py`, `WriterTest` in `tests/test_password_reset.py`.
+- **Payments, export and mail settings (the Phase L review, third group):**
+  - The export keeps the account's one-at-a-time mark and one of the two app-wide slots until the download ends (the last byte, a disconnect, or the deadline: `MAX_STREAM_SECONDS`, 10 minutes, plus the zip's size at `MIN_RATE`, 100 KB/s, so a 200 MB zip over a slow link can finish), not just until the zip is built. A timer enforces the deadline, because a client that holds the connection open and reads nothing never lets the generator check it. The zip stays in memory until then, so releasing early let one account pile up buffers with repeated requests.
+  - The Stripe portal needs the password entered recently (§8). Subscriptions are bound to the kind of Stripe key they came from (§8).
+  - A change of mail route is announced to the other admins and holds admin MFA disables and admin reset links for 24 hours (§2.5). The Server card says so.
+  - A free search is kept once the search stage has finished (§8), and `scorer.parse_result` turns any unusable answer (an infinite score, a number where a list belongs, a deeply nested answer) into a `ScorerError` for that job only; `score_one` also turns any other exception from the model call or the parse into one, so a bad answer counts as a scoring error and never ends the run.
+  - A second pass: a keyless admin can still turn off a key-holding admin (§1.4); a mail-route change by an admin without the key is refused (§2.5); the export's deadline is a timer and grows with the zip's size; the SQL guard also refuses `OVER`, `cast`, `type_coerce` and a union's ORDER BY (§15).
+  - Tests: `test_the_place_is_kept_until_the_download_has_ended` (`tests/test_export.py`), `test_the_portal_needs_the_password_entered_recently` and `StaleStripeState` (`tests/test_membership.py`), `RouteChangeTest` (`tests/test_mail_settings.py`), `ScorerParseTest` (`tests/test_core.py`).
+- **Behind a proxy:** `launch.py` trusts `X-Forwarded-For` from 127.0.0.1. The proxy must append the real client address (`tailscale serve` and the usual proxies do), not pass a client's own header through.

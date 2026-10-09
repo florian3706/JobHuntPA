@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
+import stat
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -68,6 +70,27 @@ engine = create_engine(
 )
 
 
+def owner_only(path: Path, mode: int) -> None:
+    """Makes ``path`` readable by this account only (``mode`` is 0o700 for a folder, 0o600 for a file), when it
+    isn't already. POSIX only: Windows keeps what the folder's permissions say. Never fails."""
+    if os.name != "posix":
+        return
+    try:
+        if stat.S_IMODE(os.stat(path).st_mode) != mode:
+            os.chmod(path, mode)
+    except OSError:  # missing, or not ours to change
+        pass
+
+
+def _protect_database_files() -> None:
+    """The database and its write-ahead log files hold wrapped keys and every plaintext column (accounts design §2.5):
+    other accounts on the same computer must not read them. SQLite makes them with the umask (usually 0644)."""
+    if engine.dialect.name != "sqlite":
+        return
+    for suffix in ("", "-wal", "-shm"):
+        owner_only(DB_PATH.with_name(DB_PATH.name + suffix), 0o600)
+
+
 @event.listens_for(engine, "connect")
 def _sqlite_pragmas(dbapi_conn, _record) -> None:
     cur = dbapi_conn.cursor()
@@ -76,26 +99,76 @@ def _sqlite_pragmas(dbapi_conn, _record) -> None:
     cur.execute("PRAGMA journal_mode=WAL")
     # Freed pages are zeroed, so a deleted or re-sealed value doesn't linger in the file (accounts design §5).
     cur.execute("PRAGMA secure_delete=ON")
+    # The log file is cut to nothing each time it is reset, so what a blocked scrub_wal() couldn't empty goes with the
+    # next write once the reader that blocked it is done (without a limit SQLite keeps the old frames on disk).
+    cur.execute("PRAGMA journal_size_limit=0")
     cur.close()
+    _protect_database_files()
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+def online_backup(target: Path) -> Path:
+    """A copy of the database as it is, at ``target`` (SQLite's online backup API, safe while it's in use). The copy
+    holds everything in plaintext, so it is created owner-only before anything is written to it, and moved into place
+    only when complete."""
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.unlink(missing_ok=True)
+    os.close(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    raw = engine.raw_connection()
+    try:
+        dst = sqlite3.connect(str(tmp))
+        try:
+            raw.driver_connection.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        raw.close()
+    owner_only(tmp, 0o600)
+    tmp.replace(target)
+    return target
+
+
+BUSY_TIMEOUT_MS = 30_000  # (connect_args["timeout"] above)
+WAL_WAIT_MS = 2_000
+_wal_blocked = False
+
+
 def scrub_wal() -> bool:
     """After deleting a secret (a key copy), empty the write-ahead log: secure_delete only zeroes the main file, and the
-    log keeps the old page image until a checkpoint truncates it. Best effort: a reader open at the same moment can
-    block it, then the log is emptied by a later checkpoint. Call after the commit. True if it was emptied."""
+    log keeps the old page image until a checkpoint truncates it. Best effort: a reader open at the same moment blocks
+    it. Nothing empties the log by itself then, so a blocked scrub is remembered and ``scrub_wal_again`` (start-up and
+    the clean-up tick) tries again; ``journal_size_limit`` also cuts the file at the next log reset. Call after the
+    commit. True if it was emptied."""
+    global _wal_blocked
     try:
         with engine.connect() as conn:
-            row = conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            # Waits a moment for a reader to finish (a request must not stall for the connection's usual 30 s: the
+            # clean-up tick tries again), then puts the usual wait back for whoever gets this connection next.
+            conn.exec_driver_sql(f"PRAGMA busy_timeout={WAL_WAIT_MS}")
+            try:
+                row = conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            finally:
+                conn.exec_driver_sql(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         done = bool(row) and row[0] == 0  # row[0] is 1 when the checkpoint was blocked
         if not done:
             logging.getLogger(__name__).warning("wal checkpoint after deleting a secret was blocked")
-        return done
     except Exception as exc:  # never fails the change that was already committed
         logging.getLogger(__name__).warning("wal checkpoint after deleting a secret failed: %s", exc.__class__.__name__)
+        done = False
+    _wal_blocked = not done
+    return done
+
+
+def scrub_wal_again() -> bool:
+    """Empties the log again when the last ``scrub_wal`` was blocked (a no-op otherwise). True if one was due."""
+    if not _wal_blocked:
         return False
+    scrub_wal()
+    return True
+
+
 Base = declarative_base()
 
 
@@ -174,6 +247,13 @@ class Posting(Base):
     closed_at = Column(DateTime, nullable=True, index=True)
     close_reason = Column(String, nullable=True)        # gone | unlisted | stale
     rev = Column(Integer, nullable=False, default=1, server_default="1")  # bumped when the content changes
+    # Ghost-job signs (backend/ghost.py, docs/design/ghost-jobs.md). All derived from public ads, so plaintext.
+    listed_since = Column(DateTime, nullable=True)      # start of the current run of listing (reset when it reopens)
+    repost_key = Column(String, nullable=True, index=True)  # normalised company|title: finds earlier ads of the role
+    ghost_json = Column(Text, nullable=True)            # {"text": [...signals from the ad], "pool": [...from the pool]}
+    ghost_checked_at = Column(DateTime, nullable=True)  # when the pool half was last worked out
+    ad_ghost_json = Column(Text, nullable=True)         # JSON list: what an LLM read in the public ad (NULL: not read)
+    reopened_from = Column(String, nullable=True)       # close_reason of the run before this one (set when it reopens)
 
 
 # A job's content: the posting's for a pool link (with this workspace's own value, when it has one, on top), or
@@ -311,6 +391,10 @@ class Job(Base):
     _industry = Column("industry", SealedAlways(SealedText), default=always_none, nullable=True)
     # a private job's; a pool link's is the posting's
     _closed_at = Column("closed_at", SealedAlways(SealedDateTime), default=always_none, nullable=True)
+    # What an LLM read in this workspace's own ad (a private upload or private job) that suggests it isn't a current
+    # vacancy: a JSON list. Not SealedAlways: a column added to a database that is already in strict mode is NULL
+    # in every old row. The public ad's is ``Posting.ad_ghost_json`` (backend.pool.share_ad_fact).
+    ad_ghost_json = Column(SealedText(), nullable=True)
 
     @python_only
     def url(self) -> Optional[str]:
@@ -838,7 +922,8 @@ class User(Base):
     totp_secret_enc = Column(LargeBinary, nullable=True)
     totp_pending_enc = Column(LargeBinary, nullable=True)
     totp_last_step = Column(Integer, nullable=True)
-    # Lockout: after 5 failures in a row, wait 30 s, doubling up to 15 minutes (backend.ratelimit).
+    # Not used since Phase L: wrong passwords are counted in memory, per account and per source (backend/ratelimit.py,
+    # backend/lockout.py). The columns stay so older databases keep working.
     failed_logins = Column(Integer, nullable=False, default=0, server_default="0")
     locked_until = Column(DateTime, nullable=True)
     # {email, name}: sealed to the admin details key (pii_admin), and under the user's own DEK (pii_self).
@@ -861,9 +946,17 @@ class UserKeys(Base):
     server_kek_id = Column(String, nullable=True)
     background_since = Column(DateTime, nullable=True)
     x25519_pub = Column(LargeBinary, nullable=False)
-    x25519_priv_enc = Column(LargeBinary, nullable=False)  # seal(DEK, "user_keys.x25519_priv|{uid}")
+    # The X25519 private key, wrapped under the identity key (IK): wrap(IK, priv, "ik-priv|{uid}"). Before the IK existed
+    # it was seal(DEK, priv, "user_keys.x25519_priv|{uid}"); that form is read only while ``pw_wrapped_ik`` is NULL, and
+    # the next password sign-in replaces it (users.migrate_identity).
+    x25519_priv_enc = Column(LargeBinary, nullable=False)
+    # The IK under the password key, wrap(KEK_pw, IK, "pw-ik|{uid}"). NULL: the account has no IK yet. The IK is never
+    # wrapped under the server KEK, so background access can't open the admin details key (accounts design 1.2).
+    pw_wrapped_ik = Column(LargeBinary, nullable=True)
     recovery_salt = Column(LargeBinary, nullable=False)
-    pending_codes_enc = Column(LargeBinary, nullable=True)  # DEK: recovery codes not yet confirmed as saved
+    # Recovery codes not yet confirmed as saved: wrap(IK, codes, "pending-codes|{uid}") (a code opens the IK, so the DEK,
+    # which the server KEK can open, must not hold them). Before the IK existed: seal(DEK, ...).
+    pending_codes_enc = Column(LargeBinary, nullable=True)
 
 
 class RecoveryCode(Base):
@@ -872,6 +965,8 @@ class RecoveryCode(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     wrapped_dek = Column(LargeBinary, nullable=True)       # wrap(HKDF(code, recovery_salt), DEK, "rc|{uid}|{id}")
+    # The same code's wrap of the IK, "rc-ik|{uid}|{id}". NULL for a code made before the IK existed.
+    wrapped_ik = Column(LargeBinary, nullable=True)
     created_at = Column(DateTime, default=utcnow)
     used_at = Column(DateTime, nullable=True)
 
@@ -886,6 +981,9 @@ class AuthSession(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     state = Column(String, nullable=False, default="active", server_default="active")  # pending_mfa | active
     wrapped_dek = Column(LargeBinary, nullable=False)
+    # The IK under the same cookie-derived key: "sess-ik|{sid}", or "pend-ik|{sid}" while pending_mfa. NULL for a session
+    # made before the IK existed (the admin panel then asks to sign in again).
+    wrapped_ik = Column(LargeBinary, nullable=True)
     persistent = Column(Boolean, nullable=False, default=False, server_default="0")  # "Keep me signed in"
     created_at = Column(DateTime, default=utcnow)
     last_seen_at = Column(DateTime, default=utcnow)
@@ -949,6 +1047,7 @@ class Membership(Base):
     cancel_at_period_end = Column(Boolean, nullable=False, default=False, server_default="0")
     grace_until = Column(DateTime, nullable=True)  # while past_due: access continues until then (access.GRACE)
     stripe_synced_at = Column(DateTime, nullable=True)
+    stripe_mode = Column(String, nullable=True)  # 'test' | 'live': the kind of Stripe key the status above came from
     billing_admin = Column(LargeBinary, nullable=True)  # admin details key
     billing_self = Column(LargeBinary, nullable=True)   # the user's DEK
 
@@ -1146,7 +1245,12 @@ def _rebuild_workspaces_for_autoincrement() -> None:
 
 
 def encryption_done(conn) -> bool:
-    """Whether the encryption migration (backend.migrate_encryption) has finished on this database."""
+    """Whether the encryption migration (backend.migrate_encryption) has finished on this database: the key file says
+    so (the database alone can't be trusted with it: someone who can write it could set it back), or its state does."""
+    from backend import keys
+
+    if keys.encryption_marked():
+        return True
     raw = conn.execute(text("SELECT value_json FROM app_settings WHERE key = 'encryption_migration'")).scalar()
     try:
         return bool(raw) and json.loads(raw).get("state") == "done"
@@ -1178,6 +1282,7 @@ def _ensure_indexes() -> None:
     """Indexes on columns added to existing tables (create_all only indexes new tables)."""
     with engine.begin() as conn:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_posting_id ON jobs (posting_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_postings_repost_key ON postings (repost_key)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_workspaces_owner_id ON workspaces (owner_id)"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_workspace_url_index "
                           "ON jobs (workspace_id, url_index)"))
@@ -1196,7 +1301,8 @@ def purge_http_cache() -> None:
 def init_db() -> None:
     from backend import pool_migration
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    owner_only(DATA_DIR, 0o700)  # (a folder made by an earlier version is 0755)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     _rebuild_legacy_fit_results()
     Base.metadata.tables["users"].create(bind=engine, checkfirst=True)
