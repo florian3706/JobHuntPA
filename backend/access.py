@@ -11,14 +11,16 @@ Rules (first match wins):
      payment, set by ``billing.apply_subscription``)
   4. otherwise (a trial or lapsed account): view_jobs always; search while free searches remain; nothing else.
      The AI features (rescore, chat, cover_letter, research, concise_or_summary) and scheduled_search need a
-     membership, whatever is left of the free searches. A free search run still scores the jobs it finds: the
-     caller scores inside the run without asking the gate.
+     membership, whatever is left of the free searches. A free search run still scores the jobs it finds, and
+     up to ``FREE_SEARCH_EXTRA_SCORES`` (5) other jobs that are waiting for a first score (say, ones imported
+     from a saved page): the caller scores inside the run without asking the gate.
 
   feature            member   trial, free search left   free searches used up
   view_jobs          yes      yes                       yes
   search             yes      yes (uses one)            no  (free_searches_used)
   scheduled_search   yes      no  (membership_required) no  (membership_required)
   AI features        yes      no  (ai_members_only)     no  (ai_members_only)
+  scoring in a run   every pending job; a free search: the jobs it found + FREE_SEARCH_EXTRA_SCORES waiting ones
 """
 from __future__ import annotations
 
@@ -28,6 +30,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 FREE_SEARCHES = 3
+# Besides the jobs it found, a free search scores this many jobs waiting for a first score (never scored before ones
+# whose scoring failed, each newest first: scorer.select_jobs).
+FREE_SEARCH_EXTRA_SCORES = 5
 GRACE = timedelta(days=3)
 
 VIEW_JOBS = "view_jobs"

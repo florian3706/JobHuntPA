@@ -346,10 +346,13 @@ def score_one(job_id: int, profile_text: str, profile_hash: str, cfg: dict) -> d
 
 
 def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack: int = 0,
-                only: Optional[set] = None) -> list[int]:
+                only: Optional[set] = None, extra: int = 0) -> list[int]:
     """Job ids to score. mode: pending (never scored or errored) | stale (+ scored
     against older documents) | all (every eligible job). ``office_slack`` also
-    counts jobs a temporarily softened office-days limit lets through. ``only`` limits the result to these ids."""
+    counts jobs a temporarily softened office-days limit lets through. ``only`` limits the result to these ids;
+    ``extra`` adds ``extra`` other jobs that would be selected (a free search's waiting jobs: picked
+    after the checks above, so each one really gets scored; never-scored ones first, then ones whose last scoring
+    failed, each newest first, so jobs that keep failing don't take the slots every time)."""
     from backend.filters import softened_job_ids
     from backend.pool import job_states
 
@@ -359,17 +362,21 @@ def select_jobs(db: Session, mode: str, profile_hash: str, ws: int, office_slack
     fits = {job_id: (status, phash, score) for job_id, status, phash, score in
             db.query(FitResult.job_id, FitResult.status, FitResult.profile_hash, FitResult.score)
             .join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws)}
-    out = []
+    out, others = [], []
     for job_id, hidden, reason, closed, detail in job_states(db, ws):
-        if only is not None and job_id not in only:
+        outside = only is not None and job_id not in only
+        if outside and extra <= 0:
             continue
         if (reason and job_id not in softened) or hidden or closed or detail not in ("full", "summary"):
             continue
         status, phash, score = fits.get(job_id, (None, None, None))
         unscored = status is None or score is None
         if mode == "all" or unscored or (mode == "stale" and phash != profile_hash):
-            out.append(job_id)
-    return out
+            if outside:
+                others.append((status is not None, -job_id))  # (tried before: after the never-scored ones)
+            else:
+                out.append(job_id)
+    return out + [-neg for _, neg in sorted(others)[:extra]]
 
 
 def _duplicate_groups(job_ids: list[int]) -> dict[int, list[int]]:

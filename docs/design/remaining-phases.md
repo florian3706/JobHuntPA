@@ -285,7 +285,8 @@ their module docstrings and the notes in their tests.
 - New users get **3 free searches**.
 - Jobs already found stay visible. New searches wait for a membership once the free searches run out. The AI
   features (rescoring, chat, cover letters, research, Fill missing info, title suggestions, document concise
-  versions and summary) are members-only from the start; each free search run still scores its own jobs.
+  versions and summary) are members-only from the start; each free search run still scores its own jobs
+  and up to 5 other waiting ones.
 - Scheduled searches need a membership (and background access).
 - A free search is given back if its run fails.
 - Card numbers are never stored.

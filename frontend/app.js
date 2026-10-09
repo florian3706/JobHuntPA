@@ -473,7 +473,9 @@ function showUploadAd(job) {
         status.textContent = err.status === 402
           ? (job.fit?.status === 'ok'
             ? 'Updated with the full ad. Rescoring is for members, so the old score stays until you become one.'
-            : 'Updated with the full ad. Scoring a job by hand is for members; a free search scores only the jobs it finds.')
+            : freeSearchLeft
+              ? `Updated with the full ad. Scoring a job by hand is for members; each free search also scores up to ${freeExtraScores} jobs waiting for a score, newest first.`
+              : 'Updated with the full ad. Scoring a job by hand is for members.')
           : `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
       }
       renderJobs();
@@ -1376,7 +1378,8 @@ async function importPages(e) {
       total = { imported: total.imported + r.imported, new: total.new + r.new, kept: total.kept + r.kept };
     } catch (err) { toast(`${f.name}: ${err.message}`, 'err', 8000); }
   }
-  status.textContent = `Imported ${total.imported} job(s): ${total.new} new, ${total.kept} pass your filters`;
+  status.textContent = `Imported ${total.imported} job(s): ${total.new} new, ${total.kept} pass your filters`
+    + (aiLockedNow && freeSearchLeft && total.new ? `. Your next free search scores up to ${freeExtraScores} jobs waiting for a score.` : '');
   $('#import-input').value = '';
   loadJobs();
 }

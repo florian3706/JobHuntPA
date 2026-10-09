@@ -428,12 +428,12 @@ def refilter_jobs(db: Session = Depends(get_db), ws: int = Depends(current_works
 # Background runs
 # ---------------------------------------------------------------------------
 
-def _score(ws: int, mode: str, progress, office_slack: int = 0, only: Optional[set] = None) -> dict:
+def _score(ws: int, mode: str, progress, office_slack: int = 0, only: Optional[set] = None, extra: int = 0) -> dict:
     from backend.scorer import ScorerError, build_profile, score_jobs, select_jobs
 
     db = SessionLocal()
     try:
-        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws, office_slack, only)
+        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws, office_slack, only, extra)
     finally:
         db.close()
     try:
@@ -472,15 +472,16 @@ def start_search_run(ws: int, scheduled: bool = False) -> dict:
         # Before scoring, so the same ad on two sites is scored once.
         progress("checking for duplicate ads", {})
         summary["duplicates"] = scan_workspace(ws)
-        only = None
-        if free:  # a free search scores the jobs it found, not whatever else is waiting
+        only, extra = None, 0
+        if free:  # a free search scores the jobs it found and a few waiting ones (imported pages), not everything
             db = SessionLocal()
             try:
                 found |= {i for (i,) in db.query(Job.id).filter(Job.workspace_id == ws, Job.first_run_id == run_id)}
             finally:
                 db.close()
-            only = found
-        summary["scoring"] = {"skipped": config_problem()} if config_problem() else _score(ws, "pending", progress, only=only)
+            only, extra = found, access.FREE_SEARCH_EXTRA_SCORES
+        summary["scoring"] = ({"skipped": config_problem()} if config_problem()
+                              else _score(ws, "pending", progress, only=only, extra=extra))
         return summary
 
     return tasks.start("search", job, ws, scheduled=scheduled, charge=membership.charge_search)

@@ -41,7 +41,7 @@ function renderMe(st) {
     summary = "Your last payment didn't go through, and the time to fix it is over. Update your payment method to get your membership back.";
   } else {
     summary = me.free_searches_left > 0
-      ? `You're not a member yet. You have ${me.free_searches_left} of ${me.free_searches_limit} free searches left. A search finds and scores jobs; the other AI features are for members.`
+      ? `You're not a member yet. You have ${me.free_searches_left} of ${me.free_searches_limit} free searches left. A search finds jobs and scores them, and scores up to ${me.free_search_extra_scores ?? 5} other jobs waiting for a score; the other AI features are for members.`
       : "You're not a member yet, and your free searches are used up. The AI features are for members.";
   }
   if (me.member && me.free_searches_left > 0 && !['admin', 'exempt', 'billing_off'].includes(me.reason)) {

@@ -7,7 +7,8 @@ module is what joins them to the database and the API:
 402 ``{"code": "membership_required", "detail": ..., "reason": ...}`` (``reason`` is access.py's reason code:
 ``ai_members_only`` for the AI features, ``free_searches_used`` for a search, ``membership_required`` for a scheduled
 search). Only members use the AI features; a trial account gets its free searches (each still scores the jobs it
-finds, inside the run) and nothing else. ``load_state`` builds the ``AccessState`` from the account's membership row, its unrevoked
+finds, and up to ``access.FREE_SEARCH_EXTRA_SCORES`` other jobs waiting for a first score, such as imported pages;
+all inside the run) and nothing else. ``load_state`` builds the ``AccessState`` from the account's membership row, its unrevoked
 grants, its role and the admin's free-search allowance (``signup.free_searches``); with billing off (no Stripe key,
 or no price in Stripe, ``billing.enabled()``) every account counts as a member, which keeps local installs as they
 were. When the gate sees a subscription whose period has passed it asks Stripe once (at most hourly per person).
@@ -16,7 +17,8 @@ were. When the gate sees a subscription whose period has passed it asks Stripe o
 run (``search_runs.free_search``) in the same commit as the run's row. ``refund_runs`` gives it back when the run ends
 failed or is interrupted (``tasks``); it is idempotent, because it only refunds a run whose flag it clears.
 Members, admins, exempt accounts and anyone in a free period are never charged. The run scores its own jobs
-without asking the gate, so a free search is worth having even though rescoring needs a membership.
+without asking the gate (see ``app.start_search_run``: the jobs it found and the newest waiting ones, never a merged
+duplicate or another workspace's job), so a free search is worth having even though rescoring needs a membership.
 
 **Endpoints** (all need a signed-in user; none is gated: billing must work when you have no access):
 
@@ -561,6 +563,7 @@ def person_state(db: Session, user_id: int, role: str, now: Optional[datetime] =
         "reason": reason,                      # admin, exempt, billing_off, grant, subscribed, grace, or null
         "free_searches_left": access.free_searches_left(state),
         "free_searches_limit": state.free_searches_limit,
+        "free_search_extra_scores": access.FREE_SEARCH_EXTRA_SCORES,  # waiting jobs a free search scores besides its own
         "can_search": searching.allowed,
         "message": None if searching.allowed else searching.message,
         "plan": m.plan if m else None,

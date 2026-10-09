@@ -442,15 +442,19 @@ function pageNotice(kind, html) {
 
 /* Whether this person is on a trial: billing is on and they aren't a member. The AI features (rescoring, chat, cover
    letters, company research and Fill missing info, title ideas, shorter versions and summaries of documents) are for
-   members; a free search still finds and scores jobs. Pages call loadAiAccess() once at start; a failure counts as
-   "not locked" (the server decides anyway, and answers 402). */
+   members; a free search still finds and scores jobs (and up to freeExtraScores waiting ones). Pages call
+   loadAiAccess() once at start; a failure counts as "not locked" (the server decides anyway, and answers 402). */
 const AI_NOTE = 'AI features are for members. Your free searches still find and score jobs.';
 let aiLockedNow = false;
+let freeSearchLeft = true; // whether a free search can still be run (the server's can_search; true until loaded)
+let freeExtraScores = 5; // waiting jobs a free search scores besides the ones it finds (the server's number, once loaded)
 async function loadAiAccess() {
   try {
     const st = await api('/api/billing/status');
     aiLockedNow = !!(st.billing.enabled && !st.me.member);
-  } catch { aiLockedNow = false; }
+    freeSearchLeft = st.me.can_search !== false;
+    freeExtraScores = st.me.free_search_extra_scores ?? freeExtraScores;
+  } catch { aiLockedNow = false; freeSearchLeft = true; }
   showAiNotes();
   return aiLockedNow;
 }

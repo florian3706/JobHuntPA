@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import access, billing, crypto, membership, ratelimit, schedule, tasks  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import (  # noqa: E402
-    Membership, MembershipGrant, SearchRun, SessionLocal, User, UserKeys, utcnow,
+    FitResult, Job, Membership, MembershipGrant, SearchRun, SessionLocal, User, UserKeys, utcnow,
 )
 from backend.sessions import require_admin  # noqa: E402
 
@@ -517,15 +517,31 @@ class FreeSearches(Base):
         self.assertEqual((again.status_code, again.json()["code"]), (402, "membership_required"))
         self.assertEqual(self.member(acct.id).free_searches_used, 3)
 
-    def test_a_free_search_scores_only_the_jobs_it_found_but_a_members_search_scores_every_pending_one(self):
+    def test_a_free_search_scores_the_jobs_it_found_and_a_few_waiting_ones_but_a_members_search_scores_every_pending_one(self):
         acct, c = self.user()
         with mock.patch("backend.pipeline.run_search", return_value={"job_ids": [7, 8]}):
             self.run_and_wait(c)
         self.assertEqual(self.score.call_args.kwargs["only"], {7, 8})
+        self.assertEqual(self.score.call_args.kwargs["extra"], access.FREE_SEARCH_EXTRA_SCORES)
         member, mc = self.user(exempt=True)
         with mock.patch("backend.pipeline.run_search", return_value={"job_ids": [7, 8]}):
             self.run_and_wait(mc)
         self.assertIsNone(self.score.call_args.kwargs["only"])
+        self.assertEqual(self.score.call_args.kwargs["extra"], 0)
+
+    def test_select_jobs_adds_the_newest_other_ones_when_asked(self):
+        from backend.scorer import select_jobs
+        states = [(i, False, None, False, "full") for i in range(1, 9)]
+        states[5] = (6, True, None, False, "full")  # hidden: no use
+        with mock.patch("backend.pool.job_states", return_value=states), \
+                mock.patch("backend.filters.softened_job_ids", return_value=set()):
+            db = mock.MagicMock()
+            db.query.return_value.join.return_value.filter.return_value = []
+            self.assertEqual(select_jobs(db, "pending", "h", 1, only={2}, extra=3), [2, 8, 7, 5])
+            self.assertEqual(select_jobs(db, "pending", "h", 1, only={2}), [2])
+            self.assertEqual(select_jobs(db, "pending", "h", 1, extra=3), list(range(1, 6)) + [7, 8])  # (no limit: all)
+            db.query.return_value.join.return_value.filter.return_value = [(8, "error", "h", None), (7, "error", "h", None)]
+            self.assertEqual(select_jobs(db, "pending", "h", 1, only={2}, extra=5), [2, 5, 4, 3, 1, 8])  # (never scored first)
 
     def test_select_jobs_can_be_limited_to_some_ids(self):
         from backend.scorer import select_jobs
@@ -634,6 +650,100 @@ class FreeSearches(Base):
         self.assertFalse(run["free_search"])
         self.assertEqual(self.runs(acct.workspace_id), [("search", False)])
         self.assertEqual(self.member(acct.id).free_searches_used, 0)
+
+
+class FreeSearchWaitingJobs(Base):
+    """Besides the jobs it found, a free search scores up to ``access.FREE_SEARCH_EXTRA_SCORES`` other jobs waiting for a
+    first score (the user's decision, 2026-10-09: "allow 5"), such as pages the person imported."""
+
+    def setUp(self):
+        super().setUp()
+        self.scored.stop()  # the real backend.app._score, so the real selection runs (the model's scoring is replaced)
+        self.addCleanup(self.scored.start)  # (Base's cleanup stops it again)
+
+    def waiting_job(self, acct, *, ws=None, scored=False, errored=False, **fields) -> int:
+        """A job the person imported from a saved page: private, with a full ad, in no run (first_run_id is NULL)."""
+        with helpers.as_account(acct):
+            db = SessionLocal()
+            try:
+                content = dict(description="Build things.", detail_status="full")
+                content.update(fields)
+                job = Job(workspace_id=ws or acct.workspace_id, origin="private", status="to_review",
+                          url=f"https://example.invalid/job/{time.monotonic_ns()}", title="Engineer", company="Acme",
+                          **content)
+                db.add(job)
+                db.flush()
+                if scored or errored:
+                    db.add(FitResult(job_id=job.id, status="error" if errored else "ok", score=None if errored else 80))
+                db.commit()
+                return job.id
+            finally:
+                db.close()
+
+    def scored_ids(self, c, found=()):
+        """The ids a search that finds ``found`` sends to be scored."""
+        with mock.patch("backend.pipeline.run_search", return_value={"job_ids": list(found)}), \
+                mock.patch("backend.scorer.score_jobs", return_value={"scored": 0}) as score_jobs:
+            run, done = self.run_and_wait(c)
+        self.assertEqual(done["state"], "done", done)
+        score_jobs.assert_called_once()
+        return sorted(score_jobs.call_args.args[1])
+
+    def test_a_free_search_scores_the_five_newest_waiting_jobs_and_not_the_others(self):
+        acct, c = self.user()
+        waiting = [self.waiting_job(acct) for _ in range(7)]
+        found = self.waiting_job(acct)  # (found by the search itself: scored on top of the five)
+        self.assertEqual(self.scored_ids(c, [found]), sorted(waiting[2:] + [found]))
+
+    def test_the_five_are_picked_after_the_checks_so_a_job_that_will_not_be_scored_uses_none_up(self):
+        acct, c = self.user()
+        good = [self.waiting_job(acct) for _ in range(5)]
+        self.waiting_job(acct, hidden=True)
+        self.waiting_job(acct, excluded_reason="salary below your minimum")
+        self.waiting_job(acct, description=None, detail_status="none")  # no ad to score
+        self.waiting_job(acct, scored=True)  # already has a score: not waiting
+        self.assertEqual(self.scored_ids(c), good)
+
+    def test_a_job_whose_last_scoring_failed_is_waiting_too(self):
+        acct, c = self.user()
+        failed = self.waiting_job(acct, errored=True)
+        self.assertEqual(self.scored_ids(c), [failed])
+
+    def test_jobs_that_keep_failing_do_not_take_all_five_places(self):
+        acct, c = self.user()
+        never = self.waiting_job(acct)  # (older than the failed ones)
+        failed = [self.waiting_job(acct, errored=True) for _ in range(5)]
+        self.assertEqual(self.scored_ids(c), sorted([never] + failed[1:]))
+
+    def test_a_merged_duplicate_never_counts(self):
+        acct, c = self.user()
+        original = self.waiting_job(acct)
+        copy = self.waiting_job(acct, duplicate_of=original)
+        others = [self.waiting_job(acct) for _ in range(4)]
+        self.assertEqual(self.scored_ids(c), sorted([original] + others))
+        self.assertNotIn(copy, self.scored_ids(c))
+
+    def test_another_workspaces_waiting_jobs_are_never_scored_by_a_free_search(self):
+        acct, c = self.user()
+        mine = self.waiting_job(acct)
+        other = helpers.make_user()
+        theirs = self.waiting_job(other)
+        elsewhere = self.waiting_job(acct, ws=helpers.new_workspace("Another search", acct.id))
+        self.assertEqual(self.scored_ids(c), [mine])
+        self.assertNotIn(theirs, self.scored_ids(c))
+        self.assertNotIn(elsewhere, self.scored_ids(c))
+
+    def test_a_members_search_still_scores_every_waiting_job(self):
+        member, mc = self.user(exempt=True)
+        waiting = [self.waiting_job(member) for _ in range(7)]
+        self.assertEqual(self.scored_ids(mc), waiting)
+
+    def test_the_numbers_on_the_pages_match_the_server(self):
+        n = str(access.FREE_SEARCH_EXTRA_SCORES)
+        self.assertEqual(access.FREE_SEARCH_EXTRA_SCORES, 5)  # the user's decision (2026-10-09): "allow 5"
+        self.assertIn(f"up to {n} other jobs waiting", (Path(__file__).parent.parent / "frontend/billing.html").read_text())
+        acct, c = self.user()
+        self.assertEqual(c.get("/api/billing/status").json()["me"]["free_search_extra_scores"], access.FREE_SEARCH_EXTRA_SCORES)
 
 
 class ScheduledSearches(Base):

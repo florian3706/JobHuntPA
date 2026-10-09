@@ -565,8 +565,10 @@ By default everyone who signs in has full access. To charge for it, an admin con
    paste in the card. Until a secret is saved, the webhook address answers 404.
 
 What people get: admins need no membership. Everyone else has **3 free searches** (change the number in
-the Sign-up section). A free search finds jobs and **scores them**. The **AI features are for members only**,
-even while free searches are left: rescoring and *Score pending*, chat, cover letters, company research and
+the Sign-up section). A free search finds jobs and **scores them**, and also scores up to **5 other jobs
+waiting for a first score**, such as pages you imported or completed with a saved full ad (newest first; jobs
+never scored come before ones whose scoring failed). The **AI features are for members only**, even while free
+searches are left: rescoring and *Score pending*, chat, cover letters, company research and
 "Fill missing info", concise versions and summaries of documents, and title suggestions. Once the free
 searches are used, jobs already found stay visible but new searches wait for a membership too. **Scheduled
 searches** need a membership and background access (free searches are for
@@ -584,8 +586,8 @@ a member and why, how many free searches are left, your plan, and when it renews
 takes you to Stripe's payment page and brings you back with a clear message that the payment worked (or that
 nothing was charged if you cancelled). **Manage payment and plan** (it asks for your password if you haven't typed it in the last 15 minutes) opens Stripe's page to change your card or
 plan, see invoices, or cancel at the end of the period. The Jobs tab says when **Run search** uses one of your
-free searches (and that it scores what it finds), and that the other AI features are for members. Without a
-membership your jobs, notes, documents and settings stay available.
+free searches (and that it scores what it finds and up to 5 waiting jobs), and that the other AI features are
+for members. Without a membership your jobs, notes, documents and settings stay available.
 
 ## Using it
 
