@@ -314,6 +314,7 @@ This is the same class as the plaintext-swap limit in §15 and needs write acces
    - Deletes the row, expires the cookie and sends `Clear-Site-Data: "cache"`. The JS clears `jobhunt.ws`.
    - "Sign out everywhere" deletes all of the user's sessions.
    - Password change, a reset, disabling the account and deleting it also delete every session.
+   - Browser-extension keys are session rows too (§19), so all of the above disconnect them as well.
 6. **Rate limiting and lockout** (`backend/ratelimit.py`, `backend/lockout.py`; in memory, the app is a single uvicorn process):
    - **Per IP** (the client address from X-Forwarded-For on loopback): auth endpoints allow 10 requests per 5 minutes and 60 per hour. Unsubscribe allows 30 per minute. This is only as good as the proxy's header: `tailscale serve` and other proxies on this computer **append** the real client address, which uvicorn then reads; a proxy that passed a client's own `X-Forwarded-For` through unchanged would let anyone pick their address. Behind the Host allowlist (§18) a web page on another site can't reach the server to forge one, so only programs on this computer can.
    - **Wrong passwords and codes** are counted per account **and per source**, never for the account as a whole:
@@ -1125,3 +1126,61 @@ A posting missing from one user's query results says nothing about whether it cl
   - A second pass: a keyless admin can still turn off a key-holding admin (§1.4); a mail-route change by an admin without the key is refused (§2.5); the export's deadline is a timer and grows with the zip's size; the SQL guard also refuses `OVER`, `cast`, `type_coerce` and a union's ORDER BY (§15).
   - Tests: `test_the_place_is_kept_until_the_download_has_ended` (`tests/test_export.py`), `test_the_portal_needs_the_password_entered_recently` and `StaleStripeState` (`tests/test_membership.py`), `RouteChangeTest` (`tests/test_mail_settings.py`), `ScorerParseTest` (`tests/test_core.py`).
 - **Behind a proxy:** `launch.py` trusts `X-Forwarded-For` from 127.0.0.1. The proxy must append the real client address (`tailscale serve` and the usual proxies do), not pass a client's own header through.
+
+## 19. Browser-extension keys (2026-10-09)
+
+The Chrome and Firefox extensions (repos `JobHuntPA-chrome-extension`, `JobHuntPA-firefox-extension`) add the
+page in the current tab as a job or as a company source. They can't use the session cookie (SameSite, CSRF, an
+`Origin` of `chrome-extension://...`), and everything is sealed under the person's DEK, so a key carries a wrapped
+DEK the way a session does. Code: `backend/extension.py` (the API and the keys), the key checks in
+`backend/sessions.py`, `backend/scraping/page_job.py` (reading the page), `frontend/extension.js` (Settings >
+Browser extension). Tests: `tests/test_extension.py`, and a step in `tests/test_log_leaks.py`.
+
+- **What the person gets:** `jhpa_` + base64url of 32 random bytes, shown once in Settings with the server address
+  (`location.origin`), to paste into the extension's options. Making one needs a session (a key can't make keys)
+  with a recent sign-in (`require_recent_auth`), and it wraps the request's own DEK (`crypto.current()`, checked
+  against `user_keys.dek_kid`), like background access. At most 20 per account.
+- **What is stored:** a `sessions` row with `state = "extension"`. `id = SHA-256("jh extension key id v1|" +
+  secret)`, a different hash from a cookie's (`SHA-256(secret)`), so the same bytes as a cookie name another row.
+  `wrapped_dek = wrap(HKDF(secret, "jh extension key dek v1"), DEK, "ext|{id}")`: a label no cookie session uses, so
+  a key can't open as a session or a session as a key, even with `state` changed in the database. No identity key
+  (`wrapped_ik` NULL) and no recent sign-in (`reauth_at` NULL). `public_id`: a short random id the Settings card
+  revokes by (never the hash that authenticates; unique index). `label_enc`: the name the person typed, sealed
+  under their DEK with `crypto.seal(..., "sessions.label|{id}")` (bound to the row; a plain `LargeBinary`, not a
+  `Sealed*` column, so the sign-in code can load session rows without a key scope). The key itself is never stored
+  or logged.
+- **Lifetimes:** 60 days from the last use, a year at most (`sessions.KEY_IDLE`, `KEY_ABSOLUTE`). Use moves the idle
+  expiry on and writes `last_seen_at` at most every 5 minutes, like a session; the card shows "last used" and when
+  it stops working. Expired rows go with the sessions' clean-up.
+- **What revokes keys:** *Disconnect* on the card (`DELETE /api/extension/keys/{public_id}`, own keys only), and
+  everything that deletes all of an account's session rows: *Sign out everywhere else*, a password change that signs
+  out the other devices (one that keeps them keeps the keys), a password reset by email (with or without the data),
+  a reset with a recovery code, an admin turning the account off or turning off its two-step sign-in, and deleting
+  the account. Re-enabling the account doesn't bring keys back. Making and revoking a key each commit in one
+  transaction and then `scrub_wal()`; so does *Sign out everywhere else* now.
+- **The request check** (`AuthMiddleware._check_key`): a request with `Authorization: Bearer ...` is checked by the
+  key alone; the cookie is never looked at, even when the key is bad (401 `token_invalid`). Another scheme (a proxy's
+  `Basic`) is left alone and the cookie is used. A key request skips the same-site/Origin check and CSRF: browsers
+  never add that header by themselves, and a page on another site can't add it without a CORS preflight, which this
+  server never approves (it sends no CORS headers). It keeps the setup-required check, the encryption migration's
+  423, and runs inside `crypto.as_user` with the key's DEK and no identity key. Keys that don't work are counted
+  per client address (`ratelimit.BAD_KEY`: 20 in 5 minutes, 100 an hour, then 429 before any lookup). The
+  `AuthUser` has `key = True`, so `has_recent_auth` is always false and sensitive actions refuse.
+- **The allowlist** (`sessions.KEY_ENDPOINTS`; anything else answers 403 `token_scope`, including the key endpoints
+  and every admin endpoint): `GET /api/extension/status`, `POST /api/extension/preview`, `POST /api/extension/jobs`,
+  `GET /api/sources`, `POST /api/sources`, `POST /api/sources/{id}/test`. Workspaces are the usual `X-Workspace`
+  check (another account's answers 404). A key can't read jobs, documents, chats or settings.
+- **Pages:** the extension sends the URL (http(s), ≤ 2,048 characters), the tab's title (≤ 1,000), the HTML
+  (≤ 3,000,000), the visible text (≤ 300,000), the selection (≤ 100,000) and the person's edits (≤ 500, employment
+  type and work mode ≤ 40). The body is refused with 413 from its `Content-Length` (or as it streams) past 16 MB,
+  and over a field's limit, before any parsing. Nothing is fetched (the page comes from the person's browser, as
+  with a saved page) and no AI is asked. Order: SEEK's job data, then the JobPosting JSON-LD about this address
+  (else the first), then heuristics (title from og:title, the first h1 or the tab title without the site's name;
+  employer from JSON-LD, og:site_name or the host; description from the main content, else the visible text).
+  A selection is the description; the person's non-empty edits win.
+- **Storing:** like `POST /api/import/page` (§14.4): `pool.import_private` under `source = "browser"` (shown as
+  "browser extension"): the workspace's job with that address is updated with the page's values as its own
+  overrides (200, `created: false`), else a pool link when the pool has the address, else a private job (201). The
+  exclusion filters and the duplicate scan run as for an import, and the job waits for its score like one (it has a
+  description, so `detail_status` is `full` or `summary`). The answer links to the listed job (a merged copy's
+  `duplicate_of`), as `/job.html?id={id}&ws={ws}`.

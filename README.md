@@ -218,7 +218,8 @@ emails, download your data and delete account.
 - **Password, recovery codes and devices** (Settings > Password, Recovery codes and Signed-in devices): change
   your password (your data stays readable, and other browsers are signed out unless you untick that), make 8
   new recovery codes (the old ones stop working; you enter your password, and with two-step sign-in on also the
-  app's code; you save the new ones the same way as the first set), and *Sign out everywhere else*. Anything
+  app's code; you save the new ones the same way as the first set), and *Sign out everywhere else* (which also
+  disconnects your [browser extensions](#browser-extension)). Anything
   sensitive asks you to confirm your password first, if you haven't entered it in the last 15 minutes. If you
   think someone had your session, change your password, make new recovery codes and sign out everywhere else.
 - **Delete your account** (Settings > Delete account): enter your password and everything of yours is
@@ -798,6 +799,34 @@ jobs* above).
 
 Each source brings in at most 60 new full ads per search; the rest follow on the next search.
 
+## Browser extension
+
+The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your current tab to JobHuntPA:
+
+- **Add as a job**: the extension reads the ad you are looking at, shows what it found (title, employer,
+  location, salary, employment type, work mode) so you can correct it, and saves it as your own job in the
+  workspace you pick, like an imported page. It reads the page in your own browser, so ads behind a sign-in
+  work too. Select the ad's text first to use only that as the description. A job you already have (the same
+  address) is brought up to date instead of added twice.
+- **Add as a company source**: adds the page as a [careers page](#adding-company-careers-pages) of the
+  workspace, and **Test** shows what a search would find on it.
+
+To connect it:
+
+1. Install the extension: [for Chrome](https://github.com/florian3706/JobHuntPA-chrome-extension) or
+   [for Firefox](https://github.com/florian3706/JobHuntPA-firefox-extension) (each page says how).
+2. In JobHuntPA, open **Settings > Browser extension**, type a name such as "Firefox on my laptop" and click
+   **Connect a browser extension** (it may ask for your password).
+3. Copy the **server address** and the **extension key** it shows into the extension's options, then pick a
+   workspace. The key is shown only once. Keep it secret: like a signed-in browser, it opens your data.
+
+The card lists your connected extensions with when each was last used. **Disconnect** stops a key at once.
+A key also stops working after 60 days without use, a year after it was made, and whenever your account is
+signed out everywhere: *Sign out everywhere else*, a password change that signs out the other devices, a
+password reset, and an admin turning your account off. Then connect the extension again. A key can only add
+jobs and company sources and list your workspaces and sources: it can't read your jobs, documents or
+settings, or change your account.
+
 ## Updating
 
 - **Windows:** download the newest JobHuntPA-Setup.exe and run it again with the same folder.
@@ -1049,9 +1078,11 @@ sessions), `backend/totp.py` (authenticator codes), `backend/admin.py` (the admi
 `backend/tokens.py` (sign-up modes and invitations), `backend/key_rotation.py` (the server key),
 `backend/background.py` (background access), `backend/key_recovery.py` (the `recover-lost` command),
 `backend/export.py` (data export), `backend/account.py` (preferences, the walkthrough step, deleting
-an account), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
+an account), `backend/extension.py` (the browser extensions' API and keys) with `backend/scraping/page_job.py`
+(reading a job from the page they send), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
 `new-admin-key` and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
 (account cards), `account-email.js` and `email-settings.js` (email address and server settings), `background.js`,
+`extension.js` (Settings > Browser extension),
 `export.js`, `admin.js`, `server-settings.js` and `stripe-settings.js` (the admin panel), `dialogs.js` (its
 dialogs), `signup.js`, `forgot.js`, `reset-password.js` and `verify-email.js` (the link pages), `billing.js`
 (`billing.html`, Account > Membership) and `free-searches.js` (the Jobs tab's free-search note).
