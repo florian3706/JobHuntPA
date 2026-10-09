@@ -473,7 +473,7 @@ function showUploadAd(job) {
         status.textContent = err.status === 402
           ? (job.fit?.status === 'ok'
             ? 'Updated with the full ad. Rescoring is for members, so the old score stays until you become one.'
-            : 'Updated with the full ad. Scoring a job by hand is for members; your next free search scores it.')
+            : 'Updated with the full ad. Scoring a job by hand is for members; a free search scores only the jobs it finds.')
           : `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
       }
       renderJobs();

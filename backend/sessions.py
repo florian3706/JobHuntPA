@@ -203,6 +203,19 @@ def create(db: Session, user: User, dek: bytes, ik: Optional[bytes], *, persiste
     return secret
 
 
+def give_ik(db: Session, scope, session_id: str, ik: bytes) -> None:
+    """Gives the IK to the request's own session when it has none (made before the account had one): a password
+    check that just opened it, or made it, is the one moment it is in hand. Commits. Does nothing for another cookie."""
+    secret = read_secret(scope)
+    if secret is None or crypto.session_id(secret) != session_id:
+        return
+    db.query(AuthSession).filter(AuthSession.id == session_id, AuthSession.state == "active",
+                                 AuthSession.wrapped_ik.is_(None)).update(
+        {AuthSession.wrapped_ik: crypto.wrap(crypto.session_kek(secret), ik, f"sess-ik|{session_id}")},
+        synchronize_session=False)
+    db.commit()
+
+
 def create_pending(db: Session, user: User, dek: bytes, ik: Optional[bytes], *, persistent: bool) -> bytes:
     """A ``pending_mfa`` session (added to ``db``, not committed): the password was right, the code isn't checked yet.
     ``persistent`` is "Keep me signed in", for the session that replaces this one. Returns the cookie secret. The DEK

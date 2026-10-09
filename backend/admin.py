@@ -401,6 +401,7 @@ def set_role(user_id: int, body: RoleIn, admin: AuthUser = Depends(current_user)
                     "resealed": rotation.resealed, "stale": rotation.stale, "dropped": rotation.dropped}
     admin_key.audit(db, admin.id, "role_changed", target.id, audit_detail, public=rotation.apk.public)
     db.commit()
+    scrub_wal()  # the old key's grants must not linger in the write-ahead log
     keep = rotation.apk if admin.id in remaining else None
     return {"ok": True, "changed": True, "apk_rotated": True, "user": _summaries(db, keep, [target.id])[0]}
 
@@ -503,9 +504,14 @@ def disable_user(user_id: int, body: Optional[DisableIn] = None, admin: AuthUser
         else:
             audit(db, admin, action, target.id, detail)
     db.commit()
+    if rotation is not None or not_replaced:
+        scrub_wal()  # the old key's grants must not linger in the write-ahead log
     out = {"ok": True, "changed": changed, "subscription": subscription, "apk_rotated": rotation is not None,
            "user": _summaries(db, rotation.apk if rotation else _open_apk(db, admin), [target.id])[0]}
-    if not_replaced:
+    if not_replaced and not crypto.has_ik():  # a session from before the identity key: signing in again is the fix
+        out["note"] = ("They are off, but the admin key was not replaced because this session can't open it. Sign in "
+                       "again, then replace it from an admin who has it, or run new-admin-key.")
+    elif not_replaced:
         out["note"] = ("They are off, but the admin key was not replaced because you don't have it. Replace it from "
                        "an admin who has it, or run new-admin-key.")
     return out

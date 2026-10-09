@@ -58,6 +58,8 @@ def confirm_password(request: Request, db: Session, auth: AuthUser, password: ob
         log.info("Password check failed for user %s (%d in a row)", user.id, ticket.failures)
         raise AuthProblem(422, "wrong_password", "That password isn't right. Check it and try again.", field=field)
     ticket.succeed() if reset else ticket.refund()
+    if unlocked.ik is not None and not crypto.has_ik():  # a session from before the identity key gets it now
+        sessions.give_ik(db, request.scope, auth.session_id, unlocked.ik)
     return unlocked
 
 

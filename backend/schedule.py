@@ -273,16 +273,16 @@ def start_scheduler(start_search: Callable[[int], dict]) -> None:
 
     def loop() -> None:
         while not _stop.wait(TICK_SECONDS):
+            try:  # before the searches: a member's row from before ``stripe_mode`` is not paying until it is synced
+                billing_sync_tick()
+            except Exception:
+                log.exception("membership sync failed")
             try:
                 tick(start_search)
             except Exception:
                 log.exception("scheduled search check failed")
             housekeeping()
             digest_tick()
-            try:
-                billing_sync_tick()
-            except Exception:
-                log.exception("membership sync failed")
 
     threading.Thread(target=loop, name="jobhunt-scheduler", daemon=True).start()
 

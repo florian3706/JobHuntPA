@@ -17,7 +17,7 @@ from tests import helpers  # noqa: E402  (sets the test environment first)
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import event, text  # noqa: E402
 
-from backend import admin_key, crypto, docs, migrate_encryption, ratelimit, sessions, totp, users  # noqa: E402
+from backend import admin_key, crypto, docs, lockout, migrate_encryption, ratelimit, sessions, totp, users  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import (  # noqa: E402
     UPLOAD_DIR,
@@ -430,6 +430,24 @@ class MfaSignInTest(AccountTestCase):
         self.assertTrue(self.row(alice)["locked"])
         c, r = self.login(alice)  # the password is right, but the account waits
         self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
+
+    def test_wrong_app_codes_at_sign_in_from_many_addresses_run_out(self):
+        alice, secret = self.with_mfa()
+        wrong = self.code(secret, 7)
+        statuses = []
+        for n in range(14):  # someone with the password: a new address and a new pending session every time
+            c = self.anonymous(client=(f"2001:db8::{n + 1:x}", 4000))
+            ratelimit.AUTH.reset()
+            self.assertEqual(c.post("/api/auth/login", json={"email": alice.email, "password": alice.password}).status_code,
+                             200)
+            statuses.append(self.second_step(c, code=wrong).status_code)
+        self.assertEqual(statuses, [422] * 10 + [429] * 4)
+        c = self.anonymous(client=("2001:db8::ff", 4000))
+        ratelimit.AUTH.reset()
+        c.post("/api/auth/login", json={"email": alice.email, "password": alice.password})
+        r = self.second_step(c, code=self.code(secret))  # the right code, from yet another address
+        self.assertEqual((r.status_code, r.json()["code"]), (429, "locked"))
+        self.assertEqual(self.second_step(c, recovery_code="0000-0000").status_code, 422)  # (recovery codes don't count)
 
     def test_the_wrong_code_count_comes_before_the_check_so_parallel_guesses_cannot_pass_it(self):
         alice, secret = self.with_mfa()
@@ -1348,6 +1366,18 @@ class DeleteAccountTest(AccountTestCase):
         self.assertEqual(c.post("/api/account/delete", json={"password": PASSWORD}).status_code, 200)
         self.assertEqual(self.sessions_of(bob), [])
         self.assertEqual(other.get("/api/auth/state").json().get("mfa_pending"), None)
+
+    def test_the_wrong_tries_and_limits_of_a_deleted_account_are_forgotten(self):
+        """SQLite may give the id of the newest account to the next one, which must not inherit these."""
+        bob = helpers.make_user(password=PASSWORD)
+        c = self.signed_in(bob)
+        for _ in range(6):
+            self.login(bob, "the wrong one!!")
+        self.assertGreater(lockout.waiting(bob.id), 0)
+        ratelimit.VERIFY_RESEND.hit(bob.id)
+        self.assertEqual(c.post("/api/account/delete", json={"password": PASSWORD}).status_code, 200)
+        self.assertEqual(lockout.waiting(bob.id), 0)
+        self.assertEqual(len(ratelimit.VERIFY_RESEND._hits.get(bob.id, ())), 0)
 
 
 # ---------------------------------------------------------------------------

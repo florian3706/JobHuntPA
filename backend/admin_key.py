@@ -51,6 +51,7 @@ from backend.db import (
     SessionLocal,
     User,
     UserKeys,
+    scrub_wal,
     utcnow,
 )
 
@@ -203,9 +204,10 @@ def other_holders(db: Session, admin_id: int) -> bool:
 
 
 def needs_sign_in(keys: UserKeys) -> bool:
-    """Whether the account's private key is still under the data key (it has no identity key yet) and background
-    access lets the server key open that: a grant sealed to it would not be protected from the key file."""
-    return keys.pw_wrapped_ik is None and keys.server_wrapped_dek is not None
+    """Whether the account's private key is still under the data key (it has no identity key yet): a grant sealed to
+    it would not be protected from the key file, or from an old copy of data/ if background access was on (and has
+    since been turned off: nothing records that). Its next password step gives it an identity key."""
+    return keys.pw_wrapped_ik is None
 
 
 def open_grant(db: Session, admin_id: int, private: bytes) -> Optional[Apk]:
@@ -268,7 +270,7 @@ def new_key(db: Session, old: Optional[Apk], admin_ids: Iterable[int], granted_b
     With ``old`` (the key as an admin who holds it opened it), every value sealed to it is opened and sealed again
     to the new key. Without it (``new-admin-key``: nobody has it any more) personal details become stale and heal at
     each person's next sign-in; the other values that were sealed to it stay as they are (unreadable). An admin who
-    has background access and has not signed in since the identity key (``needs_sign_in``) is not given the key
+    has not signed in since the identity key (``needs_sign_in``) is not given the key
     (``Rotation.skipped``, audited): another admin shares it once they have."""
     priv, pub = crypto.new_keypair()
     current = current_public(db)
@@ -280,7 +282,7 @@ def new_key(db: Session, old: Optional[Apk], admin_ids: Iterable[int], granted_b
     users._put_setting(db, "apk_public", base64.b64encode(pub).decode("ascii"))
     users._put_setting(db, "apk_version", version)
     recipients = list(dict.fromkeys(admin_ids))
-    for admin_id in recipients:  # an admin whose private key the server key still opens waits for their next sign-in
+    for admin_id in recipients:  # an admin whose private key is still under the data key waits for their next sign-in
         keys = db.get(UserKeys, admin_id)
         if keys is not None and needs_sign_in(keys):
             out.skipped.append(admin_id)
@@ -404,6 +406,7 @@ def new_admin_key_command(email: str, out=None, err=None) -> int:
               {"by": "command line", "made_admin": became_admin, "healed_now": immediately},
               public=rotation.apk.public)
         db.commit()
+        scrub_wal()  # the old key's grants must not linger in the write-ahead log
         waiting = db.query(User).filter(_behind(rotation.apk.version)).count()
     except BaseException:
         db.rollback()

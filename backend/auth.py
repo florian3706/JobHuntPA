@@ -247,11 +247,21 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
         sessions.end(db, sid)
         raise _mfa_expired()
     # Counted before the code is looked at (a try at the code of an account whose password is known: the ceiling over
-    # all sources isn't applied, but this browser or address waits after 5 wrong ones in a row).
+    # all sources isn't applied, but this browser or address waits after 5 wrong ones in a row). The app's code also
+    # has the code ceiling over all sources: a phished password makes a new pending session for every 5 tries.
     ticket = lockout.begin(request.scope, user, ceiling=False, what="codes")
+    code_ticket = None
+    if typed_code:
+        try:
+            code_ticket = lockout.begin_code(request.scope, user)
+        except AuthProblem:
+            ticket.refund()
+            raise
     attempts = sessions.count_mfa_attempt(db, sid)  # (and per sign-in: the 5th wrong code drops the pending session)
     if attempts > sessions.MFA_ATTEMPTS:
         ticket.refund()
+        if code_ticket is not None:
+            code_ticket.refund()
         sessions.end(db, sid)
         raise _mfa_expired("Too many wrong codes. Enter your email and password again.")
     recovery_id: Optional[int] = None
@@ -275,6 +285,8 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
         raise AuthProblem(422, "wrong_recovery_code", "That recovery code isn't right. Check it and try again.",
                           field="recovery_code")
     ticket.succeed()
+    if code_ticket is not None:
+        code_ticket.succeed()
     new_secret = sessions.create(db, user, dek, ik, persistent=remember)
     db.delete(pending)
     db.commit()

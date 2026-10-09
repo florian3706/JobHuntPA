@@ -380,17 +380,17 @@ digests don't need it and work as before. What this means in practice:
 - An existing account gets its identity key at its next password sign-in (or recovery-code reset); until
   then an admin's old arrangement still applies, so every admin should sign in once after updating. That
   sign-in gives the admin a new key pair and replaces the admin key (so a copy of `data/` from before can't
-  open anything current). An admin who has background access and hasn't signed in yet doesn't get the new
-  key until they have: sign in, then another admin chooses *Share the admin key again*. Making someone an
-  admin who has background access but hasn't signed in since the update waits for their sign-in too.
+  open anything current). An admin who hasn't signed in yet doesn't get the new key until they have: sign
+  in, then another admin chooses *Share the admin key again*. Making someone an admin who hasn't signed in
+  since the update waits for their sign-in too, and so does turning on background access.
 - **Delete the old `.bak-*` files** (`data/*.bak-before-encryption`, `*.bak-before-job-pool`, the
   uninstaller's zips once you have no use for them; the admin panel's **Server** section lists and deletes
   the first two). They keep the keys from before the update, so someone who has one together with the key
   file can still read what they held.
 - **Recovery codes saved before the update can't carry the identity key.** (Codes you hadn't yet confirmed
-  saving do carry it.) An admin who resets their password with a saved one keeps their data but needs
-  another admin to share the admin key with them again; Settings > Recovery codes suggests making new
-  codes (it takes a minute).
+  saving do carry it, unless the account has background access.) An admin who resets their password with a
+  saved one keeps their data but needs another admin to share the admin key with them again; Settings >
+  Recovery codes suggests making new codes (it takes a minute).
 
 ### Job digest emails
 

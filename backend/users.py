@@ -624,12 +624,13 @@ def migrate_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, passw
     """Gives an account from before the identity key one, in the caller's transaction (not committed): a new IK and a
     **new X25519 key pair** whose private key is wrapped under the IK (the old private key is not reused: copies of
     the DEK-sealed form, in a backup or an old file, would still open it), the IK wrapped under ``password_kek`` (the
-    password key) and under each unconfirmed recovery code (their text is in hand here), and those codes moved from
-    the DEK to the IK. An admin's grant of the admin key is opened with the old private key and sealed to the new
-    public key, and the admin key is replaced (``admin_key.new_key``), so a grant in an old copy opens nothing
-    current; a grant that doesn't open is deleted and audited. The DEK-sealed copies are overwritten; the caller
-    scrubs the write-ahead log after committing. Everything is computed before the row changes, and the changes are
-    one savepoint, so a failure leaves them as they were (CryptoError)."""
+    password key) and, unless the server key opens the data key (background access), under each unconfirmed recovery
+    code (their text is in hand here), and those codes moved from the DEK to the IK. An admin's grant of the admin key
+    is opened with the old private key and sealed to the new public key, and the admin key is replaced
+    (``admin_key.new_key``), so a grant in an old copy opens nothing current; a grant that doesn't open is deleted and
+    audited. The DEK-sealed copies are overwritten; the caller scrubs the write-ahead log after committing. Everything
+    is computed before the row changes, and the changes are one savepoint, so a failure leaves them as they were
+    (CryptoError)."""
     from backend import admin_key
 
     with crypto.as_user(user_id, dek):
@@ -640,7 +641,8 @@ def migrate_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, passw
     wrapped_priv = crypto.wrap(ik, priv, _ik_priv_label(user_id))
     wrapped_ik = crypto.wrap(password_kek, ik, _pw_ik_label(user_id))
     wrapped_pending = crypto.wrap(ik, pending, _pending_codes_label(user_id)) if pending is not None else None
-    code_iks = _code_iks(db, row, user_id, ik, pending)
+    # (a code whose text the server key could read, through the data key, must not open the new IK: it stays without)
+    code_iks = _code_iks(db, row, user_id, ik, pending) if row.server_wrapped_dek is None else {}
     old_apk = admin_key.open_grant(db, user_id, old_priv)
     grant = db.get(AdminKeyGrant, user_id)
     with db.begin_nested():
@@ -1337,6 +1339,7 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
     removed = _remove_uploads(user_id, files)  # after the commit
     scrub_wal()  # the deleted account's key copies and secrets must not linger in the write-ahead log
     sessions._active_on.pop(user_id, None)  # SQLite may give this id to the next account
+    ratelimit.forget_user(user_id)  # ... and must not inherit its wrong tries and email limits
     log.info("Account deleted: user %s (%d workspace(s), %d file(s))", user_id, len(ws_ids), removed)
     out = {"workspaces": len(ws_ids), "files": removed, "apk_rotated": was_admin}
     if subscription != "none":  # only said when Stripe was involved: "cancelled" or "failed"

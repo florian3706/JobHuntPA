@@ -453,6 +453,13 @@ class RoleTest(AdminTestCase):
 
 
 class NewAdminKeyTest(AdminTestCase):
+    def test_the_old_grants_are_scrubbed_from_the_log(self):
+        carol = helpers.make_user(name="Carol Scrub")
+        self.addCleanup(self.demote_quietly, carol.id)
+        with mock.patch.object(admin_key, "scrub_wal") as scrub:
+            self.assertEqual(keys.main(["new-admin-key", "--email", carol.email]), 0)
+        scrub.assert_called_once_with()
+
     def test_new_admin_key_marks_details_stale_and_they_heal_at_sign_in(self):
         c = self.signed_in()
         bob = helpers.make_user(name="Bob Heal")
@@ -1546,6 +1553,36 @@ class DisabledAdminKeyTest(AdminTestCase):
         # Turned on again, Dave holds nothing until an admin shares the key.
         self.assertEqual(c.post(f"/api/admin/users/{dave.id}/enable").status_code, 200)
         self.assertFalse(self.grant_of(dave.id))
+
+    def test_a_session_from_before_the_identity_key_is_told_to_sign_in_again_not_that_it_lacks_the_key(self):
+        carol = self.make_admin(name="Carol")
+        dave = self.make_admin(name="Dave")
+        cc = self.signed_in(carol)
+        sid = crypto.session_id(crypto.b64d(cc.cookies.get("jh_session")))
+        db = SessionLocal()  # Carol's session was made before the identity key: it opens no grant
+        db.query(AuthSession).filter(AuthSession.id == sid).update({AuthSession.wrapped_ik: None})
+        db.commit()
+        db.close()
+        version = apk_version()
+        r = cc.post(f"/api/admin/users/{dave.id}/disable")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["changed"], r.json()["apk_rotated"]), (True, False))
+        self.assertIn("Sign in again", r.json()["note"])
+        self.assertNotIn("you don't have it", r.json()["note"])
+        self.assertEqual(apk_version(), version)
+        self.assertFalse(self.grant_of(dave.id))
+
+    def test_the_old_grants_are_scrubbed_from_the_log_when_the_key_is_replaced_or_a_copy_deleted(self):
+        c = self.signed_in()
+        carol = self.make_admin(name="Carol")
+        dave = self.make_admin(name="Dave")
+        with mock.patch.object(admin, "scrub_wal") as scrub:
+            self.assertEqual(c.post(f"/api/admin/users/{carol.id}/disable").status_code, 200)  # replaces the key
+            self.assertEqual(scrub.call_count, 1)
+            self.assertEqual(c.post(f"/api/admin/users/{dave.id}/role", json={"role": "user"}).status_code, 200)
+            self.assertEqual(scrub.call_count, 2)
+            self.assertEqual(c.post(f"/api/admin/users/{carol.id}/enable").status_code, 200)  # changes no key
+            self.assertEqual(scrub.call_count, 2)
 
     def test_demoting_still_needs_your_own_copy_of_the_key(self):
         carol = self.make_admin(name="Carol")

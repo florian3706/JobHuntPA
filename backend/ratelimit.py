@@ -86,6 +86,10 @@ class Limiter:
                 self._hits.popitem(last=False)
             return wait if wait > 0 else None
 
+    def clear(self, key: Hashable) -> None:
+        with self._lock:
+            self._hits.pop(key, None)
+
     def reset(self) -> None:
         with self._lock:
             self._hits.clear()
@@ -297,6 +301,13 @@ def forget_account(account: Hashable) -> None:
     """The account starts again with no wrong passwords or codes (an admin unlocked it, or its password changed)."""
     guesses.clear(account)
     code_guesses.clear(account)
+
+
+def forget_user(user_id: int) -> None:
+    """Everything counted under a user id, for an account that is deleted (SQLite may give the id to the next one)."""
+    forget_account(user_id)
+    for limiter in (RESET_ACCOUNT, FORGOT_NO_LINK, RESET_BY_ADMIN, VERIFY_RESEND, EMAIL_CHANGE, EMAIL_TEST):
+        limiter.clear(user_id)
 
 
 CODE_TRIES = 5  # wrong second-proof codes on one reset link (or against one recovery code) before it is used up

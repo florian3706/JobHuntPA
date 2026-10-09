@@ -12,6 +12,9 @@ label as at sign-up (``srv|{uid}``). Scheduled searches (backend.schedule) and, 
 **Off** sets all three to NULL, destroying the server's copy (``PRAGMA secure_delete`` is on). It needs no extra
 sign-in: giving access away is always allowed. Scheduled searches then pass over the account's slots, saying why.
 
+An account that has no identity key yet (it hasn't entered its password since the update) is answered 409
+``needs_sign_in``: its private key is still under the data key, which the server key would then open.
+
 Both work on the signed-in account only; there is no way to change another account's setting (an admin's
 included), because the key that's wrapped is the one the person's own session holds.
 """
@@ -58,6 +61,10 @@ def set_background(body: BackgroundIn, user: AuthUser = Depends(current_user), d
     scope = crypto.current()  # the request's key: this session's own, never a stored one
     if scope.user_id != user.id:
         raise AuthProblem(403, "wrong_account", "This request isn't for your account.")
+    row = db.get(UserKeys, user.id)
+    if row is None or row.pw_wrapped_ik is None:  # no identity key yet: the server key would open its private key
+        raise AuthProblem(409, "needs_sign_in", "Background access can't be turned on yet. Sign out, sign in again "
+                                                "and try again.")
     try:
         users.enable_background(db, user.id, scope.dek)
     except ValueError:

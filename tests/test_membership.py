@@ -1444,6 +1444,19 @@ class Sync(Base):
         self.assertEqual(schedule.billing_sync_tick(t0 + timedelta(hours=6)), 0)             # due
         self.assertEqual(self.stripe.v1.subscriptions.list.call_count, 2)
 
+    def test_the_loop_syncs_before_it_looks_for_due_searches(self):
+        """A member's row from before ``stripe_mode`` is not paying until synced: the first tick must not skip their slot."""
+        order: list = []
+        with mock.patch.object(schedule.threading, "Thread") as thread, \
+                mock.patch.object(schedule._stop, "wait", side_effect=[False, True]), \
+                mock.patch.object(schedule, "tick", side_effect=lambda *a: order.append("tick")), \
+                mock.patch.object(schedule, "housekeeping"), mock.patch.object(schedule, "digest_tick"), \
+                mock.patch.object(schedule, "billing_sync_tick", side_effect=lambda *a: order.append("sync")), \
+                mock.patch.dict(os.environ, {"JOBHUNT_SCHEDULER": "on"}):
+            schedule.start_scheduler(lambda ws: {})
+            thread.call_args.kwargs["target"]()
+        self.assertEqual(order, ["sync", "tick"])
+
     def test_the_scheduler_thread_is_off_with_the_scheduler(self):
         with mock.patch.dict(os.environ, {"JOBHUNT_SCHEDULER": "off"}), \
                 mock.patch.object(schedule.threading, "Thread") as thread:

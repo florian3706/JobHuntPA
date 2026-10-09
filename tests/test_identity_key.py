@@ -610,6 +610,27 @@ class MigrationTest(Case):
         finally:
             db.close()
 
+    def test_confirming_the_password_gives_a_session_from_before_the_ik_its_key(self):
+        admin = self.make_admin()
+        c = self.signed_in(admin)
+        self.make_legacy(admin, keep_sessions=True)  # the account and its session have no IK
+        self.assertTrue(c.get("/api/admin/users").json()["admin_key_needs_sign_in"])
+        self.assertEqual(c.post("/api/auth/reauth", json={"password": PASSWORD}).status_code, 200)  # migrates it
+        self.assert_session_has_ik(c)
+        helpers._iks.pop(admin.email, None)
+        self.assertTrue(self.sees_details(c))  # no new sign-in needed
+
+    def test_confirming_the_password_gives_a_session_that_lacks_the_ik_of_an_account_that_has_one_its_key(self):
+        admin = self.make_admin()
+        c = self.signed_in(admin)
+        sid = crypto.session_id(crypto.b64d(c.cookies.get("jh_session")))
+        rows(lambda s: (s.query(AuthSession).filter(AuthSession.id == sid).update({AuthSession.wrapped_ik: None}),
+                        s.commit()))
+        self.assertFalse(self.sees_details(c))
+        self.assertEqual(c.post("/api/auth/reauth", json={"password": PASSWORD}).status_code, 200)
+        self.assert_session_has_ik(c)
+        self.assertTrue(self.sees_details(c))
+
     def test_a_session_from_before_the_change_asks_to_sign_in_again(self):
         admin = self.make_admin()
         c = self.signed_in(admin)
@@ -751,6 +772,18 @@ class MigrationTest(Case):
         anon.headers["X-CSRF-Token"] = r.json()["csrf"]
         self.assertTrue(self.sees_details(anon))
 
+    def test_unconfirmed_codes_the_server_key_could_read_do_not_get_the_ik(self):
+        admin = self.make_admin()
+        codes = helpers.pending_codes(admin)
+        self.assertEqual(self.signed_in(admin).post("/api/account/background", json={"enabled": True}).status_code, 200)
+        self.make_legacy(admin)
+        self.login(admin.email, PASSWORD)  # migrates: the data key was under the server key, and so were the codes' text
+        helpers._iks.pop(admin.email, None)
+        self.assertEqual(rows(lambda s: users.recovery_codes_without_ik(s, admin.id)), len(codes))
+        self.assert_identity(admin.email, PASSWORD)
+        ik = helpers.ik_of(admin.email)
+        self.assertEqual(rows(lambda s: users.pending_recovery_codes(s, admin.id, ik)), codes)  # still shown to them
+
     def test_a_reset_with_a_code_without_an_ik_drops_the_unconfirmed_codes_it_cannot_show(self):
         admin = self.make_admin()
         codes = helpers.pending_codes(admin)
@@ -842,11 +875,30 @@ class LegacyGrantTest(Case):
             self.assertEqual(first.post(f"/api/admin/users/{user.id}/role", json={"role": "admin"}).status_code, 200)
         self.assertTrue(self.sees_details(self.login(user.email, PASSWORD)))
 
-    def test_promoting_such_an_account_without_background_access_works(self):
-        user = self.legacy_user(background=False)  # the server key doesn't open its data key
-        self.addCleanup(self.demote, user.id)
+    def test_promoting_such_an_account_without_background_access_waits_too(self):
+        """Nothing says whether it once had background access (an old copy of data/ may open its data key)."""
+        user = self.legacy_user(background=False)
         with helpers.client() as first:
+            r = first.post(f"/api/admin/users/{user.id}/role", json={"role": "admin"})
+            self.assertEqual((r.status_code, r.json()["code"]), (409, "needs_sign_in"))
+            self.assertEqual(rows(lambda s: s.get(User, user.id).role), "user")
+            self.login(user.email, PASSWORD)
+            self.addCleanup(self.demote, user.id)
             self.assertEqual(first.post(f"/api/admin/users/{user.id}/role", json={"role": "admin"}).status_code, 200)
+
+    def test_background_access_waits_for_the_identity_key(self):
+        """A session from before the update, with the password entered a moment ago but no password step since the
+        update, belongs to an account whose private key is still under the data key."""
+        user = helpers.make_user(password=PASSWORD)
+        c = self.signed_in(user)
+        self.make_legacy(user, keep_sessions=True)
+        r = c.post("/api/account/background", json={"enabled": True})
+        self.assertEqual((r.status_code, r.json()["code"]), (409, "needs_sign_in"))
+        self.assertIsNone(rows(lambda s: s.get(UserKeys, user.id).server_wrapped_dek))
+        self.login(user.email, PASSWORD)  # the next password step gives it an identity key
+        c = self.signed_in(user)
+        self.assertEqual(c.post("/api/account/background", json={"enabled": True}).status_code, 200)
+        self.assertEqual(self.anonymous().post("/api/account/background", json={"enabled": True}).status_code, 401)
 
     def test_sharing_the_key_again_with_such_an_admin_waits_for_their_sign_in(self):
         admin = self.make_admin()
