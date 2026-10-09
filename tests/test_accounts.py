@@ -357,8 +357,9 @@ class LoginTest(SignInTestCase):
         self.assertNotIn("set-cookie", wrong.headers)
 
     def fake_time(self) -> types.SimpleNamespace:
-        """A clock for the limits only (ratelimit's own ``time``; the rest of the process keeps the real one)."""
-        clock = types.SimpleNamespace(t=time.monotonic())
+        """A clock for the limits only (ratelimit's own ``time``; the rest of the process keeps the real one). It starts
+        at a reading where ``now + 30 - now`` is 30.000000000000057, which once made Retry-After say 31."""
+        clock = types.SimpleNamespace(t=488.432919602)
         patch = mock.patch.object(ratelimit, "time", types.SimpleNamespace(monotonic=lambda: clock.t))
         patch.start()
         self.addCleanup(patch.stop)
@@ -389,6 +390,9 @@ class LoginTest(SignInTestCase):
         self.assertEqual(self.try_login(c, alice).status_code, 200)
         self.assertEqual((helpers.wrong_tries(alice.id), ratelimit.guesses.waiting(alice.id)), (0, 0))
         self.assertEqual([ratelimit.lockout_seconds(n) for n in (4, 5, 6, 7, 10, 30)], [0, 30, 60, 120, 900, 900])
+        noisy = 518.4329196020001 - 488.432919602  # 30.000000000000057
+        self.assertEqual((ratelimit.retry_after(noisy), ratelimit.wait_text(noisy)), ("30", "30 seconds"))
+        self.assertEqual([ratelimit.retry_after(s) for s in (0, 0.2, 29.5, 30.001)], ["1", "1", "30", "31"])
         # No permanent lockout: at the cap the wait is 15 minutes, and then one more try is allowed.
         for _ in range(12):
             clock.t += 901

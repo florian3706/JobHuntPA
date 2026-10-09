@@ -38,13 +38,19 @@ def lockout_seconds(failures: int) -> int:
     return min(MAX_WAIT_S, FIRST_WAIT_S * 2 ** min(failures - LOCK_AFTER, 16))
 
 
+def _whole_seconds(seconds: float) -> int:
+    """``seconds`` rounded up to whole seconds, at least 1. A wait is the difference of two clock readings, so a
+    30-second one can come out as 30.000000000000057: rounded to the microsecond first, it stays 30."""
+    return max(1, math.ceil(round(seconds, 6)))
+
+
 def retry_after(seconds: float) -> str:
     """A Retry-After value: whole seconds, at least 1."""
-    return str(max(1, math.ceil(seconds)))
+    return str(_whole_seconds(seconds))
 
 
 def wait_text(seconds: float) -> str:
-    seconds = max(1, math.ceil(seconds))
+    seconds = _whole_seconds(seconds)
     if seconds < 90:
         return f"{seconds} seconds"
     return f"{math.ceil(seconds / 60)} minutes"
