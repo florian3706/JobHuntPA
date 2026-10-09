@@ -973,13 +973,19 @@ class RecoveryCode(Base):
 
 class AuthSession(Base):
     """A signed-in browser. The cookie holds a random secret; ``id`` is its SHA-256 and ``wrapped_dek`` the DEK
-    under a key derived from it, so the database alone can't unwrap anything (backend.sessions)."""
+    under a key derived from it, so the database alone can't unwrap anything (backend.sessions).
+
+    A browser-extension key is a row too (``state = "extension"``, backend/extension.py): ``id`` is a hash of the
+    key's secret with a prefix of its own (``crypto.extension_key_id``), ``wrapped_dek`` the DEK under ``ext|{id}``,
+    and it has no identity key and no recent sign-in. Being a session row, every "sign out everywhere" (a password
+    change or reset, disabling or deleting the account) ends it too."""
 
     __tablename__ = "sessions"
 
     id = Column(String, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    state = Column(String, nullable=False, default="active", server_default="active")  # pending_mfa | active
+    # pending_mfa | active | extension
+    state = Column(String, nullable=False, default="active", server_default="active")
     wrapped_dek = Column(LargeBinary, nullable=False)
     # The IK under the same cookie-derived key: "sess-ik|{sid}", or "pend-ik|{sid}" while pending_mfa. NULL for a session
     # made before the IK existed (the admin panel then asks to sign in again).
@@ -991,6 +997,11 @@ class AuthSession(Base):
     absolute_expires_at = Column(DateTime, nullable=False)
     reauth_at = Column(DateTime, nullable=True)     # the password was last entered (sensitive actions need 15 min)
     mfa_failures = Column(Integer, nullable=False, default=0, server_default="0")  # wrong codes while pending_mfa (Phase E)
+    # Extension keys only. ``public_id``: the short id the Settings card revokes it by (never the hash that
+    # authenticates). ``label_enc``: the name the person gave it, ``crypto.seal``ed under their DEK as
+    # ``sessions.label|{id}`` (bound to the row), so only they can read it.
+    public_id = Column(String, nullable=True)
+    label_enc = Column(LargeBinary, nullable=True)
 
 
 class AuthToken(Base):
@@ -1289,6 +1300,7 @@ def _ensure_indexes() -> None:
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_sources_workspace_url_index "
                           "ON company_sources (workspace_id, careers_url_index)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_commute_cache_owner_id ON commute_cache (owner_id)"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_public_id ON sessions (public_id)"))
 
 
 def purge_http_cache() -> None:

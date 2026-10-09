@@ -314,7 +314,10 @@ def show_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, aut
 
 @router.post("/sessions/end-others")
 def end_other_sessions(auth: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
-    """"Sign out everywhere else": ends every other session of this account and keeps the one asking."""
+    """"Sign out everywhere else": ends every other session of this account and keeps the one asking. Browser-extension
+    keys end too (they are session rows)."""
     ended = sessions.end_all(db, auth.id, keep=auth.session_id)
+    if ended:
+        scrub_wal()  # the rows held wrapped copies of the data key
     log.info("Other sessions ended: user %s (%d)", auth.id, ended)
     return {"ok": True, "ended": ended}

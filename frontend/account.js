@@ -362,7 +362,7 @@
     $('#acct-ses-body').innerHTML = `<p>${n === 0
       ? 'You\'re signed in on this device only.'
       : `You're signed in on this device and <strong>${n} other ${n === 1 ? 'device' : 'devices'}</strong>.`}</p>
-      <p class="hint">Use this if you signed in on a shared or lost device. This device stays signed in.</p>
+      <p class="hint">Use this if you signed in on a shared or lost device. This device stays signed in; connected browser extensions are disconnected too.</p>
       ${errorBox}
       <div><button id="acct-ses-end" class="btn" type="button">Sign out everywhere else</button></div>`;
     $('#acct-ses-end').addEventListener('click', async (e) => {

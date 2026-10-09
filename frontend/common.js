@@ -735,6 +735,7 @@ function sourceLabel(src) {
   const s = String(src || '');
   if (s === 'seek') return 'SEEK';
   if (s === 'import') return 'imported page';
+  if (s === 'browser') return 'browser extension';
   const i = s.indexOf(':');
   if (i < 0) return s;
   const kind = s.slice(0, i), rest = s.slice(i + 1);
