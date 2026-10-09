@@ -34,13 +34,15 @@ signed in". Lifetimes: 24 hours idle and 7 days in all, or 30 days idle and 90 i
      API but health, /api/auth/* and /api/encryption/* answers 423 ``encrypting`` with its progress; a request
      from the admin whose key it needs starts or resumes it.
 
-**Browser-extension keys** (backend/extension.py). A request with ``Authorization: Bearer <key>`` is checked by the key
-alone, never the cookie (a key that doesn't work answers 401 ``token_invalid``, even with a good cookie). It skips
-steps 1, 3 and 5 (a browser never sends that header by itself, and another site's page can't add it without a CORS
-preflight this server never approves), keeps 2, 6 and 7, and reaches only ``KEY_ENDPOINTS`` (403 ``token_scope``
-otherwise). Its ``AuthUser`` has ``key`` set and never a recent sign-in. Keys that don't work are counted per client
-address (``ratelimit.BAD_KEY``, then 429). A key's row is a ``sessions`` row (``state = "extension"``), so everything
-that ends all of an account's sessions ends its keys too.
+**Browser-extension keys** (backend/extension.py). A request with ``Authorization: Bearer jhpa_...`` is checked by the
+key alone, never the cookie (a key that doesn't work answers 401 ``token_invalid``, even with a good cookie). Any other
+``Authorization`` value (a sign-in proxy's ``Bearer <JWT>`` or ``Basic``) isn't ours: the request goes the cookie's
+way, with all its checks. A key request skips steps 1, 3 and 5 (a browser never sends that header by itself, and
+another site's page can't add it without a CORS preflight this server never approves), keeps 2, 6 and 7, and reaches
+only ``KEY_ENDPOINTS`` (403 ``token_scope`` otherwise). Its ``AuthUser`` has ``key`` set and never a recent sign-in.
+Keys that don't work are counted per client address (``ratelimit.BAD_KEY``); past its limit a key that doesn't work
+answers 429, and one that works still gets in. A key's row is a ``sessions`` row (``state = "extension"``), so
+everything that ends all of an account's sessions ends its keys too.
 
 **Two-step sign-in.** After a correct password, an account with MFA gets a ``pending_mfa`` session (10 minutes) and
 no data key in use: its row holds the DEK (and the IK) wrapped under the cookie secret with their own labels
@@ -416,13 +418,15 @@ def new_extension_key(db: Session, user_id: int, dek: bytes, label: str) -> tupl
 
 
 def bearer(headers: Headers) -> Optional[str]:
-    """The token of an ``Authorization: Bearer`` header ("" when it is empty), or None without one. Other schemes
-    (a proxy's Basic sign-in) are not ours: the cookie is used then."""
+    """The extension key of an ``Authorization: Bearer jhpa_...`` header, or None. Anything else in that header (a
+    sign-in proxy in front of the app passing on its own ``Bearer <JWT>``, or ``Basic``) is not ours: the cookie is
+    used then."""
     value = headers.get("authorization")
     if value is None:
         return None
     scheme, _, token = value.strip().partition(" ")
-    return token.strip() if scheme.lower() == "bearer" else None
+    token = token.strip()
+    return token if scheme.lower() == "bearer" and token.startswith(KEY_PREFIX) else None
 
 
 def key_secret(token: str) -> Optional[bytes]:
@@ -607,21 +611,22 @@ class AuthMiddleware:
         return found
 
     async def _check_key(self, scope, path: str, token: str):
-        """A request with ``Authorization: Bearer``: a browser-extension key, and only that (the cookie is never
-        looked at, even when the key doesn't work). No Origin check or CSRF token: browsers never add this header by
-        themselves, and a page on another site can't add it without a CORS preflight, which this server never
-        approves. Keys that don't work are counted per client address (``ratelimit.BAD_KEY``)."""
+        """A request with ``Authorization: Bearer jhpa_...``: a browser-extension key, and only that (the cookie is
+        never looked at, even when the key doesn't work). No Origin check or CSRF token: browsers never add this
+        header by themselves, and a page on another site can't add it without a CORS preflight, which this server
+        never approves. Keys that don't work are counted per client address (``ratelimit.BAD_KEY``): past its limit
+        one answers 429, but a key that works is let in all the same (one address can be many people's: a shared
+        network, a proxy), and guessing a key is hopeless (32 random bytes)."""
         if not (users.known_to_exist() or await run_in_threadpool(users.users_exist)):
             return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create the admin account first.")
-        address = client_address(scope)
-        wait = ratelimit.BAD_KEY.peek(address)
-        if wait is not None:
-            return _deny(429, "rate_limited", f"Too many tries with keys that don't work. Try again in "
-                                              f"{ratelimit.wait_text(wait)}.", {"Retry-After": ratelimit.retry_after(wait)})
         secret = key_secret(token)
         found = await run_in_threadpool(load_key, secret) if secret else None
         if found is None:
-            ratelimit.BAD_KEY.hit(address)
+            wait = ratelimit.BAD_KEY.hit(client_address(scope))
+            if wait is not None:
+                return _deny(429, "rate_limited", f"Too many tries with keys that don't work. Try again in "
+                                                  f"{ratelimit.wait_text(wait)}.",
+                             {"Retry-After": ratelimit.retry_after(wait)})
             return _deny(401, "token_invalid", TOKEN_INVALID_DETAIL)
         if not key_may_call(scope.get("method", "GET"), path):
             return _deny(403, TOKEN_SCOPE, TOKEN_SCOPE_DETAIL)

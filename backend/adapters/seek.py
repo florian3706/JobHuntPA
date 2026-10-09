@@ -30,7 +30,12 @@ SEARCH_BASE = "https://au.seek.com"
 JOB_URL = "https://www.seek.com.au/job/{id}"
 LISTING_TTL = timedelta(hours=1)
 
-_REDUX_RE = re.compile(r"window\.SEEK_REDUX_DATA\s*=\s*(\{.*?\});?\s*\n", re.DOTALL)
+# ``window.SEEK_REDUX_DATA = {...};`` and the end of the line: the object is the text from its "{" to the first "}"
+# that ends a line (optionally with ";"). Found in two steps, the start and then its end, each with a pattern that
+# can't backtrack across the page: one expression with a lazy ``{.*?}`` rescanned the rest of the page from every
+# start (quadratic on a hostile page; pages come from the browser extension too).
+_REDUX_START = re.compile(r"window\.SEEK_REDUX_DATA\s*=\s*\{")
+_REDUX_END = re.compile(r"\};?[^\S\n]*\n")
 _MODES = {"on-site": "onsite", "onsite": "onsite", "hybrid": "hybrid", "remote": "remote"}
 
 
@@ -51,15 +56,26 @@ def build_search_url(keywords: str, location: str = "") -> str:
     return url
 
 
+def _redux_text(html: str) -> Optional[str]:
+    """The text of the ``SEEK_REDUX_DATA`` object, or None. Only the first start that has an end counts, and when
+    the first start has none, no later one can (its end would come after the first start too)."""
+    start = _REDUX_START.search(html or "")
+    if start is None:
+        return None
+    end = _REDUX_END.search(html, start.end())
+    return html[start.end() - 1:end.start() + 1] if end is not None else None
+
+
 def _redux(html: str) -> Optional[dict]:
-    m = _REDUX_RE.search(html or "")
-    if not m:
+    raw = _redux_text(html)
+    if raw is None:
         return None
-    raw = m.group(1).replace(":undefined", ":null")
+    raw = raw.replace(":undefined", ":null")
     try:
-        return json.loads(raw)
-    except ValueError:
+        data = json.loads(raw)
+    except (ValueError, RecursionError):  # not JSON, or nested too deep to read
         return None
+    return data if isinstance(data, dict) else None
 
 
 def _work_mode(labels: list[str]) -> str:

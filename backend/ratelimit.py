@@ -86,18 +86,6 @@ class Limiter:
                 self._hits.popitem(last=False)
             return wait if wait > 0 else None
 
-    def peek(self, key: Hashable, now: Optional[float] = None) -> Optional[float]:
-        """Like ``hit`` without counting: None when a request for ``key`` would be allowed, else the wait."""
-        now = time.monotonic() if now is None else now
-        with self._lock:
-            times = list(self._hits.get(key) or ())
-        wait = 0.0
-        for limit, window in self.rules:
-            recent = [t for t in times if t > now - window]
-            if len(recent) >= limit:
-                wait = max(wait, recent[-limit] + window - now)
-        return wait if wait > 0 else None
-
     def clear(self, key: Hashable) -> None:
         with self._lock:
             self._hits.pop(key, None)
@@ -343,8 +331,8 @@ EMAIL_CHANGE = Limiter([(5, 60 * 60)])                         # per signed-in u
 EMAIL_TEST = Limiter([(5, 10 * 60)])                           # per admin
 # The unsubscribe link's POSTs (Phase J, no session): per client address.
 UNSUBSCRIBE = Limiter([(30, 60)])
-# Browser-extension keys that don't work (unknown, revoked, expired, malformed), per client address: past this an
-# address waits before any key it sends is even looked up (backend/sessions.py).
+# Browser-extension keys that don't work (unknown, revoked, expired, malformed), per client address: past this a key
+# that doesn't work answers 429 instead of 401; one that works still gets in (backend/sessions.py).
 BAD_KEY = Limiter([(20, 5 * 60), (100, 60 * 60)])
 
 

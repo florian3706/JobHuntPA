@@ -1139,7 +1139,8 @@ Browser extension). Tests: `tests/test_extension.py`, and a step in `tests/test_
 - **What the person gets:** `jhpa_` + base64url of 32 random bytes, shown once in Settings with the server address
   (`location.origin`), to paste into the extension's options. Making one needs a session (a key can't make keys)
   with a recent sign-in (`require_recent_auth`), and it wraps the request's own DEK (`crypto.current()`, checked
-  against `user_keys.dek_kid`), like background access. At most 20 per account.
+  against `user_keys.dek_kid`), like background access. At most 20 per account (counted and added under one lock,
+  so two requests at once can't both pass the count; the app is one process).
 - **What is stored:** a `sessions` row with `state = "extension"`. `id = SHA-256("jh extension key id v1|" +
   secret)`, a different hash from a cookie's (`SHA-256(secret)`), so the same bytes as a cookie name another row.
   `wrapped_dek = wrap(HKDF(secret, "jh extension key dek v1"), DEK, "ext|{id}")`: a label no cookie session uses, so
@@ -1158,14 +1159,19 @@ Browser extension). Tests: `tests/test_extension.py`, and a step in `tests/test_
   a reset with a recovery code, an admin turning the account off or turning off its two-step sign-in, and deleting
   the account. Re-enabling the account doesn't bring keys back. Making and revoking a key each commit in one
   transaction and then `scrub_wal()`; so does *Sign out everywhere else* now.
-- **The request check** (`AuthMiddleware._check_key`): a request with `Authorization: Bearer ...` is checked by the
-  key alone; the cookie is never looked at, even when the key is bad (401 `token_invalid`). Another scheme (a proxy's
-  `Basic`) is left alone and the cookie is used. A key request skips the same-site/Origin check and CSRF: browsers
+- **The request check** (`AuthMiddleware._check_key`): a request with `Authorization: Bearer jhpa_...` is checked by
+  the key alone; the cookie is never looked at, even when the key is bad (401 `token_invalid`). Any other
+  `Authorization` value is left alone and the request goes the cookie's way with all its checks (Origin, CSRF): a
+  sign-in proxy in front of the app (oauth2-proxy, Authelia, ...) passes its own `Bearer <JWT>` or `Basic` on, and
+  that must neither lock the person out nor count as a bad key. A key request skips the same-site/Origin check and CSRF: browsers
   never add that header by themselves, and a page on another site can't add it without a CORS preflight, which this
   server never approves (it sends no CORS headers). It keeps the setup-required check, the encryption migration's
   423, and runs inside `crypto.as_user` with the key's DEK and no identity key. Keys that don't work are counted
-  per client address (`ratelimit.BAD_KEY`: 20 in 5 minutes, 100 an hour, then 429 before any lookup). The
-  `AuthUser` has `key = True`, so `has_recent_auth` is always false and sensitive actions refuse.
+  per client address (`ratelimit.BAD_KEY`: 20 in 5 minutes, 100 an hour); past that a key that doesn't work answers
+  429 `rate_limited` (with `Retry-After`) instead of 401, while a key that works still gets in, so bad keys from a
+  shared address (an office network, a proxy) never lock out the people with good ones; a key is 32 random bytes,
+  so the lookups the limit no longer saves guess nothing. The `AuthUser` has `key = True`, so `has_recent_auth` is
+  always false and sensitive actions refuse.
 - **The allowlist** (`sessions.KEY_ENDPOINTS`; anything else answers 403 `token_scope`, including the key endpoints
   and every admin endpoint): `GET /api/extension/status`, `POST /api/extension/preview`, `POST /api/extension/jobs`,
   `GET /api/sources`, `POST /api/sources`, `POST /api/sources/{id}/test`. Workspaces are the usual `X-Workspace`
@@ -1177,10 +1183,28 @@ Browser extension). Tests: `tests/test_extension.py`, and a step in `tests/test_
   with a saved page) and no AI is asked. Order: SEEK's job data, then the JobPosting JSON-LD about this address
   (else the first), then heuristics (title from og:title, the first h1 or the tab title without the site's name;
   employer from JSON-LD, og:site_name or the host; description from the main content, else the visible text).
-  A selection is the description; the person's non-empty edits win.
+  A selection is the description; the person's non-empty edits win. SEEK's data is read only on SEEK's own sites
+  (`seek.com.au`, `seek.co.nz` and their subdomains) and only with an all-digit job id, because the job is stored
+  under `https://www.seek.com.au/job/{id}`: another site's page can't choose a SEEK address (and so overwrite the
+  person's real SEEK job or link the pool's). The JSON-LD's own `url` is used only on the very same host and port
+  as the page (with or without `www.`, no user name in it); else the page's address is stored.
+- **Hostile pages:** any page the person opens the extension on can send what HTML it likes, so reading a page
+  takes time in proportion to its size: the SEEK data and JSON-LD blocks are found by scanning (no pattern that
+  rescans the page from every start), the page is parsed once with lxml (`huge_tree`: up to 2,048 levels deep; a
+  BeautifulSoup tree of 3 MB took seconds and a quarter of a gigabyte), the main content is read in one pass per
+  candidate container (at most 50, none inside one already tried), a location or salary line from at most 50
+  elements with at most 400 nodes looked at in each, titles and site names are cut to 1,000 characters before they
+  are cleaned, and `html_to_text` (JSON-LD descriptions) no longer edits the tree. On top of that, preview and save
+  read one page at a time per account and two at a time in all (`extension.MAX_READING`); a request past that
+  answers at once with 429 `busy`, a plain `detail` and `Retry-After: 5`, so pages being read never hold more than
+  two of the server's threads. `tests/test_extension.py` (`HostilePageTest`) times each shape that was slow.
 - **Storing:** like `POST /api/import/page` (§14.4): `pool.import_private` under `source = "browser"` (shown as
   "browser extension"): the workspace's job with that address is updated with the page's values as its own
   overrides (200, `created: false`), else a pool link when the pool has the address, else a private job (201). The
   exclusion filters and the duplicate scan run as for an import, and the job waits for its score like one (it has a
-  description, so `detail_status` is `full` or `summary`). The answer links to the listed job (a merged copy's
-  `duplicate_of`), as `/job.html?id={id}&ws={ws}`.
+  description, so `detail_status` is `full` or `summary`). When the job with that address is a merged copy
+  (`duplicate_of`, backend/duplicates.py), the job it was merged into is the one updated: the one the person sees.
+  The answer links to the listed job (a merged copy's `duplicate_of`), as `/job.html?id={id}&ws={ws}`, and says
+  `excluded_reason`: why the exclusion filters leave the listed job out of the Jobs list (the same text the list
+  shows), or null, so the extension can say where the job went. Answer of `POST /api/extension/jobs`:
+  `{"job_id", "created", "title", "company", "link", "excluded_reason"}`.

@@ -807,7 +807,10 @@ The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your curr
   location, salary, employment type, work mode) so you can correct it, and saves it as your own job in the
   workspace you pick, like an imported page. It reads the page in your own browser, so ads behind a sign-in
   work too. Select the ad's text first to use only that as the description. A job you already have (the same
-  address) is brought up to date instead of added twice.
+  address) is brought up to date instead of added twice. If your filters leave the saved job out of the Jobs
+  list (for example a location or keyword you excluded), JobHuntPA tells the extension why; tick
+  **Show excluded** in the Jobs tab to see it. JobHuntPA reads one page at a time for each account: while it
+  is still reading another, it asks you to try again in a few seconds.
 - **Add as a company source**: adds the page as a [careers page](#adding-company-careers-pages) of the
   workspace, and **Test** shows what a search would find on it.
 
@@ -826,6 +829,10 @@ signed out everywhere: *Sign out everywhere else*, a password change that signs 
 password reset, and an admin turning your account off. Then connect the extension again. A key can only add
 jobs and company sources and list your workspaces and sources: it can't read your jobs, documents or
 settings, or change your account.
+
+The extension sends its key as `Authorization: Bearer jhpa_...`. If JobHuntPA sits behind a sign-in proxy
+(oauth2-proxy, Authelia and the like) that passes its own `Authorization` header on, JobHuntPA ignores that
+header and your browser's sign-in works as usual.
 
 ## Updating
 

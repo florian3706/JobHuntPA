@@ -13,14 +13,20 @@ The extension's API contract: docs/design/accounts.md §19. Who may call each en
                                     shown once
     DELETE /api/extension/keys/{id} a session only: revokes one of the account's keys (404 for anyone else's)
 
+Preview and save read the page one at a time per account, and at most ``MAX_READING`` at once in all; a request
+past that answers 429 ``busy`` with ``Retry-After`` (any page the person opens can send the HTML, so reading it
+must never tie up the server's threads). The save's answer also says ``excluded_reason``: why the filters leave
+the job out of the Jobs list, or null.
+
 **Extension keys.** ``jhpa_`` and 43 base64url characters (32 random bytes). The server keeps a ``sessions`` row
 (``state = "extension"``) whose id is a hash of the secret and whose ``wrapped_dek`` is the person's data key
 wrapped under a key derived from the secret, so a key opens the person's data the way a session cookie does, and the
-database alone opens nothing. A key is checked by backend/sessions.py (``Authorization: Bearer``): no cookie, CSRF
-token or Origin is used with it, and it reaches only the endpoints in ``sessions.KEY_ENDPOINTS``. It never counts as
-a recent sign-in. It lasts 60 days from its last use and a year at most; every "sign out everywhere" ends it (a
-password change that signs out the other devices, a reset, recovery, "Sign out everywhere else", an admin turning
-off the account or its two-step sign-in, deleting the account).
+database alone opens nothing. A key is checked by backend/sessions.py (``Authorization: Bearer jhpa_...``; any
+other ``Authorization`` value is left to the cookie's checks): no cookie, CSRF token or Origin is used with it, and
+it reaches only the endpoints in ``sessions.KEY_ENDPOINTS``. It never counts as a recent sign-in. It lasts 60 days
+from its last use and a year at most; every "sign out everywhere" ends it (a password change that signs out the
+other devices, a reset, recovery, "Sign out everywhere else", an admin turning off the account or its two-step
+sign-in, deleting the account).
 
 **Pages.** The extension sends the page from the person's own browser (address, title, HTML, visible text and any
 selected text); nothing is fetched and no AI is asked (backend/scraping/page_job.py). The job is stored like an
@@ -31,6 +37,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -57,6 +65,13 @@ MAX_BODY = 16 * 1024 * 1024  # bytes: the page's HTML at its longest is 3 millio
 MAX_KEYS = 20               # extension keys per account
 LABEL_MAX = 80
 PREVIEW_CHARS = 1500
+MAX_READING = 2             # pages read at once (each account one at a time)
+BUSY_RETRY = 5              # seconds: Retry-After when that is reached
+BUSY = "JobHuntPA is still reading another page. Try again in a few seconds."
+
+_reading: set[int] = set()  # the accounts a page is being read for
+_reading_lock = threading.Lock()
+_keys_lock = threading.Lock()  # counting an account's keys and adding one happen together (one server process)
 
 
 def _version() -> str:
@@ -181,8 +196,24 @@ async def page_body(request: Request) -> PageIn:
     return page
 
 
-def _read(page: PageIn) -> page_job.PageJob:
-    return page_job.read_page(page.url, page.page_title, page.html, page.text, page.selection)
+@contextmanager
+def _reading_slot(user_id: int):
+    """Room to read a page for ``user_id``: one of ``MAX_READING``, and none while another page of the same account
+    is being read (429 ``busy`` otherwise, at once)."""
+    with _reading_lock:
+        if user_id in _reading or len(_reading) >= MAX_READING:
+            raise AuthProblem(429, "busy", BUSY, headers={"Retry-After": str(BUSY_RETRY)})
+        _reading.add(user_id)
+    try:
+        yield
+    finally:
+        with _reading_lock:
+            _reading.discard(user_id)
+
+
+def _read(page: PageIn, user: AuthUser) -> page_job.PageJob:
+    with _reading_slot(user.id):
+        return page_job.read_page(page.url, page.page_title, page.html, page.text, page.selection)
 
 
 def _listed(db: Session, job: Job) -> Job:
@@ -251,9 +282,10 @@ def status(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)
 
 
 @router.post("/preview")
-def preview(page: PageIn = Depends(page_body), db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def preview(page: PageIn = Depends(page_body), user: AuthUser = Depends(current_user), db: Session = Depends(get_db),
+            ws: int = Depends(current_workspace)):
     """The job the page shows, for the extension's form. Stores nothing."""
-    read = _read(page)
+    read = _read(page, user)
     if not read.posting.title and not page.fields.title.strip():
         raise _invalid(NO_TITLE, field="title")
     return {"method": read.method, "job": _job_out(read),
@@ -261,24 +293,30 @@ def preview(page: PageIn = Depends(page_body), db: Session = Depends(get_db), ws
 
 
 @router.post("/jobs")
-def save_job(response: Response, page: PageIn = Depends(page_body), db: Session = Depends(get_db),
-             ws: int = Depends(current_workspace)):
+def save_job(response: Response, page: PageIn = Depends(page_body), user: AuthUser = Depends(current_user),
+             db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """Stores the page's job as this workspace's own (as ``/api/import/page`` does), with the person's edits over
     what the page said: a new job (201), or the workspace's job with that address brought up to date (200). The
-    exclusion filters and the duplicate scan run as for an import, and the job waits for its score like one."""
+    exclusion filters and the duplicate scan run as for an import, and the job waits for its score like one.
+    ``excluded_reason``: why the filters leave the saved job out of the Jobs list (as the list says it), or null."""
     from backend.duplicates import scan_workspace
     from backend.pipeline import import_one
+    from backend.pool import job_by_url
 
-    read = _read(page)
+    read = _read(page, user)
     posting = read.posting
     page_job.apply_fields(posting, page.fields.model_dump())
     if not posting.title:
         raise _invalid(NO_TITLE, field="title")
     page_job.set_detail_status(posting)
-    if posting.url != page.url and _existing(db, ws, [posting.url]) is None:
-        known = _existing(db, ws, [page.url])  # saved before under the page's own address: update that one
-        if known is not None:
-            posting.url = page.url
+    # The job to update: the workspace's job with the posting's address, else one saved before under the page's own
+    # address. When that is a merged copy (backend.duplicates), the job it was merged into is updated instead: the
+    # one the person sees in the list.
+    known = job_by_url(db, ws, posting.url)
+    if known is None and posting.url != page.url:
+        known = job_by_url(db, ws, page.url)
+    if known is not None:
+        posting.url = _listed(db, known).url or posting.url
     job_id, created = import_one(posting, SOURCE, ws)
     scan_workspace(ws)
     db.expire_all()
@@ -286,7 +324,7 @@ def save_job(response: Response, page: PageIn = Depends(page_body), db: Session 
     response.status_code = 201 if created else 200
     log.info("Browser extension: job %s %s in workspace %s", job.id, "added" if created else "updated", ws)
     return {"job_id": job.id, "created": created, "title": job.title or "", "company": job.company or "",
-            "link": job_link(job.id, ws)}
+            "link": job_link(job.id, ws), "excluded_reason": job.excluded_reason or None}
 
 
 # ---------------------------------------------------------------------------
@@ -329,21 +367,22 @@ def create_key(body: KeyIn, user: AuthUser = Depends(session_only), db: Session 
     scope = crypto.current()
     if scope.user_id != user.id:
         raise AuthProblem(403, "wrong_account", "This request isn't for your account.")
-    if len(_live_keys(db, user.id)) >= MAX_KEYS:
-        raise AuthProblem(409, "too_many_keys", f"You have {MAX_KEYS} connected extensions, the most there can be. "
-                                                "Disconnect one you no longer use first.")
-    try:
-        keys = db.get(UserKeys, user.id)
-        if keys is None or crypto.key_id(scope.dek) != bytes(keys.dek_kid):
-            raise AuthProblem(409, "key_mismatch", "The extension couldn't be connected. Sign out, sign in again "
-                                                   "and try again.")
-        key, row = sessions.new_extension_key(db, user.id, scope.dek, label)
-        db.flush()
-        out = _key_out(row)
-        db.commit()
-    except BaseException:
-        db.rollback()
-        raise
+    with _keys_lock:  # two requests at once can't both pass the count
+        try:
+            if len(_live_keys(db, user.id)) >= MAX_KEYS:
+                raise AuthProblem(409, "too_many_keys", f"You have {MAX_KEYS} connected extensions, the most there "
+                                                        "can be. Disconnect one you no longer use first.")
+            keys = db.get(UserKeys, user.id)
+            if keys is None or crypto.key_id(scope.dek) != bytes(keys.dek_kid):
+                raise AuthProblem(409, "key_mismatch", "The extension couldn't be connected. Sign out, sign in again "
+                                                       "and try again.")
+            key, row = sessions.new_extension_key(db, user.id, scope.dek, label)
+            db.flush()
+            out = _key_out(row)
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
     scrub_wal()
     log.info("Extension key made: user %s", user.id)
     return {k: out[k] for k in ("id", "label", "created_at", "expires_at")} | {"key": key}
