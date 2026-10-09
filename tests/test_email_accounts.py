@@ -849,7 +849,8 @@ class AdminResetButtonTest(AccountMailCase):
         self.assertLess(abs(timedelta(hours=1) - (row.expires_at - row.created_at)), timedelta(seconds=30))
         c = self.anonymous()
         self.assertEqual(c.post("/api/auth/reset/info", json={"token": token}).json(),
-                         {"keeps_data": False, "mfa_required": False})
+                         {"keeps_data": False, "mfa_required": False, "admin_key_will_be_lost": False,
+                          "last_key_holder": False})
         r = c.post("/api/auth/reset", json={"token": token, "new_password": "chosen by the user", "accept_wipe": True})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(c.post("/api/auth/reset", json={"token": token, "new_password": "chosen by the user",

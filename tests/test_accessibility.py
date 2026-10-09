@@ -1218,8 +1218,14 @@ class EmailPagesTest(unittest.TestCase):
         for ident in ("codes-step", "codes-list", "codes-copy", "codes-download", "codes-print", "codes-saved",
                       "codes-continue", "codes-status", "setup-step"):
             self.by_id(self.reset, ident)
-        self.assertIn("You no longer have the admin key. Ask another admin to share it with you again.", self.reset_src)
+        self.by_id(self.reset, "admin-key-lost")
+        self.by_id(self.reset, "admin-key-note")
+        self.assertIn("You no longer have the admin key.", self.reset_js)
+        self.assertIn("Ask another admin to share it with you again.", self.reset_js)
+        self.assertIn("python -m backend.keys new-admin-key --email", self.reset_js)  # said when nobody else has it
         self.assertIn("admin_key_lost", self.reset_js)
+        self.assertIn("admin_key_last_holder", self.reset_js)
+        self.assertIn("last_key_holder", self.reset_js)
 
     def test_every_refusal_is_said_in_words_and_the_second_factor_is_asked_for(self):
         for code in ("link_invalid", "disabled", "second_factor_required"):

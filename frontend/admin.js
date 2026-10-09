@@ -626,7 +626,7 @@ async function loadPlaintext() {
   if (cols.length) parts.push(`<h4>Values that aren't encrypted</h4><ul>${cols.map(([k, n]) => `<li><code>${esc(k)}</code>: ${num(n)}</li>`).join('')}</ul>`);
   if (p.files.length) parts.push(`<p>${num(p.files.length)} uploaded ${p.files.length === 1 ? 'file isn\'t' : 'files aren\'t'} encrypted.</p>`);
   if (p.leftovers.length) {
-    parts.push(`<h4>Old files that still hold data unencrypted</h4><p class="hint">Backups made before encryption and the old page cache. You only need the backup to go back to an older version of JobHuntPA.</p>
+    parts.push(`<h4>Old files that still hold data unencrypted</h4><p class="hint">Backups made before encryption and the old page cache. You only need the backup to go back to an older version of JobHuntPA. Delete the <code>.bak-*</code> files you don't need: they also hold keys from before, and anyone who gets them with the key file can read what they held.</p>
       <ul class="leftover-files">${p.leftovers.map((f) => `<li><code>${esc(f.path)}</code> (${esc(fmtBytes(f.bytes))})</li>`).join('')}</ul>`);
   }
   $('#plain-details').innerHTML = parts.join('');

@@ -413,9 +413,10 @@ class LinkTest(ResetCase):
     def test_info_says_whether_the_data_is_kept_and_a_code_is_needed(self):
         locked, kept = self.user(), self.user(background=True)
         (mfa, _secret) = self.user(mfa=True)
-        self.assertEqual(self.info(self.link(locked)).json(), {"keeps_data": False, "mfa_required": False})
-        self.assertEqual(self.info(self.link(kept)).json(), {"keeps_data": True, "mfa_required": False})
-        self.assertEqual(self.info(self.link(mfa)).json(), {"keeps_data": False, "mfa_required": True})
+        no_key = {"admin_key_will_be_lost": False, "last_key_holder": False}  # (none of them is an admin)
+        self.assertEqual(self.info(self.link(locked)).json(), {"keeps_data": False, "mfa_required": False, **no_key})
+        self.assertEqual(self.info(self.link(kept)).json(), {"keeps_data": True, "mfa_required": False, **no_key})
+        self.assertEqual(self.info(self.link(mfa)).json(), {"keeps_data": False, "mfa_required": True, **no_key})
 
     def test_info_does_not_use_the_link_up(self):
         bob = self.user()
@@ -776,6 +777,40 @@ class WipeTest(ResetCase):
                                  if u["id"] == boss.id)["admin_key_shared"])
         c.post("/api/auth/reauth", json={"password": NEW_PASSWORD})
         self.assertTrue(c.get("/api/admin/users").json()["admin_key_available"])
+
+    def test_the_reset_page_is_told_what_an_admin_loses_and_who_else_holds_the_key(self):
+        helpers.started()
+        boss = helpers.make_user(password=PASSWORD)
+        with helpers.client() as first:
+            self.assertEqual(first.post(f"/api/admin/users/{boss.id}/role", json={"role": "admin"}).status_code, 200)
+        self.addCleanup(self.demote, boss.id)
+        with helpers.client(boss.email, PASSWORD) as c:
+            c.post("/api/account/background", json={"enabled": True})
+        token = self.link(boss)
+        info = self.anonymous().post("/api/auth/reset/info", json={"token": token}).json()
+        self.assertEqual((info["keeps_data"], info["admin_key_will_be_lost"], info["last_key_holder"]),
+                         (True, True, False))  # (the first admin holds it too)
+        self.assertIsNotNone(rows(lambda s: s.get(AdminKeyGrant, boss.id)))  # looking changed nothing
+        first_id = helpers.admin_id()
+        db = SessionLocal()  # now nobody else holds it
+        try:
+            kept = db.get(AdminKeyGrant, first_id)
+            db.delete(kept)
+            db.commit()
+        finally:
+            db.close()
+        try:
+            info = self.anonymous().post("/api/auth/reset/info", json={"token": token}).json()
+            self.assertEqual((info["admin_key_will_be_lost"], info["last_key_holder"]), (True, True))
+        finally:
+            with helpers.client(boss.email, PASSWORD) as c:  # share it with the first admin again
+                self.assertEqual(c.post(f"/api/admin/users/{first_id}/regrant").status_code, 200)
+        plain = self.user(background=True)
+        info = self.anonymous().post("/api/auth/reset/info", json={"token": self.link(plain)}).json()
+        self.assertEqual((info["admin_key_will_be_lost"], info["last_key_holder"]), (False, False))
+        # after the reset the answer says whether anyone else can share it
+        r = self.reset(token)
+        self.assertEqual((r.json()["admin_key_lost"], r.json()["admin_key_last_holder"]), (True, False))
 
     def test_an_admin_with_background_access_keeps_the_data_but_loses_the_admin_key(self):
         """The server key opens the data key but not the identity key (accounts design 1.2), so a reset by email that

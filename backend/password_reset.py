@@ -65,7 +65,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from backend import account_email, crypto, email_templates, keys, lockout, mail_queue, ratelimit, sessions, tokens, users
+from backend import (account_email, admin_key, crypto, email_templates, keys, lockout, mail_queue, ratelimit, sessions,
+                     tokens, users)
 from backend.auth import _after_sign_in, _signed_in
 from backend.db import AuthToken, SessionLocal, User, get_db, utcnow
 from backend.keys import normalise_email
@@ -237,9 +238,15 @@ def _sealed_address(db: Session, user: User) -> Optional[str]:
 @router.post("/reset/info")
 def reset_info(body: TokenIn, db: Session = Depends(get_db)):
     """What the reset page must say before it asks for the new password: whether the data is kept (the account has
-    background access) and whether a code is needed. Doesn't use the link up."""
+    background access), whether a code is needed, and whether an admin loses their share of the admin key (and is
+    the last who has it). Read-only; doesn't use the link up."""
     _row, user, _address = _row_and_user(db, body.token)
-    return {"keeps_data": users.background_key(db, user.id) is not None, "mfa_required": bool(user.mfa_enabled)}
+    keeps = users.background_key(db, user.id) is not None
+    # An admin who resets by email (with the data kept or deleted) loses their share of the admin key: only a
+    # recovery code keeps it. When no other admin holds it, only the server's operator can restore it.
+    loses = admin_key.holds_key(db, user.id)
+    return {"keeps_data": keeps, "mfa_required": bool(user.mfa_enabled), "admin_key_will_be_lost": loses,
+            "last_key_holder": loses and not admin_key.other_holders(db, user.id)}
 
 
 def _run_active() -> AuthProblem:
@@ -320,5 +327,6 @@ def reset(body: ResetIn, request: Request, db: Session = Depends(get_db)):
     _after_sign_in(user.id, dek)  # a pending encryption migration waits for its owner's key
     out = {"ok": True, "user": {"id": user.id, "role": user.role}, "kept_data": keeps, "wiped": not keeps,
            "admin_key_lost": bool((wiped and wiped.admin_key_lost) or (kept and kept.admin_key_lost))}
+    out["admin_key_last_holder"] = out["admin_key_lost"] and not admin_key.other_holders(db, user.id)
     out["recovery_codes"] = wiped.recovery_codes if wiped is not None else kept_codes  # (never the old ones)
     return _signed_in(request, secret, body.remember, out, user_id=user.id)

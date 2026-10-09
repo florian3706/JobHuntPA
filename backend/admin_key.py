@@ -36,7 +36,7 @@ import hmac
 import json
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
 from sqlalchemy import or_, text
@@ -67,6 +67,12 @@ class ApkUnavailable(Exception):
     def __init__(self, message: str = "", *, sign_in_again: bool = False):
         super().__init__(message)
         self.sign_in_again = sign_in_again
+
+
+class NeedsSignIn(ApkUnavailable):
+    """The account hasn't signed in with its password since the identity key was introduced, and has background
+    access: its private key is still sealed under the data key, which the server key opens, so a grant sealed to it
+    would be open to anyone with the database and the key file. It can be shared once they have signed in."""
 
 
 def pii_label(user_id: int) -> str:
@@ -177,11 +183,55 @@ def audit_settings(db: Session, admin_id: int, changed: dict[str, bool]) -> None
         db.commit()
 
 
+def holds_key(db: Session, admin_id: int) -> bool:
+    """Whether ``admin_id`` is an admin with a grant of the current key (it may still not open)."""
+    current = current_public(db)
+    grant = db.get(AdminKeyGrant, admin_id)
+    user = db.get(User, admin_id)
+    return (current is not None and grant is not None and grant.apk_version == current[1]
+            and user is not None and user.role == "admin")
+
+
+def other_holders(db: Session, admin_id: int) -> bool:
+    """Whether an active admin besides ``admin_id`` has a grant of the current key (so can share it again)."""
+    current = current_public(db)
+    if current is None:
+        return False
+    return db.query(AdminKeyGrant.user_id).join(User, User.id == AdminKeyGrant.user_id).filter(
+        AdminKeyGrant.user_id != admin_id, AdminKeyGrant.apk_version == current[1],
+        User.role == "admin", User.status == "active").first() is not None
+
+
+def needs_sign_in(keys: UserKeys) -> bool:
+    """Whether the account's private key is still under the data key (it has no identity key yet) and background
+    access lets the server key open that: a grant sealed to it would not be protected from the key file."""
+    return keys.pw_wrapped_ik is None and keys.server_wrapped_dek is not None
+
+
+def open_grant(db: Session, admin_id: int, private: bytes) -> Optional[Apk]:
+    """The current APK as ``admin_id``'s grant holds it, opened with their X25519 private key; None when they have
+    no grant of the current key or it doesn't open. Used when the private key is replaced (``users.migrate_identity``)."""
+    current = current_public(db)
+    grant = db.get(AdminKeyGrant, admin_id)
+    if current is None or grant is None or grant.apk_version != current[1]:
+        return None
+    try:
+        key = crypto.open_sealed(private, grant.sealed_priv, grant_label(admin_id, grant.apk_version))
+        if not hmac.compare_digest(crypto.public_key_of(key), current[0]):
+            return None
+    except (crypto.CryptoError, ValueError):
+        return None
+    return Apk(key, current[0], current[1])
+
+
 def grant_to(db: Session, apk: Apk, admin_id: int, granted_by: Optional[int]) -> None:
-    """Share ``apk`` with ``admin_id``: sealed to their current X25519 public key (they needn't be signed in)."""
+    """Share ``apk`` with ``admin_id``: sealed to their current X25519 public key (they needn't be signed in, unless
+    their private key is still under the data key: ``NeedsSignIn``)."""
     keys = db.get(UserKeys, admin_id)
     if keys is None:
         raise ApkUnavailable("That account has no keys")
+    if needs_sign_in(keys):
+        raise NeedsSignIn("That account has to sign in once first")
     sealed = crypto.seal_to(keys.x25519_pub, apk.private, grant_label(admin_id, apk.version))
     row = db.get(AdminKeyGrant, admin_id)
     if row is None:
@@ -202,6 +252,7 @@ class Rotation:
     resealed: int = 0   # values moved to the new key
     stale: int = 0      # personal details marked to be re-sealed at their owner's next sign-in
     dropped: int = 0    # other values that no longer opened, and were cleared
+    skipped: list = field(default_factory=list)  # admins not given the key yet (``NeedsSignIn``)
 
 
 def active_admin_ids(db: Session) -> list[int]:
@@ -216,7 +267,9 @@ def new_key(db: Session, old: Optional[Apk], admin_ids: Iterable[int], granted_b
 
     With ``old`` (the key as an admin who holds it opened it), every value sealed to it is opened and sealed again
     to the new key. Without it (``new-admin-key``: nobody has it any more) personal details become stale and heal at
-    each person's next sign-in; the other values that were sealed to it stay as they are (unreadable)."""
+    each person's next sign-in; the other values that were sealed to it stay as they are (unreadable). An admin who
+    has background access and has not signed in since the identity key (``needs_sign_in``) is not given the key
+    (``Rotation.skipped``, audited): another admin shares it once they have."""
     priv, pub = crypto.new_keypair()
     current = current_public(db)
     version = (current[1] if current else 0) + 1
@@ -226,13 +279,21 @@ def new_key(db: Session, old: Optional[Apk], admin_ids: Iterable[int], granted_b
         _reseal_everything(db, old, apk, out)
     users._put_setting(db, "apk_public", base64.b64encode(pub).decode("ascii"))
     users._put_setting(db, "apk_version", version)
-    keep = set(admin_ids)
+    recipients = list(dict.fromkeys(admin_ids))
+    for admin_id in recipients:  # an admin whose private key the server key still opens waits for their next sign-in
+        keys = db.get(UserKeys, admin_id)
+        if keys is not None and needs_sign_in(keys):
+            out.skipped.append(admin_id)
+            audit(db, granted_by, "admin_key_not_shared", admin_id,
+                  {"reason": "not signed in since the identity key", "apk_version": version}, public=pub)
+    keep = set(recipients) - set(out.skipped)
     for row in db.query(AdminKeyGrant).all():
-        if row.user_id not in keep:  # someone who is no longer an admin keeps nothing
+        if row.user_id not in keep:  # someone who is no longer an admin (or isn't given it yet) keeps nothing
             db.delete(row)
     db.flush()
-    for admin_id in dict.fromkeys(admin_ids):  # the others get the new key (their old grant is replaced)
-        grant_to(db, apk, admin_id, granted_by)
+    for admin_id in recipients:  # the others get the new key (their old grant is replaced)
+        if admin_id not in out.skipped:
+            grant_to(db, apk, admin_id, granted_by)
     return out
 
 
@@ -349,8 +410,11 @@ def new_admin_key_command(email: str, out=None, err=None) -> int:
         raise
     finally:
         db.close()
-    print(f"Done. {'The account is now an admin and ' if became_admin else 'The account '}holds the new admin key "
-          f"(it is shared with {len(admin_ids)} admin(s)).", file=out)
+    print(f"Done. {'The account is now an admin. ' if became_admin else ''}The new admin key is shared with "
+          f"{len(admin_ids) - len(rotation.skipped)} admin(s).", file=out)
+    if rotation.skipped:
+        print(f"{len(rotation.skipped)} admin(s) have not signed in since the identity key was introduced, so they "
+              "were not given the key. Once they have signed in, run this command again.", file=out)
     print(f"{immediately} people's details were re-sealed now; {waiting} more will be when they next sign in "
           "(until then the admin list says \"Details unavailable until this person signs in\").", file=out)
     return 0

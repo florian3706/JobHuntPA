@@ -121,8 +121,15 @@ def start(kind: str, job: Callable[[Progress], dict], ws: int, scheduled: bool =
         finally:
             db.close()
         # Inside the lock, so the queue order is the order of the run ids. In this request's context,
-        # so a crypto scope reaches the worker thread.
-        submit(_executor, _execute, run_id, job)
+        # so a crypto scope reaches the worker thread. The scope is made again without the request's identity-key
+        # opener (it holds the session key): a run can wait in the queue long after the request is over, and a
+        # background run must not be able to open the identity key (accounts design §1.2).
+        if crypto.has_scope():
+            scope = crypto.current()
+            with crypto.as_user(scope.user_id, scope.dek):
+                submit(_executor, _execute, run_id, job)
+        else:
+            submit(_executor, _execute, run_id, job)
     return out
 
 

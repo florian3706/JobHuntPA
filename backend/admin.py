@@ -357,6 +357,9 @@ def list_users(admin: AuthUser = Depends(current_user), db: Session = Depends(ge
 # Roles and the admin key
 # ---------------------------------------------------------------------------
 
+NEEDS_SIGN_IN = "Ask them to sign in once first, then share the key."
+
+
 class RoleIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["admin", "user"]
@@ -379,6 +382,8 @@ def set_role(user_id: int, body: RoleIn, admin: AuthUser = Depends(current_user)
             raise _problem(409, "disabled", "Turn this account on before making it an admin.")
         try:
             admin_key.grant_to(db, apk, target.id, admin.id)
+        except admin_key.NeedsSignIn:
+            raise _problem(409, "needs_sign_in", NEEDS_SIGN_IN) from None
         except ApkUnavailable:
             raise _problem(409, "no_keys", "This account has no keys, so it can't be made an admin.") from None
         target.role = "admin"
@@ -414,6 +419,8 @@ def regrant(user_id: int, admin: AuthUser = Depends(current_user), db: Session =
     apk = _need_apk(db, admin)
     try:
         admin_key.grant_to(db, apk, target.id, admin.id)
+    except admin_key.NeedsSignIn:
+        raise _problem(409, "needs_sign_in", NEEDS_SIGN_IN) from None
     except ApkUnavailable:
         raise _problem(409, "no_keys", "This account has no keys.") from None
     audit(db, admin, "admin_key_shared", target.id, {"apk_version": apk.version})

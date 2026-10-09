@@ -532,7 +532,7 @@ async function remindLeftovers(me) {
   const files = status?.leftovers || [];
   if (status?.state !== 'done' || !files.length) return;
   pageNotice('leftovers', `<p><strong>Your data is encrypted now.</strong> ${files.length === 1 ? 'A file' : `${files.length} files`} from before still
-      ${files.length === 1 ? 'holds' : 'hold'} it unencrypted. <a href="admin.html#server">See them in the admin panel</a>, where you can delete them.</p>`);
+      ${files.length === 1 ? 'holds' : 'hold'} it unencrypted, with old keys. <a href="admin.html#server">See them in the admin panel</a> and delete the <code>.bak-*</code> files you don't need.</p>`);
 }
 
 /* ---------- the account menu in the header ----------

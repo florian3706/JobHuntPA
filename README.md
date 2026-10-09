@@ -378,10 +378,19 @@ digests don't need it and work as before. What this means in practice:
 - Admins open people's details only while signed in. A browser that was already signed in when JobHuntPA was
   updated shows "Sign in again to open people's details" in the admin panel: sign out and in again.
 - An existing account gets its identity key at its next password sign-in (or recovery-code reset); until
-  then an admin's old arrangement still applies, so every admin should sign in once after updating.
-- **Recovery codes made before the update can't carry the identity key.** An admin who resets their
-  password with one keeps their data but needs another admin to share the admin key with them again;
-  Settings > Recovery codes suggests making new codes (it takes a minute).
+  then an admin's old arrangement still applies, so every admin should sign in once after updating. That
+  sign-in gives the admin a new key pair and replaces the admin key (so a copy of `data/` from before can't
+  open anything current). An admin who has background access and hasn't signed in yet doesn't get the new
+  key until they have: sign in, then another admin chooses *Share the admin key again*. Making someone an
+  admin who has background access but hasn't signed in since the update waits for their sign-in too.
+- **Delete the old `.bak-*` files** (`data/*.bak-before-encryption`, `*.bak-before-job-pool`, the
+  uninstaller's zips once you have no use for them; the admin panel's **Server** section lists and deletes
+  the first two). They keep the keys from before the update, so someone who has one together with the key
+  file can still read what they held.
+- **Recovery codes saved before the update can't carry the identity key.** (Codes you hadn't yet confirmed
+  saving do carry it.) An admin who resets their password with a saved one keeps their data but needs
+  another admin to share the admin key with them again; Settings > Recovery codes suggests making new
+  codes (it takes a minute).
 
 ### Job digest emails
 
@@ -809,7 +818,8 @@ with your database, so back them up together.
 **Encrypting your existing data.** The first time the admin signs in (or right away, on the first-run
 page), JobHuntPA encrypts everything from before with the admin's key:
 
-1. It saves a backup first, `data/jobhunt.db.bak-before-encryption` (unencrypted).
+1. It saves a backup first, `data/jobhunt.db.bak-before-encryption` (unencrypted, with the keys from
+   before). Delete it once you're sure you don't need to go back.
 2. It encrypts your uploaded files, then your data, in small steps. A few thousand jobs take seconds
    on a computer and up to a minute or two on a Raspberry Pi. Meanwhile the dashboard shows the
    progress and reloads by itself when it's done. If JobHuntPA is stopped halfway, it carries on the

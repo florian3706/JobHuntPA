@@ -408,7 +408,7 @@ def _identity_without_code(db: Session, user: User, dek: bytes, password_kek: by
     row = db.get(UserKeys, user.id)
     if row.pw_wrapped_ik is None:
         try:
-            return users.migrate_identity(row, user.id, dek, password_kek), False
+            return users.migrate_identity(db, row, user.id, dek, password_kek), False
         except crypto.CryptoError:
             log.warning("user %s: the private key didn't open with the data key; making a new key pair", user.id)
     return users.replace_identity(db, user.id, row, password_kek, "password reset with a recovery code made before "

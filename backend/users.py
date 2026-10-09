@@ -610,7 +610,7 @@ def _give_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, passwor
         db.refresh(row)
         if row.pw_wrapped_ik is not None:
             return crypto.unwrap(password_kek, row.pw_wrapped_ik, _pw_ik_label(user_id)), False
-        ik = migrate_identity(row, user_id, dek, password_kek)
+        ik = migrate_identity(db, row, user_id, dek, password_kek)
     except (crypto.CryptoError, ValueError):
         db.rollback()
         log.warning("user %s: the identity key could not be made; the admin key stays closed until the next sign-in",
@@ -620,23 +620,79 @@ def _give_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, passwor
     return ik, True
 
 
-def migrate_identity(row: UserKeys, user_id: int, dek: bytes, password_kek: bytes) -> bytes:
-    """Gives an account from before the identity key one, in the caller's transaction (not committed): a new IK, the
-    X25519 private key moved from its DEK-sealed form to a wrap under the IK, the IK wrapped under ``password_kek``
-    (the password key), and the unconfirmed recovery codes (if any) moved from the DEK to the IK. The DEK-sealed
-    copies are overwritten; the caller scrubs the write-ahead log after committing. Everything is computed before the
-    row changes, so a failure leaves it as it was (CryptoError)."""
+def migrate_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, password_kek: bytes) -> bytes:
+    """Gives an account from before the identity key one, in the caller's transaction (not committed): a new IK and a
+    **new X25519 key pair** whose private key is wrapped under the IK (the old private key is not reused: copies of
+    the DEK-sealed form, in a backup or an old file, would still open it), the IK wrapped under ``password_kek`` (the
+    password key) and under each unconfirmed recovery code (their text is in hand here), and those codes moved from
+    the DEK to the IK. An admin's grant of the admin key is opened with the old private key and sealed to the new
+    public key, and the admin key is replaced (``admin_key.new_key``), so a grant in an old copy opens nothing
+    current; a grant that doesn't open is deleted and audited. The DEK-sealed copies are overwritten; the caller
+    scrubs the write-ahead log after committing. Everything is computed before the row changes, and the changes are
+    one savepoint, so a failure leaves them as they were (CryptoError)."""
+    from backend import admin_key
+
     with crypto.as_user(user_id, dek):
-        priv = crypto.unseal(row.x25519_priv_enc, f"user_keys.x25519_priv|{user_id}")
+        old_priv = crypto.unseal(row.x25519_priv_enc, f"user_keys.x25519_priv|{user_id}")
         pending = crypto.unseal(row.pending_codes_enc, _codes_label(user_id)) if row.pending_codes_enc else None
     ik = crypto.new_key()
+    priv, pub = crypto.new_keypair()
     wrapped_priv = crypto.wrap(ik, priv, _ik_priv_label(user_id))
     wrapped_ik = crypto.wrap(password_kek, ik, _pw_ik_label(user_id))
     wrapped_pending = crypto.wrap(ik, pending, _pending_codes_label(user_id)) if pending is not None else None
-    row.x25519_priv_enc, row.pw_wrapped_ik = wrapped_priv, wrapped_ik
-    if wrapped_pending is not None:
-        row.pending_codes_enc = wrapped_pending
+    code_iks = _code_iks(db, row, user_id, ik, pending)
+    old_apk = admin_key.open_grant(db, user_id, old_priv)
+    grant = db.get(AdminKeyGrant, user_id)
+    with db.begin_nested():
+        row.x25519_pub, row.x25519_priv_enc, row.pw_wrapped_ik = pub, wrapped_priv, wrapped_ik
+        if wrapped_pending is not None:
+            row.pending_codes_enc = wrapped_pending
+        for code_id, wrapped in code_iks.items():
+            db.execute(update(RecoveryCode).where(RecoveryCode.id == code_id).values(wrapped_ik=wrapped))
+        if grant is not None and old_apk is None:  # it doesn't open (or is of an older key): nothing to carry over
+            db.delete(grant)
+            db.flush()
+            admin_key.audit(db, user_id, "admin_key_lost", user_id, {"reason": "identity key made"})
+        elif old_apk is not None:
+            # The new public key gets the grant, and the key is replaced: a grant sealed to the old public key (in a
+            # backup) then opens a key that protects nothing written from now on.
+            rotation = admin_key.new_key(db, old_apk, admin_key.active_admin_ids(db), user_id)
+            admin_key.audit(db, user_id, "admin_key_replaced", user_id,
+                            {"by": "identity key made", "apk_version": rotation.apk.version,
+                             "resealed": rotation.resealed, "stale": rotation.stale, "dropped": rotation.dropped},
+                            public=rotation.apk.public)
     return ik
+
+
+def _code_iks(db: Session, row: UserKeys, user_id: int, ik: bytes, pending: Optional[bytes]) -> dict[int, bytes]:
+    """``{recovery code id: the IK wrapped under that code}`` for the unused codes whose text is among the
+    unconfirmed ones (``pending``, the JSON list): they carried no IK, and the text is the only thing that can give
+    them one. Codes already confirmed saved are not here, and stay without (``recovery_codes_without_ik``)."""
+    if pending is None:
+        return {}
+    try:
+        typed = json.loads(pending)
+    except ValueError:
+        return {}
+    waiting = list(db.query(RecoveryCode).filter(RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None),
+                                                 RecoveryCode.wrapped_dek.isnot(None),
+                                                 RecoveryCode.wrapped_ik.is_(None)).order_by(RecoveryCode.id))
+    out: dict[int, bytes] = {}
+    for text_ in typed if isinstance(typed, list) else []:
+        code = normalise_recovery_code(text_)
+        if code is None:
+            continue
+        kek = crypto.recovery_kek(code, row.recovery_salt)
+        for rc in waiting:
+            if rc.id in out:
+                continue
+            try:
+                crypto.unwrap(kek, rc.wrapped_dek, f"rc|{user_id}|{rc.id}")
+            except crypto.CryptoError:
+                continue
+            out[rc.id] = crypto.wrap(kek, ik, _rc_ik_label(user_id, rc.id))
+            break
+    return out
 
 
 def open_private_key(row: UserKeys, user_id: int, ik: bytes) -> bytes:
@@ -649,13 +705,16 @@ def replace_identity(db: Session, user_id: int, row: UserKeys, password_kek: byt
     the data, a reset with a recovery code made before the IK, or a reset that deletes the data). In the caller's
     transaction (not committed). The IK is wrapped under ``password_kek``; the caller wraps it under the recovery codes
     and the session. Whatever was sealed to the old public key is lost to this account: an admin's grant of the admin
-    key is deleted (and audited with ``reason``) so another admin can share it again. Returns ``(ik, grant_lost)``."""
+    key is deleted (and audited with ``reason``) so another admin can share it again. The unconfirmed recovery codes
+    (kept under the old IK, which nothing opens now) are dropped: the caller makes new ones or leaves the account's
+    other codes as they are. Returns ``(ik, grant_lost)``."""
     from backend import admin_key
 
     ik = crypto.new_key()
     priv, pub = crypto.new_keypair()
     row.x25519_pub, row.x25519_priv_enc = pub, crypto.wrap(ik, priv, _ik_priv_label(user_id))
     row.pw_wrapped_ik = crypto.wrap(password_kek, ik, _pw_ik_label(user_id))
+    row.pending_codes_enc = None  # (under the old IK: it can't be shown again, and would stay "unsaved" for good)
     # The codes that wrapped the old IK are of no use for it any more (and must not be taken for the new one).
     db.execute(update(RecoveryCode).where(RecoveryCode.user_id == user_id).values(wrapped_ik=None))
     lost = db.execute(delete(AdminKeyGrant).where(AdminKeyGrant.user_id == user_id)).rowcount > 0
