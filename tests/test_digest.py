@@ -722,7 +722,8 @@ class EmailTests(Base):
     def test_the_source_label_follows_the_frontends_rule(self):
         from backend.email_templates import source_label
 
-        for raw, label in (("seek", "SEEK"), ("import", "imported page"), ("apsjobs:q=x", "APSJobs"),
+        for raw, label in (("seek", "SEEK"), ("import", "imported page"), ("browser", "browser extension"),
+                           ("apsjobs:q=x", "APSJobs"),
                            ("site:acme.com", "acme.com"), ("generic:jobs.example.org", "jobs.example.org"),
                            ("workable:compass-education", "compass-education (Workable)"),
                            ("greenhouse:acme/jobs", "acme (Greenhouse)"), ("plain", "plain"), ("", None),
