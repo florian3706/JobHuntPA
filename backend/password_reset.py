@@ -40,7 +40,10 @@ wipe rebuilds ``pii_self`` from, and where the "password changed" notice goes.
   * With background access the server opens the data key, wraps it under the new password and keeps everything
     (``users.reset_password_keeping_data``) **except the recovery codes**: all eight are replaced, because each opens
     the same data key and the person who held the account before (someone who signed up with this address first)
-    may have kept them. The answer carries the new codes (``recovery_codes``), shown once like after a wipe.
+    may have kept them. The answer carries the new codes (``recovery_codes``), shown once like after a wipe. The
+    server key can't open the identity key (accounts design §1.2), so the account also gets a new key pair and
+    identity key: an admin loses their share of the admin details key (``admin_key_lost``), as after a wipe, and
+    another admin shares it again.
   * Without it the data is locked with the old password: refused (409 ``wipe_not_accepted``) unless ``accept_wipe``,
     then everything saved is deleted and the account starts again (``users.reset_password_wiping_data``). The
     response carries the new recovery codes, shown once; ``admin_key_lost`` says an admin lost their share of the
@@ -287,18 +290,19 @@ def reset(body: ResetIn, request: Request, db: Session = Depends(get_db)):
     if used is None:
         raise AuthProblem(410, "link_invalid", LINK_INVALID)
     wiped: Optional[users.WipedReset] = None
+    kept: Optional[users.KeptReset] = None
     kept_codes: Optional[list] = None
     try:  # the link is given back if the change itself fails
         if keeps:
-            dek, kept_codes = None, users.reset_password_keeping_data(db, user.id, body.new_password)
-            if kept_codes:
-                dek = users.background_key(db, user.id)
+            dek, kept = None, users.reset_password_keeping_data(db, user.id, body.new_password)
+            if kept is not None:
+                dek, ik, kept_codes = users.background_key(db, user.id), kept.ik, kept.recovery_codes
             if dek is None:  # background access was turned off or its key stopped opening just now
                 raise AuthProblem(409, "try_again", "Something changed while you were resetting. Open the link again "
                                                     "and try once more.")
         else:
             wiped = users.reset_password_wiping_data(db, user.id, body.new_password, address)
-            dek = wiped.dek
+            dek, ik = wiped.dek, wiped.ik
     except users.AccountBusy:
         tokens.release(db, used.id)
         raise _run_active() from None
@@ -308,13 +312,13 @@ def reset(body: ResetIn, request: Request, db: Session = Depends(get_db)):
         raise
     user = db.get(User, user.id, populate_existing=True)
     db.execute(update(User).where(User.id == user.id).values(email_verified=True))  # the mailbox answered
-    secret = sessions.create(db, user, dek, persistent=body.remember)
+    secret = sessions.create(db, user, dek, ik, persistent=body.remember)
     account_email.end_open_links(db, user.id)  # any other link sent before this reset (the one used is already spent)
     db.commit()
     log.info("Password reset by email: user %s (%s)", user.id, "data kept" if keeps else "data deleted")
     account_email.notify("password_changed", address, user.id)
     _after_sign_in(user.id, dek)  # a pending encryption migration waits for its owner's key
     out = {"ok": True, "user": {"id": user.id, "role": user.role}, "kept_data": keeps, "wiped": not keeps,
-           "admin_key_lost": bool(wiped and wiped.admin_key_lost)}
+           "admin_key_lost": bool((wiped and wiped.admin_key_lost) or (kept and kept.admin_key_lost))}
     out["recovery_codes"] = wiped.recovery_codes if wiped is not None else kept_codes  # (never the old ones)
     return _signed_in(request, secret, body.remember, out, user_id=user.id)

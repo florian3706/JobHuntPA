@@ -426,12 +426,11 @@ class RoleTest(AdminTestCase):
     def test_regrant_gives_a_new_keypair_admin_access_again(self):
         c = self.signed_in()
         carol = self.make_admin()
-        uid, dek = helpers.key_of(carol.email)
+        ik = helpers.ik_of(carol.email)
         priv, pub = crypto.new_keypair()
         db = SessionLocal()
         row = db.get(UserKeys, carol.id)
-        with crypto.as_user(uid, dek):  # what a locked reset does: a new key pair under the (new) data key
-            row.x25519_priv_enc = crypto.seal(priv, f"user_keys.x25519_priv|{carol.id}")
+        row.x25519_priv_enc = crypto.wrap(ik, priv, f"ik-priv|{carol.id}")  # a new key pair under the identity key
         row.x25519_pub = pub
         db.commit()
         db.close()

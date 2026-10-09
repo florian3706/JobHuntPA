@@ -43,7 +43,7 @@ from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
 from backend import account_email, admin_key, app_settings, billing, email_templates, key_rotation, keys, mail_queue
-from backend import lockout, mail_route, mailer, membership, migrate_encryption, password_reset, ratelimit, signup, tokens, users
+from backend import crypto, lockout, mail_route, mailer, membership, migrate_encryption, password_reset, ratelimit, signup, tokens, users
 from backend.admin_key import Apk, ApkUnavailable
 from backend.db import (
     AdminAudit,
@@ -119,7 +119,12 @@ def other_admin_addresses(db: Session, admin: AuthUser) -> list[str]:
     return out
 
 
+SIGN_IN_AGAIN = "Sign in again to open people's details."
+
+
 def _key_missing() -> AuthProblem:
+    if not crypto.has_ik():  # a session from before the identity key: signing in again is the fix
+        return _problem(409, "admin_key_missing", SIGN_IN_AGAIN)
     return _problem(409, "admin_key_missing", "You don't have the admin key, so this can't be done. Ask another "
                                               "admin to share it with you again.")
 
@@ -341,6 +346,7 @@ def list_users(admin: AuthUser = Depends(current_user), db: Session = Depends(ge
     return {
         "users": people,
         "admin_key_available": apk is not None,  # false: this admin can't open details (ask for a re-grant)
+        "admin_key_needs_sign_in": apk is None and not crypto.has_ik(),  # ... or this session has no identity key
         "admins": sum(1 for p in people if p["role"] == "admin"),
         "only_one_admin": sum(1 for p in people if p["role"] == "admin" and p["status"] == "active") <= 1,
         "details_unavailable": sum(1 for p in people if not p["details_available"]),

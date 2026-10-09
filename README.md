@@ -197,8 +197,11 @@ emails, download your data and delete account.
   recovery codes (your account, membership and sign-in stay). Either way, every other browser is signed
   out, you are signed in, and you get a "Your password was changed" email. **With data kept, your old
   recovery codes stop working and you are shown eight new ones to save** (someone who had an account on
-  your address before you could otherwise still use theirs). If you have a recovery code, use it
-  instead: it keeps your data.
+  your address before you could otherwise still use theirs). **If you are an admin, you also lose your copy
+  of the admin key** (the server can unlock your data but not that key, see
+  [background access](#background-access)): the page says so, and another admin uses *Share the admin key
+  again*. If you have a recovery code, use it instead: it keeps your data and, if the code is a current one,
+  your admin key too.
 
 ### Your details and devices
 
@@ -316,7 +319,8 @@ printed on purpose, and the traceback of an unhandled error (a bug) could name d
   or reads its memory could capture your password when you next sign in. Nothing stored on disk can
   prevent that.
 - **With [background access](#background-access) on,** whoever runs the server can read your data, using
-  the key file.
+  the key file, but not other people's names, emails and billing details: the admin key stays closed to the
+  server (see *Background access*).
 - **Wrong passwords** are counted per place in memory (see *Signing in*), so a restart gives each place its
   five tries back. A guesser with many addresses gets 5 tries per address up to 100 an hour for the whole
   account (10 wrong two-step codes); IPv6 addresses count one by one, so a whole /64 can rotate through that
@@ -339,7 +343,9 @@ the account's own encrypted details, and every link carries the server's signatu
 made by editing the database alone. For an account without background access, a link sent to the wrong
 address deletes that account's data and never discloses it. The admin key opens only people's names,
 emails, notes and billing details, never searches, documents or jobs. Someone who has the database **and**
-`data/server-keys.json` can do anything the server can.
+`data/server-keys.json` can do anything the server can with the data of accounts that have background
+access, and can still edit the public keys above, but **can't open the admin key**, even when an admin has
+background access (see *Background access*).
 
 **Whoever controls the mail route** (the mail server and public address in Admin > Server) receives every
 password reset link, so changing them is guarded: see [Setting up email](#setting-up-email). On an account
@@ -361,6 +367,21 @@ Whoever has the database **and** that file can read the data of every account wi
 off deletes that copy at once. The setup walkthrough's *Automatic searches* step turns it on for you
 if you tick it. Back up `data/server-keys.json` with the database; it also records that the one-time
 encryption of an older install has finished, so restore the two together.
+
+**Background access doesn't open the admin key.** Everyone's name, email and billing details are locked
+with the *admin key*, and an admin opens it with a second key of their own (an *identity key*) that only
+their password, a recovery code or their signed-in browser can unlock, never the server's key. So a copy of
+`data/` (the database and `server-keys.json`, which is what the uninstaller's backup holds) opens the
+searches, documents and jobs of accounts with background access, but **not people's personal and billing
+details, even when the admin who holds the admin key has background access too**. Scheduled searches and
+digests don't need it and work as before. What this means in practice:
+- Admins open people's details only while signed in. A browser that was already signed in when JobHuntPA was
+  updated shows "Sign in again to open people's details" in the admin panel: sign out and in again.
+- An existing account gets its identity key at its next password sign-in (or recovery-code reset); until
+  then an admin's old arrangement still applies, so every admin should sign in once after updating.
+- **Recovery codes made before the update can't carry the identity key.** An admin who resets their
+  password with one keeps their data but needs another admin to share the admin key with them again;
+  Settings > Recovery codes suggests making new codes (it takes a minute).
 
 ### Job digest emails
 
@@ -430,7 +451,8 @@ documents or searches. It has five parts:
 
 **The admin details key.** People's emails, names, notes and billing details are encrypted
 so that only admins can open them, with an *admin key* that each admin holds a copy of (sealed to their
-own password). Making someone an admin shares the key with them. Making an admin a regular user, or
+own identity key, which their password, recovery codes and signed-in browser unlock but the server's key
+does not; see [Background access](#background-access)). Making someone an admin shares the key with them. Making an admin a regular user, or
 **disabling** or deleting one, **replaces the key** and shares the new one only with the admins who
 remain and are turned on, so the person who was removed can't open anything new. (Disabling an admin
 needs your own copy of the key; an admin you enable again gets the key only when you *Share the admin

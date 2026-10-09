@@ -6,8 +6,14 @@ an audit entry's detail) are sealed to the public half of one X25519 key pair, s
 them with no admin signed in. The private half lives in ``admin_key_grants``, one row per admin, sealed to that
 admin's own X25519 public key. In an admin's request it is opened like this, every time, and kept nowhere:
 
-    the admin's data key (the request's key scope) -> their X25519 private key (``user_keys.x25519_priv_enc``)
-        -> their grant (``admin_key_grants.sealed_priv``) -> the APK's private key
+    the admin's identity key (IK: the request's session, ``crypto.open_ik``) -> their X25519 private key
+        (``user_keys.x25519_priv_enc``, label ``ik-priv|{admin id}``) -> their grant (``admin_key_grants.sealed_priv``)
+        -> the APK's private key
+
+The IK is wrapped under the password, the recovery codes and the sessions, never under the server KEK, and the data
+key does not open the private key. So background access (the data key under the server key) can't reach the admin
+details key: only an admin who is signed in can (accounts design §1.2 and §1.4). A session made before the IK existed
+has none: ``ApkUnavailable.sign_in_again`` says so, and the admin panel asks the admin to sign in again.
 
 Labels (the AAD of each sealed value, so one can't be moved to another place): ``users.pii_admin|{user id}``,
 ``memberships.billing_admin|{user id}``, ``membership_grants.note_admin|{grant id}``,
@@ -54,7 +60,13 @@ STALE = 0  # pii_admin_version of a value no current key opens
 
 
 class ApkUnavailable(Exception):
-    """This admin can't open the admin details key (no grant, an old one, or one that doesn't open)."""
+    """This admin can't open the admin details key (no grant, an old one, or one that doesn't open).
+    ``sign_in_again``: the request's session has no identity key to open it with (it was made before the IK existed),
+    so signing in again fixes it."""
+
+    def __init__(self, message: str = "", *, sign_in_again: bool = False):
+        super().__init__(message)
+        self.sign_in_again = sign_in_again
 
 
 def pii_label(user_id: int) -> str:
@@ -94,8 +106,8 @@ def current_public(db: Session) -> Optional[tuple[bytes, int]]:
 
 
 def open_apk(db: Session, admin_id: int) -> Apk:
-    """The current APK, opened through ``admin_id``'s own grant. Needs that admin's key scope (the request they
-    are signed in with). ApkUnavailable when they have no usable grant."""
+    """The current APK, opened through ``admin_id``'s own grant. Needs that admin's key scope with an identity key (the
+    request they are signed in with). ApkUnavailable when they have no usable grant or the session has no IK."""
     current = current_public(db)
     if current is None:
         raise ApkUnavailable("There is no admin key yet")
@@ -104,8 +116,14 @@ def open_apk(db: Session, admin_id: int) -> Apk:
     grant = db.get(AdminKeyGrant, admin_id)
     if keys is None or grant is None or grant.apk_version != version:
         raise ApkUnavailable("This admin has no grant of the current admin key")
+    if not crypto.has_scope() or crypto.current().user_id != admin_id:
+        raise ApkUnavailable("This isn't that admin's request")
     try:
-        own_private = crypto.unseal(keys.x25519_priv_enc, f"user_keys.x25519_priv|{admin_id}")
+        ik = crypto.open_ik()
+    except crypto.NoIdentityKey:
+        raise ApkUnavailable("This session has no identity key; sign in again", sign_in_again=True) from None
+    try:
+        own_private = users.open_private_key(keys, admin_id, ik)
         private = crypto.open_sealed(own_private, grant.sealed_priv, grant_label(admin_id, version))
         if not hmac.compare_digest(crypto.public_key_of(private), public):
             raise ApkUnavailable("The granted key isn't the current admin key")

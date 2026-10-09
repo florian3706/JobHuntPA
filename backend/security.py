@@ -2,7 +2,7 @@
 resetting with a recovery code are in backend/auth.py.
 
     GET  /api/auth/security              {mfa_enabled, mfa_setup_started, recovery_codes_left, recovery_codes_pending,
-                                          other_sessions, recent_auth}
+                                          recovery_codes_old, other_sessions, recent_auth}
     POST /api/auth/reauth                {password}: "confirm your password": sensitive actions need it within 15 min
     POST /api/auth/password              {current_password, new_password, sign_out_others = true}
     POST /api/auth/mfa/setup             (recent sign-in) -> {otpauth_uri, qr_svg, secret, secret_groups}
@@ -40,8 +40,8 @@ router = APIRouter(prefix="/api/auth", tags=["security"])
 
 
 def confirm_password(request: Request, db: Session, auth: AuthUser, password: object, *, field: str = "password",
-                     reset: bool = True, what: str = "passwords") -> bytes:
-    """The signed-in user's DEK if ``password`` is theirs; AuthProblem otherwise. Counted per address like a sign-in
+                     reset: bool = True, what: str = "passwords") -> users.Unlocked:
+    """The signed-in user's DEK and identity key (``users.Unlocked``) if ``password`` is theirs; AuthProblem otherwise. Counted per address like a sign-in
     (10 in 5 minutes) and per account and source (``lockout.begin``: 5 wrong ones in a row make this browser or
     address wait), so a stolen session can't guess it. ``reset`` False keeps the wrong-tries count for a caller that
     checks a code too (a right password gives the try back, and ``check_second_factor`` counts the code); ``what``
@@ -53,12 +53,12 @@ def confirm_password(request: Request, db: Session, auth: AuthUser, password: ob
                           headers={"Retry-After": ratelimit.retry_after(wait)})
     user = db.get(User, auth.id)
     ticket = lockout.begin(request.scope, user, what=what)  # counted before the slow check
-    dek = users.unlock_with_password(db, user, password)
-    if dek is None:
+    unlocked = users.unlock(db, user, password)
+    if unlocked is None:
         log.info("Password check failed for user %s (%d in a row)", user.id, ticket.failures)
         raise AuthProblem(422, "wrong_password", "That password isn't right. Check it and try again.", field=field)
     ticket.succeed() if reset else ticket.refund()
-    return dek
+    return unlocked
 
 
 def _mark_recent(db: Session, auth: AuthUser) -> None:
@@ -83,7 +83,10 @@ def security_status(auth: AuthUser = Depends(current_user), db: Session = Depend
         "mfa_enabled": bool(user.mfa_enabled),
         "mfa_setup_started": user.totp_pending_enc is not None and not user.mfa_enabled,
         "recovery_codes_left": users.recovery_codes_left(db, auth.id),
-        "recovery_codes_pending": users.pending_recovery_codes(db, auth.id) is not None,
+        "recovery_codes_pending": users.has_pending_recovery_codes(db, auth.id),
+        # An admin whose unused codes were made before the identity key: a reset with one keeps their data but loses
+        # their share of the admin key, so Settings suggests making new codes.
+        "recovery_codes_old": user.role == "admin" and users.recovery_codes_without_ik(db, auth.id) > 0,
         "other_sessions": others,
         "recent_auth": sessions.has_recent_auth(auth),
     }
@@ -107,15 +110,16 @@ class ChangePasswordIn(BaseModel):
 @router.post("/password")
 def change_password(body: ChangePasswordIn, request: Request, auth: AuthUser = Depends(current_user),
                     db: Session = Depends(get_db)):
-    """Changes the password: the data key is wrapped again under the new one and nothing is re-encrypted. Every other
+    """Changes the password: the data key and the identity key are wrapped again under the new one and nothing is
+    re-encrypted. Every other
     session ends (unless ``sign_out_others`` is false). Entering the current password counts as recent sign-in."""
     try:
         new_password = users.check_password(body.new_password)
     except users.AccountError as exc:
         raise AuthProblem(422, "invalid", exc.message, field="new_password") from None
-    dek = confirm_password(request, db, auth, body.current_password, field="current_password")
+    unlocked = confirm_password(request, db, auth, body.current_password, field="current_password")
     user = db.get(User, auth.id)
-    users.apply_new_password(db, user, dek, users.new_password_keys(new_password))
+    users.apply_new_password(db, user, unlocked.dek, unlocked.ik, users.new_password_keys(new_password))
     db.query(AuthSession).filter(AuthSession.id == auth.session_id).update({AuthSession.reauth_at: utcnow()},
                                                                          synchronize_session=False)
     ended = 0
@@ -124,7 +128,7 @@ def change_password(body: ChangePasswordIn, request: Request, auth: AuthUser = D
                                              ).delete(synchronize_session=False)
     account_email.end_open_links(db, auth.id)  # a reset link already sent must not undo this
     db.commit()
-    scrub_wal()  # the old password's copy of the data key must not linger in the write-ahead log
+    scrub_wal()  # the old password's copies of the keys must not linger in the write-ahead log
     log.info("Password changed: user %s (%d other session(s) ended)", auth.id, ended)
     account_email.notify_in_session(db, auth.id, "password_changed")
     return {"ok": True, "signed_out_others": ended}
@@ -265,16 +269,16 @@ def new_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, auth
         raise AuthProblem(422, "invalid", "Enter your password to make new recovery codes.", field="password")
     user = db.get(User, auth.id)
     mfa = bool(user.mfa_enabled)
-    confirm_password(request, db, auth, body.password, reset=not mfa, what="passwords or codes")
+    unlocked = confirm_password(request, db, auth, body.password, reset=not mfa, what="passwords or codes")
     if mfa:
         check_second_factor(db, user, body, request.scope, what="passwords or codes")
     try:
-        codes = users.replace_recovery_codes(db, auth.id, crypto.current().dek)
+        codes = users.replace_recovery_codes(db, auth.id, crypto.current().dek, unlocked.ik)
     except crypto.KeyMismatch:  # the key was replaced under this request (a password reset that deleted the data)
         db.rollback()
         raise AuthProblem(401, "signed_out", "You're signed out. Sign in to continue.") from None
     db.commit()
-    scrub_wal()  # the old codes' copies of the data key
+    scrub_wal()  # the old codes' copies of the keys
     log.info("New recovery codes made: user %s", auth.id)
     account_email.notify_in_session(db, auth.id, "recovery_codes_replaced")
     return {"ok": True, "recovery_codes_left": users.RECOVERY_CODES, "recovery_codes_pending": True,
@@ -289,17 +293,17 @@ def show_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, aut
     15 minutes, so a session alone must not read them (a cookie taken from a browser just after sign-in): the request
     carries the password, and with two-step sign-in on a code as well, because they can stand in for it."""
     body = body or NewCodesIn()
-    if users.pending_recovery_codes(db, auth.id) is None:
+    if not users.has_pending_recovery_codes(db, auth.id):
         raise AuthProblem(404, "none_pending", "There are no recovery codes waiting to be saved: you confirmed "
                                                "saving them already.")
     if not body.password:
         raise AuthProblem(422, "invalid", "Enter your password to see your recovery codes.", field="password")
     user = db.get(User, auth.id)
     mfa = bool(user.mfa_enabled)
-    confirm_password(request, db, auth, body.password, reset=not mfa, what="passwords or codes")
+    unlocked = confirm_password(request, db, auth, body.password, reset=not mfa, what="passwords or codes")
     if mfa:
         check_second_factor(db, user, body, request.scope, what="passwords or codes")
-    codes = users.pending_recovery_codes(db, auth.id)  # (read again: a code that was typed may have been a pending one)
+    codes = users.pending_recovery_codes(db, auth.id, unlocked.ik)  # (read again: a code that was typed may have been a pending one)
     if codes is None:
         raise AuthProblem(404, "none_pending", "There are no recovery codes waiting to be saved: you confirmed "
                                                "saving them already.")

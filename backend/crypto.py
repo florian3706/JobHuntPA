@@ -28,7 +28,11 @@ function                  AAD after the header        why
 Sealed* column types      ``jh/<table>.<column>``     a value moved to another column (or table) won't open
 ``seal``/``unseal``       ``jh-value|<label>``        values kept outside a sealed column, under the DEK
 ``wrap``/``unwrap``       ``jh-wrap|<label>``         keys under a key: ``pw|{uid}``, ``rc|{uid}|{code_id}``,
-                                                      ``sess|{sid}``, ``srv|{uid}|{kek_id}``, ``totp|{uid}``
+                                                      ``sess|{sid}``, ``srv|{uid}|{kek_id}``, ``totp|{uid}``,
+                                                      and the identity key's: ``pw-ik|{uid}``,
+                                                      ``rc-ik|{uid}|{code_id}``, ``sess-ik|{sid}``,
+                                                      ``pend-ik|{sid}``, ``ik-priv|{uid}``,
+                                                      ``pending-codes|{uid}``
 ``seal_file``/``open_*``  ``jh-file|<label>``         an upload, labelled ``file|{stored_name}``: a file
                                                       renamed onto another document's name won't open
 ``seal_to``/``open_*``    ``jh-box|<label>``          admin-readable details, labelled by table and column
@@ -41,6 +45,13 @@ same column. The threat model is someone who can *read* the database (design, "T
 **Key scope.** The data key (DEK) of the user a request or background run acts for is kept in a context variable:
 ``with as_user(user_id, dek): ...``. Sealing or opening outside one raises ``Locked``. Thread pools must start work
 through ``submit`` (re-exported from backend/threads.py), which copies the context into the worker.
+
+**The identity key (IK).** A second 32-byte key per user protects only the X25519 private key, which opens the admin
+details key. It is wrapped under the password key, each recovery code's key and each session's cookie-derived key,
+never under the server KEK, so background access (the DEK under the server KEK) can't reach it. A request's scope
+carries no IK; a signed-in request's scope carries a way to open its session's wrap of it (``as_user(..., ik_opener)``).
+``open_ik()`` opens it afresh on each call, so the key is held nowhere: ``NoIdentityKey`` when the scope has none (a
+background run, a session from before the IK existed).
 
 **Sealed columns.** ``SealedText``, ``SealedJSON``, ``SealedInt``, ``SealedFloat``, ``SealedBool`` and
 ``SealedDateTime`` encrypt on write and decrypt on read under the current scope. NULL stays NULL; a value that isn't
@@ -83,7 +94,7 @@ import unicodedata
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional, Union
+from typing import Any, Callable, Iterator, Optional, Union
 
 from argon2.low_level import ARGON2_VERSION, Type, hash_secret_raw
 from cryptography.exceptions import InvalidTag
@@ -135,6 +146,10 @@ class CryptoError(DontWrapMixin, Exception):
 
 class Locked(CryptoError):
     """No key scope: the code isn't running inside ``as_user`` (or a thread was started without ``submit``)."""
+
+
+class NoIdentityKey(CryptoError):
+    """The scope can't open the identity key: a background run, or a session made before the IK existed."""
 
 
 class KeyMismatch(CryptoError):
@@ -249,10 +264,11 @@ def envelope_kid(blob: Any) -> Optional[bytes]:
 class Scope:
     """The key a request or background run acts with: one user's DEK, plus what is derived from it."""
 
-    __slots__ = ("user_id", "dek", "kid", "_aead", "_index_key")
+    __slots__ = ("user_id", "dek", "kid", "_aead", "_index_key", "_ik_opener")
 
-    def __init__(self, user_id: int, dek: bytes):
+    def __init__(self, user_id: int, dek: bytes, ik_opener: Optional[Callable[[], bytes]] = None):
         self.user_id = user_id
+        self._ik_opener = ik_opener
         self.dek = _key(dek, "data key")
         self.kid = key_id(self.dek)
         self._aead = AESGCM(self.dek)
@@ -267,10 +283,11 @@ _scope: ContextVar[Optional[Scope]] = ContextVar("jobhunt_crypto_scope", default
 
 
 @contextlib.contextmanager
-def as_user(user_id: int, dek: bytes) -> Iterator[Scope]:
+def as_user(user_id: int, dek: bytes, ik_opener: Optional[Callable[[], bytes]] = None) -> Iterator[Scope]:
     """Seal and open with ``user_id``'s data key inside the ``with`` block (and in threads started with ``submit``
-    from it). Scopes nest; leaving one restores the one before."""
-    token = _scope.set(Scope(user_id, dek))
+    from it). Scopes nest; leaving one restores the one before. ``ik_opener`` (a signed-in request's, from
+    ``session_ik_opener``) lets ``open_ik`` open that user's identity key; without it the scope has none."""
+    token = _scope.set(Scope(user_id, dek, ik_opener))
     try:
         yield _scope.get()
     finally:
@@ -287,6 +304,24 @@ def current() -> Scope:
 
 def has_scope() -> bool:
     return _scope.get() is not None
+
+
+def has_ik() -> bool:
+    """Whether the current scope can try to open an identity key (a signed-in session made with one)."""
+    scope = _scope.get()
+    return scope is not None and scope._ik_opener is not None
+
+
+def open_ik() -> bytes:
+    """The current user's identity key, opened now from the request's session (never kept). Locked without a scope,
+    NoIdentityKey when it has no way to open one or the wrap doesn't open."""
+    opener = current()._ik_opener
+    if opener is None:
+        raise NoIdentityKey("This session has no identity key")
+    try:
+        return opener()
+    except CryptoError:
+        raise NoIdentityKey("This session's identity key doesn't open") from None
 
 
 def _seal_scope(plain: bytes, aad: bytes) -> bytes:
@@ -478,6 +513,14 @@ def wrap_session_dek(cookie_secret: bytes, dek: bytes) -> bytes:
 
 def unwrap_session_dek(cookie_secret: bytes, wrapped: bytes) -> bytes:
     return unwrap(session_kek(cookie_secret), wrapped, f"sess|{session_id(cookie_secret)}")
+
+
+def session_ik_opener(cookie_secret: bytes, wrapped: bytes) -> Callable[[], bytes]:
+    """A function that opens ``sessions.wrapped_ik`` (``sess-ik|{sid}``) each time it is called, for ``as_user``. It
+    holds the session's derived key and the wrapped blob, never the identity key itself."""
+    kek, label = session_kek(cookie_secret), f"sess-ik|{session_id(cookie_secret)}"
+    blob = bytes(wrapped)
+    return lambda: unwrap(kek, blob, label)
 
 
 def csrf_token(cookie_secret: bytes) -> str:

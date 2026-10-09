@@ -946,9 +946,17 @@ class UserKeys(Base):
     server_kek_id = Column(String, nullable=True)
     background_since = Column(DateTime, nullable=True)
     x25519_pub = Column(LargeBinary, nullable=False)
-    x25519_priv_enc = Column(LargeBinary, nullable=False)  # seal(DEK, "user_keys.x25519_priv|{uid}")
+    # The X25519 private key, wrapped under the identity key (IK): wrap(IK, priv, "ik-priv|{uid}"). Before the IK existed
+    # it was seal(DEK, priv, "user_keys.x25519_priv|{uid}"); that form is read only while ``pw_wrapped_ik`` is NULL, and
+    # the next password sign-in replaces it (users.migrate_identity).
+    x25519_priv_enc = Column(LargeBinary, nullable=False)
+    # The IK under the password key, wrap(KEK_pw, IK, "pw-ik|{uid}"). NULL: the account has no IK yet. The IK is never
+    # wrapped under the server KEK, so background access can't open the admin details key (accounts design 1.2).
+    pw_wrapped_ik = Column(LargeBinary, nullable=True)
     recovery_salt = Column(LargeBinary, nullable=False)
-    pending_codes_enc = Column(LargeBinary, nullable=True)  # DEK: recovery codes not yet confirmed as saved
+    # Recovery codes not yet confirmed as saved: wrap(IK, codes, "pending-codes|{uid}") (a code opens the IK, so the DEK,
+    # which the server KEK can open, must not hold them). Before the IK existed: seal(DEK, ...).
+    pending_codes_enc = Column(LargeBinary, nullable=True)
 
 
 class RecoveryCode(Base):
@@ -957,6 +965,8 @@ class RecoveryCode(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     wrapped_dek = Column(LargeBinary, nullable=True)       # wrap(HKDF(code, recovery_salt), DEK, "rc|{uid}|{id}")
+    # The same code's wrap of the IK, "rc-ik|{uid}|{id}". NULL for a code made before the IK existed.
+    wrapped_ik = Column(LargeBinary, nullable=True)
     created_at = Column(DateTime, default=utcnow)
     used_at = Column(DateTime, nullable=True)
 
@@ -971,6 +981,9 @@ class AuthSession(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     state = Column(String, nullable=False, default="active", server_default="active")  # pending_mfa | active
     wrapped_dek = Column(LargeBinary, nullable=False)
+    # The IK under the same cookie-derived key: "sess-ik|{sid}", or "pend-ik|{sid}" while pending_mfa. NULL for a session
+    # made before the IK existed (the admin panel then asks to sign in again).
+    wrapped_ik = Column(LargeBinary, nullable=True)
     persistent = Column(Boolean, nullable=False, default=False, server_default="0")  # "Keep me signed in"
     created_at = Column(DateTime, default=utcnow)
     last_seen_at = Column(DateTime, default=utcnow)

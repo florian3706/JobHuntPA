@@ -46,7 +46,7 @@ from sqlalchemy.orm import Session
 
 from backend import (account, account_email, crypto, lockout, mail_queue, migrate_encryption, ratelimit, sessions,
                      signup, users)
-from backend.db import AuthSession, AuthToken, SessionLocal, User, get_db, scrub_wal, utcnow
+from backend.db import AuthSession, AuthToken, SessionLocal, User, UserKeys, get_db, scrub_wal, utcnow
 from backend.sessions import REAUTH_REQUIRED, AuthProblem, AuthUser, current_user, require_recent_auth  # noqa: F401
 
 log = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ def first_run(body: FirstRunIn, request: Request):
         raise AuthProblem(409, "already_set_up", "JobHuntPA is already set up. Sign in instead.") from None
     db = SessionLocal()
     try:
-        secret = sessions.create(db, db.get(User, account.user_id), account.dek, persistent=body.remember)
+        secret = sessions.create(db, db.get(User, account.user_id), account.dek, account.ik, persistent=body.remember)
         db.commit()
     finally:
         db.close()
@@ -155,7 +155,7 @@ def sign_up(body: SignupIn, request: Request):
     account_email.verify_after_sign_up(account.user_id, body.email)  # when email is set up and it isn't verified yet
     db = SessionLocal()
     try:
-        secret = sessions.create(db, db.get(User, account.user_id), account.dek, persistent=body.remember)
+        secret = sessions.create(db, db.get(User, account.user_id), account.dek, account.ik, persistent=body.remember)
         db.commit()
     finally:
         db.close()
@@ -184,10 +184,11 @@ def _login(body: LoginIn, request: Request, db: Session):
     if user is None:
         users.dummy_derivation(body.password)
         raise AuthProblem(401, "wrong_password", WRONG)
-    dek = users.unlock_with_password(db, user, body.password)
-    if dek is None:
+    unlocked = users.unlock(db, user, body.password)  # (an account from before the identity key gets one here)
+    if unlocked is None:
         log.info("Sign-in failed for user %s (%d in a row)", user.id, ticket.failures)
         raise AuthProblem(401, "wrong_password", WRONG)
+    dek, ik = unlocked.dek, unlocked.ik
     if user.status != "active":
         ticket.succeed()
         raise AuthProblem(403, "disabled", "This account is turned off. Ask the person who runs this JobHuntPA.")
@@ -196,7 +197,7 @@ def _login(body: LoginIn, request: Request, db: Session):
         # under its own label (backend/sessions.py). The try is given back; wrong codes at the next step are counted
         # on their own, so wrong codes across several sign-ins still add up to a wait.
         ticket.refund()
-        secret = sessions.create_pending(db, user, dek, persistent=body.remember)
+        secret = sessions.create_pending(db, user, dek, ik, persistent=body.remember)
         db.commit()
         log.info("Password accepted for user %s; waiting for the two-step code", user.id)
         _end_browser_session(request)
@@ -204,7 +205,7 @@ def _login(body: LoginIn, request: Request, db: Session):
         sessions.set_cookie(response, request.scope, secret, False)
         return response
     ticket.succeed()
-    secret = sessions.create(db, user, dek, persistent=body.remember)
+    secret = sessions.create(db, user, dek, ik, persistent=body.remember)
     db.commit()
     log.info("Signed in: user %s", user.id)
     if not migrate_encryption.known_done():  # their key may be the one the encryption run is waiting for
@@ -268,13 +269,13 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
         raise AuthProblem(422, "wrong_code", "That code isn't right. Check the code in your app and try again."
                           if typed_code else "That recovery code isn't right. Check it and try again.",
                           field="code" if typed_code else "recovery_code")
-    dek = sessions.pending_dek(secret, pending)
+    dek, ik = sessions.pending_dek(secret, pending), sessions.pending_ik(secret, pending)
     if recovery_id is not None and not users.spend_recovery_code(db, recovery_id):
         db.rollback()  # the same code was used by another request at the same moment
         raise AuthProblem(422, "wrong_recovery_code", "That recovery code isn't right. Check it and try again.",
                           field="recovery_code")
     ticket.succeed()
-    new_secret = sessions.create(db, user, dek, persistent=remember)
+    new_secret = sessions.create(db, user, dek, ik, persistent=remember)
     db.delete(pending)
     db.commit()
     if recovery_id is not None:
@@ -372,26 +373,46 @@ def _recover(body: RecoverIn, request: Request, db: Session):
     if user.status != "active":
         ticket.refund()
         raise AuthProblem(403, "disabled", "This account is turned off. Ask the person who runs this JobHuntPA.")
-    dek = first[1]
+    dek, ik = first[1], first[2]
+    lost = False
     try:
         for code_id in spend:
             if not users.spend_recovery_code(db, code_id):
                 raise AuthProblem(401, "wrong_recovery", RECOVER_FAILED)  # used by another request just now
-        users.apply_new_password(db, user, dek, fresh)
+        if ik is None:  # the code was made before the identity key existed, so it can't open it
+            ik, lost = _identity_without_code(db, user, dek, fresh.derived.kek)
+        users.apply_new_password(db, user, dek, ik, fresh)
         db.query(AuthSession).filter(AuthSession.user_id == user.id).delete(synchronize_session=False)
         account_email.end_open_links(db, user.id)  # a reset link already sent must not undo this
-        secret = sessions.create(db, user, dek, persistent=body.remember)
+        secret = sessions.create(db, user, dek, ik, persistent=body.remember)
         db.commit()
     except BaseException:
         db.rollback()
         raise
-    scrub_wal()  # the old password's copy of the data key must not linger in the write-ahead log
-    log.info("Password reset with a recovery code: user %s (%d code(s) used)", user.id, len(spend))
+    scrub_wal()  # the old password's copy of the keys must not linger in the write-ahead log
+    log.info("Password reset with a recovery code: user %s (%d code(s) used)%s", user.id, len(spend),
+             " (the admin key share is gone)" if lost else "")
     account_email.notify_with_key(db, user.id, dek, "password_changed")
     _after_sign_in(user.id, dek)
     return _signed_in(request, secret, body.remember, {"ok": True, "user": {"id": user.id, "role": user.role},
-                                                       "recovery_codes_left": users.recovery_codes_left(db, user.id)},
+                                                       "recovery_codes_left": users.recovery_codes_left(db, user.id),
+                                                       "admin_key_lost": lost},
                       user_id=user.id)
+
+
+def _identity_without_code(db: Session, user: User, dek: bytes, password_kek: bytes) -> tuple[bytes, bool]:
+    """``(ik, admin_key_lost)`` for a recovery reset with a code that carries no identity key. An account from before
+    the IK is given one now: the code opens the DEK, which opens the private key, so nothing is lost. An account that
+    already has one can't open it with this code, so it gets a new key pair and IK (``users.replace_identity``): an
+    admin keeps their data but needs the admin key shared again. In ``db``'s transaction."""
+    row = db.get(UserKeys, user.id)
+    if row.pw_wrapped_ik is None:
+        try:
+            return users.migrate_identity(row, user.id, dek, password_kek), False
+        except crypto.CryptoError:
+            log.warning("user %s: the private key didn't open with the data key; making a new key pair", user.id)
+    return users.replace_identity(db, user.id, row, password_kek, "password reset with a recovery code made before "
+                                                                  "the identity key")
 
 
 @router.post("/logout")
@@ -411,7 +432,7 @@ def me(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
     return {
         "user": {"id": user.id, "email": info.get("email", ""), "name": info.get("name", ""), "role": user.role},
         "csrf": user.csrf,
-        "recovery_codes_pending": users.pending_recovery_codes(db, user.id) is not None,
+        "recovery_codes_pending": users.has_pending_recovery_codes(db, user.id),
         "workspaces": users.workspace_ids(db, user.id),
         # What this version offers; admin_panel is true for admins only.
         "features": account.features(admin=user.is_admin),

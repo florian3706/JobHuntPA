@@ -266,7 +266,7 @@ function initRecover() {
     const res = await authCall('/api/auth/recover', { method: 'POST', body });
     setBusy(btn, false);
     status('');
-    if (res.status === 200) { showRecovered(res.data.recovery_codes_left); return; }
+    if (res.status === 200) { showRecovered(res.data.recovery_codes_left, res.data.admin_key_lost); return; }
     if (res.data.code === 'second_factor_required') {
       $('#code-field').hidden = false;
       showErrors([{ field: 'code', message: 'Your account uses two-step sign-in. Enter the code from your app, or a second recovery code.' }]);
@@ -276,14 +276,15 @@ function initRecover() {
   });
 }
 
-function showRecovered(left) {
+function showRecovered(left, adminKeyLost) {
   clearErrors();
   $('#recover-form').hidden = true;
   document.title = 'Password changed · JobHuntPA';
   $('#page-title').textContent = 'Password changed';
   const note = typeof left === 'number' ? ` ${recoveryLeftText(left)}` : '';
+  const lost = adminKeyLost ? ' You no longer have the admin key. Ask another admin to share it with you again.' : '';
   const done = $('#recover-done');
-  done.querySelector('p').textContent = `You're signed in, your data is kept and other browsers are signed out.${note}`;
+  done.querySelector('p').textContent = `You're signed in, your data is kept and other browsers are signed out.${note}${lost}`;
   done.hidden = false;
   $('#recover-continue').href = nextPage();
   $('#page-title').focus();

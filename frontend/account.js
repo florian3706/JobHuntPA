@@ -319,9 +319,13 @@
     const left = sec.recovery_codes_left;
     const pending = sec.recovery_codes_pending;
     const mfa = sec.mfa_enabled;
+    const old = sec.recovery_codes_old
+      ? `<p class="callout" role="note"><strong>Make new codes.</strong> Your codes were made before the admin key got its own
+        protection. Resetting your password with one of them keeps your data, but you would then need another admin to share
+        the admin key with you again.</p>` : '';
     $('#acct-rc-body').innerHTML = `<p>${pending
       ? '<strong>You haven\'t saved your new codes yet.</strong> <a href="first-run.html">Show my recovery codes</a>'
-      : `You have <strong>${left} of 8</strong> recovery codes left.`}</p>
+      : `You have <strong>${left} of 8</strong> recovery codes left.`}</p>${old}
       <p class="hint">Making new codes replaces all eight at once, including any you haven't used. You then see them once, to copy, download or print. Because a code can set a new password, you enter your password${mfa ? ' and, because they can also stand in for the app, a code from your app' : ''}. We email you to say new codes were made.</p>
       <form id="acct-rc-form" class="account-form" novalidate>
         ${usernameField()}

@@ -93,6 +93,7 @@ with TestClient(app) as c:
         jobs += [j["title"] for j in c.get("/api/jobs", headers={"X-Workspace": str(w["id"])}).json()]
     out["jobs"] = sorted(jobs)
     out["me"] = c.get("/api/auth/me").json()
+    out["admin_key_open"] = c.get("/api/admin/users").json()["admin_key_available"]  # the session carries the IK
     out["settings"] = c.get("/api/settings/llm").status_code
     out["ack"] = c.post("/api/auth/recovery-codes/ack", headers={"X-CSRF-Token": csrf}).status_code
     out["pending_after_ack"] = c.get("/api/auth/me").json()["recovery_codes_pending"]
@@ -114,14 +115,24 @@ with engine.connect() as conn:  # the old rows are sealed now (the first run enc
                     [list(r) for r in conn.execute(text("SELECT typeof(status), typeof(hidden), url FROM jobs"))]
 out["user_id"] = user.id
 # Every recovery code opens the same data key as the password, and so does the admin's grant of the APK.
-dek = users.unlock_with_password(db, user, "correct horse battery")
-opened = []
+unlocked = users.unlock(db, user, "correct horse battery")
+dek, ik = unlocked.dek, unlocked.ik
+opened, opened_ik = [], []
 for row, code in zip(db.query(RecoveryCode).order_by(RecoveryCode.id), out["codes"]):
     kek = crypto.recovery_kek(users.normalise_recovery_code(code.lower()), keys_row.recovery_salt)
     opened.append(crypto.unwrap(kek, row.wrapped_dek, f"rc|{user.id}|{row.id}") == dek)
+    opened_ik.append(crypto.unwrap(kek, row.wrapped_ik, f"rc-ik|{user.id}|{row.id}") == ik)
 out["codes_open_dek"] = opened
-with crypto.as_user(user.id, dek):
-    priv = crypto.unseal(keys_row.x25519_priv_enc, f"user_keys.x25519_priv|{user.id}")
+out["codes_open_ik"] = opened_ik
+# The private key is under the identity key, which only the password and the codes open (and a session's cookie).
+priv = crypto.unwrap(ik, keys_row.x25519_priv_enc, f"ik-priv|{user.id}")
+out["priv_needs_ik"] = True
+try:
+    with crypto.as_user(user.id, dek):
+        crypto.unseal(keys_row.x25519_priv_enc, f"user_keys.x25519_priv|{user.id}")
+    out["priv_needs_ik"] = False
+except crypto.CryptoError:
+    pass
 grant = db.query(AdminKeyGrant).one()
 apk_priv = crypto.open_sealed(priv, grant.sealed_priv, f"grant|{user.id}|{grant.apk_version}")
 out["pii_admin"] = json.loads(crypto.open_sealed(apk_priv, user.pii_admin, f"users.pii_admin|{user.id}"))
@@ -187,6 +198,9 @@ class FirstRunTest(unittest.TestCase):
         for code in out["codes"]:
             self.assertRegex(code, r"^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$")
         self.assertEqual(out["codes_open_dek"], [True] * 8)
+        self.assertEqual(out["codes_open_ik"], [True] * 8)  # a code opens the identity key too
+        self.assertTrue(out["priv_needs_ik"])  # the data key alone doesn't open the private key
+        self.assertTrue(out["admin_key_open"])  # the first-run session opens the admin details key (it holds the IK)
         self.assertTrue(out["me"]["recovery_codes_pending"])
         self.assertEqual(out["ack"], 200)
         self.assertFalse(out["pending_after_ack"])
@@ -400,7 +414,7 @@ class LoginTest(SignInTestCase):
     def test_parallel_guesses_are_counted_before_the_check_so_only_five_get_through(self):
         alice = helpers.make_user()
         checked = []
-        real = users.unlock_with_password
+        real = users.unlock
 
         def counting(db, user, password):
             checked.append(password)
@@ -413,7 +427,7 @@ class LoginTest(SignInTestCase):
             results.append(c.post("/api/auth/login", json={"email": alice.email, "password": f"wrong password {n}"}))
 
         ratelimit.AUTH.reset()
-        with mock.patch.object(users, "unlock_with_password", counting), \
+        with mock.patch.object(users, "unlock", counting), \
                 mock.patch.object(ratelimit, "AUTH", ratelimit.Limiter([(1000, 60)])):
             starter = TestClient(app)  # (start the app once, outside the race)
             starter.__enter__()
@@ -473,7 +487,7 @@ class LoginTest(SignInTestCase):
             # signing in again keeps the same browser id; a new password makes every copy useless
             self.assertEqual(self.try_login(c, alice).status_code, 200)
             self.assertEqual(lockout.device_id({"headers": [(b"cookie", f"jh_device={c.cookies.get('jh_device')}".encode())]}, a), device)
-            users.apply_new_password(db, a, helpers.key_of(alice.email)[1], users.new_password_keys("brand new password"))
+            users.apply_new_password(db, a, helpers.key_of(alice.email)[1], helpers.ik_of(alice.email), users.new_password_keys("brand new password"))
             db.commit()
             db.refresh(a)
             self.assertIsNone(lockout.device_id(scope, a))

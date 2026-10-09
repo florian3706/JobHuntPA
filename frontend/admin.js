@@ -70,7 +70,10 @@ function renderWarnings() {
     parts.push(`<p><strong>You are the only admin.</strong> If you lose your password and your recovery codes, nobody can
       open people's details or run the admin panel. Make a second person an admin (People, then "Make admin").</p>`);
   }
-  if (data && !data.admin_key_available) {
+  if (data && !data.admin_key_available && data.admin_key_needs_sign_in) {
+    parts.push(`<p><strong>Sign in again to open people's details.</strong> This browser signed in before the admin key got
+      its own protection. Names and emails stay hidden, and roles can't be changed, until you sign out and sign in again.</p>`);
+  } else if (data && !data.admin_key_available) {
     parts.push(`<p><strong>You can't open people's details right now.</strong> Names and emails are hidden and roles can't be
       changed. Ask another admin to share the admin key with you again (People, then "Share the admin key again"). Signing in
       again may also fix it.</p>`);

@@ -345,7 +345,7 @@ class KeepDataResetTest(Base):
         before = self.snapshot(acct.id)
         db = SessionLocal()
         try:
-            self.assertTrue(users.reset_password_keeping_data(db, acct.id, self.NEW))
+            self.assertIsNotNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
         finally:
             db.close()
         after = self.snapshot(acct.id)
@@ -373,7 +373,7 @@ class KeepDataResetTest(Base):
         self.assertGreater(ratelimit.guesses.waiting(acct.id), 0)
         db = SessionLocal()
         try:
-            self.assertTrue(users.reset_password_keeping_data(db, acct.id, self.NEW))
+            self.assertIsNotNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
         finally:
             db.close()
         self.assertEqual((ratelimit.guesses.waiting(acct.id), helpers.wrong_tries(acct.id)), (0, 0))
@@ -386,7 +386,8 @@ class KeepDataResetTest(Base):
         account = users.create_user(email, helpers.USER_PASSWORD, background=True)
         db = SessionLocal()
         try:
-            new_codes = users.reset_password_keeping_data(db, account.user_id, self.NEW)
+            kept = users.reset_password_keeping_data(db, account.user_id, self.NEW)
+            new_codes = kept.recovery_codes
             self.assertEqual(len(new_codes), 8)
             self.assertFalse(set(new_codes) & set(account.recovery_codes))
             for code in account.recovery_codes:
@@ -394,8 +395,7 @@ class KeepDataResetTest(Base):
             self.assertEqual(db.query(RecoveryCode).filter(RecoveryCode.user_id == account.user_id).count(), 8)
             for code in new_codes:
                 self.assertEqual(users.open_recovery_code(db, account.user_id, code)[1], account.dek)
-            with crypto.as_user(account.user_id, account.dek):
-                self.assertEqual(users.pending_recovery_codes(db, account.user_id), new_codes)
+            self.assertEqual(users.pending_recovery_codes(db, account.user_id, kept.ik), new_codes)
         finally:
             db.close()
 
@@ -404,7 +404,7 @@ class KeepDataResetTest(Base):
         before = self.snapshot(acct.id)
         db = SessionLocal()
         try:
-            self.assertFalse(users.reset_password_keeping_data(db, acct.id, self.NEW))
+            self.assertIsNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
         finally:
             db.close()
         self.assertEqual(self.snapshot(acct.id), before)
@@ -417,7 +417,7 @@ class KeepDataResetTest(Base):
         c.post("/api/account/background", json={"enabled": False})
         db = SessionLocal()
         try:
-            self.assertFalse(users.reset_password_keeping_data(db, acct.id, self.NEW))
+            self.assertIsNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
         finally:
             db.close()
 
@@ -441,7 +441,7 @@ class KeepDataResetTest(Base):
             db.query(UserKeys).filter(UserKeys.user_id == acct.id).update({UserKeys.server_wrapped_dek: os.urandom(80)})
             db.commit()
             before = self.snapshot(acct.id)
-            self.assertFalse(users.reset_password_keeping_data(db, acct.id, self.NEW))
+            self.assertIsNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
         finally:
             db.close()
         self.assertEqual(self.snapshot(acct.id), before)
@@ -449,7 +449,7 @@ class KeepDataResetTest(Base):
     def test_an_unknown_account_returns_false(self):
         db = SessionLocal()
         try:
-            self.assertFalse(users.reset_password_keeping_data(db, 10 ** 9, self.NEW))
+            self.assertIsNone(users.reset_password_keeping_data(db, 10 ** 9, self.NEW))
         finally:
             db.close()
 

@@ -758,6 +758,8 @@ class WipeTest(ResetCase):
         r = self.reset(self.link(boss), accept_wipe=True)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertTrue(r.json()["admin_key_lost"])  # a warning for the page to show
+        self.assertTrue(all(w is not None for (w,) in rows(
+            lambda s: s.query(AuthSession.wrapped_ik).filter(AuthSession.user_id == boss.id).all())))
         self.assertEqual(rows(lambda s: s.get(AdminKeyGrant, boss.id)), None)
         self.assertIn("admin_key_lost", [e["action"] for e in self._audit()])
         with helpers.client() as first:
@@ -775,16 +777,30 @@ class WipeTest(ResetCase):
         c.post("/api/auth/reauth", json={"password": NEW_PASSWORD})
         self.assertTrue(c.get("/api/admin/users").json()["admin_key_available"])
 
-    def test_an_admin_with_background_access_keeps_the_key(self):
+    def test_an_admin_with_background_access_keeps_the_data_but_loses_the_admin_key(self):
+        """The server key opens the data key but not the identity key (accounts design 1.2), so a reset by email that
+        keeps the data gives the person a new key pair: their share of the admin key is gone, as after a wipe."""
         boss = helpers.make_user(password=PASSWORD)
         with helpers.client() as first:
             first.post(f"/api/admin/users/{boss.id}/role", json={"role": "admin"})
         self.addCleanup(self.demote, boss.id)
         with helpers.client(boss.email, PASSWORD) as c:
             c.post("/api/account/background", json={"enabled": True})
+            self.assertTrue(c.get("/api/admin/users").json()["admin_key_available"])
         r = self.reset(self.link(boss))
-        self.assertEqual((r.status_code, r.json()["admin_key_lost"]), (200, False))
-        self.assertIsNotNone(rows(lambda s: s.get(AdminKeyGrant, boss.id)))
+        self.assertEqual((r.status_code, r.json()["kept_data"], r.json()["admin_key_lost"]), (200, True, True))
+        self.assertTrue(all(w is not None for (w,) in rows(  # the session the reset signed in holds the new identity key
+            lambda s: s.query(AuthSession.wrapped_ik).filter(AuthSession.user_id == boss.id).all())))
+        self.assertIsNone(rows(lambda s: s.get(AdminKeyGrant, boss.id)))
+        self.assertIn("admin_key_lost", [e["action"] for e in self._audit()])
+        with helpers.client() as first:
+            row = next(u for u in first.get("/api/admin/users").json()["users"] if u["id"] == boss.id)
+            self.assertFalse(row["admin_key_shared"])  # "Share the admin key again"
+            self.assertEqual(first.post(f"/api/admin/users/{boss.id}/regrant").status_code, 200)
+        c = self.anonymous()
+        login = c.post("/api/auth/login", json={"email": boss.email, "password": NEW_PASSWORD})
+        c.headers["X-CSRF-Token"] = login.json()["csrf"]
+        self.assertTrue(c.get("/api/admin/users").json()["admin_key_available"])  # the new identity key opens it
 
     def demote(self, user_id: int) -> None:
         with helpers.client() as first:
@@ -798,7 +814,7 @@ class WipeTest(ResetCase):
             wiped = users.reset_password_wiping_data(db, bob.id, NEW_PASSWORD, bob.email)
             db.expunge_all()  # (a handler's session may have read the row before the wipe)
             with self.assertRaises(crypto.KeyMismatch):
-                users.replace_recovery_codes(db, bob.id, old_dek)
+                users.replace_recovery_codes(db, bob.id, old_dek, wiped.ik)
             db.rollback()
             # the codes the reset page showed still open the new key, and nothing wraps the old one
             opened = users.open_recovery_code(db, bob.id, wiped.recovery_codes[0])
@@ -806,8 +822,7 @@ class WipeTest(ResetCase):
             self.assertEqual(db.query(RecoveryCode).filter(RecoveryCode.user_id == bob.id,
                                                                  RecoveryCode.wrapped_dek.isnot(None)).count(), 8)
             row = db.get(UserKeys, bob.id)
-            with crypto.as_user(bob.id, wiped.dek):
-                self.assertEqual(len(json.loads(crypto.unseal(bytes(row.pending_codes_enc), users._codes_label(bob.id)))), 8)
+            self.assertEqual(len(users.pending_recovery_codes(db, bob.id, wiped.ik)), 8)
         finally:
             db.close()
 
@@ -867,7 +882,7 @@ class MfaResetTest(ResetCase):
         db = SessionLocal()
         try:
             with helpers.as_account(bob):
-                codes = users.pending_recovery_codes(db, bob.id)
+                codes = users.pending_recovery_codes(db, bob.id, helpers.ik_of(bob.email))
         finally:
             db.close()
         token = self.link(bob)

@@ -2,7 +2,7 @@
 
 **Base.** `main` at 48fb435, plus Phase 1 of the documents work (d8eea88 on branch `worktree-agent-a3d7c32a94762a7dd`). Phase 1 adds notes and summaries as `Document` rows (`filetype` "note"/"summary"), `concise_text`, `use_concise`, `summary_of`, `updated_at`, the "preferences" kind and `llm_usage`. Rebase every phase below on it.
 
-**Threat model.** The goal is that someone holding only the database, its backups or the `data/` folder cannot read a user's searches, documents, jobs or personal details. This holds even if that person is the operator browsing with `sqlite3`, as long as the user has not opted in to background access.
+**Threat model.** The goal is that someone holding only the database, its backups or the `data/` folder cannot read a user's searches, documents, jobs or personal details. This holds even if that person is the operator browsing with `sqlite3`, as long as the user has not opted in to background access. Personal and billing details of other people (the admin details key, §1.4) stay closed even to someone who holds the database **and** the key file, because the key that opens them is never reachable through the server key (the identity key, §1.2).
 
 It does not protect against an operator who changes the running code or reads process memory, and nothing at rest can. Section 2.5 says this plainly, and the user-facing text in section 6 says it too.
 
@@ -27,7 +27,7 @@ New dependencies: `cryptography` and `argon2-cffi`.
 | Deriving a key from the password | argon2id raw output (`argon2.low_level.hash_secret_raw`) gives a 32-byte master value. HKDF-SHA256 splits it into `auth` and `kek`. One argon2 run per login does both jobs, which halves the cost on a Pi. |
 | Sub-keys | HKDF-SHA256 with labelled `info` strings, for example `b"jh index v1"`. |
 | Admin personal details | X25519 sealed boxes: ephemeral X25519, then HKDF over the shared secret and both public keys, then AES-GCM. |
-| Associated data (AAD) | Columns use `b"jh/" + table.column`, set automatically by an `after_parent_attach` event so values can't be swapped between columns. Key wraps use their own labels, for example `pw\|{uid}`, `rc\|{uid}\|{code_id}`, `sess\|{sid}`, `srv\|{uid}\|{kek_id}`, `grant\|{uid}\|{apk_ver}`, `totp\|{uid}` and `file\|{stored_name}`. |
+| Associated data (AAD) | Columns use `b"jh/" + table.column`, set automatically by an `after_parent_attach` event so values can't be swapped between columns. Key wraps use their own labels, for example `pw\|{uid}`, `rc\|{uid}\|{code_id}`, `sess\|{sid}`, `srv\|{uid}\|{kek_id}`, `grant\|{uid}\|{apk_ver}`, `totp\|{uid}` and `file\|{stored_name}`; the identity key's (§1.2): `pw-ik\|{uid}`, `rc-ik\|{uid}\|{code_id}`, `sess-ik\|{sid}`, `pend-ik\|{sid}`, `ik-priv\|{uid}` and `pending-codes\|{uid}`. |
 
 ### 1.2 Hierarchy
 ```
@@ -37,13 +37,26 @@ recovery code i (80-bit, 8 codes) ─HKDF(user salt)─► KEK_rc_i ──wraps�
 session cookie secret (256-bit) ─HKDF─► KEK_sess ──wraps──► DEK            (one wrap per session row)
 server KEK (key file) ──wraps──► DEK                                       (background opt-in users only)
 DEK ──► AES-GCM for columns and uploaded files
-    ├HKDF "index"──► blind-index key (jobs.url_index, company_sources.careers_url_index, commute cache keys)
-    └encrypts──► the user's X25519 private key
+    └HKDF "index"──► blind-index key (jobs.url_index, company_sources.careers_url_index, commute cache keys)
+
+identity key IK (32 random bytes per user; protects ONLY the X25519 private key and the unconfirmed recovery codes):
+    KEK_pw ──wraps──► IK                       (pw-ik|{uid})
+    KEK_rc_i ──wraps──► IK                     (rc-ik|{uid}|{code_id}, one per code made after the IK existed)
+    KEK_sess ──wraps──► IK                     (sess-ik|{sid}; pend-ik|{sid} while pending_mfa)
+    server KEK ──✗──► IK                       (never: background access does not open the IK)
+IK ──wraps──► the user's X25519 private key    (ik-priv|{uid})
 Admin PII key pair (APK): public key in app_settings; private key sealed to each admin's X25519 public key
 key file: pepper ─► email_hash = HMAC-SHA256(pepper, normalised email)
           signing ─► unsubscribe tokens
 process-only random key (never on disk) ─► http_cache
 ```
+
+**The identity key (IK).** A second random key per user, made with the account, whose only job is to protect the X25519 private key (the one that opens an admin's grant of the APK, §1.4) and the recovery codes shown once and not yet confirmed (`pending_codes_enc`, because a code opens the IK).
+- **Why.** The server KEK opens the DEK of every background-access account. If the private key were sealed under the DEK, anyone with `data/` (the database and `server-keys.json`: exactly the uninstaller's backup) could go server KEK → DEK → private key → grant → APK and read every user's personal and billing details. The IK has no wrap the server can open, so that chain stops at the private key. Everything the server does while nobody is signed in (scheduled searches, digests, Stripe sync, sign-ups) needs the DEK or only public keys, never the IK.
+- **Where it is wrapped:** under the password key (`user_keys.pw_wrapped_ik`), under each recovery code's key (`recovery_codes.wrapped_ik`) and under each session's cookie-derived key (`sessions.wrapped_ik`, also while `pending_mfa`). **Never under the server KEK.** A password change re-wraps it with the DEK; a recovery-code reset opens it with the code.
+- **Use.** A signed-in request's key scope carries a way to open its session's wrap (`crypto.as_user(..., ik_opener)`); `crypto.open_ik()` opens it afresh each time and nothing keeps the result. Only `admin_key.open_apk` asks for it. A background run's scope has none (`NoIdentityKey`).
+- **A reset that can't open it makes a new one.** A reset by email that keeps the data (background access) can open the DEK but not the IK, so the person gets a new key pair and a new IK; an admin loses their grant (audited as `admin_key_lost`, and the page says so) and another admin shares the key again with the usual "Share the admin key again". A reset that wipes the data always makes new keys, as before.
+- **Accounts from before the IK** have the private key sealed under the DEK (`pw_wrapped_ik` is NULL). There is no start-up step, because the IK is wrapped under the password: at the account's next password sign-in (or recovery-code reset, or any check of the password: changing it, making new codes) `users.unlock` makes an IK, re-wraps the private key and the unconfirmed codes under it, wraps it under the password key, overwrites the DEK-sealed copies and scrubs the write-ahead log. Until then an admin's arrangement is the old one. Their recovery codes can't carry the IK (the plaintext of a code is gone): a reset with such a code keeps the data but gives the account a new key pair (an admin needs the key shared again), and Settings suggests making new codes to admins whose unused codes predate the IK (`recovery_codes_old` in `GET /api/auth/security`). A reset with one of those codes by an account that has no IK yet loses nothing: the code opens the DEK, which still opens the private key. Sessions made before the IK have none; the admin panel then says "Sign in again to open people's details" (`admin_key_needs_sign_in`).
 
 **DEK lifetime.** The DEK is never rotated in place, because that would mean re-encrypting every row. It is replaced only when a password reset wipes the data. Random-nonce limits are not a concern: one user would need billions of encryptions to approach them. The `kid` and version byte would allow lazy re-encryption if it were ever needed.
 
@@ -87,7 +100,7 @@ process-only random key (never on disk) ─► http_cache
 ### 1.4 Admin PII key (APK)
 - **Creation.** An X25519 key pair is created when the first admin is created. The public key and its `apk_version` live in `app_settings`. The private key is stored in `admin_key_grants` (one row per admin), sealed to that admin's X25519 public key.
 - **Writing personal details needs only the public key.** Sign-ups, email changes and the Stripe sync can all write `users.pii_admin`, `memberships.billing_admin`, `membership_grants.note_admin` and `admin_audit.detail_admin` with no admin logged in.
-- **Reading.** In an admin request: admin DEK → their X25519 private key → open their grant → APK private key. This is repeated for each request; nothing stays in memory.
+- **Reading.** In an admin request: the session's identity key (§1.2) → their X25519 private key → open their grant → APK private key. This is repeated for each request; nothing stays in memory. The admin's DEK does not open the private key, and the server KEK opens only the DEK, so **the key that opens the APK is usable only while that admin is signed in**, however their background access is set. `recover-lost` runs the same chain with the password (password → IK → private key → grant), and reads the older DEK-sealed form for an admin who hasn't signed in since the IK was introduced.
 - **Making someone an admin.** The promoting admin (logged in, so they have the APK private key) seals it to the new admin's public key. Every user gets a key pair at sign-up, so this works without the new admin being present.
 - **Demoting, deleting or turning off an admin.** The APK is rotated automatically: a new key pair is made, every admin-sealed value is decrypted and re-sealed to the new public key, and the remaining *active* admins get new grants (`admin_key.active_admin_ids`). An admin who is turned off is no longer trusted with what is written from now on, so turning one off rotates the key like demoting does, and they are given no grant of any later key. Only the rotation needs the acting admin's own copy: an admin without one can still turn the other off (the emergency brake: they are signed out and their grant deleted), and the answer says the key was not replaced (`apk_rotated` false, audited as `admin_key_not_replaced`); an admin who has the key then replaces it, or `new-admin-key` does. Turning them on again shares nothing: another admin uses "Share the admin key again" (`POST …/regrant`, refused for an account that is off). A database from before this rule may still hold a disabled admin's grant; the next rotation drops it, as does turning them off again.
 - **The last admin loses both their password and every recovery code.**
@@ -222,7 +235,7 @@ Notes:
 
 **An operator who changes the code**, proxies traffic before TLS terminates, or reads process memory can capture passwords and data at the next login. Encryption at rest cannot prevent this.
 
-**Users with background access:** the operator can decrypt their data using the key file.
+**Users with background access:** the operator can decrypt their data (searches, documents, jobs, `pii_self`) using the key file. What this does **not** reach is the admin details key: the private key that opens an admin's grant is under their identity key, which has no wrap the key file opens (§1.2). So the personal and billing details of all users (`pii_admin`, `billing_admin`, grant notes, audit details) stay closed to someone with `data/`, even when an admin has background access, until an admin signs in. What remains: an admin who has not yet signed in since the identity key was introduced still has the private key under their DEK (migration, §1.2), and an operator who changes the code or reads process memory can take the key from a signed-in admin's requests; the recovery codes an admin has not yet confirmed saving are under the IK, not the DEK.
 
 **Third parties:**
 - The email provider sees digest contents (job titles, companies and fit summaries).
@@ -274,6 +287,7 @@ This is the same class as the plaintext-swap limit in §15 and needs write acces
    - No key stays in memory between requests. Restarting the server logs nobody out. The database alone cannot unwrap a key.
    - Background runs hold the key for as long as the run lasts, even if the user logs out meanwhile.
    - Background-access keys are unwrapped with the KEK each time they are needed, and never cached.
+   - The row also holds `wrapped_ik` (label `sess-ik|{sid}`, `pend-ik|{sid}` while pending). The middleware does not open it: it gives the request's scope a function that does (`crypto.session_ik_opener`), and only the admin details chain calls it, once per use (§1.2). A session without one asks the admin to sign in again.
 2. **Cookie:**
    - Name `__Host-jh_session` with `Secure` when the request is HTTPS, and with `_<port>` after it when the Host has a port (`__Host-jh_session_8443`). Browsers keep cookies per host name and ignore the port, so a test instance on `:8001` next to the live app on `:8040` would otherwise overwrite each other's cookie and sign each other out. A port in the name stops that; it does not stop another app on the same host name from receiving the cookie, so JobHuntPA should have a host name of its own. HTTPS means `request.url.scheme` after uvicorn's proxy headers (`--forwarded-allow-ips 127.0.0.1` is the default, and Tailscale serve connects from loopback), or a Host matching an `https` `PUBLIC_BASE_URL`.
    - On plain `http://127.0.0.1` (local installs; Safari rejects Secure cookies there) the name is `jh_session` (`jh_session_8040` with the port). Existing sessions end once when this changes, and people sign in again.
@@ -336,12 +350,12 @@ This is the same class as the plaintext-swap limit in §15 and needs write acces
 **user_keys** (1:1 with users, ON DELETE CASCADE):
 - `dek_kid`, `pw_wrapped_dek`.
 - `server_wrapped_dek NULL`, `server_kek_id NULL`, `background_since NULL`.
-- `x25519_pub`, `x25519_priv_enc` (DEK).
-- `recovery_salt`, `pending_codes_enc NULL` (DEK: recovery codes still to be shown once).
+- `x25519_pub`, `x25519_priv_enc` (the private key wrapped under the IK, `ik-priv|{uid}`; sealed under the DEK in accounts from before the IK), `pw_wrapped_ik NULL` (NULL: no IK yet).
+- `recovery_salt`, `pending_codes_enc NULL` (IK: recovery codes still to be shown once; DEK in accounts from before the IK).
 
-**recovery_codes:** `id`, `user_id` (CASCADE), `wrapped_dek`, `created_at`, `used_at NULL`. Eight codes.
+**recovery_codes:** `id`, `user_id` (CASCADE), `wrapped_dek`, `wrapped_ik NULL` (NULL for a code made before the IK), `created_at`, `used_at NULL`. Eight codes.
 
-**sessions:** `id TEXT PK` (sid), `user_id` (CASCADE), `state` ('pending_mfa'|'active'), `wrapped_dek`, `persistent`, `created_at`, `last_seen_at`, `idle_expires_at`, `absolute_expires_at`, `reauth_at`.
+**sessions:** `id TEXT PK` (sid), `user_id` (CASCADE), `state` ('pending_mfa'|'active'), `wrapped_dek`, `wrapped_ik NULL` (NULL for a session made before the IK), `persistent`, `created_at`, `last_seen_at`, `idle_expires_at`, `absolute_expires_at`, `reauth_at`.
 
 **auth_tokens:** `id`, `kind` ('reset'|'invite'|'verify_email'|'email_change'), `token_hash UNIQUE`, `user_id NULL`, `created_by NULL`, `created_at`, `expires_at`, `used_at`, `payload_enc` (sealed with `HKDF(token)`. For example, a reset token carries the email address so the reset can rebuild `pii_self`; an invite carries the address to pre-fill).
 
@@ -448,7 +462,7 @@ WCAG notes that apply to every auth page:
 1. `signup.html?invite=…`: `GET /api/auth/state` returns the sign-up mode and whether the invite is valid. The fields are email, password, an optional name and "Keep me signed in".
 2. `POST /api/auth/signup`:
    - Applies rate limits and checks the mode or invite. An existing address gets "An account with this email already exists. Sign in or reset your password."
-   - Creates the user, DEK and wraps, key pair, 8 recovery codes in `pending_codes_enc`, membership (3 free searches when payments are on), email_prefs (off), the workspace and a session.
+   - Creates the user, DEK and IK and their wraps, key pair, 8 recovery codes (each wrapping the DEK and the IK) in `pending_codes_enc` (under the IK), membership (3 free searches when payments are on), email_prefs (off), the workspace and a session.
    - If the invite was **actually emailed** to this same address (the mail server took it; the mail job records `emailed` in the invitation's sealed payload), the email counts as verified. An invitation the admin copied, one made while email was off or the queue was full, and one the mail server refused, prove nothing about the mailbox, so those sign-ups get a verification email when SMTP is set up. Digests require a verified address.
 3. `welcome.html`: each step has an `<h2 tabindex=-1>` that receives focus, "Step n of 6" as text, Back/Next and, where it makes sense, "Skip for now". Each step saves through the existing APIs (`/api/profile`, `/api/pins`, `/api/schedule`, `/api/documents`, `/api/documents/suggest-titles`), and `onboarding_step` records progress.
    1. **Theme.** A radio group in a fieldset. Each card previews its theme by carrying `data-theme` on the card itself, which works because themes.css uses attribute selectors. Choosing applies the theme to the page at once and saves it with `PUT /api/account/prefs`.
@@ -484,8 +498,8 @@ WCAG notes that apply to every auth page:
 - **At the MFA step:** see 6.2.
 - **Forgot password, with a code (keeps your data):**
   - `forgot.html` offers "I have a recovery code" or "Email me a link". The email typed on the login page is carried over (3.3.7).
-  - `POST /api/auth/recover {email, recovery_code, new_password, code | second_recovery_code}`. The code unwraps the DEK. With MFA on, the person also needs the TOTP code or a second recovery code.
-  - The DEK is re-wrapped under the new password, the code is used up, other sessions are signed out and the person is logged in.
+  - `POST /api/auth/recover {email, recovery_code, new_password, code | second_recovery_code}`. The code unwraps the DEK and the IK. With MFA on, the person also needs the TOTP code or a second recovery code.
+  - The DEK and the IK are re-wrapped under the new password, the code is used up, other sessions are signed out and the person is logged in. A code made before the IK can't open it: an account that has no IK yet gets one now (nothing lost); one that has an IK gets a new key pair and IK, an admin loses their grant (`admin_key_lost: true` in the answer, audited) and keeps their data.
   - This path needs no SMTP, so it works on local installs.
 - **Regenerate:** `POST /api/auth/recovery-codes {password, code?}` replaces all eight wraps and shows the new codes once. The request carries the password itself (and a code from the app or a recovery code with MFA on), not just a recent sign-in: every code opens the data key and can set a new password, so a cookie taken from a browser a few minutes after sign-in must not be able to mint them. The account's address gets a "new recovery codes were made" notice. The codes are in the answer of the request that made them (and of sign-up, first run and a reset). Reading codes not yet confirmed as saved again, after a reload or on a later visit, is `POST /api/auth/recovery-codes/show {password, code?}`: the password (and with two-step on a code or recovery code) is checked like the regenerate request, because a new session counts as recent for 15 minutes and a cookie taken in that window must not read eight working codes. There is no `GET`.
 
@@ -499,17 +513,17 @@ WCAG notes that apply to every auth page:
    - **With background access (`keeps_data`):** "Your data will be kept."
    - **Locked:** the page shows the warning text from "Copy for users" below, a link to the recovery-code path, a required checkbox "I understand my saved data will be deleted" and the new-password field.
 3. `POST /api/auth/reset {token, new_password, code?, accept_wipe}`. If MFA is on, the TOTP code is required, because the secret is under the KEK.
-   - **With background access:** unwrap the DEK with the KEK and re-wrap it under the new password. The data is kept. **The recovery codes are replaced** (each opens the same DEK, and whoever held the account before, for example someone who signed up with this address first and kept the codes, could set a password of their own with one) and shown on the next page like after a wipe; a never-finished authenticator setup is dropped. A reset by email leaves nothing the previous holder could use: no recovery codes, no sessions, no pending address-change or reset links, and the device cookies are bound to the old password salt.
+   - **With background access:** unwrap the DEK with the KEK and re-wrap it under the new password. The data is kept. **The recovery codes are replaced** (each opens the same DEK, and whoever held the account before, for example someone who signed up with this address first and kept the codes, could set a password of their own with one) and shown on the next page like after a wipe; a never-finished authenticator setup is dropped. The server key can't open the IK, so the account also gets **a new key pair and IK** (`users.replace_identity`): an admin loses their grant (`admin_key_lost: true`, audited as `admin_key_lost`) and another admin shares the key again. A reset by email leaves nothing the previous holder could use: no recovery codes, no sessions, no pending address-change or reset links, and the device cookies are bound to the old password salt.
    - **Locked:**
      - Delete the user's workspaces (cascade), sealed files, recovery codes and `billing_self`.
-     - Create a new DEK, a new key pair and new recovery codes (shown on the next page), plus a fresh workspace.
+     - Create a new DEK, a new IK, a new key pair and new recovery codes (shown on the next page), plus a fresh workspace.
      - Rebuild `pii_self` from the token's email; `pii_admin` is unchanged.
      - Memberships stay.
      - An admin who loses their grant this way gets a warning, and other admins see "Share the admin key again".
    - Either way: all sessions are deleted and a "Your password was changed" notice is sent.
 4. **Sent by an admin:** in the admin panel, "Send password reset email" decrypts `pii_admin.email` and goes through the same token flow. Admins never set passwords.
 
-**6.6 Change password.** `POST /api/auth/password {current_password, new_password, sign_out_others=true}`. The DEK is re-wrapped and nothing is re-encrypted.
+**6.6 Change password.** `POST /api/auth/password {current_password, new_password, sign_out_others=true}`. The DEK and the IK are re-wrapped and nothing is re-encrypted.
 
 **6.7 Background access on and off.** Settings → Account → "Background access" (shown as a switch).
 - **On:** re-authenticate, then wrap the DEK with the current KEK.
@@ -794,7 +808,7 @@ Every phase must leave `python3 -m unittest discover -s tests -t .` passing, kee
 ## 12. Open questions (only these three) and the defaults I chose
 
 **Questions:**
-1. **Email resets for users with background access keep their data,** because the server holds their key. With MFA on, the TOTP code is still required. A strict reading of "a reset without the recovery code wipes" would wipe these users too. Default: keep the data.
+1. **Email resets for users with background access keep their data,** because the server holds their key. With MFA on, the TOTP code is still required. A strict reading of "a reset without the recovery code wipes" would wipe these users too. Default: keep the data. (The server can't open the identity key, so an admin who resets this way loses their share of the admin key, §1.2.)
 2. **What the digest cards show:**
    - **Work type:** default is remote, hybrid or onsite. Employment type (full-time or contract) isn't stored today; it would need changes to the adapters.
    - **Job title:** default is to show it as the card heading, although your list didn't name it.
@@ -1037,6 +1051,7 @@ A posting missing from one user's query results says nothing about whether it cl
   - KEK wrap labels always end in `|{kek_id}`, e.g. `totp|{uid}|{kek_id}`.
   - Each use has its own AAD prefix (`jh-wrap|`, `jh-file|`, `jh-value|`, `jh-box|`), and columns use `jh/<table>.<column>`.
   - The 5-byte envelope header is part of the AAD.
+- **Identity key (added after the final security review).** Wrap labels of the IK: `pw-ik|{uid}`, `rc-ik|{uid}|{code_id}`, `sess-ik|{sid}`, `pend-ik|{sid}`, `ik-priv|{uid}` (the private key under the IK) and `pending-codes|{uid}`; each names its row and user. The IK is never wrapped under the server KEK and never cached; multi-row key changes (migration, password change, new codes, resets) are one transaction followed by `scrub_wal()`.
 - **Dependencies.** `requirements.txt` pins older `cryptography` and `argon2-cffi-bindings` on Intel Macs through environment markers, because the newest versions have no x86_64 wheels there. Keep those markers when you bump versions.
 
 ## 16. Notes from the email-core review (they bind Phases H and J)

@@ -125,6 +125,7 @@ def make_user(email: Optional[str] = None, password: str = USER_PASSWORD, *, rol
     account = users.create_user(email, password, name=name, role=role, created_via="open")
     _passwords[email] = password
     _keys[email] = (account.user_id, account.dek)
+    _iks[email] = account.ik
     db = SessionLocal()
     try:
         ws = db.query(Workspace.id).filter(Workspace.owner_id == account.user_id).scalar()
@@ -155,6 +156,7 @@ def admin_id() -> int:
 
 
 _keys: dict[str, tuple[int, bytes]] = {}
+_iks: dict[str, bytes] = {}
 
 
 def key_of(email: str = ADMIN_EMAIL) -> tuple[int, bytes]:
@@ -164,19 +166,32 @@ def key_of(email: str = ADMIN_EMAIL) -> tuple[int, bytes]:
     return _keys[email]
 
 
+def ik_of(email: str = ADMIN_EMAIL) -> bytes:
+    """The identity key of an account, opened with its password once per test run."""
+    if email not in _iks:
+        started()
+        db = SessionLocal()
+        try:
+            _iks[email] = users.unlock(db, users.find_by_email(db, email), _passwords[email]).ik
+        finally:
+            db.close()
+    return _iks[email]
+
+
 @contextlib.contextmanager
 def as_admin() -> Iterator[crypto.Scope]:
-    """The admin's key scope, for writing and reading rows (sealed columns) directly in a test."""
+    """The admin's key scope, for writing and reading rows (sealed columns) directly in a test. Like a signed-in
+    request's, it can open the identity key (so ``admin_key.open_apk`` works); a background run's can't."""
     uid, dek = key_of()
-    with crypto.as_user(uid, dek) as scope:
+    with crypto.as_user(uid, dek, lambda: ik_of()) as scope:
         yield scope
 
 
 @contextlib.contextmanager
 def as_account(account: "Account") -> Iterator[crypto.Scope]:
-    """``account``'s key scope."""
+    """``account``'s key scope (with its identity key, as a signed-in request's)."""
     uid, dek = key_of(account.email)
-    with crypto.as_user(uid, dek) as scope:
+    with crypto.as_user(uid, dek, lambda: ik_of(account.email)) as scope:
         yield scope
 
 
@@ -185,7 +200,7 @@ def pending_codes(account: "Account") -> list[str]:
     db = SessionLocal()
     try:
         with as_account(account):
-            return users.pending_recovery_codes(db, account.id)
+            return users.pending_recovery_codes(db, account.id, ik_of(account.email))
     finally:
         db.close()
 

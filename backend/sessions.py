@@ -1,8 +1,11 @@
 """Sessions, and the checks every /api request passes (accounts design, section 3).
 
 **A session** is a row in ``sessions``. The browser's cookie holds a random 32-byte secret; the row's id is its
-SHA-256 and the row keeps the user's data key (DEK) wrapped under a key derived from the secret. So no key stays in
-memory between requests, restarting the server signs nobody out, and the database alone can't unwrap anything.
+SHA-256 and the row keeps the user's data key (DEK) wrapped under a key derived from the secret, and beside it the
+identity key (IK, ``wrapped_ik``), which only the admin panel's details chain needs (backend/admin_key.py). So no key
+stays in memory between requests, restarting the server signs nobody out, and the database alone can't unwrap
+anything. A request opens the IK only when it asks (``crypto.open_ik``); a session made before the IK existed has
+none, and the admin panel says to sign in again.
 
 **The cookie** is ``__Host-jh_session`` (Secure) over HTTPS, and ``jh_session`` on plain http://127.0.0.1 (local
 installs; Safari refuses Secure cookies there). When the address has a port, the port is part of the name
@@ -31,8 +34,8 @@ signed in". Lifetimes: 24 hours idle and 7 days in all, or 30 days idle and 90 i
      API but health, /api/auth/* and /api/encryption/* answers 423 ``encrypting`` with its progress; a request
      from the admin whose key it needs starts or resumes it.
 **Two-step sign-in.** After a correct password, an account with MFA gets a ``pending_mfa`` session (10 minutes) and
-no data key in use: its row holds the DEK wrapped under the cookie secret with its own label (``pend|{sid}``, not
-``sess|{sid}``), ``load`` never unwraps a row that isn't ``active``, and so a pending session reaches nothing but
+no data key in use: its row holds the DEK (and the IK) wrapped under the cookie secret with their own labels
+(``pend|{sid}``, ``pend-ik|{sid}``, not ``sess|{sid}``), ``load`` never unwraps a row that isn't ``active``, and so a pending session reaches nothing but
 /api/auth/login/mfa (which checks the code, then makes a new ``active`` session with a new cookie secret) and
 /api/auth/logout; every other path answers 401 ``mfa_required`` and keeps the cookie, so the sign-in page can go on.
 Flipping ``state`` in the database doesn't turn a pending row into a usable session: the DEK wouldn't unwrap.
@@ -47,7 +50,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request
@@ -181,33 +184,40 @@ def clear_cookie(response: Response, scope) -> None:
 # Session rows
 # ---------------------------------------------------------------------------
 
-def create(db: Session, user: User, dek: bytes, *, persistent: bool, state: str = "active") -> bytes:
-    """A new session for ``user`` (added to ``db``, not committed). Returns the cookie secret. Signing in also
-    re-seals the person's details for admins when they aren't sealed to the current admin key (backend.admin_key)."""
+def create(db: Session, user: User, dek: bytes, ik: Optional[bytes], *, persistent: bool,
+           state: str = "active") -> bytes:
+    """A new session for ``user`` (added to ``db``, not committed). Returns the cookie secret. ``ik`` is the identity
+    key (None: the account has none yet, so the session has none). Signing in also re-seals the person's details for
+    admins when they aren't sealed to the current admin key (backend.admin_key)."""
     admin_key.heal_details(db, user, dek)
     secret = crypto.new_key()
+    sid = crypto.session_id(secret)
     now = utcnow()
     absolute = now + ABSOLUTE[persistent]
-    db.add(AuthSession(id=crypto.session_id(secret), user_id=user.id, state=state, persistent=persistent,
-                       wrapped_dek=crypto.wrap_session_dek(secret, dek), created_at=now, last_seen_at=now,
+    wrapped_ik = crypto.wrap(crypto.session_kek(secret), ik, f"sess-ik|{sid}") if ik is not None else None
+    db.add(AuthSession(id=sid, user_id=user.id, state=state, persistent=persistent,
+                       wrapped_dek=crypto.wrap_session_dek(secret, dek), wrapped_ik=wrapped_ik,
+                       created_at=now, last_seen_at=now,
                        idle_expires_at=min(now + IDLE[persistent], absolute), absolute_expires_at=absolute,
                        reauth_at=now))
     return secret
 
 
-def create_pending(db: Session, user: User, dek: bytes, *, persistent: bool) -> bytes:
+def create_pending(db: Session, user: User, dek: bytes, ik: Optional[bytes], *, persistent: bool) -> bytes:
     """A ``pending_mfa`` session (added to ``db``, not committed): the password was right, the code isn't checked yet.
     ``persistent`` is "Keep me signed in", for the session that replaces this one. Returns the cookie secret. The DEK
-    is wrapped under a label no ``active`` session uses (design §3, Phase E), and the cookie lasts the browser's
-    session, whatever ``persistent`` says."""
+    and the IK are wrapped under labels no ``active`` session uses (design §3, Phase E), and the cookie lasts the
+    browser's session, whatever ``persistent`` says."""
     secret = crypto.new_key()
     sid = crypto.session_id(secret)
     now = utcnow()
     until = now + PENDING_MFA
+    kek = crypto.session_kek(secret)
     db.add(AuthSession(id=sid, user_id=user.id, state="pending_mfa", persistent=persistent,
-                       wrapped_dek=crypto.wrap(crypto.session_kek(secret), dek, f"pend|{sid}"), created_at=now,
-                       last_seen_at=now, idle_expires_at=until, absolute_expires_at=until, reauth_at=now,
-                       mfa_failures=0))
+                       wrapped_dek=crypto.wrap(kek, dek, f"pend|{sid}"),
+                       wrapped_ik=crypto.wrap(kek, ik, f"pend-ik|{sid}") if ik is not None else None,
+                       created_at=now, last_seen_at=now, idle_expires_at=until, absolute_expires_at=until,
+                       reauth_at=now, mfa_failures=0))
     return secret
 
 
@@ -226,6 +236,18 @@ def load_pending(db: Session, secret: bytes) -> Optional[AuthSession]:
 def pending_dek(secret: bytes, row: AuthSession) -> bytes:
     """The DEK of a pending session. Call it only after the code has been checked."""
     return crypto.unwrap(crypto.session_kek(secret), row.wrapped_dek, f"pend|{row.id}")
+
+
+def pending_ik(secret: bytes, row: AuthSession) -> Optional[bytes]:
+    """The IK of a pending session, or None when it has none (or it doesn't open: the new session then has none, and
+    the admin panel asks to sign in again). Call it only after the code has been checked."""
+    if row.wrapped_ik is None:
+        return None
+    try:
+        return crypto.unwrap(crypto.session_kek(secret), row.wrapped_ik, f"pend-ik|{row.id}")
+    except crypto.CryptoError:
+        log.warning("user %s: a pending session's identity key doesn't open", row.user_id)
+        return None
 
 
 def count_mfa_attempt(db: Session, session_id: str) -> int:
@@ -275,9 +297,10 @@ def _expired(row: AuthSession, now: datetime) -> bool:
 _active_on: dict[int, object] = {}  # user id -> the day last written to users.last_active_on (fewer writes)
 
 
-def load(secret: bytes) -> Optional[tuple[AuthUser, bytes]]:
-    """The signed-in user and their DEK for a cookie secret, or None (no such session, expired, waiting for the MFA
-    code, account not active). Moves the idle expiry on (at most every 5 minutes) and records the day of activity."""
+def load(secret: bytes) -> Optional[tuple[AuthUser, bytes, Optional[Callable[[], bytes]]]]:
+    """The signed-in user, their DEK and a way to open their IK (``crypto.session_ik_opener``; None for a session
+    from before the IK existed) for a cookie secret, or None (no such session, expired, waiting for the MFA code,
+    account not active). Moves the idle expiry on (at most every 5 minutes) and records the day of activity."""
     db = SessionLocal()
     try:
         sid = crypto.session_id(secret)
@@ -300,6 +323,7 @@ def load(secret: bytes) -> Optional[tuple[AuthUser, bytes]]:
             return None
         auth = AuthUser(id=user.id, role=user.role, session_id=sid, persistent=bool(row.persistent),
                         reauth_at=row.reauth_at, csrf=crypto.csrf_token(secret))
+        ik_opener = crypto.session_ik_opener(secret, row.wrapped_ik) if row.wrapped_ik is not None else None
         today = datetime.now(timezone.utc).date()
         try:
             if now - (row.last_seen_at or row.created_at or now) >= TOUCH_EVERY:
@@ -312,7 +336,7 @@ def load(secret: bytes) -> Optional[tuple[AuthUser, bytes]]:
             db.commit()
         except OperationalError:  # the database is busy: the request matters more than the bookkeeping
             db.rollback()
-        return auth, dek
+        return auth, dek, ik_opener
     finally:
         db.close()
 
@@ -400,9 +424,9 @@ class AuthMiddleware:
             return await response(scope, receive, send)
         if response is None:
             return await self.app(scope, receive, send)
-        auth, dek = response
+        auth, dek, ik_opener = response
         scope["jh_auth"] = auth
-        with crypto.as_user(auth.id, dek):
+        with crypto.as_user(auth.id, dek, ik_opener):
             await self.app(scope, receive, send)
 
     async def _check(self, scope):
@@ -437,7 +461,7 @@ class AuthMiddleware:
         if unsafe and path not in PRE_SESSION and not crypto.check_csrf(secret, headers.get("x-csrf-token")):
             return _deny(403, "csrf", "This page's security token is out of date. Reload the page and try again.")
         if not encryption_open(path):
-            blocked = await _while_encrypting(*found)
+            blocked = await _while_encrypting(found[0], found[1])
             if blocked is not None:
                 return blocked
         return found
