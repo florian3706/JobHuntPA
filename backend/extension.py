@@ -4,19 +4,14 @@ The extension's API contract: docs/design/accounts.md §19. Who may call each en
 
     GET    /api/extension/status    signed in (an extension key or a session): the key's name and expiry (null for a
                                     session), the account's workspaces and the default one
-    POST   /api/extension/preview   signed in, any workspace of the account (X-Workspace): the job read from a page,
-                                    and the workspace's job with that address if it has one. Stores nothing.
+    POST   /api/extension/preview   signed in, any workspace of the account (X-Workspace): the address a save would
+                                    store, and the workspace's job with that address if it has one. Stores nothing.
     POST   /api/extension/jobs      signed in, as above: stores the job as the workspace's own (201), or updates the
                                     workspace's job with that address (200)
     GET    /api/extension/keys      a session only (an extension key gets 403 token_scope): the account's keys
     POST   /api/extension/keys      a session only, with a recent sign-in (403 reauth_required): a new key {label},
                                     shown once
     DELETE /api/extension/keys/{id} a session only: revokes one of the account's keys (404 for anyone else's)
-
-Preview and save read the page one at a time per account, and at most ``MAX_READING`` at once in all; a request
-past that answers 429 ``busy`` with ``Retry-After`` (any page the person opens can send the HTML, so reading it
-must never tie up the server's threads). The save's answer also says ``excluded_reason``: why the filters leave
-the job out of the Jobs list, or null.
 
 **Extension keys.** ``jhpa_`` and 43 base64url characters (32 random bytes). The server keeps a ``sessions`` row
 (``state = "extension"``) whose id is a hash of the secret and whose ``wrapped_dek`` is the person's data key
@@ -28,9 +23,13 @@ from its last use and a year at most; every "sign out everywhere" ends it (a pas
 other devices, a reset, recovery, "Sign out everywhere else", an admin turning off the account or its two-step
 sign-in, deleting the account).
 
-**Pages.** The extension sends the page from the person's own browser (address, title, HTML, visible text and any
-selected text); nothing is fetched and no AI is asked (backend/scraping/page_job.py). The job is stored like an
-imported page (``pool.import_private``): private to the workspace unless the shared pool already has the address.
+**Jobs.** The extension reads the page in the person's own browser and sends only the finished job: its values and
+the description as plain text (``JobIn``). No HTML and no whole-page text reach the server, and nothing here parses
+or re-reads a page: the request is checked (types, limits), its values trimmed, and the address to store decided
+(``stored_url``), because that decides which job a save updates. The job is then stored like an imported page
+(``pool.import_private``): private to the workspace unless the shared pool already has the address; the exclusion
+filters, the pipeline's own derived values (country, office days, work mode) and the duplicate scan follow as for an
+import. The save's answer also says ``excluded_reason``: why the filters leave the job out of the Jobs list, or null.
 """
 from __future__ import annotations
 
@@ -38,20 +37,21 @@ import json
 import logging
 import re
 import threading
-from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Optional
-from urllib.parse import urlsplit
+from typing import Any, Literal, Optional
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from backend import crypto, sessions
+from backend.adapters.base import Posting
+from backend.adapters.seek import JOB_URL as SEEK_JOB_URL
 from backend.db import PROJECT_ROOT, AuthSession, Job, UserKeys, Workspace, get_db, scrub_wal, utcnow
-from backend.scraping import page_job
-from backend.scraping.text import clean
+from backend.employment import normalise_employment_type
+from backend.scraping.text import clean, normalize_block
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 from backend.workspaces import current_workspace
 
@@ -61,16 +61,16 @@ router = APIRouter(prefix="/api/extension", tags=["extension"])
 
 API_VERSION = 1
 SOURCE = "browser"          # jobs.source of a job added from the extension (frontend: "browser extension")
-MAX_BODY = 16 * 1024 * 1024  # bytes: the page's HTML at its longest is 3 million characters, up to 4 bytes each in UTF-8
+MAX_BODY = 512 * 1024       # bytes: the longest job the contract allows is ~110,000 characters
 MAX_KEYS = 20               # extension keys per account
 LABEL_MAX = 80
-PREVIEW_CHARS = 1500
-MAX_READING = 2             # pages read at once (each account one at a time)
-BUSY_RETRY = 5              # seconds: Retry-After when that is reached
-BUSY = "JobHuntPA is still reading another page. Try again in a few seconds."
+FULL_AD_CHARS = 200         # a description at least this long counts as the full ad (like the JSON-LD importer)
+SEEK_HOSTS = ("seek.com.au", "seek.co.nz")
+WORK_MODES = ("onsite", "hybrid", "remote", "unknown")
+# The longest value of each field (characters), as the contract states them.
+LIMITS = {"url": 2048, "canonical_url": 2048, "title": 500, "company": 500, "location_text": 500, "salary_text": 500,
+          "employment_type": 100, "posted_at": 40, "description": 100_000}
 
-_reading: set[int] = set()  # the accounts a page is being read for
-_reading_lock = threading.Lock()
 _keys_lock = threading.Lock()  # counting an account's keys and adding one happen together (one server process)
 
 
@@ -111,48 +111,117 @@ def session_only(user: AuthUser = Depends(current_user)) -> AuthUser:
 
 
 # ---------------------------------------------------------------------------
-# The page a request carries
+# The job a request carries
 # ---------------------------------------------------------------------------
 
-class PageFields(BaseModel):
-    """What the person typed into the extension's form; empty values change nothing."""
-    model_config = ConfigDict(extra="ignore")
-    title: str = Field("", max_length=page_job.FIELD_LIMITS["title"])
-    company: str = Field("", max_length=page_job.FIELD_LIMITS["company"])
-    location_text: str = Field("", max_length=page_job.FIELD_LIMITS["location_text"])
-    salary_text: str = Field("", max_length=page_job.FIELD_LIMITS["salary_text"])
-    employment_type: str = Field("", max_length=page_job.FIELD_LIMITS["employment_type"])
-    work_mode: str = Field("", max_length=page_job.FIELD_LIMITS["work_mode"])
+def _text(value: Any) -> Any:
+    """A string as UTF-8 can store it: an unpaired surrogate (JavaScript strings may hold one) becomes "?"; null is
+    an absent value (""). Anything else is left for the type check."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    return value
+
+
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,9})?)?"
+                       r"(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?", re.ASCII)
+
+
+class JobIn(BaseModel):
+    """The job as the extension read it from the page (and the person corrected it in the popup)."""
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field("", max_length=LIMITS["title"])
+    company: str = Field("", max_length=LIMITS["company"])
+    location_text: str = Field("", max_length=LIMITS["location_text"])
+    salary_text: str = Field("", max_length=LIMITS["salary_text"])
+    employment_type: str = Field("", max_length=LIMITS["employment_type"])
+    work_mode: Literal["onsite", "hybrid", "remote", "unknown", ""] = ""
+    posted_at: str = Field("", max_length=LIMITS["posted_at"])
+    url: str = Field("", max_length=LIMITS["url"])
+    description: str = Field("", max_length=LIMITS["description"])
+    description_from: Literal["selection", "structured", "site", "main", "body", ""] = ""
+    method: Literal["jsonld", "site", "page", ""] = ""
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strings(cls, value: Any) -> Any:
+        return _text(value)
+
+    @field_validator("posted_at")
+    @classmethod
+    def _iso_date(cls, value: str) -> str:
+        value = value.strip()
+        if value and not _ISO_DATE.fullmatch(value):
+            raise ValueError("not an ISO date")
+        return value
 
 
 class PageIn(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    url: str = Field(..., max_length=page_job.LIMITS["url"])
-    page_title: str = Field("", max_length=page_job.LIMITS["page_title"])
-    html: str = Field("", max_length=page_job.LIMITS["html"])
-    text: str = Field("", max_length=page_job.LIMITS["text"])
-    selection: str = Field("", max_length=page_job.LIMITS["selection"])
-    fields: PageFields = Field(default_factory=PageFields)
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(..., max_length=LIMITS["url"])
+    canonical_url: str = Field("", max_length=LIMITS["canonical_url"])
+    job: JobIn = Field(default_factory=JobIn)
 
+    @field_validator("canonical_url", mode="before")
+    @classmethod
+    def _canonical(cls, value: Any) -> Any:
+        return _text(value)
 
-TOO_BIG = "This page is too big to send. Select the job ad's text on the page and try again."
-
-
-def _too_big() -> AuthProblem:
-    return AuthProblem(413, "too_large", TOO_BIG)
+    @field_validator("job", mode="before")
+    @classmethod
+    def _job(cls, value: Any) -> Any:
+        return {} if value is None else value
 
 
 def _invalid(detail: str, field: Optional[str] = None) -> AuthProblem:
     return AuthProblem(422, "invalid", detail, field=field)
 
 
-_FIELD_NAMES = {"url": "the page address", "page_title": "the page title", "title": "the job title",
-                "company": "the employer", "location_text": "the location", "salary_text": "the salary",
-                "employment_type": "the employment type", "work_mode": "the work mode"}
+_FIELD_NAMES = {"url": "the page address", "canonical_url": "the page's canonical address", "job": "the job",
+                "title": "the job title", "company": "the employer", "location_text": "the location",
+                "salary_text": "the salary", "employment_type": "the employment type", "work_mode": "the work mode",
+                "posted_at": "the date posted", "description": "the description",
+                "description_from": "where the description came from", "method": "how the page was read"}
+TOO_BIG = "This job is too big to send. Select the job ad's text on the page and try again."
+
+
+def _too_big(field: Optional[str] = None) -> AuthProblem:
+    if field in LIMITS:
+        detail = f"{_FIELD_NAMES[field][0].upper()}{_FIELD_NAMES[field][1:]} is too long: at most {LIMITS[field]:,} " \
+                 "characters can be sent."
+        return AuthProblem(413, "too_large", detail, field=field)
+    return AuthProblem(413, "too_large", TOO_BIG)
+
+
+def _refused(exc: ValidationError) -> AuthProblem:
+    """The answer to a body that doesn't fit ``PageIn``: 422 ``invalid`` for a wrong type, an unknown field or a value
+    outside its list (the first one), else 413 ``too_large`` for a value over its limit. ``field`` names the value:
+    a job value by its own name (``title``), anything else by its place (``url``, ``job``, or the unknown name)."""
+    errors = exc.errors()
+    wrong = [e for e in errors if e.get("type") != "string_too_long"]
+    error = (wrong or errors)[0] if errors else {}
+    where = [str(p) for p in error.get("loc", ()) if isinstance(p, str)]
+    name = where[-1] if where else ""
+    if not wrong:
+        return _too_big(name)
+    if error.get("type") == "extra_forbidden":
+        return _invalid(f'JobHuntPA doesn\'t know the value "{name[:40]}" this extension sends. Update the '
+                        "extension.", field=name[:40] or None)
+    return _invalid(f"Check {_FIELD_NAMES.get(name, 'what was sent')}: it is missing or not what JobHuntPA "
+                    "expects.", field=name[:40] or None)
+
+
+def _http_url(value: str) -> bool:
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
 
 
 async def page_body(request: Request) -> PageIn:
-    """The request's page, read with a size limit: a body over ``MAX_BODY`` bytes is refused (413) from its
+    """The request's job, read with a size limit: a body over ``MAX_BODY`` bytes is refused (413) from its
     Content-Length, or as soon as it grows past it, before any of it is parsed."""
     length = request.headers.get("content-length")
     if length is not None:
@@ -168,52 +237,88 @@ async def page_body(request: Request) -> PageIn:
         chunks.append(chunk)
     try:
         data = await run_in_threadpool(json.loads, b"".join(chunks) or b"null")
-    except ValueError:
-        raise _invalid("Send the page as JSON.") from None
+    except (ValueError, RecursionError):  # not JSON, or nested too deep to read
+        raise _invalid("Send the job as JSON.") from None
     if not isinstance(data, dict):
-        raise _invalid("Send the page as a JSON object.")
-    for name in ("html", "text", "selection"):
-        value = data.get(name)
-        if isinstance(value, str) and len(value) > page_job.LIMITS[name]:
-            raise _too_big()
+        raise _invalid("Send the job as a JSON object.")
     try:
         page = PageIn.model_validate(data)
     except ValidationError as exc:
-        where = exc.errors()[0].get("loc", ()) if exc.errors() else ()
-        name = str(where[-1]) if where else ""
-        raise _invalid(f"Check {_FIELD_NAMES.get(name, 'what was sent')}: it is missing, too long or not text.",
-                       field=name or None) from None
+        raise _refused(exc) from None
     page.url = page.url.strip()
-    try:
-        parts = urlsplit(page.url)
-    except ValueError:
-        parts = None
-    if parts is None or parts.scheme not in ("http", "https") or not parts.netloc:
+    if not _http_url(page.url):
         raise _invalid("Only pages with an http:// or https:// address can be added.", field="url")
-    mode = page.fields.work_mode.strip().lower()
-    if mode and mode not in page_job.WORK_MODES:
-        raise _invalid("The work mode must be onsite, hybrid, remote or unknown.", field="work_mode")
+    page.canonical_url = page.canonical_url.strip()
+    if page.canonical_url and not _http_url(page.canonical_url):
+        raise _invalid("The page's canonical address must be an http:// or https:// address.", field="canonical_url")
     return page
 
 
-@contextmanager
-def _reading_slot(user_id: int):
-    """Room to read a page for ``user_id``: one of ``MAX_READING``, and none while another page of the same account
-    is being read (429 ``busy`` otherwise, at once)."""
-    with _reading_lock:
-        if user_id in _reading or len(_reading) >= MAX_READING:
-            raise AuthProblem(429, "busy", BUSY, headers={"Retry-After": str(BUSY_RETRY)})
-        _reading.add(user_id)
+# ---------------------------------------------------------------------------
+# The address to store
+# ---------------------------------------------------------------------------
+
+def _host_port(url: str) -> Optional[tuple[str, int]]:
+    """The host (lower case) and port (the scheme's own when none is given) of an http(s) address with no user name
+    or password in it, else None."""
     try:
-        yield
-    finally:
-        with _reading_lock:
-            _reading.discard(user_id)
+        parts = urlsplit(url)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not host or "@" in parts.netloc:
+        return None
+    return host, port or (443 if parts.scheme == "https" else 80)
 
 
-def _read(page: PageIn, user: AuthUser) -> page_job.PageJob:
-    with _reading_slot(user.id):
-        return page_job.read_page(page.url, page.page_title, page.html, page.text, page.selection)
+def seek_job_id(url: str) -> Optional[str]:
+    """SEEK's id of the job at ``url`` when it is one of SEEK's own sites (seek.com.au, seek.co.nz or a subdomain of
+    one) showing a job: ``/job/<digits>`` or ``?jobId=<digits>``. Else None."""
+    site = _host_port(url)
+    if site is None or not any(site[0] == d or site[0].endswith("." + d) for d in SEEK_HOSTS):
+        return None
+    parts = urlsplit(url)
+    m = re.fullmatch(r"/job/([0-9]{1,20})(?:/.*)?", parts.path, re.ASCII)
+    if m:
+        return m.group(1)
+    ids = parse_qs(parts.query).get("jobId") or []
+    return ids[0] if ids and re.fullmatch(r"[0-9]{1,20}", ids[0], re.ASCII) else None
+
+
+def stored_url(url: str, job_url: str = "", canonical_url: str = "") -> tuple[str, str]:
+    """(The address a job read from the page at ``url`` is stored under, SEEK's job id or ""): a SEEK job (judged
+    from ``url`` alone) as ``https://www.seek.com.au/job/<id>``, the address the searches give it; else the posting's
+    own address, then the page's canonical one, when it is on exactly the same host and port as ``url`` (often
+    without tracking parameters); else ``url``. Another site's address is never taken from the page, so a page can't
+    choose which of the person's jobs (or the pool's postings) a save updates."""
+    seek_id = seek_job_id(url)
+    if seek_id:
+        return SEEK_JOB_URL.format(id=seek_id), seek_id
+    site = _host_port(url)
+    for own in (job_url, canonical_url):
+        if not own or site is None:
+            continue
+        try:
+            joined = urljoin(url, own)
+        except ValueError:
+            continue
+        if _host_port(joined) == site:
+            return joined, ""
+    return url, ""
+
+
+def posting_of(page: PageIn) -> Posting:
+    """The job to store: the browser's values trimmed, under the address ``stored_url`` picks. Nothing is read from
+    the page here; the pipeline works out what follows from the text (country, office days, work mode)."""
+    job = page.job
+    url, external_id = stored_url(page.url, job.url.strip(), page.canonical_url)
+    description = normalize_block(job.description)
+    return Posting(url=url, title=clean(job.title), company=clean(job.company), external_id=external_id,
+                   location_text=clean(job.location_text), work_mode=job.work_mode or "unknown",
+                   employment_type=normalise_employment_type(clean(job.employment_type)),
+                   salary_text=clean(job.salary_text), description=description,
+                   detail_status="full" if len(description) >= FULL_AD_CHARS else "summary" if description else "none",
+                   posted_at=job.posted_at)
 
 
 def _listed(db: Session, job: Job) -> Job:
@@ -233,31 +338,15 @@ def job_link(job_id: int, ws: int) -> str:
     return f"/job.html?id={job_id}&ws={ws}"
 
 
-def _existing(db: Session, ws: int, urls: list[str]) -> Optional[dict]:
-    """The workspace's listed job with one of these addresses, or None."""
+def _known(db: Session, ws: int, url: str, page_url: str) -> Optional[Job]:
+    """The workspace's job with the address to store, else with the page's own address (saved before under it), as
+    the job that is listed for it (a merged copy's original), or None."""
     from backend.pool import job_by_url
 
-    for url in dict.fromkeys(u for u in urls if u):
-        job = job_by_url(db, ws, url)
-        if job is not None:
-            job = _listed(db, job)
-            return {"id": job.id, "title": job.title or "", "status": job.status, "link": job_link(job.id, ws)}
-    return None
-
-
-def _job_out(read: page_job.PageJob) -> dict:
-    from backend.geo import classify_work_mode
-
-    p = read.posting
-    mode = p.work_mode if p.work_mode in page_job.WORK_MODES else "unknown"
-    if mode == "unknown":
-        mode = classify_work_mode(p.title or "", p.location_text or "", p.description or "")
-    description = p.description or ""
-    return {"title": p.title or "", "company": p.company or "", "location_text": p.location_text or "",
-            "salary_text": p.salary_text or "", "employment_type": p.employment_type or "", "work_mode": mode,
-            "posted_at": p.posted_at or "", "url": p.url,
-            "description_preview": description[:PREVIEW_CHARS], "description_chars": len(description),
-            "description_from": read.description_from}
+    job = job_by_url(db, ws, url)
+    if job is None and page_url != url:
+        job = job_by_url(db, ws, page_url)
+    return _listed(db, job) if job is not None else None
 
 
 NO_TITLE = "No job title was found on this page. Type one in, then save."
@@ -284,39 +373,32 @@ def status(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)
 @router.post("/preview")
 def preview(page: PageIn = Depends(page_body), user: AuthUser = Depends(current_user), db: Session = Depends(get_db),
             ws: int = Depends(current_workspace)):
-    """The job the page shows, for the extension's form. Stores nothing."""
-    read = _read(page, user)
-    if not read.posting.title and not page.fields.title.strip():
-        raise _invalid(NO_TITLE, field="title")
-    return {"method": read.method, "job": _job_out(read),
-            "existing": _existing(db, ws, [read.posting.url, page.url]), "notes": read.notes}
+    """The address a save would store, and the workspace's (listed) job with it, for the popup's "Already in
+    JobHuntPA". Stores nothing; ``job`` may be partial or empty."""
+    url, _ = stored_url(page.url, page.job.url.strip(), page.canonical_url)
+    job = _known(db, ws, url, page.url)
+    existing = None if job is None else {"id": job.id, "title": job.title or "", "status": job.status,
+                                         "link": job_link(job.id, ws)}
+    return {"url": url, "existing": existing}
 
 
 @router.post("/jobs")
 def save_job(response: Response, page: PageIn = Depends(page_body), user: AuthUser = Depends(current_user),
              db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
-    """Stores the page's job as this workspace's own (as ``/api/import/page`` does), with the person's edits over
-    what the page said: a new job (201), or the workspace's job with that address brought up to date (200). The
-    exclusion filters and the duplicate scan run as for an import, and the job waits for its score like one.
-    ``excluded_reason``: why the filters leave the saved job out of the Jobs list (as the list says it), or null."""
+    """Stores the job as this workspace's own (as ``/api/import/page`` does): a new job (201), or the workspace's job
+    with that address brought up to date (200). When that job is a merged copy (backend.duplicates), the job it was
+    merged into is updated instead: the one the person sees in the list. The exclusion filters and the duplicate
+    scan run as for an import, and the job waits for its score like one. ``excluded_reason``: why the filters leave
+    the saved job out of the Jobs list (as the list says it), or null."""
     from backend.duplicates import scan_workspace
     from backend.pipeline import import_one
-    from backend.pool import job_by_url
 
-    read = _read(page, user)
-    posting = read.posting
-    page_job.apply_fields(posting, page.fields.model_dump())
+    posting = posting_of(page)
     if not posting.title:
         raise _invalid(NO_TITLE, field="title")
-    page_job.set_detail_status(posting)
-    # The job to update: the workspace's job with the posting's address, else one saved before under the page's own
-    # address. When that is a merged copy (backend.duplicates), the job it was merged into is updated instead: the
-    # one the person sees in the list.
-    known = job_by_url(db, ws, posting.url)
-    if known is None and posting.url != page.url:
-        known = job_by_url(db, ws, page.url)
+    known = _known(db, ws, posting.url, page.url)
     if known is not None:
-        posting.url = _listed(db, known).url or posting.url
+        posting.url = known.url or posting.url
     job_id, created = import_one(posting, SOURCE, ws)
     scan_workspace(ws)
     db.expire_all()

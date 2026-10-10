@@ -33,7 +33,7 @@ LISTING_TTL = timedelta(hours=1)
 # ``window.SEEK_REDUX_DATA = {...};`` and the end of the line: the object is the text from its "{" to the first "}"
 # that ends a line (optionally with ";"). Found in two steps, the start and then its end, each with a pattern that
 # can't backtrack across the page: one expression with a lazy ``{.*?}`` rescanned the rest of the page from every
-# start (quadratic on a hostile page; pages come from the browser extension too).
+# start (quadratic on a hostile page; a saved page the user imports can be anything).
 _REDUX_START = re.compile(r"window\.SEEK_REDUX_DATA\s*=\s*\{")
 _REDUX_END = re.compile(r"\};?[^\S\n]*\n")
 _MODES = {"on-site": "onsite", "onsite": "onsite", "hybrid": "hybrid", "remote": "remote"}

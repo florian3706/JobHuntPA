@@ -11,8 +11,8 @@ from backend.scraping.text import clean, html_to_text
 
 # A JSON-LD block is ``<script ... type="application/ld+json" ...>(.*?)</script>`` (any case). It is found by
 # scanning (``_jsonld_blocks``), not by one regular expression over the page: on a page with many unclosed
-# ``<script`` tags that would rescan the rest of the page from each one (quadratic; pages come from the browser
-# extension too).
+# ``<script`` tags that would rescan the rest of the page from each one (quadratic; a saved page the user imports
+# can be anything).
 _SCRIPT_OPEN = re.compile(r"<script", re.IGNORECASE)
 _SCRIPT_CLOSE = re.compile(r"</script>", re.IGNORECASE)
 _LD_TYPE = re.compile(r'type=["\']application/ld\+json["\']', re.IGNORECASE)

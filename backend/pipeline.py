@@ -192,7 +192,7 @@ def import_postings(postings: list[Posting], source: str, ws: int) -> dict:
 
 
 def import_one(posting: Posting, source: str, ws: int) -> tuple[int, bool]:
-    """``import_postings`` for one posting (a page sent by the browser extension). Returns (the job's id, new to the
+    """``import_postings`` for one posting (a job sent by the browser extension). Returns (the job's id, new to the
     workspace)."""
     db = SessionLocal()
     try:

@@ -804,13 +804,14 @@ Each source brings in at most 60 new full ads per search; the rest follow on the
 The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your current tab to JobHuntPA:
 
 - **Add as a job**: the extension reads the ad you are looking at, shows what it found (title, employer,
-  location, salary, employment type, work mode) so you can correct it, and saves it as your own job in the
-  workspace you pick, like an imported page. It reads the page in your own browser, so ads behind a sign-in
-  work too. Select the ad's text first to use only that as the description. A job you already have (the same
-  address) is brought up to date instead of added twice. If your filters leave the saved job out of the Jobs
-  list (for example a location or keyword you excluded), JobHuntPA tells the extension why; tick
-  **Show excluded** in the Jobs tab to see it. JobHuntPA reads one page at a time for each account: while it
-  is still reading another, it asks you to try again in a few seconds.
+  location, salary, employment type, work mode, description) so you can correct it, and saves it as your own
+  job in the workspace you pick, like an imported page. It reads the page in your own browser, on your own
+  machine, so ads behind a sign-in work too, and it sends JobHuntPA only the job: those values and the
+  description as plain text. The page itself (its HTML, the rest of its text, anything else you are signed in
+  to) never leaves your browser. Select the ad's text first to use only that as the description. A job you
+  already have (the same address) is brought up to date instead of added twice, and the popup tells you before
+  you save. If your filters leave the saved job out of the Jobs list (for example a location or keyword you
+  excluded), JobHuntPA tells the extension why; tick **Show excluded** in the Jobs tab to see it.
 - **Add as a company source**: adds the page as a [careers page](#adding-company-careers-pages) of the
   workspace, and **Test** shows what a search would find on it.
 
@@ -1085,8 +1086,8 @@ sessions), `backend/totp.py` (authenticator codes), `backend/admin.py` (the admi
 `backend/tokens.py` (sign-up modes and invitations), `backend/key_rotation.py` (the server key),
 `backend/background.py` (background access), `backend/key_recovery.py` (the `recover-lost` command),
 `backend/export.py` (data export), `backend/account.py` (preferences, the walkthrough step, deleting
-an account), `backend/extension.py` (the browser extensions' API and keys) with `backend/scraping/page_job.py`
-(reading a job from the page they send), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
+an account), `backend/extension.py` (the browser extensions' API and keys; the extensions read the page themselves and
+send only the job), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
 `new-admin-key` and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
 (account cards), `account-email.js` and `email-settings.js` (email address and server settings), `background.js`,
 `extension.js` (Settings > Browser extension),

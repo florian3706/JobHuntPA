@@ -374,8 +374,9 @@ class FullRun(MailTestCase):
         self.assertIn("zqx corp", c.get("/api/companies").json())
 
     def browser_extension(self, c):
-        """The browser extension: a key named by the person, then pages sent from their browser (the page's text, its
-        HTML and a selection), saved as jobs with their edits, and a source added and tested through the key."""
+        """The browser extension: a key named by the person, then jobs it read from pages in their browser (the
+        values, the description and the addresses), previewed and saved, and a source added and tested through the
+        key."""
         from backend import ratelimit
         from backend.adapters.base import SourceError
 
@@ -386,18 +387,23 @@ class FullRun(MailTestCase):
         k = self.anonymous()
         k.headers["Authorization"] = f"Bearer {r.json()['key']}"
         self.assertIn("ZQX", k.get("/api/extension/status").json()["label"])
-        ad = ("<p>ZQX include: lead the ZQX delivery program for Zqx Quillon's team. " * 6) + "</p>"
-        html = (f"<html><head><title>ZQX Delivery Lead | ZQX Corp</title></head><body><h1>ZQX Delivery Lead</h1>"
-                f'<div class="job-location">Zqxtown NSW</div><div class="job-description">{ad}</div></body></html>')
-        page = {"url": "https://careers.zqx.example/jobs/zqx-77", "page_title": "ZQX Delivery Lead | ZQX Corp",
-                "html": html, "text": "ZQX visible text of the page", "selection": "",
-                "fields": {"title": "ZQX Delivery Lead (edited)", "company": "ZQX Corp", "salary_text": "ZQX $150k"}}
+        ad = "ZQX include: lead the ZQX delivery program for Zqx Quillon's team. " * 6
+        page = {"url": "https://careers.zqx.example/jobs/zqx-77?zqx=1", "canonical_url": "https://careers.zqx.example/c/zqx",
+                "job": {"title": "ZQX Delivery Lead", "company": "ZQX Corp", "location_text": "Zqxtown NSW",
+                        "salary_text": "ZQX $150k", "employment_type": "ZQX full time", "work_mode": "hybrid",
+                        "posted_at": "2026-10-01", "url": "https://careers.zqx.example/jobs/zqx-77",
+                        "description": ad, "description_from": "site", "method": "site"}}
         self.assertEqual(k.post("/api/extension/preview", json=page).status_code, 200)
         self.assertEqual(k.post("/api/extension/jobs", json=page).status_code, 201)
-        self.assertEqual(k.post("/api/extension/jobs", json={**page, "selection": "ZQX selected ad text"}).status_code, 200)
-        for bad in ({**page, "html": "<p>ZQX nothing</p>", "fields": {}, "page_title": ""},
-                    {**page, "url": "ftp://zqx.example/zqx"}, {**page, "fields": {"work_mode": "ZQX moon"}}):
+        edited = {**page, "job": {**page["job"], "description": "ZQX selected ad text", "description_from": "selection"}}
+        self.assertEqual(k.post("/api/extension/jobs", json=edited).status_code, 200)
+        self.assertEqual(k.post("/api/extension/preview", json=page).json()["existing"]["title"], "ZQX Delivery Lead")
+        for bad in ({**page, "job": {**page["job"], "title": ""}}, {**page, "url": "ftp://zqx.example/zqx"},
+                    {**page, "job": {**page["job"], "work_mode": "ZQX moon"}}, {**page, "html": "<p>ZQX</p>"},
+                    {**page, "job": {**page["job"], "posted_at": "ZQX yesterday"}}):
             self.assertEqual(k.post("/api/extension/jobs", json=bad).status_code, 422)
+        too_long = {**page, "job": {**page["job"], "title": "ZQX " * 200}}
+        self.assertEqual(k.post("/api/extension/jobs", json=too_long).status_code, 413)
         r = k.post("/api/sources", json={"url": "https://careers.zqx-two.example/jobs", "label": "ZQX second employer"})
         self.assertEqual(r.status_code, 201, r.text)
         self.source.postings = [_ad(20)]

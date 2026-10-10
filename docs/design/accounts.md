@@ -1132,9 +1132,8 @@ A posting missing from one user's query results says nothing about whether it cl
 The Chrome and Firefox extensions (repos `JobHuntPA-chrome-extension`, `JobHuntPA-firefox-extension`) add the
 page in the current tab as a job or as a company source. They can't use the session cookie (SameSite, CSRF, an
 `Origin` of `chrome-extension://...`), and everything is sealed under the person's DEK, so a key carries a wrapped
-DEK the way a session does. Code: `backend/extension.py` (the API and the keys), the key checks in
-`backend/sessions.py`, `backend/scraping/page_job.py` (reading the page), `frontend/extension.js` (Settings >
-Browser extension). Tests: `tests/test_extension.py`, and a step in `tests/test_log_leaks.py`.
+DEK the way a session does. Code: `backend/extension.py` (the API, the keys and the address a job is stored under),
+the key checks in `backend/sessions.py`, `frontend/extension.js` (Settings > Browser extension). Tests: `tests/test_extension.py`, and a step in `tests/test_log_leaks.py`.
 
 - **What the person gets:** `jhpa_` + base64url of 32 random bytes, shown once in Settings with the server address
   (`location.origin`), to paste into the extension's options. Making one needs a session (a key can't make keys)
@@ -1176,33 +1175,46 @@ Browser extension). Tests: `tests/test_extension.py`, and a step in `tests/test_
   and every admin endpoint): `GET /api/extension/status`, `POST /api/extension/preview`, `POST /api/extension/jobs`,
   `GET /api/sources`, `POST /api/sources`, `POST /api/sources/{id}/test`. Workspaces are the usual `X-Workspace`
   check (another account's answers 404). A key can't read jobs, documents, chats or settings.
-- **Pages:** the extension sends the URL (http(s), ≤ 2,048 characters), the tab's title (≤ 1,000), the HTML
-  (≤ 3,000,000), the visible text (≤ 300,000), the selection (≤ 100,000) and the person's edits (≤ 500, employment
-  type and work mode ≤ 40). The body is refused with 413 from its `Content-Length` (or as it streams) past 16 MB,
-  and over a field's limit, before any parsing. Nothing is fetched (the page comes from the person's browser, as
-  with a saved page) and no AI is asked. Order: SEEK's job data, then the JobPosting JSON-LD about this address
-  (else the first), then heuristics (title from og:title, the first h1 or the tab title without the site's name;
-  employer from JSON-LD, og:site_name or the host; description from the main content, else the visible text).
-  A selection is the description; the person's non-empty edits win. SEEK's data is read only on SEEK's own sites
-  (`seek.com.au`, `seek.co.nz` and their subdomains) and only with an all-digit job id, because the job is stored
-  under `https://www.seek.com.au/job/{id}`: another site's page can't choose a SEEK address (and so overwrite the
-  person's real SEEK job or link the pool's). The JSON-LD's own `url` is used only on the very same host and port
-  as the page (with or without `www.`, no user name in it); else the page's address is stored.
-- **Hostile pages:** any page the person opens the extension on can send what HTML it likes, so reading a page
-  takes time in proportion to its size: the SEEK data and JSON-LD blocks are found by scanning (no pattern that
-  rescans the page from every start), the page is parsed once with lxml (`huge_tree`: up to 2,048 levels deep; a
-  BeautifulSoup tree of 3 MB took seconds and a quarter of a gigabyte), the main content is read in one pass per
-  candidate container (at most 50, none inside one already tried), a location or salary line from at most 50
-  elements with at most 400 nodes looked at in each, titles and site names are cut to 1,000 characters before they
-  are cleaned, and `html_to_text` (JSON-LD descriptions) no longer edits the tree. On top of that, preview and save
-  read one page at a time per account and two at a time in all (`extension.MAX_READING`); a request past that
-  answers at once with 429 `busy`, a plain `detail` and `Retry-After: 5`, so pages being read never hold more than
-  two of the server's threads. `tests/test_extension.py` (`HostilePageTest`) times each shape that was slow.
+- **Jobs (contract v3, 2026-10-10):** the extension reads the page in the person's own browser, on their machine:
+  JSON-LD JobPosting data, site-specific elements (SEEK, LinkedIn, Indeed, ...), the heading and titles, and the
+  description element's text (a JSON-LD description's HTML becomes text there, in an inert document), and fills the
+  popup with the result; the person corrects it there. It then sends only the finished job: `{"url", "canonical_url",
+  "job": {"title", "company", "location_text", "salary_text", "employment_type", "work_mode", "posted_at", "url",
+  "description", "description_from", "method"}}`, the description as plain text. **No HTML and no whole-page text
+  leave the browser**, so the session tokens, personal details and app state a signed-in page carries never reach
+  the server, and the server parses no page (an earlier version sent the page's HTML, up to 3 MB, and read it here:
+  that was most of the extension's attack surface and needed a limit on pages read at once). Limits (characters):
+  URLs 2,048, title, employer, location and salary 500, employment type 100, `posted_at` 40 (an ISO date or
+  date-time), description 100,000; `work_mode`, `description_from` and `method` are one of the contract's words.
+  The body is refused with 413 `too_large` from its `Content-Length` (or as it streams) past 512 KB, before any
+  parsing; a value over its limit is 413 `too_large` with `field`; a wrong type, a word outside its list, JSON
+  nested too deep to read or an **unknown field** is 422 `invalid` with `field` (so an extension still sending the
+  old `html` fails loudly instead of being half understood). null counts as an absent value, and an unpaired UTF-16
+  surrogate (JavaScript strings can hold one) is stored as "?". Nothing is fetched and no AI is asked.
+- **What the server decides:** only the address the job is stored under (`extension.stored_url`), since that decides
+  which job a save updates. A SEEK job, judged from the page's own `url` alone (`/job/<digits>` or
+  `?jobId=<digits>`, all ASCII digits, on `seek.com.au`, `seek.co.nz` or a subdomain, no user name), is stored as
+  `https://www.seek.com.au/job/{id}` with `external_id = id`, as the SEEK searches store it, so it links the pool's
+  posting. Otherwise the job's own `url` (the JSON-LD's), then `canonical_url`, is used when it is an http(s)
+  address on exactly the same host and port as `url` (the scheme's port when none is given; `www.` is another host)
+  with no user name; otherwise `url`. A page therefore can't make a save land on another site's address (the
+  person's real SEEK job, or a pool posting). Everything else is the browser's values, trimmed (the employment type
+  mapped to the stored vocabulary); the pipeline works out the rest from the text as for any job (country, office
+  days, work mode when unknown, the description hash). `detail_status` is `full` for a description of 200
+  characters or more, `summary` for a shorter one.
+- **No busy limit:** with nothing parsed but a JSON body of at most 512 KB, the largest request takes tens of
+  milliseconds (measured: ~25 ms preview, ~90 ms the first save, including the filters and the duplicate scan), so
+  the earlier limit of one page read per account and two at once (429 `busy`) is gone.
+- **Preview** (`POST /api/extension/preview`, the same body; `job` may be partial or empty) stores nothing and
+  answers `{"url": <the address a save would store>, "existing": {"id", "title", "status", "link"} | null}`: the
+  workspace's job with that address, else with the page's own `url` (saved under it before), as the job that is
+  listed for it (a merged copy's `duplicate_of`). **Save** (`POST /api/extension/jobs`) needs a non-empty title
+  (422 `invalid`, `field: "title"`).
 - **Storing:** like `POST /api/import/page` (§14.4): `pool.import_private` under `source = "browser"` (shown as
-  "browser extension"): the workspace's job with that address is updated with the page's values as its own
+  "browser extension"): the workspace's job with that address is updated with the job's values as its own
   overrides (200, `created: false`), else a pool link when the pool has the address, else a private job (201). The
-  exclusion filters and the duplicate scan run as for an import, and the job waits for its score like one (it has a
-  description, so `detail_status` is `full` or `summary`). When the job with that address is a merged copy
+  exclusion filters and the duplicate scan run as for an import, and the job waits for its score like one (with a
+  description its `detail_status` is `full` or `summary`; without one, `none`, like a listing). When the job with that address is a merged copy
   (`duplicate_of`, backend/duplicates.py), the job it was merged into is the one updated: the one the person sees.
   The answer links to the listed job (a merged copy's `duplicate_of`), as `/job.html?id={id}&ws={ws}`, and says
   `excluded_reason`: why the exclusion filters leave the listed job out of the Jobs list (the same text the list
