@@ -121,6 +121,18 @@ class NoStoreApi:
         await self.app(scope, receive, send_no_store)
 
 
+class FrontendFiles(StaticFiles):
+    """The pages with their scripts and stylesheets, sent with ``Cache-Control: no-cache``: the browser keeps its
+    copy but asks whether it is still current before using it (a 304 when it is). Without the header a browser
+    guesses how long a file stays fresh from its age, so after an update it ran a page's new script with the
+    common.js from before, and the job page stopped at "Loading the job…" until the guess ran out."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 STATUSES = ("to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested")
 Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested"]
@@ -701,4 +713,4 @@ async def import_job_page(job_id: int, file: UploadFile = File(...), office_slac
 
 
 if FRONTEND_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+    app.mount("/", FrontendFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

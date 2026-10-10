@@ -428,7 +428,17 @@ class NoStoreTest(WorkspaceTestCase):
             r = self.client.get(path, headers=self.headers())
             self.assertEqual(r.headers.get("cache-control"), "no-store", path)
         self.assertEqual(self.client.post("/api/workspaces", json={}).headers.get("cache-control"), "no-store")  # a 422 too
-        self.assertNotEqual(self.client.get("/").headers.get("cache-control"), "no-store")  # the pages themselves are cached as before
+
+    def test_pages_and_scripts_are_checked_before_reuse(self):
+        """An update must not leave a browser running a page's new script with an older common.js: every frontend
+        file says ``no-cache`` (kept, but asked about first), and so does the 304 that answers the question."""
+        for path in ("/", "/job.html", "/common.js", "/job.js", "/styles.css"):
+            r = self.client.get(path)
+            self.assertEqual(r.status_code, 200, path)
+            self.assertEqual(r.headers.get("cache-control"), "no-cache", path)
+            again = self.client.get(path, headers={"If-None-Match": r.headers["etag"]})
+            self.assertEqual(again.status_code, 304, path)
+            self.assertEqual(again.headers.get("cache-control"), "no-cache", path)
 
 
 if __name__ == "__main__":
