@@ -969,6 +969,14 @@ dialog.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 .account-status:empty { display: none; }
 .account-danger { border-color: var(--danger); }
 .account-card h4 { margin: 0; font-size: 16px; }
+/* Browser extension card (extension.js) */
+.ext-keys { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ext-key { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+.ext-key > div { min-width: 0; overflow-wrap: anywhere; }
+.ext-result { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.ext-result[hidden] { display: none; }
+.ext-result p, .ext-result h4 { margin: 0; }
 .mfa-steps { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 16px; }
 .mfa-steps li { display: flex; flex-direction: column; gap: 8px; }
 .mfa-steps li::marker { font-weight: 700; }

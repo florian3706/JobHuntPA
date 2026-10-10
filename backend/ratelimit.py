@@ -331,11 +331,15 @@ EMAIL_CHANGE = Limiter([(5, 60 * 60)])                         # per signed-in u
 EMAIL_TEST = Limiter([(5, 10 * 60)])                           # per admin
 # The unsubscribe link's POSTs (Phase J, no session): per client address.
 UNSUBSCRIBE = Limiter([(30, 60)])
+# Browser-extension keys that don't work (unknown, revoked, expired, malformed), per client address: past this a key
+# that doesn't work answers 429 instead of 401; one that works still gets in (backend/sessions.py).
+BAD_KEY = Limiter([(20, 5 * 60), (100, 60 * 60)])
 
 
 def reset_all() -> None:
     """Forget every count (tests)."""
     AUTH.reset()
+    BAD_KEY.reset()
     guesses.reset()
     unknown_guesses.reset()
     code_guesses.reset()

@@ -232,7 +232,7 @@ class GeneratedMarkupTest(unittest.TestCase):
         problems = []
         for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js", "account.js", "admin.js", "dialogs.js",
                      "signup.js", "server-settings.js", "export.js", "billing.js", "stripe-settings.js",
-                     "free-searches.js", "digest.js"):
+                     "free-searches.js", "digest.js", "extension.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
 
@@ -585,8 +585,9 @@ class SignInPagesBehaviourTest(unittest.TestCase):
                     guarded.add((prefix.group(1) if prefix else "") + here.group(1))
         self.assertIn("/api/admin/plaintext-files/delete", guarded)
         self.assertIn("/api/auth/mfa/setup", guarded)
+        self.assertIn("/api/extension/keys", guarded)
         for name in ("app.js", "job.js", "welcome.js", "account.js", "common.js", "admin.js", "export.js",
-                     "background.js", "account-email.js", "email-settings.js"):
+                     "background.js", "account-email.js", "email-settings.js", "extension.js"):
             for number, line in enumerate((FRONTEND / name).read_text(encoding="utf-8").splitlines(), 1):
                 for path in guarded:
                     # A plain api(path) is a GET; the guard is on the calls that change something.

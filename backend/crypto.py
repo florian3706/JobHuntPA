@@ -28,10 +28,10 @@ function                  AAD after the header        why
 Sealed* column types      ``jh/<table>.<column>``     a value moved to another column (or table) won't open
 ``seal``/``unseal``       ``jh-value|<label>``        values kept outside a sealed column, under the DEK
 ``wrap``/``unwrap``       ``jh-wrap|<label>``         keys under a key: ``pw|{uid}``, ``rc|{uid}|{code_id}``,
-                                                      ``sess|{sid}``, ``srv|{uid}|{kek_id}``, ``totp|{uid}``,
-                                                      and the identity key's: ``pw-ik|{uid}``,
-                                                      ``rc-ik|{uid}|{code_id}``, ``sess-ik|{sid}``,
-                                                      ``pend-ik|{sid}``, ``ik-priv|{uid}``,
+                                                      ``sess|{sid}``, ``ext|{id}`` (an extension key),
+                                                      ``srv|{uid}|{kek_id}``, ``totp|{uid}``, and the
+                                                      identity key's: ``pw-ik|{uid}``, ``rc-ik|{uid}|{code_id}``,
+                                                      ``sess-ik|{sid}``, ``pend-ik|{sid}``, ``ik-priv|{uid}``,
                                                       ``pending-codes|{uid}``
 ``seal_file``/``open_*``  ``jh-file|<label>``         an upload, labelled ``file|{stored_name}``: a file
                                                       renamed onto another document's name won't open
@@ -533,6 +533,26 @@ def check_csrf(cookie_secret: bytes, token: Optional[str]) -> bool:
     if not isinstance(token, str):
         return False
     return hmac.compare_digest(csrf_token(cookie_secret).encode("ascii"), token.encode("utf-8", "replace"))
+
+
+def extension_key_id(key_secret: bytes) -> str:
+    """``sessions.id`` of a browser-extension key (backend/extension.py): SHA-256 of the key's secret with a prefix of
+    its own, so the same 32 bytes as a cookie name another row (and a key can never be used as a cookie session, or
+    a cookie as a key)."""
+    return hashlib.sha256(b"jh extension key id v1|" + _key(key_secret, "extension key")).hexdigest()
+
+
+def extension_kek(key_secret: bytes) -> bytes:
+    return hkdf(_key(key_secret, "extension key"), b"jh extension key dek v1")
+
+
+def wrap_extension_dek(key_secret: bytes, dek: bytes) -> bytes:
+    """``sessions.wrapped_dek`` of an extension key: ``ext|{id}``, a label no cookie session uses."""
+    return wrap(extension_kek(key_secret), _key(dek, "data key"), f"ext|{extension_key_id(key_secret)}")
+
+
+def unwrap_extension_dek(key_secret: bytes, wrapped: bytes) -> bytes:
+    return unwrap(extension_kek(key_secret), wrapped, f"ext|{extension_key_id(key_secret)}")
 
 
 def recovery_kek(code: str, salt: bytes) -> bytes:

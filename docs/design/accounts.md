@@ -314,6 +314,7 @@ This is the same class as the plaintext-swap limit in §15 and needs write acces
    - Deletes the row, expires the cookie and sends `Clear-Site-Data: "cache"`. The JS clears `jobhunt.ws`.
    - "Sign out everywhere" deletes all of the user's sessions.
    - Password change, a reset, disabling the account and deleting it also delete every session.
+   - Browser-extension keys are session rows too (§19), so all of the above disconnect them as well.
 6. **Rate limiting and lockout** (`backend/ratelimit.py`, `backend/lockout.py`; in memory, the app is a single uvicorn process):
    - **Per IP** (the client address from X-Forwarded-For on loopback): auth endpoints allow 10 requests per 5 minutes and 60 per hour. Unsubscribe allows 30 per minute. This is only as good as the proxy's header: `tailscale serve` and other proxies on this computer **append** the real client address, which uvicorn then reads; a proxy that passed a client's own `X-Forwarded-For` through unchanged would let anyone pick their address. Behind the Host allowlist (§18) a web page on another site can't reach the server to forge one, so only programs on this computer can.
    - **Wrong passwords and codes** are counted per account **and per source**, never for the account as a whole:
@@ -1125,3 +1126,97 @@ A posting missing from one user's query results says nothing about whether it cl
   - A second pass: a keyless admin can still turn off a key-holding admin (§1.4); a mail-route change by an admin without the key is refused (§2.5); the export's deadline is a timer and grows with the zip's size; the SQL guard also refuses `OVER`, `cast`, `type_coerce` and a union's ORDER BY (§15).
   - Tests: `test_the_place_is_kept_until_the_download_has_ended` (`tests/test_export.py`), `test_the_portal_needs_the_password_entered_recently` and `StaleStripeState` (`tests/test_membership.py`), `RouteChangeTest` (`tests/test_mail_settings.py`), `ScorerParseTest` (`tests/test_core.py`).
 - **Behind a proxy:** `launch.py` trusts `X-Forwarded-For` from 127.0.0.1. The proxy must append the real client address (`tailscale serve` and the usual proxies do), not pass a client's own header through.
+
+## 19. Browser-extension keys (2026-10-09)
+
+The Chrome and Firefox extensions (repos `JobHuntPA-chrome-extension`, `JobHuntPA-firefox-extension`) add the
+page in the current tab as a job or as a company source. They can't use the session cookie (SameSite, CSRF, an
+`Origin` of `chrome-extension://...`), and everything is sealed under the person's DEK, so a key carries a wrapped
+DEK the way a session does. Code: `backend/extension.py` (the API, the keys and the address a job is stored under),
+the key checks in `backend/sessions.py`, `frontend/extension.js` (Settings > Browser extension). Tests: `tests/test_extension.py`, and a step in `tests/test_log_leaks.py`.
+
+- **What the person gets:** `jhpa_` + base64url of 32 random bytes, shown once in Settings with the server address
+  (`location.origin`), to paste into the extension's options. Making one needs a session (a key can't make keys)
+  with a recent sign-in (`require_recent_auth`), and it wraps the request's own DEK (`crypto.current()`, checked
+  against `user_keys.dek_kid`), like background access. At most 20 per account (counted and added under one lock,
+  so two requests at once can't both pass the count; the app is one process).
+- **What is stored:** a `sessions` row with `state = "extension"`. `id = SHA-256("jh extension key id v1|" +
+  secret)`, a different hash from a cookie's (`SHA-256(secret)`), so the same bytes as a cookie name another row.
+  `wrapped_dek = wrap(HKDF(secret, "jh extension key dek v1"), DEK, "ext|{id}")`: a label no cookie session uses, so
+  a key can't open as a session or a session as a key, even with `state` changed in the database. No identity key
+  (`wrapped_ik` NULL) and no recent sign-in (`reauth_at` NULL). `public_id`: a short random id the Settings card
+  revokes by (never the hash that authenticates; unique index). `label_enc`: the name the person typed, sealed
+  under their DEK with `crypto.seal(..., "sessions.label|{id}")` (bound to the row; a plain `LargeBinary`, not a
+  `Sealed*` column, so the sign-in code can load session rows without a key scope). The key itself is never stored
+  or logged.
+- **Lifetimes:** 60 days from the last use, a year at most (`sessions.KEY_IDLE`, `KEY_ABSOLUTE`). Use moves the idle
+  expiry on and writes `last_seen_at` at most every 5 minutes, like a session; the card shows "last used" and when
+  it stops working. Expired rows go with the sessions' clean-up.
+- **What revokes keys:** *Disconnect* on the card (`DELETE /api/extension/keys/{public_id}`, own keys only), and
+  everything that deletes all of an account's session rows: *Sign out everywhere else*, a password change that signs
+  out the other devices (one that keeps them keeps the keys), a password reset by email (with or without the data),
+  a reset with a recovery code, an admin turning the account off or turning off its two-step sign-in, and deleting
+  the account. Re-enabling the account doesn't bring keys back. Making and revoking a key each commit in one
+  transaction and then `scrub_wal()`; so does *Sign out everywhere else* now.
+- **The request check** (`AuthMiddleware._check_key`): a request with `Authorization: Bearer jhpa_...` is checked by
+  the key alone; the cookie is never looked at, even when the key is bad (401 `token_invalid`). Any other
+  `Authorization` value is left alone and the request goes the cookie's way with all its checks (Origin, CSRF): a
+  sign-in proxy in front of the app (oauth2-proxy, Authelia, ...) passes its own `Bearer <JWT>` or `Basic` on, and
+  that must neither lock the person out nor count as a bad key. A key request skips the same-site/Origin check and CSRF: browsers
+  never add that header by themselves, and a page on another site can't add it without a CORS preflight, which this
+  server never approves (it sends no CORS headers). It keeps the setup-required check, the encryption migration's
+  423, and runs inside `crypto.as_user` with the key's DEK and no identity key. Keys that don't work are counted
+  per client address (`ratelimit.BAD_KEY`: 20 in 5 minutes, 100 an hour); past that a key that doesn't work answers
+  429 `rate_limited` (with `Retry-After`) instead of 401, while a key that works still gets in, so bad keys from a
+  shared address (an office network, a proxy) never lock out the people with good ones; a key is 32 random bytes,
+  so the lookups the limit no longer saves guess nothing. The `AuthUser` has `key = True`, so `has_recent_auth` is
+  always false and sensitive actions refuse.
+- **The allowlist** (`sessions.KEY_ENDPOINTS`; anything else answers 403 `token_scope`, including the key endpoints
+  and every admin endpoint): `GET /api/extension/status`, `POST /api/extension/preview`, `POST /api/extension/jobs`,
+  `GET /api/sources`, `POST /api/sources`, `POST /api/sources/{id}/test`. Workspaces are the usual `X-Workspace`
+  check (another account's answers 404). A key can't read jobs, documents, chats or settings.
+- **Jobs (contract v3, 2026-10-10):** the extension reads the page in the person's own browser, on their machine:
+  JSON-LD JobPosting data, site-specific elements (SEEK, LinkedIn, Indeed, ...), the heading and titles, and the
+  description element's text (a JSON-LD description's HTML becomes text there, in an inert document), and fills the
+  popup with the result; the person corrects it there. It then sends only the finished job: `{"url", "canonical_url",
+  "job": {"title", "company", "location_text", "salary_text", "employment_type", "work_mode", "posted_at", "url",
+  "description", "description_from", "method"}}`, the description as plain text. **No HTML and no whole-page text
+  leave the browser**, so the session tokens, personal details and app state a signed-in page carries never reach
+  the server, and the server parses no page (an earlier version sent the page's HTML, up to 3 MB, and read it here:
+  that was most of the extension's attack surface and needed a limit on pages read at once). Limits (characters):
+  URLs 2,048, title, employer, location and salary 500, employment type 100, `posted_at` 40 (an ISO date or
+  date-time), description 100,000; `work_mode`, `description_from` and `method` are one of the contract's words.
+  The body is refused with 413 `too_large` from its `Content-Length` (or as it streams) past 512 KB, before any
+  parsing; a value over its limit is 413 `too_large` with `field`; a wrong type, a word outside its list, JSON
+  nested too deep to read or an **unknown field** is 422 `invalid` with `field` (so an extension still sending the
+  old `html` fails loudly instead of being half understood). null counts as an absent value, and an unpaired UTF-16
+  surrogate (JavaScript strings can hold one) is stored as "?". Nothing is fetched and no AI is asked.
+- **What the server decides:** only the address the job is stored under (`extension.stored_url`), since that decides
+  which job a save updates. A SEEK job, judged from the page's own `url` alone (`/job/<digits>` or
+  `?jobId=<digits>`, all ASCII digits, on `seek.com.au`, `seek.co.nz` or a subdomain, no user name), is stored as
+  `https://www.seek.com.au/job/{id}` with `external_id = id`, as the SEEK searches store it, so it links the pool's
+  posting. Otherwise the job's own `url` (the JSON-LD's), then `canonical_url`, is used when it is an http(s)
+  address on exactly the same host and port as `url` (the scheme's port when none is given; `www.` is another host)
+  with no user name; otherwise `url`. A page therefore can't make a save land on another site's address (the
+  person's real SEEK job, or a pool posting). Everything else is the browser's values, trimmed (the employment type
+  mapped to the stored vocabulary); the pipeline works out the rest from the text as for any job (country, office
+  days, work mode when unknown, the description hash). `detail_status` is `full` for a description of 200
+  characters or more, `summary` for a shorter one.
+- **No busy limit:** with nothing parsed but a JSON body of at most 512 KB, the largest request takes tens of
+  milliseconds (measured: ~25 ms preview, ~90 ms the first save, including the filters and the duplicate scan), so
+  the earlier limit of one page read per account and two at once (429 `busy`) is gone.
+- **Preview** (`POST /api/extension/preview`, the same body; `job` may be partial or empty) stores nothing and
+  answers `{"url": <the address a save would store>, "existing": {"id", "title", "status", "link"} | null}`: the
+  workspace's job with that address, else with the page's own `url` (saved under it before), as the job that is
+  listed for it (a merged copy's `duplicate_of`). **Save** (`POST /api/extension/jobs`) needs a non-empty title
+  (422 `invalid`, `field: "title"`).
+- **Storing:** like `POST /api/import/page` (§14.4): `pool.import_private` under `source = "browser"` (shown as
+  "browser extension"): the workspace's job with that address is updated with the job's values as its own
+  overrides (200, `created: false`), else a pool link when the pool has the address, else a private job (201). The
+  exclusion filters and the duplicate scan run as for an import, and the job waits for its score like one (with a
+  description its `detail_status` is `full` or `summary`; without one, `none`, like a listing). When the job with that address is a merged copy
+  (`duplicate_of`, backend/duplicates.py), the job it was merged into is the one updated: the one the person sees.
+  The answer links to the listed job (a merged copy's `duplicate_of`), as `/job.html?id={id}&ws={ws}`, and says
+  `excluded_reason`: why the exclusion filters leave the listed job out of the Jobs list (the same text the list
+  shows), or null, so the extension can say where the job went. Answer of `POST /api/extension/jobs`:
+  `{"job_id", "created", "title", "company", "link", "excluded_reason"}`.

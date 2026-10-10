@@ -33,6 +33,17 @@ signed in". Lifetimes: 24 hours idle and 7 days in all, or 30 days idle and 90 i
   7. Until the one-time encryption of the data from before accounts has run (backend.migrate_encryption), every
      API but health, /api/auth/* and /api/encryption/* answers 423 ``encrypting`` with its progress; a request
      from the admin whose key it needs starts or resumes it.
+
+**Browser-extension keys** (backend/extension.py). A request with ``Authorization: Bearer jhpa_...`` is checked by the
+key alone, never the cookie (a key that doesn't work answers 401 ``token_invalid``, even with a good cookie). Any other
+``Authorization`` value (a sign-in proxy's ``Bearer <JWT>`` or ``Basic``) isn't ours: the request goes the cookie's
+way, with all its checks. A key request skips steps 1, 3 and 5 (a browser never sends that header by itself, and
+another site's page can't add it without a CORS preflight this server never approves), keeps 2, 6 and 7, and reaches
+only ``KEY_ENDPOINTS`` (403 ``token_scope`` otherwise). Its ``AuthUser`` has ``key`` set and never a recent sign-in.
+Keys that don't work are counted per client address (``ratelimit.BAD_KEY``); past its limit a key that doesn't work
+answers 429, and one that works still gets in. A key's row is a ``sessions`` row (``state = "extension"``), so
+everything that ends all of an account's sessions ends its keys too.
+
 **Two-step sign-in.** After a correct password, an account with MFA gets a ``pending_mfa`` session (10 minutes) and
 no data key in use: its row holds the DEK (and the IK) wrapped under the cookie secret with their own labels
 (``pend|{sid}``, ``pend-ik|{sid}``, not ``sess|{sid}``), ``load`` never unwraps a row that isn't ``active``, and so a pending session reaches nothing but
@@ -48,13 +59,15 @@ The DB work runs in the thread pool, so a slow write elsewhere never stalls the 
 from __future__ import annotations
 
 import logging
+import re
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy import select, update
+from sqlalchemy import null, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -109,13 +122,14 @@ class AuthUser:
     persistent: bool
     reauth_at: Optional[datetime]
     csrf: str
+    key: bool = False  # a browser-extension key, not a browser session: no recent sign-in, KEY_ENDPOINTS only
 
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"
 
     def __repr__(self) -> str:  # never the CSRF token
-        return f"<AuthUser id={self.id} role={self.role}>"
+        return f"<AuthUser id={self.id} role={self.role}{' key' if self.key else ''}>"
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +308,8 @@ def end(db: Session, session_id: str) -> None:
 
 
 def end_all(db: Session, user_id: int, *, keep: Optional[str] = None) -> int:
-    """Sign the user out everywhere (but ``keep``): password change or reset, disabling or deleting the account."""
+    """Sign the user out everywhere (but ``keep``): password change or reset, disabling or deleting the account. The
+    account's browser-extension keys are session rows too, so they end as well."""
     q = db.query(AuthSession).filter(AuthSession.user_id == user_id)
     if keep:
         q = q.filter(AuthSession.id != keep)
@@ -354,9 +369,122 @@ def load(secret: bytes) -> Optional[tuple[AuthUser, bytes, Optional[Callable[[],
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# Browser-extension keys (backend/extension.py)
+# ---------------------------------------------------------------------------
+
+KEY_STATE = "extension"
+KEY_PREFIX = "jhpa_"
+KEY_IDLE = timedelta(days=60)       # a key not used for this long stops working
+KEY_ABSOLUTE = timedelta(days=365)  # and every key after a year
+KEY_LEN_CHARS = len(KEY_PREFIX) + 43  # 32 bytes in base64url, without padding
+TOKEN_INVALID_DETAIL = ("This extension key doesn't work: it was disconnected, has expired or was copied wrong. "
+                        "Connect the extension again in JobHuntPA's Settings, then paste the new key in its options.")
+TOKEN_SCOPE = "token_scope"
+TOKEN_SCOPE_DETAIL = "A browser-extension key can't be used for this. Open JobHuntPA in your browser instead."
+# What an extension key may call: (method, path) with the path's trailing slash taken off. Everything else answers
+# 403 token_scope, whatever the key.
+KEY_ENDPOINTS = (
+    ("GET", re.compile(r"/api/extension/status")),
+    ("POST", re.compile(r"/api/extension/preview")),
+    ("POST", re.compile(r"/api/extension/jobs")),
+    ("GET", re.compile(r"/api/sources")),
+    ("POST", re.compile(r"/api/sources")),
+    ("POST", re.compile(r"/api/sources/[0-9]{1,18}/test")),
+)
+
+
+def key_may_call(method: str, path: str) -> bool:
+    return any(method == m and pattern.fullmatch(path) for m, pattern in KEY_ENDPOINTS)
+
+
+def new_extension_key(db: Session, user_id: int, dek: bytes, label: str) -> tuple[str, AuthSession]:
+    """A new extension key for ``user_id`` (added to ``db``, not committed): returns the key as the person pastes it
+    (``jhpa_`` + base64url of 32 random bytes; it is never stored) and its row. ``dek`` is the request's own data key;
+    ``label`` the name the person gave it, sealed under that key and bound to the row. No identity key, no recent
+    sign-in."""
+    secret = crypto.new_key()
+    sid = crypto.extension_key_id(secret)
+    now = utcnow()
+    absolute = now + KEY_ABSOLUTE
+    row = AuthSession(id=sid, user_id=user_id, state=KEY_STATE, persistent=False,
+                      wrapped_dek=crypto.wrap_extension_dek(secret, dek), wrapped_ik=None,
+                      created_at=now, last_seen_at=null(), idle_expires_at=min(now + KEY_IDLE, absolute),
+                      absolute_expires_at=absolute, reauth_at=None, mfa_failures=0,
+                      public_id=secrets.token_urlsafe(9),
+                      label_enc=crypto.seal(label.encode("utf-8"), f"sessions.label|{sid}"))
+    db.add(row)
+    return KEY_PREFIX + crypto.b64e(secret), row
+
+
+def bearer(headers: Headers) -> Optional[str]:
+    """The extension key of an ``Authorization: Bearer jhpa_...`` header, or None. Anything else in that header (a
+    sign-in proxy in front of the app passing on its own ``Bearer <JWT>``, or ``Basic``) is not ours: the cookie is
+    used then."""
+    value = headers.get("authorization")
+    if value is None:
+        return None
+    scheme, _, token = value.strip().partition(" ")
+    token = token.strip()
+    return token if scheme.lower() == "bearer" and token.startswith(KEY_PREFIX) else None
+
+
+def key_secret(token: str) -> Optional[bytes]:
+    """The 32 bytes of a well-formed extension key, else None."""
+    if len(token) != KEY_LEN_CHARS or not token.startswith(KEY_PREFIX):
+        return None
+    try:
+        secret = crypto.b64d(token[len(KEY_PREFIX):])
+    except ValueError:
+        return None
+    return secret if len(secret) == crypto.KEY_LEN else None
+
+
+def load_key(secret: bytes) -> Optional[tuple[AuthUser, bytes, None]]:
+    """The user and DEK of an extension key, or None (unknown, revoked, expired, account not active). Moves its idle
+    expiry on and records its last use, at most every 5 minutes. The user has no recent sign-in and no identity
+    key."""
+    db = SessionLocal()
+    try:
+        sid = crypto.extension_key_id(secret)
+        row = db.get(AuthSession, sid)
+        if row is None or row.state != KEY_STATE:
+            return None
+        now = utcnow()
+        if _expired(row, now):
+            db.delete(row)
+            db.commit()
+            return None
+        user = db.get(User, row.user_id)
+        if user is None or user.status != "active":
+            return None
+        try:
+            dek = crypto.unwrap_extension_dek(secret, row.wrapped_dek)
+        except crypto.CryptoError:
+            return None
+        auth = AuthUser(id=user.id, role=user.role, session_id=sid, persistent=False, reauth_at=None, csrf="",
+                        key=True)
+        today = datetime.now(timezone.utc).date()
+        try:
+            if row.last_seen_at is None or now - row.last_seen_at >= TOUCH_EVERY:
+                row.last_seen_at = now
+                row.idle_expires_at = min(now + KEY_IDLE, row.absolute_expires_at)
+            if _active_on.get(user.id) != today:
+                if user.last_active_on != today:
+                    user.last_active_on = today
+                _active_on[user.id] = today
+            db.commit()
+        except OperationalError:
+            db.rollback()
+        return auth, dek, None
+    finally:
+        db.close()
+
+
 def has_recent_auth(user: AuthUser, now: Optional[datetime] = None) -> bool:
-    """The password was entered within the last 15 minutes (for sensitive actions, Phases E and F)."""
-    return user.reauth_at is not None and (now or utcnow()) - user.reauth_at <= RECENT_AUTH
+    """The password was entered within the last 15 minutes (for sensitive actions, Phases E and F). Never for an
+    extension key."""
+    return not user.key and user.reauth_at is not None and (now or utcnow()) - user.reauth_at <= RECENT_AUTH
 
 
 class AuthProblem(Exception):
@@ -446,6 +574,9 @@ class AuthMiddleware:
         path = scope["path"].rstrip("/") or "/"
         unsafe = scope.get("method", "GET") in UNSAFE
         headers = Headers(scope=scope)
+        token = bearer(headers)
+        if token is not None:
+            return await self._check_key(scope, path, token)
         if unsafe and not same_site(scope):
             return _deny(403, "bad_origin", "This request came from another website, so it was refused.")
         if not (users.known_to_exist() or await run_in_threadpool(users.users_exist)) and path not in SETUP_PATHS:
@@ -473,6 +604,32 @@ class AuthMiddleware:
             return response
         if unsafe and path not in PRE_SESSION and not crypto.check_csrf(secret, headers.get("x-csrf-token")):
             return _deny(403, "csrf", "This page's security token is out of date. Reload the page and try again.")
+        if not encryption_open(path):
+            blocked = await _while_encrypting(found[0], found[1])
+            if blocked is not None:
+                return blocked
+        return found
+
+    async def _check_key(self, scope, path: str, token: str):
+        """A request with ``Authorization: Bearer jhpa_...``: a browser-extension key, and only that (the cookie is
+        never looked at, even when the key doesn't work). No Origin check or CSRF token: browsers never add this
+        header by themselves, and a page on another site can't add it without a CORS preflight, which this server
+        never approves. Keys that don't work are counted per client address (``ratelimit.BAD_KEY``): past its limit
+        one answers 429, but a key that works is let in all the same (one address can be many people's: a shared
+        network, a proxy), and guessing a key is hopeless (32 random bytes)."""
+        if not (users.known_to_exist() or await run_in_threadpool(users.users_exist)):
+            return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create the admin account first.")
+        secret = key_secret(token)
+        found = await run_in_threadpool(load_key, secret) if secret else None
+        if found is None:
+            wait = ratelimit.BAD_KEY.hit(client_address(scope))
+            if wait is not None:
+                return _deny(429, "rate_limited", f"Too many tries with keys that don't work. Try again in "
+                                                  f"{ratelimit.wait_text(wait)}.",
+                             {"Retry-After": ratelimit.retry_after(wait)})
+            return _deny(401, "token_invalid", TOKEN_INVALID_DETAIL)
+        if not key_may_call(scope.get("method", "GET"), path):
+            return _deny(403, TOKEN_SCOPE, TOKEN_SCOPE_DETAIL)
         if not encryption_open(path):
             blocked = await _while_encrypting(found[0], found[1])
             if blocked is not None:

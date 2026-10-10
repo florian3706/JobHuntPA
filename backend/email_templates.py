@@ -289,6 +289,8 @@ def source_label(source: Any) -> Optional[str]:
         return "SEEK"
     if s == "import":
         return "imported page"
+    if s == "browser":
+        return "browser extension"
     kind, sep, rest = s.partition(":")
     if not sep:
         return _clean(s, 80)

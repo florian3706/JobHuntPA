@@ -163,6 +163,17 @@ def stage_of(job: Job) -> str:
     return "full" if job.detail_status in ("full", "summary") else "listing"
 
 
+def _import(db: Session, ws: int, p: Posting, source: str, crit: Criteria, now: datetime) -> tuple[Job, bool]:
+    """One posting from a page the user has (``pool.import_private``), placed and filtered, committed."""
+    job, is_new = pool.import_private(db, ws, p, source, now)
+    if job.excluded_reason == NOT_A_JOB:
+        job.excluded_reason = None
+    enrich(job, crit)
+    job.excluded_reason = exclusion_reason(job, crit, stage=stage_of(job))
+    db.commit()
+    return job, is_new
+
+
 def import_postings(postings: list[Posting], source: str, ws: int) -> dict:
     """Store postings parsed from a page the user saved in their browser. They're the user's own: a job the pool
     doesn't have stays private to this workspace (``pool.import_private``)."""
@@ -172,15 +183,21 @@ def import_postings(postings: list[Posting], source: str, ws: int) -> dict:
         now = datetime.utcnow()
         new = kept = 0
         for p in postings:
-            job, is_new = pool.import_private(db, ws, p, source, now)
-            if job.excluded_reason == NOT_A_JOB:
-                job.excluded_reason = None
-            enrich(job, crit)
-            job.excluded_reason = exclusion_reason(job, crit, stage=stage_of(job))
+            job, is_new = _import(db, ws, p, source, crit, now)
             new += is_new
             kept += job.excluded_reason is None
-            db.commit()
         return {"imported": len(postings), "new": new, "kept": kept, "excluded": len(postings) - kept}
+    finally:
+        db.close()
+
+
+def import_one(posting: Posting, source: str, ws: int) -> tuple[int, bool]:
+    """``import_postings`` for one posting (a job sent by the browser extension). Returns (the job's id, new to the
+    workspace)."""
+    db = SessionLocal()
+    try:
+        job, is_new = _import(db, ws, posting, source, load_criteria(db, ws), datetime.utcnow())
+        return job.id, is_new
     finally:
         db.close()
 

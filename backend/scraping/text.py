@@ -5,7 +5,7 @@ import hashlib
 import html as html_lib
 import re
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, CData, NavigableString, Tag
 
 _WS_RE = re.compile(r"[ \t\r\f\v ]+")
 _BLANKS_RE = re.compile(r"\n{3,}")
@@ -21,8 +21,16 @@ def clean(value: object) -> str:
     return " ".join(str(value).split())
 
 
+_LEFT_OUT = ("script", "style", "noscript", "svg", "template")
+_TEXT = (NavigableString, CData)  # the strings get_text() reads (not comments, nor the text of <rt> and the like)
+_AFTER = object()
+
+
 def html_to_text(markup: str) -> str:
-    """Convert an HTML fragment to plain text keeping paragraphs and bullets."""
+    """Convert an HTML fragment to plain text keeping paragraphs and bullets: "- " before each list item, a line
+    break before and after each block, scripts, styles and the like left out. One pass over the parsed fragment,
+    without changing it: inserting the breaks into the tree took time in proportion to the square of a long list of
+    siblings, and the fragment can come from any page (a job's JSON-LD description)."""
     if not markup:
         return ""
     if "<" not in markup and "&" in markup:
@@ -30,14 +38,24 @@ def html_to_text(markup: str) -> str:
     if "<" not in markup:
         return normalize_block(markup)
     soup = BeautifulSoup(markup, "lxml")
-    for tag in soup(["script", "style", "noscript", "svg", "template"]):
-        tag.decompose()
-    for li in soup.find_all("li"):
-        li.insert_before("\n- ")
-    for tag in soup.find_all(BLOCK_TAGS):
-        tag.insert_before("\n")
-        tag.insert_after("\n")
-    return normalize_block(soup.get_text())
+    out: list[str] = []
+    stack: list = [soup]
+    while stack:
+        node = stack.pop()
+        if node is _AFTER:
+            out.append("\n")
+        elif isinstance(node, Tag):
+            if node.name in _LEFT_OUT:
+                continue
+            if node.name == "li":
+                out.append("\n- ")
+            elif node.name in BLOCK_TAGS:
+                out.append("\n")
+                stack.append(_AFTER)
+            stack.extend(reversed(node.contents))
+        elif type(node) in _TEXT:
+            out.append(node)
+    return normalize_block("".join(out))
 
 
 def normalize_block(text: str) -> str:

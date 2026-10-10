@@ -270,6 +270,7 @@ class FullRun(MailTestCase):
             grant = self.free_period(c)  # the AI features are for members (a free period, as an admin grants it)
             ads = self.search_and_score(c)
             self.talk_to_the_ai(c, ads)
+            self.browser_extension(c)
             self.when_things_fail(c)
             self.with_claude(c)
             self.end_free_period(grant)  # so the account pays for its membership next
@@ -371,6 +372,53 @@ class FullRun(MailTestCase):
         r = c.post("/api/companies/research", json={"name": "ZQX Corp"})
         self.assertEqual(self.run_to_end(c, r.json())["state"], "done")
         self.assertIn("zqx corp", c.get("/api/companies").json())
+
+    def browser_extension(self, c):
+        """The browser extension: a key named by the person, then jobs it read from pages in their browser (the
+        values, the description and the addresses), previewed and saved, and a source added and tested through the
+        key."""
+        from backend import ratelimit
+        from backend.adapters.base import SourceError
+
+        r = c.post("/api/extension/keys", json={"label": "ZQX Firefox on Zqx's laptop"})
+        self.assertEqual(r.status_code, 201, r.text)
+        self.secrets["extension_key"] = r.json()["key"]
+        self.assertIn("ZQX", c.get("/api/extension/keys").json()[0]["label"])
+        k = self.anonymous()
+        k.headers["Authorization"] = f"Bearer {r.json()['key']}"
+        self.assertIn("ZQX", k.get("/api/extension/status").json()["label"])
+        ad = "ZQX include: lead the ZQX delivery program for Zqx Quillon's team. " * 6
+        page = {"url": "https://careers.zqx.example/jobs/zqx-77?zqx=1", "canonical_url": "https://careers.zqx.example/c/zqx",
+                "job": {"title": "ZQX Delivery Lead", "company": "ZQX Corp", "location_text": "Zqxtown NSW",
+                        "salary_text": "ZQX $150k", "employment_type": "ZQX full time", "work_mode": "hybrid",
+                        "posted_at": "2026-10-01", "url": "https://careers.zqx.example/jobs/zqx-77",
+                        "description": ad, "description_from": "site", "method": "site"}}
+        self.assertEqual(k.post("/api/extension/preview", json=page).status_code, 200)
+        self.assertEqual(k.post("/api/extension/jobs", json=page).status_code, 201)
+        edited = {**page, "job": {**page["job"], "description": "ZQX selected ad text", "description_from": "selection"}}
+        self.assertEqual(k.post("/api/extension/jobs", json=edited).status_code, 200)
+        self.assertEqual(k.post("/api/extension/preview", json=page).json()["existing"]["title"], "ZQX Delivery Lead")
+        for bad in ({**page, "job": {**page["job"], "title": ""}}, {**page, "url": "ftp://zqx.example/zqx"},
+                    {**page, "job": {**page["job"], "work_mode": "ZQX moon"}}, {**page, "html": "<p>ZQX</p>"},
+                    {**page, "job": {**page["job"], "posted_at": "ZQX yesterday"}}):
+            self.assertEqual(k.post("/api/extension/jobs", json=bad).status_code, 422)
+        too_long = {**page, "job": {**page["job"], "title": "ZQX " * 200}}
+        self.assertEqual(k.post("/api/extension/jobs", json=too_long).status_code, 413)
+        r = k.post("/api/sources", json={"url": "https://careers.zqx-two.example/jobs", "label": "ZQX second employer"})
+        self.assertEqual(r.status_code, 201, r.text)
+        self.source.postings = [_ad(20)]
+        self.source.notes = []  # (what a source test shows besides the sample)
+        with mock.patch("backend.sources.source_adapter", side_effect=lambda *a, **kw: self.source):
+            self.assertEqual(k.post(f"/api/sources/{r.json()['id']}/test").json()["count"], 1)
+            self.source.failure = SourceError("ZQX source down: https://careers.zqx-two.example/jobs")
+            self.assertFalse(k.post(f"/api/sources/{r.json()['id']}/test").json()["ok"])
+            self.source.failure = None
+        self.assertEqual(k.get("/api/jobs").status_code, 403)
+        wrong = self.anonymous()
+        wrong.headers["Authorization"] = "Bearer " + self.secrets["extension_key"][:-4] + "zqxq"
+        self.secrets["wrong_extension_key"] = wrong.headers["Authorization"][7:]
+        self.assertEqual(wrong.get("/api/extension/status").status_code, 401)
+        ratelimit.BAD_KEY.reset()
 
     def when_things_fail(self, c):
         """Errors carry the text that caused them (a provider echoes the prompt, a library names the address): none

@@ -9,10 +9,37 @@ from backend.adapters.base import Posting
 from backend.employment import normalise_employment_type
 from backend.scraping.text import clean, html_to_text
 
-_JSONLD_RE = re.compile(
-    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
-    re.IGNORECASE | re.DOTALL,
-)
+# A JSON-LD block is ``<script ... type="application/ld+json" ...>(.*?)</script>`` (any case). It is found by
+# scanning (``_jsonld_blocks``), not by one regular expression over the page: on a page with many unclosed
+# ``<script`` tags that would rescan the rest of the page from each one (quadratic; a saved page the user imports
+# can be anything).
+_SCRIPT_OPEN = re.compile(r"<script", re.IGNORECASE)
+_SCRIPT_CLOSE = re.compile(r"</script>", re.IGNORECASE)
+_LD_TYPE = re.compile(r'type=["\']application/ld\+json["\']', re.IGNORECASE)
+
+
+def _jsonld_blocks(html: str) -> Iterable[str]:
+    """The contents of the page's JSON-LD script blocks, in order. Each part of the page is looked at once."""
+    pos = 0
+    while True:
+        start = _SCRIPT_OPEN.search(html, pos)
+        if start is None:
+            return
+        attrs_at = start.end()
+        tag_end = html.find(">", attrs_at)
+        if tag_end < 0:
+            return  # no tag after this one can end either
+        # The type is an attribute after at least one other character (``<script type=...``, not ``<scripttype=``).
+        # A ``<script`` inside this tag's attributes ends at the same ">", so it can't be a JSON-LD block when this
+        # one isn't: carry on after the tag.
+        if _LD_TYPE.search(html, attrs_at + 1, tag_end) is None:
+            pos = tag_end + 1
+            continue
+        close = _SCRIPT_CLOSE.search(html, tag_end + 1)
+        if close is None:
+            return  # nor can any later block be closed
+        yield html[tag_end + 1:close.start()]
+        pos = close.end()
 
 
 def _walk(node: Any) -> Iterable[dict]:
@@ -37,12 +64,13 @@ def _is_type(node: dict, name: str) -> bool:
 
 def find_job_postings(html: str) -> list[dict]:
     out: list[dict] = []
-    for raw in _JSONLD_RE.findall(html or ""):
+    for raw in _jsonld_blocks(html or ""):
         try:
             data = json.loads(raw.strip())
-        except ValueError:
+            found = [n for n in _walk(data) if _is_type(n, "JobPosting")]
+        except (ValueError, RecursionError):  # not JSON, or nested too deep to read
             continue
-        out.extend(n for n in _walk(data) if _is_type(n, "JobPosting"))
+        out.extend(found)
     return out
 
 
