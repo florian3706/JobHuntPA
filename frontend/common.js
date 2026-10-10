@@ -616,34 +616,52 @@ function employmentBadge(job) {
   const label = EMPLOYMENT_LABEL[job.employment_type];
   return label ? `<span class="badge soft"><span class="visually-hidden">Employment type: </span>${label}</span>` : '';
 }
-// "Possible ghost job" badge: the icon and the words say it (colour only repeats it); never an accusation.
+/* Ghost jobs (backend/ghost.py): how likely the ad is not a current vacancy, as the server estimates it from the signs
+   it found. Every job shows 👻 and the percentage under its fit score. The number and the words say it; the colour
+   (the theme's green through yellow to red, in eleven steps: .ghost-h0 to .ghost-h10) only repeats it. Never an
+   accusation: it is an estimate, and the job page says how it was worked out. */
 const GHOST_STRENGTH = { likely: 'several signs', possible: 'some signs' };
-function ghostBadge(job) {
-  const level = job.ghost?.level;
-  if (!level) return '';
-  return `<span class="badge ghost ghost-${level}"><span aria-hidden="true">⚠ </span>Possible ghost job<span class="ghost-strength">: ${GHOST_STRENGTH[level]}</span></span>`;
+function ghostPercent(job) {
+  const p = job.ghost?.percent;
+  return Number.isFinite(p) ? Math.max(0, Math.min(100, Math.round(p))) : null; // (null: an older server sent none)
 }
-// The "Why?" disclosure on a job card: the signs that raised the flag.
+const ghostHue = (percent) => `ghost-h${Math.round(percent / 10)}`;
+/* 👻 and the percentage. `href` makes it a link to the explanation (the job page's own section). */
+function ghostMeter(job, href = '') {
+  const percent = ghostPercent(job);
+  if (percent === null) return '';
+  const words = GHOST_STRENGTH[job.ghost.level] || 'no strong signs';
+  const body = `<span aria-hidden="true">👻 </span><span class="visually-hidden">Ghost job likelihood </span>${percent}%<span class="visually-hidden">, ${words}</span>`;
+  const cls = `ghost-pct ${ghostHue(percent)}`;
+  if (href) return `<a class="${cls}" href="${esc(href)}" title="Why this rating">${body}<span class="visually-hidden">: why this rating</span></a>`;
+  return `<span class="${cls}" title="Estimated likelihood that this ad is not a current vacancy: ${words}. Open the job to see why.">${body}</span>`;
+}
+// The fit score with the ghost-job likelihood under it (job cards, the map list, the job page).
+function ratingsHtml(job, ghostHref = '') {
+  return `<div class="ratings">${scoreBadge(job)}${ghostMeter(job, ghostHref)}</div>`;
+}
+// On the card of a flagged job: the signs that raised the flag, in words.
 function ghostWhy(job) {
   const g = job.ghost;
   if (!g?.level || !(g.signals || []).length) return '';
-  return `<details class="ghost-why" data-section="ghost"><summary>Why?<span class="visually-hidden"> This job is flagged as a possible ghost job</span></summary>
+  return `<details class="ghost-why" data-section="ghost"><summary><span aria-hidden="true">👻 </span>Possible ghost job (${GHOST_STRENGTH[g.level]}): why?</summary>
     <ul class="ghost-signs">${g.signals.map((s) => `<li>${esc(s.text)}</li>`).join('')}</ul>
-    <p class="hint">This may still be a real job. Ask the employer whether the role is open now.</p></details>`;
+    <p class="hint">This may still be a real job. Ask the employer whether the role is open now. Open the job to see how the percentage was worked out.</p></details>`;
 }
 function modeOf(job) { return ['remote', 'hybrid', 'onsite'].includes(job.work_mode) ? job.work_mode : 'unknown'; }
 
-// The number is the score; its colour only repeats it. Screen readers get "Fit score 82 of 100".
+// 🎯 and the fit score. The number is the score; its colour only repeats it. Screen readers get "Fit score 82 of 100".
+const SCORE_ICON = '<span aria-hidden="true">🎯 </span>';
 function scoreBadge(job) {
   const fit = job.fit;
-  if (!fit) return '<span class="score none" title="Not scored yet"><span aria-hidden="true">–</span><span class="visually-hidden">Not scored yet</span></span>';
+  if (!fit) return `<span class="score none" title="Not scored yet">${SCORE_ICON}<span aria-hidden="true">–</span><span class="visually-hidden">Not scored yet</span></span>`;
   if (fit.status === 'error') {
-    return `<span class="score err" title="${esc(fit.error || 'error')}"><span aria-hidden="true">!</span><span class="visually-hidden">Scoring failed</span></span>`;
+    return `<span class="score err" title="${esc(fit.error || 'error')}">${SCORE_ICON}<span aria-hidden="true">!</span><span class="visually-hidden">Scoring failed</span></span>`;
   }
   const cls = fit.score >= 75 ? 'high' : fit.score >= 45 ? 'mid' : 'low';
   const stale = fit.stale ? ' stale' : '';
   const title = fit.stale ? 'Scored against older documents' : `Scored ${fmtDate(fit.scored_at)}`;
-  return `<span class="score ${cls}${stale}" title="${esc(title)}"><span class="visually-hidden">Fit score </span>${fit.score}${
+  return `<span class="score ${cls}${stale}" title="${esc(title)}">${SCORE_ICON}<span class="visually-hidden">Fit score </span>${fit.score}${
     fit.stale ? '<span aria-hidden="true">*</span><span class="visually-hidden"> of 100, scored against older documents</span>' : '<span class="visually-hidden"> of 100</span>'}</span>`;
 }
 

@@ -1,7 +1,8 @@
 """Signs that a job ad may not be a real, current vacancy (docs/design/ghost-jobs.md).
 
-An ad can't be proved to be a "ghost job", so this only reports signs, each with a plain reason, and a level:
-``likely`` (strong evidence), ``possible``, or None. It never hides, scores or down-ranks a job.
+An ad can't be proved to be a "ghost job", so this only reports signs, each with a plain reason, a level
+(``likely``: strong evidence, ``possible``, or None) and a percentage worked out from the same signs
+(``percent_of``: an estimate, never a measurement). It never hides, scores or down-ranks a job.
 
 A signal is ``{code, weight, text, detail?}``. The pure functions here turn facts into signals; the rest reads and
 stores them:
@@ -52,6 +53,13 @@ LIKELY_WEIGHT = 5                               # one signal this strong makes "
 LIKELY_TOTAL, LIKELY_SIGNALS = 6, 2             # ... or this much from at least this many moderate signals
 POSSIBLE_TOTAL = 3
 MAX_AD_PHRASES, MAX_PHRASE_CHARS = 4, 100
+# The percentage shown beside the level. Each level has its own band, so the number never disagrees with the level
+# (which the "Hide possible ghost jobs" filter, the digest and the export read), and the total weight places a job in
+# its band. Never 0 or 100: the app can't know.
+BASE_PERCENT, UNFLAGGED_STEP = 5, 10            # no signs: 5%; 15% and 25% for a total of 1 and 2
+POSSIBLE_PERCENT = (35, 60)                     # from a total of POSSIBLE_TOTAL, 5 more a point
+LIKELY_PERCENT = (70, 95)                       # from a total of LIKELY_WEIGHT, 5 more a point
+PERCENT_STEP = 5
 
 ORDER = ("evergreen_wording", "long_open", "reposted", "ad_signs", "company_news_cuts", "date_refreshed",
          "many_similar", "recruiter_no_employer")
@@ -75,6 +83,26 @@ def level_of(signals: Iterable[dict]) -> Optional[str]:
     if total >= LIKELY_TOTAL and sum(1 for w in weights if w >= 2) >= LIKELY_SIGNALS:
         return "likely"
     return "possible" if total >= POSSIBLE_TOTAL else None
+
+
+def percent_of(signals: Iterable[dict]) -> int:
+    """How likely the ad is not a current vacancy, as a percentage for the job card: an estimate from the signs'
+    weights. 5 with no signs, up to 25 below "possible", 35 to 60 for "possible", 70 to 95 for "likely"."""
+    signals = list(signals)
+    total = sum(s["weight"] for s in signals)
+    level = level_of(signals)
+    if level == "likely":
+        low, high = LIKELY_PERCENT
+        return min(high, low + PERCENT_STEP * max(0, total - LIKELY_WEIGHT))
+    if level == "possible":
+        low, high = POSSIBLE_PERCENT
+        return min(high, low + PERCENT_STEP * (total - POSSIBLE_TOTAL))
+    return BASE_PERCENT + UNFLAGGED_STEP * total
+
+
+def strength_of(weight: int) -> str:
+    """A sign's weight in words, for the job page (the weights themselves stay internal)."""
+    return "strong" if weight >= LIKELY_WEIGHT else "moderate" if weight >= 2 else "weak"
 
 
 def ordered(signals: Iterable[dict]) -> list[dict]:
@@ -288,21 +316,36 @@ def edit_date_source(source: Optional[str]) -> bool:
     return (source or "").partition(":")[0] in UPDATED_DATE_SOURCES
 
 
+def listing_dates(first_seen: Optional[datetime], listed_since: Optional[datetime], posted_at: Optional[str],
+                  now: datetime, source: Optional[str] = None) -> tuple:
+    """(start, posted, began): when the current run of listing started for the pool, the ad's own posted date when it
+    can be read as one (None for a source that stores the last-edit date, or a date in the future), and the day the
+    listing began (``time_signals`` says how the two combine). All None without a start."""
+    start = listed_since or first_seen
+    if start is None:
+        return None, None, None
+    posted = None if edit_date_source(source) else parse_posted(posted_at)
+    if posted is not None and posted > now + timedelta(days=2):
+        posted = None  # a date in the future isn't a posted date
+    began = start if posted is None or reopened(first_seen, listed_since) else min(start, posted)
+    return start, posted, began
+
+
+def still_listed(last_listed: Optional[datetime], now: datetime) -> bool:
+    return last_listed is None or last_listed >= now - STILL_LISTED
+
+
 def time_signals(first_seen: Optional[datetime], listed_since: Optional[datetime], last_listed: Optional[datetime],
                  closed: bool, posted_at: Optional[str], now: datetime, source: Optional[str] = None) -> list[dict]:
     """``long_open`` and ``date_refreshed`` from the posting's dates. The listing's start is when the pool first saw
     the ad (or when it came back after closing); a posted date earlier than that moves the start back, unless the ad
     closed and came back (it wasn't open all that time). A source that stores the ad's last-edit date as its posted
     date (``UPDATED_DATE_SOURCES``) says nothing about when it was posted: that date is not read."""
-    start = listed_since or first_seen
+    start, posted, began = listing_dates(first_seen, listed_since, posted_at, now, source)
     if start is None:
         return []
-    posted = None if edit_date_source(source) else parse_posted(posted_at)
-    if posted is not None and posted > now + timedelta(days=2):
-        posted = None  # a date in the future isn't a posted date
     out = []
-    began = start if posted is None or reopened(first_seen, listed_since) else min(start, posted)
-    if not closed and (last_listed is None or last_listed >= now - STILL_LISTED):
+    if not closed and still_listed(last_listed, now):
         days = (now - began).days
         for threshold, weight in LONG_OPEN_DAYS:
             if days >= threshold:
@@ -548,14 +591,79 @@ def refresh(db: Session, now: datetime, limit: int = MAX_REFRESH) -> int:
 # A job
 # --------------------------------------------------------------------------
 
-NONE = {"level": None, "signals": []}
+NONE = {"level": None, "percent": BASE_PERCENT, "signals": []}
+
+# Every kind of sign, in the order the job page lists them, with what the app looks for.
+CHECKS = (
+    ("evergreen_wording", 'Wording that collects applications for future roles, such as "talent pool" or "register your interest"'),
+    ("ad_signs", "Wording the AI read in the ad that suggests it is not a current vacancy"),
+    ("long_open", f"An ad still listed after {LONG_OPEN_DAYS[-1][0]} days or more"),
+    ("reposted", "The same role listed before, ended, and listed again"),
+    ("date_refreshed", "A posted date moved forward while the ad stayed listed"),
+    ("many_similar", f"{MANY_SIMILAR} or more open ads with this title at this company"),
+    ("recruiter_no_employer", "A recruiter's ad that may not name the employer"),
+    ("company_news_cuts", "News of job cuts or a hiring freeze at the company in the last 12 months"),
+)
+NO_HISTORY = "This job did not come from a search, so there is no listing history to check."
+NOT_YET = "Worked out at the end of the next search."
+
+
+def _checks(job: Job, profiles: dict[str, CompanyProfile], found: set, ad_raw: Optional[str], now: datetime) -> list[dict]:
+    """For the job page: each kind of sign as ``{code, label, state, note?}``. ``state`` is "found" (it is in the
+    signals), "clear" (looked for, not there) or "unknown" (it could not be checked, and the note says why): a low
+    percentage means less when half the checks could not be made."""
+    posting = job.posting
+    unknown: dict[str, str] = {}
+    notes: dict[str, str] = {}
+    if posting is None:
+        unknown.update({code: NO_HISTORY for code in ("long_open", "reposted", "date_refreshed", "many_similar")})
+    else:
+        start, posted, began = listing_dates(posting.first_seen, posting.listed_since, posting.posted_at, now, posting.source)
+        if start is None:
+            unknown.update({"long_open": NOT_YET, "date_refreshed": NOT_YET})
+        elif posting.closed_at is not None:
+            notes["long_open"] = "The ad is closed."
+        elif not still_listed(posting.last_listed_at, now):
+            notes["long_open"] = f"No listing has shown the ad in the last {STILL_LISTED.days} days."
+        else:
+            days = (now - began).days
+            notes["long_open"] = f"Listed for {days} day{'' if days == 1 else 's'}."
+        if start is not None and posted is None:
+            unknown["date_refreshed"] = ("This job board gives the date of the ad's last edit, not when it was posted."
+                                         if edit_date_source(posting.source) else "The ad has no posted date that can be read as a date.")
+        if posting.ghost_checked_at is None:
+            unknown.update({"reposted": NOT_YET, "many_similar": NOT_YET})
+    status = job.detail_status
+    if not (job.description or "").strip():
+        notes["evergreen_wording"] = "No description is stored, so only the title was read."
+    elif status == "summary":
+        notes["evergreen_wording"] = "Only the listing summary was read: the full ad is not stored."
+    if ad_raw is None:
+        unknown["ad_signs"] = "The AI reads the ad when the job is scored, and only a full description."
+    key = company_key(job.company or "")
+    profile = profiles.get(key) if key else None
+    if not key:
+        unknown["company_news_cuts"] = "No employer is named."
+    elif profile is None or profile.status != "done":
+        unknown["company_news_cuts"] = "The company has not been researched yet."
+    out = []
+    for code, label in CHECKS:
+        state = "found" if code in found else "unknown" if code in unknown else "clear"
+        item = {"code": code, "label": label, "state": state}
+        note = unknown.get(code) if state == "unknown" else notes.get(code)
+        if note and state != "found":
+            item["note"] = note
+        out.append(item)
+    return out
 
 
 def assess(job: Job, profiles: dict[str, CompanyProfile], now: Optional[datetime] = None,
-           own: Optional[tuple] = None, news_cache: Optional[dict] = None) -> dict:
-    """{"level", "signals": [{code, text, detail?}]} for one job, strongest first. ``own`` is
+           own: Optional[tuple] = None, news_cache: Optional[dict] = None, explain: bool = False) -> dict:
+    """{"level", "percent", "signals": [{code, text, detail?, strength}]} for one job, strongest first. ``own`` is
     ``(description, ad_ghost_json)`` of the job's own columns when it has its own ad (``assess_jobs`` loads them for
-    many jobs at once). A job without a posting gets only what its own text and the company research give."""
+    many jobs at once). A job without a posting gets only what its own text and the company research give.
+    ``explain`` (the job page) adds ``"checks"``: every kind of sign and whether it was found, clear or could not be
+    checked (``_checks``)."""
     from backend.offices import looks_like_recruiter
 
     now = now or datetime.utcnow()
@@ -585,20 +693,24 @@ def assess(job: Job, profiles: dict[str, CompanyProfile], now: Optional[datetime
             cache[key] = news_signal(profiles.get(key), now)
         if cache[key]:
             found.append(cache[key])
-    if not found:
-        return {"level": None, "signals": []}
+    if not found and not explain:
+        return dict(NONE, signals=[])
     signals = []
     for item in found:
         if item.get("when") == "recruiter" and not looks_like_recruiter(job.company or "", profiles):
             continue
         signals.append({k: v for k, v in item.items() if k != "when"})
     signals = ordered(signals)
-    return {"level": level_of(signals), "signals": [{k: v for k, v in s.items() if k != "weight"} for s in signals]}
+    out = {"level": level_of(signals), "percent": percent_of(signals),
+           "signals": [{**{k: v for k, v in s.items() if k != "weight"}, "strength": strength_of(s["weight"])} for s in signals]}
+    if explain:
+        out["checks"] = _checks(job, profiles, {s["code"] for s in signals}, ad_raw, now)
+    return out
 
 
 def assess_jobs(db: Session, jobs: list[Job], profiles: dict[str, CompanyProfile],
-                now: Optional[datetime] = None) -> dict[int, dict]:
-    """{job id: assess(job)} for many jobs. A job reads an ad of its own (a private upload, or a private job) when its
+                now: Optional[datetime] = None, explain: bool = False) -> dict[int, dict]:
+    """{job id: assess(job)} for many jobs (``explain``: with what was checked, for the job page). A job reads an ad of its own (a private upload, or a private job) when its
     own description is set; that and the LLM's reading of it are deferred in the job list, so they are loaded here in
     one query per 500 jobs (two sealed values a job, nearly all of them the NULL marker)."""
     now = now or datetime.utcnow()
@@ -607,7 +719,7 @@ def assess_jobs(db: Session, jobs: list[Job], profiles: dict[str, CompanyProfile
         for job_id, description, ad_raw in db.query(Job.id, Job._description, Job.ad_ghost_json).filter(Job.id.in_(chunk)):
             own[job_id] = (description, ad_raw)
     cache: dict = {}
-    return {j.id: assess(j, profiles, now, own.get(j.id), cache) for j in jobs}
+    return {j.id: assess(j, profiles, now, own.get(j.id), cache, explain) for j in jobs}
 
 
 def first_reason(result: dict) -> Optional[str]:

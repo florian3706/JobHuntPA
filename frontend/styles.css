@@ -812,6 +812,7 @@ summary { cursor: pointer; min-height: 24px; }
   .check, .check-field, .run-report summary, .reqs summary, .trip summary, .dupe-side summary, .ghost-why summary { min-height: 44px; }
   .check input, .check-field input, .job-top input[type="checkbox"], .title-row input { width: 24px; height: 24px; }
   .tag button, .info-btn, .link, .help-link { min-width: 36px; min-height: 36px; }
+  a.ghost-pct { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .leaflet-touch .leaflet-bar a { width: 44px; height: 44px; line-height: 44px; }
 }
 
@@ -1075,11 +1076,53 @@ dialog.admin-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 @media (max-width: 480px) { .billing-facts { grid-template-columns: 1fr; } .billing-facts dd { margin-bottom: 6px; } }
 .check[hidden] { display: none; }
 
-/* Possible ghost jobs: the icon and words carry the meaning, the colour only repeats it. */
-.badge.ghost { text-transform: none; color: var(--warn); border-color: color-mix(in srgb, var(--warn) 60%, transparent); }
-.badge.ghost-likely { border-width: 2px; padding: 1px 8px; }
+/* The fit score (🎯) with the ghost-job likelihood (👻) under it: job cards, the map list, the job page. */
+.ratings { margin-left: auto; flex: none; display: flex; flex-direction: column; align-items: stretch; gap: 4px; text-align: center; }
+.ratings .score, .map-job-row .ratings { margin-left: 0; }
+/* Ghost-job likelihood: the number and the words carry the meaning, the colour only repeats it. --g runs from the
+   theme's --ok (not likely) through --warn (unsure) to --danger (likely) in eleven steps, .ghost-h0 to .ghost-h10
+   (a tenth of the percentage, rounded). A mix of two of the theme's data hues is never lighter or darker than both,
+   so it keeps their contrast against the grounds. */
+.ghost-h0 { --g: var(--ok); }
+.ghost-h1 { --g: color-mix(in srgb, var(--warn) 20%, var(--ok)); }
+.ghost-h2 { --g: color-mix(in srgb, var(--warn) 40%, var(--ok)); }
+.ghost-h3 { --g: color-mix(in srgb, var(--warn) 60%, var(--ok)); }
+.ghost-h4 { --g: color-mix(in srgb, var(--warn) 80%, var(--ok)); }
+.ghost-h5 { --g: var(--warn); }
+.ghost-h6 { --g: color-mix(in srgb, var(--danger) 20%, var(--warn)); }
+.ghost-h7 { --g: color-mix(in srgb, var(--danger) 40%, var(--warn)); }
+.ghost-h8 { --g: color-mix(in srgb, var(--danger) 60%, var(--warn)); }
+.ghost-h9 { --g: color-mix(in srgb, var(--danger) 80%, var(--warn)); }
+.ghost-h10 { --g: var(--danger); }
+.ghost-pct {
+  font-weight: 700; font-size: 13px; background: var(--field); color: var(--g, var(--muted));
+  border: 1px solid color-mix(in srgb, var(--g, var(--border)) 50%, transparent);
+  padding: 3px 8px; border-radius: 8px; white-space: nowrap; text-decoration: none;
+}
+a.ghost-pct:hover { text-decoration: underline; }
 .ghost-why { margin-top: 6px; font-size: 13.5px; }
 .ghost-why summary { cursor: pointer; color: var(--accent-text); }
 .ghost-signs, .ghost-ask { margin: 6px 0 0; padding-left: 18px; }
 .ghost-signs li, .ghost-ask li { margin-bottom: 4px; overflow-wrap: anywhere; }
-.ghost-section .badge { white-space: normal; }
+/* The job page's "Is this a real vacancy?" section. */
+.ghost-big { margin: 0; font-size: 15px; }
+.ghost-big strong { font-size: 24px; color: var(--g, var(--text)); }
+.ghost-scale {
+  position: relative; height: 10px; margin: 12px 0 4px; border-radius: 999px;
+  background: linear-gradient(to right, var(--ok), var(--warn), var(--danger));
+}
+.ghost-scale-mark {
+  position: absolute; top: -5px; left: 0; width: 6px; height: 20px; margin-left: -3px; border-radius: 3px;
+  background: var(--text); border: 1px solid var(--card);
+}
+.ghost-scale-ends { display: flex; justify-content: space-between; gap: 8px; margin: 0 0 10px; font-size: 12.5px; }
+.ghost-sub { margin: 14px 0 6px; font-size: 15px; }
+.ghost-checks { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 10px 20px; }
+.ghost-check { padding: 2px 0 2px 10px; border-left: 3px solid var(--border); overflow-wrap: anywhere; }
+.ghost-state { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.ghost-check.found { border-left-color: var(--warn); }
+.ghost-check.found .ghost-state { color: var(--warn); }
+.ghost-check.found.strong { border-left-color: var(--danger); }
+.ghost-check.found.strong .ghost-state { color: var(--danger); }
+.ghost-check.clear { border-left-color: var(--ok); }
+.ghost-check.clear .ghost-state { color: var(--ok); }

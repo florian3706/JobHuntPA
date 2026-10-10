@@ -216,6 +216,30 @@ class LevelTest(unittest.TestCase):
         self.assertEqual(ghost.level_of(weak), "possible")  # even all of them together
         self.assertEqual(ghost.level_of(weak + [{"code": "company_news_cuts", "weight": 2}]), "possible")  # 7, but only one moderate sign
 
+    def percent(self, *weights):
+        return ghost.percent_of([{"code": "x", "weight": w} for w in weights])
+
+    def test_the_percentage_grows_with_the_signs(self):
+        self.assertEqual(self.percent(), 5)  # no signs: low, never 0 (the app can't know)
+        self.assertEqual([self.percent(1), self.percent(1, 1), self.percent(2)], [15, 25, 25])
+        self.assertEqual([self.percent(3), self.percent(3, 1), self.percent(3, 2)], [35, 40, 45])  # possible
+        self.assertEqual([self.percent(5), self.percent(3, 3), self.percent(5, 3), self.percent(5, 5)], [70, 75, 85, 95])  # likely
+        self.assertEqual(self.percent(5, 5, 5, 3, 2, 1), 95)  # never 100
+        self.assertEqual(self.percent(*[1] * 12), 60)  # weak signs alone stay in the "possible" band
+
+    def test_the_percentage_never_disagrees_with_the_level(self):
+        """Every combination of up to five signs: an unflagged job is under 30%, a possible one 35 to 60, a likely
+        one 70 or more, so the card's number, the filter, the digest and the export tell one story."""
+        bands = {None: (5, 25), "possible": (35, 60), "likely": (70, 95)}
+        for n in range(6):
+            for weights in itertools.combinations_with_replacement((1, 2, 3, 5), n):
+                low, high = bands[self.level(*weights)]
+                self.assertTrue(low <= self.percent(*weights) <= high, weights)
+                self.assertEqual(self.percent(*weights) % 5, 0, weights)  # (the colour steps are tenths, rounded)
+
+    def test_strength_in_words(self):
+        self.assertEqual([ghost.strength_of(w) for w in (1, 2, 3, 5, 6)], ["weak", "moderate", "moderate", "strong", "strong"])
+
     def test_the_strongest_sign_comes_first(self):
         found = ghost.ordered([ghost.signal("many_similar", 1, "a"), ghost.signal("long_open", 3, "b"),
                                ghost.signal("evergreen_wording", 5, "c"), ghost.signal("reposted", 1, "d")])
@@ -541,7 +565,7 @@ class StoredSignsTest(unittest.TestCase, Plant):
         out = self.assess(now_ad)
         self.assertEqual(out["level"], "likely")
         self.assertEqual(out["signals"][0], {"code": "reposted", "text": "Posted 3 times since 30 June",
-                                              "detail": out["signals"][0]["detail"]})
+                                              "detail": out["signals"][0]["detail"], "strength": "strong"})
 
     def test_the_closed_ones_count_and_so_do_other_urls_and_external_ids(self):
         self.posting(self.db, self.company.upper(), self.title.lower() + " (6 month contract)", first=90, last=70, closed=20,
@@ -756,7 +780,7 @@ class JobReadTest(unittest.TestCase, Plant):
         p = self.posting(self.db, self.company, "Talent Acquisition Partner", first=2, last=0,
                          text="Build a pipeline of candidates and manage the talent pool. " + AD)
         out = self.read(self.job(self.db, self.ws, p))
-        self.assertEqual(out, {"level": None, "signals": []})
+        self.assertEqual(out, {"level": None, "percent": 5, "signals": []})
 
     def test_long_open_and_news_together(self):
         p = self.posting(self.db, self.company, "Project Manager", first=65, last=0)
@@ -812,8 +836,64 @@ class JobReadTest(unittest.TestCase, Plant):
         p = self.posting(self.db, self.company, "Project Manager", first=100, last=0, text="Join our talent pool. " + AD)
         out = self.read(self.job(self.db, self.ws, p))
         self.assertEqual(codes(out["signals"]), ["evergreen_wording", "long_open"])
-        self.assertTrue(all(set(s) <= {"code", "text", "detail"} for s in out["signals"]))
-        self.assertEqual(set(out), {"level", "signals"})
+        self.assertTrue(all(set(s) <= {"code", "text", "detail", "strength"} for s in out["signals"]))  # words, no weight
+        self.assertEqual([s["strength"] for s in out["signals"]], ["strong", "strong"])
+        self.assertEqual(set(out), {"level", "percent", "signals"})
+        self.assertEqual((out["level"], out["percent"]), ("likely", 95))
+
+    def explain(self, job, profiles=None):
+        self.db.commit()
+        out = ghost.assess_jobs(self.db, [job], profiles or {}, NOW, explain=True)[job.id]
+        return out, {c["code"]: c for c in out["checks"]}
+
+    def test_the_job_page_gets_every_check_and_what_it_found(self):
+        p = self.posting(self.db, self.company, "Project Manager", first=100, last=0, text="Join our talent pool. " + AD)
+        p.ghost_checked_at = NOW
+        out, checks = self.explain(self.job(self.db, self.ws, p))
+        self.assertEqual([c["code"] for c in out["checks"]], [code for code, _ in ghost.CHECKS])  # all eight, in a fixed order
+        self.assertEqual({code for code, c in checks.items() if c["state"] == "found"}, set(codes(out["signals"])))
+        self.assertTrue(all(set(c) <= {"code", "label", "state", "note"} and c["label"] for c in out["checks"]))
+        self.assertNotIn("note", checks["long_open"])  # a found sign has its own text and detail
+        self.assertEqual([checks[c]["state"] for c in ("reposted", "many_similar", "recruiter_no_employer")], ["clear"] * 3)
+        # What could not be checked says why: the percentage rests on less.
+        self.assertEqual(checks["ad_signs"]["state"], "unknown")
+        self.assertIn("when the job is scored", checks["ad_signs"]["note"])
+        self.assertEqual(checks["company_news_cuts"]["state"], "unknown")
+        self.assertIn("not been researched", checks["company_news_cuts"]["note"])
+
+    def test_a_clean_job_says_what_was_looked_at(self):
+        p = self.posting(self.db, self.company, "Delivery Lead", first=12, last=0, posted=days_ago(12).date().isoformat())
+        p.ghost_checked_at = NOW
+        p.ad_ghost_json = "[]"  # the AI read the ad and found nothing
+        profile = CompanyProfile(key=self.company.lower(), name=self.company, status="done", news_researched_at=days_ago(5),
+                                 controversies_json="[]")
+        out, checks = self.explain(self.job(self.db, self.ws, p), {self.company.lower(): profile})
+        self.assertEqual((out["level"], out["percent"], out["signals"]), (None, 5, []))
+        self.assertEqual({c["state"] for c in out["checks"]}, {"clear"})
+        self.assertEqual(checks["long_open"]["note"], "Listed for 12 days.")
+        # A closed ad isn't "open for" anything, and one a search hasn't finished with has no history yet.
+        closed = self.posting(self.db, self.company, "Delivery Lead Two", first=80, last=20, closed=20)
+        _, checks = self.explain(self.job(self.db, self.ws, closed))
+        self.assertEqual(checks["long_open"], {"code": "long_open", "label": checks["long_open"]["label"], "state": "clear",
+                                               "note": "The ad is closed."})
+        self.assertEqual((checks["reposted"]["state"], checks["many_similar"]["state"]), ("unknown", "unknown"))
+        self.assertIn("next search", checks["reposted"]["note"])
+
+    def test_a_job_that_did_not_come_from_a_search_has_no_history_to_check(self):
+        job = self.job(self.db, self.ws, None, company=None, title="Analyst", detail_status="summary", description="A teaser.")
+        out, checks = self.explain(job)
+        self.assertEqual((out["level"], out["percent"]), (None, 5))
+        for code in ("long_open", "reposted", "date_refreshed", "many_similar"):
+            self.assertEqual(checks[code]["state"], "unknown", code)
+            self.assertIn("did not come from a search", checks[code]["note"])
+        self.assertEqual(checks["company_news_cuts"]["note"], "No employer is named.")
+        self.assertEqual(checks["evergreen_wording"]["state"], "clear")
+        self.assertIn("listing summary", checks["evergreen_wording"]["note"])  # read, but on little
+        # An edit date is not a posted date: that check can't be made for such a source.
+        p = self.posting(self.db, self.company, "Engineer", first=5, last=0, source="greenhouse:acme", posted=days_ago(1).isoformat())
+        _, checks = self.explain(self.job(self.db, self.ws, p))
+        self.assertEqual(checks["date_refreshed"]["state"], "unknown")
+        self.assertIn("last edit", checks["date_refreshed"]["note"])
 
     def test_the_list_costs_no_query_per_job(self):
         postings = [self.posting(self.db, unique("Bulkco"), "Project Manager", first=2, last=0) for _ in range(40)]
@@ -1098,19 +1178,29 @@ class JobJsonTest(unittest.TestCase, Plant):
         private = self.job(self.db, self.ws, None, company=unique("Jsonco"), title="Analyst", description=AD, detail_status="full").id
         self.db.commit()
         jobs = self.listed()
-        self.assertEqual(jobs[ids["plain"]]["ghost"], {"level": None, "signals": []})
-        self.assertEqual(jobs[private]["ghost"], {"level": None, "signals": []})
+        self.assertEqual(jobs[ids["plain"]]["ghost"], {"level": None, "percent": 5, "signals": []})
+        self.assertEqual(jobs[private]["ghost"], {"level": None, "percent": 5, "signals": []})
         self.assertEqual(jobs[ids["evergreen"]]["ghost"],
-                         {"level": "likely", "signals": [{"code": "evergreen_wording", "text": 'Mentions "talent pool"'}]})
-        self.assertEqual(jobs[ids["stale"]]["ghost"], {"level": "possible", "signals": [{"code": "long_open", "text": "Open for 75 days"}]})
+                         {"level": "likely", "percent": 70, "signals": [{"code": "evergreen_wording", "text": 'Mentions "talent pool"'}]})
+        self.assertEqual(jobs[ids["stale"]]["ghost"],
+                         {"level": "possible", "percent": 35, "signals": [{"code": "long_open", "text": "Open for 75 days"}]})
         for job in jobs.values():
-            self.assertEqual(set(job["ghost"]), {"level", "signals"})
+            self.assertEqual(set(job["ghost"]), {"level", "percent", "signals"})
             self.assertTrue(all(set(s) == {"code", "text"} for s in job["ghost"]["signals"]))  # the list has no detail
-        # The job page adds a sentence of detail to each reason.
+        # The job page adds a sentence of detail and the strength to each reason, and every check that was made.
         detail = self.client.get(f"/api/jobs/{ids['evergreen']}", headers=self.h).json()["ghost"]
-        self.assertEqual(detail["level"], "likely")
-        self.assertEqual(set(detail["signals"][0]), {"code", "text", "detail"})
+        self.assertEqual((detail["level"], detail["percent"]), ("likely", 70))
+        self.assertEqual(set(detail["signals"][0]), {"code", "text", "detail", "strength"})
         self.assertIn("future roles", detail["signals"][0]["detail"])
+        self.assertEqual(detail["signals"][0]["strength"], "strong")
+        self.assertEqual([c["code"] for c in detail["checks"]], [code for code, _ in ghost.CHECKS])
+        self.assertEqual([c["code"] for c in detail["checks"] if c["state"] == "found"], ["evergreen_wording"])
+        # ... also for a job with nothing found (the page says what was looked at), and one that is not from a search.
+        for job_id in (ids["plain"], private):
+            clean = self.client.get(f"/api/jobs/{job_id}", headers=self.h).json()["ghost"]
+            self.assertEqual((clean["level"], clean["percent"], clean["signals"]), (None, 5, []))
+            self.assertEqual(len(clean["checks"]), len(ghost.CHECKS))
+            self.assertNotIn("found", {c["state"] for c in clean["checks"]})
 
     def test_nothing_is_hidden_or_moved_by_a_flag(self):
         p = self.posting(self.db, unique("Jsonco"), "Project Manager", first=1, text="Join our talent pool. " + AD)

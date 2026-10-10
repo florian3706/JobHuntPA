@@ -280,8 +280,9 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "office_unknown": office_unknown(job),
         "location_verdict": job.location_verdict,
         "recruiter": recruiter,
-        # Signs that the ad may not be a current vacancy (backend/ghost.py): level "likely" | "possible" | null, and
-        # the reasons (the list page gets code and text; the job page also a sentence of detail). Never hides a job.
+        # Signs that the ad may not be a current vacancy (backend/ghost.py): level "likely" | "possible" | null, a
+        # percentage worked out from the same signs, and the reasons (the list page gets code and text; the job page
+        # also a sentence of detail, each sign's strength and what was checked). Never hides a job.
         "ghost": _ghost_dict(signs, full),
     }
     if full:
@@ -291,9 +292,13 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
 
 def _ghost_dict(signs: Optional[dict], full: bool) -> dict:
     if not signs:
-        return {"level": None, "signals": []}
-    keep = ("code", "text", "detail") if full else ("code", "text")
-    return {"level": signs["level"], "signals": [{k: s[k] for k in keep if k in s} for s in signs["signals"]]}
+        return dict(ghost.NONE, signals=[])
+    keep = ("code", "text", "detail", "strength") if full else ("code", "text")
+    out = {"level": signs["level"], "percent": signs["percent"],
+           "signals": [{k: s[k] for k in keep if k in s} for s in signs["signals"]]}
+    if full:
+        out["checks"] = signs.get("checks", [])
+    return out
 
 
 def _profile_hash(db: Session, ws: int) -> str:
@@ -380,7 +385,7 @@ def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(
     fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
     profiles = {p.key: p for p in db.query(CompanyProfile).filter(CompanyProfile.key == company_key(job.company or ""))}
     letter = db.query(CoverLetter.id).filter(CoverLetter.job_id == job_id).first() is not None
-    signs = ghost.assess_jobs(db, [job], profiles)[job.id]
+    signs = ghost.assess_jobs(db, [job], profiles, explain=True)[job.id]
     out = _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True, has_letter=letter,
                               recruiter=looks_like_recruiter(job.company or "", profiles), signs=signs),
                   softened_job_ids(db, ws, office_slack))

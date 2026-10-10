@@ -630,10 +630,12 @@ def sc_jobs(a, w, theme):
         a.check(page, "index: Jobs tab, nothing matches")
         page.fill("#filter-search", "")
         settle(page, 400)
-    with a.step("index: ghost-job badges and a Why? list"):
-        if not page.query_selector(".badge.ghost"):
-            raise RuntimeError("no job carries a possible-ghost-job badge (plant_ghost_signs did not take)")
-        a.check(page, "index: Jobs tab, ghost-job badges")
+    with a.step("index: ghost-job percentages and a Why? list"):
+        if not page.query_selector(".job-card details.ghost-why"):
+            raise RuntimeError("no job is flagged as a possible ghost job (plant_ghost_signs did not take)")
+        if not page.query_selector(".job-card .ghost-pct"):
+            raise RuntimeError("the job cards show no ghost-job percentage")
+        a.check(page, "index: Jobs tab, ghost-job percentages")
         for summary in page.query_selector_all("details.ghost-why summary")[:2]:
             summary.click()
         settle(page, 300)
@@ -1273,7 +1275,7 @@ def sc_job(a, w, theme):
         page.goto(f"{app.base}/job.html?id=1&ws={a.fixtures['ws']}")
         page.wait_for_selector("#job-company dl.profile")
         page.wait_for_function("() => !document.querySelector('#job-commute').textContent.includes('Working out')", timeout=60000)
-        page.wait_for_selector("#job-ghost-section:not([hidden]) .ghost-signs")  # the "Is this a real vacancy?" section (planted signs)
+        page.wait_for_selector("#job-ghost-section:not([hidden]) .ghost-check.found")  # the "Is this a real vacancy?" section (planted signs)
         settle(page, 600)
         a.check(page, "job.html")
     with a.step("job.html: a job that isn't there"):
@@ -2155,8 +2157,8 @@ def mint_unsubscribe_token(app: App) -> str:
 
 
 def plant_ghost_signs(app: App) -> None:
-    """Ghost-job signs on a few demo jobs, so the Jobs tab and the job page show the badge, the Why? list and the
-    "Is this a real vacancy?" section: one job open for 100 days with evergreen wording in its ad (likely), two open
+    """Ghost-job signs on a few demo jobs, so the Jobs tab and the job page show percentages across the colour scale,
+    the Why? list and the "Is this a real vacancy?" section with signs found: one job open for 100 days with evergreen wording in its ad (likely), two open
     for 50 and 65 days (possible). Written straight to the database while the app is stopped."""
     code = (
         "import json\nfrom datetime import datetime, timedelta\nfrom backend import users, ghost\n"

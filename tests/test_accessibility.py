@@ -1439,7 +1439,7 @@ class DigestPagesTest(unittest.TestCase):
 
 
 class GhostJobPagesTest(unittest.TestCase):
-    """The possible-ghost-job badge, its Why? disclosure, the Jobs filter and the job page section."""
+    """The ghost-job percentage under the fit score, the Why? disclosure, the Jobs filter and the job page section."""
 
     @classmethod
     def setUpClass(cls):
@@ -1447,23 +1447,69 @@ class GhostJobPagesTest(unittest.TestCase):
         cls.common, cls.app, cls.job = read("common.js"), read("app.js"), read("job.js")
         cls.index, cls.job_html, cls.css = read("index.html"), read("job.html"), read("styles.css")
 
-    def test_badge_has_an_icon_and_text(self):
-        badge = self.common[self.common.index("function ghostBadge"):self.common.index("function ghostWhy")]
-        self.assertIn("Possible ghost job", badge)
-        self.assertIn('<span aria-hidden="true">⚠ </span>', badge)
+    def test_the_percentage_has_an_icon_a_number_and_words(self):
+        meter = self.common[self.common.index("function ghostMeter"):self.common.index("function ratingsHtml")]
+        self.assertIn('<span aria-hidden="true">👻 </span>', meter)  # the emoji is decoration: the words name it
+        self.assertIn('<span class="visually-hidden">Ghost job likelihood </span>${percent}%', meter)
+        self.assertIn("GHOST_STRENGTH[job.ghost.level] || 'no strong signs'", meter)
         self.assertIn("several signs", self.common)
         self.assertIn("some signs", self.common)
-        self.assertIn("if (!level) return ''", badge)
+        self.assertIn("if (percent === null) return ''", meter)  # (an older server sends no percentage)
+        self.assertIn("title=", meter)
 
-    def test_badge_on_cards_compact_cards_and_job_page(self):
-        self.assertIn("${ghostBadge(job)}", self.app)
-        self.assertIn("${ghostBadge(j)}", self.app)
-        self.assertIn("ghostBadge(job)", self.job)
+    def test_the_fit_score_has_its_icon_and_keeps_its_words(self):
+        badge = self.common[self.common.index("const SCORE_ICON"):self.common.index("function fitHtml")]
+        self.assertIn("const SCORE_ICON = '<span aria-hidden=\"true\">🎯 </span>';", badge)
+        self.assertEqual(badge.count("${SCORE_ICON}"), 3)  # scored, not scored yet, scoring failed
+        for words in ("Fit score ", "Not scored yet", "Scoring failed", " of 100"):
+            self.assertIn(f'<span class="visually-hidden">{words}', badge)
+
+    def test_the_percentage_is_under_the_score_on_cards_the_map_list_and_the_job_page(self):
+        ratings = self.common[self.common.index("function ratingsHtml"):self.common.index("function ghostWhy")]
+        self.assertIn('<div class="ratings">${scoreBadge(job)}${ghostMeter(job, ghostHref)}</div>', ratings)
+        self.assertIn("${ratingsHtml(job)}", self.app)
+        self.assertIn("${ratingsHtml(j)}", self.app)
+        self.assertIn("${ratingsHtml(job, '#ghost-title')}", self.job)  # on the job page it links to the explanation
+        self.assertIn('<h2 id="ghost-title" tabindex="-1">', self.job_html)  # ... which can take the focus
+        self.assertRegex(self.css, r"\.ratings \{[^}]*flex-direction: column")
+        for src in (self.app, self.job):
+            self.assertNotIn("scoreBadge(", src)  # nowhere a score without the percentage under it
+
+    def test_the_colour_runs_from_ok_through_warn_to_danger_in_theme_colours(self):
+        """Eleven steps of the theme's own data hues (so every theme, the colour-blind ones included, keeps its
+        contrast): the number and words carry the meaning, the colour only repeats it."""
+        self.assertIn("const ghostHue = (percent) => `ghost-h${Math.round(percent / 10)}`;", self.common)
+        steps = dict(re.findall(r"\.ghost-h(\d+) \{ --g: ([^;]+); \}", self.css))
+        self.assertEqual(sorted(steps, key=int), [str(n) for n in range(11)])
+        self.assertEqual((steps["0"], steps["5"], steps["10"]), ("var(--ok)", "var(--warn)", "var(--danger)"))
+        for n in range(1, 5):
+            self.assertEqual(steps[str(n)], f"color-mix(in srgb, var(--warn) {n * 20}%, var(--ok))")
+            self.assertEqual(steps[str(n + 5)], f"color-mix(in srgb, var(--danger) {n * 20}%, var(--warn))")
+        rule = re.search(r"(?m)^\.ghost-pct \{([^}]*)\}", self.css).group(1)
+        self.assertIn("color: var(--g", rule)
+        self.assertIn("background: var(--field)", rule)  # the ground the fit score's colours are checked against
+        self.assertNotRegex(self.css, r"\.ghost-(?:pct|big|check|scale)[^{]*\{[^}]*#[0-9a-fA-F]{3,8}\b")  # no fixed colours
+
+    def test_every_colour_step_meets_aa_in_every_theme(self):
+        """The percentage is small bold text on the field ground (cards, the map list, the job page's header) and
+        large text on the card ground (the job page's section): each of the eleven steps, in each theme, against
+        both. The steps are worked out here as the browser mixes them (in srgb, channel by channel)."""
+        themes = theme_contrast.parse_themes((FRONTEND / "themes.css").read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(themes), 28)
+        for theme, tokens in themes.items():
+            ok, warn, danger = (theme_contrast.token(tokens, name) for name in ("ok", "warn", "danger"))
+            for step in range(11):
+                a, b, share = (warn, ok, step / 5) if step <= 5 else (danger, warn, (step - 5) / 5)
+                colour = tuple(share * x + (1 - share) * y for x, y in zip(a[:3], b[:3])) + (1.0,)
+                for ground in ("field", "card"):
+                    ratio = theme_contrast.ratio(colour, theme_contrast.resolve(tokens, ground))
+                    self.assertGreaterEqual(ratio, 4.5, f"{theme}: .ghost-h{step} on --{ground} is {ratio:.2f}:1")
 
     def test_why_disclosure_is_a_native_details_with_a_full_name_and_escaped_text(self):
         why = self.common[self.common.index("function ghostWhy"):self.common.index("function modeOf")]
         self.assertIn("<details", why)
-        self.assertIn("<summary>Why?<span class=\"visually-hidden\">", why)
+        self.assertIn('<summary><span aria-hidden="true">👻 </span>Possible ghost job (${GHOST_STRENGTH[g.level]}): why?</summary>', why)
+        self.assertIn("if (!g?.level || !(g.signals || []).length) return ''", why)  # only on a flagged job's card
         self.assertIn("esc(s.text)", why)
         self.assertIn("This may still be a real job", why)
         self.assertIn("${ghostWhy(job)}", self.app)
@@ -1477,16 +1523,41 @@ class GhostJobPagesTest(unittest.TestCase):
         self.assertNotIn("possible ghost job${ghosts === 1 ? '' : 's'} hidden", self.app)
         self.assertIn("$('#filter-hide-ghost').addEventListener('change'", self.app)
 
-    def test_job_page_section_is_named_and_hidden_unless_flagged(self):
+    def test_job_page_section_is_named_and_shown_for_every_job(self):
+        # (hidden only until the job has loaded)
         self.assertRegex(self.job_html, r'<section id="job-ghost-section"[^>]*aria-labelledby="ghost-title"[^>]*hidden>')
-        self.assertIn('<h2 id="ghost-title">Is this a real vacancy?</h2>', self.job_html)
+        self.assertIn('<h2 id="ghost-title" tabindex="-1">Is this a real vacancy?</h2>', self.job_html)
         fn = self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]
-        self.assertIn("box.hidden = !g?.level", fn)
+        self.assertIn("box.hidden = percent === null", fn)
+        self.assertNotIn("box.hidden = !g?.level", fn)
+        self.assertIn("${g.level ? `<h3", fn)  # what to ask the employer: for a flagged job only
         self.assertIn("may well be a real job", fn)
         for ask in ("Is the role open now", "when do they need someone to start", "Why was the ad posted again"):
             self.assertIn(ask.lower(), fn.lower())
-        self.assertIn("esc(s.text)", fn)
-        self.assertIn("esc(s.detail)", fn)
+
+    def test_job_page_says_why_and_how_the_percentage_is_worked_out(self):
+        fn = self.job[self.job.index("/* ---------- is this a real vacancy?"):self.job.index("function renderFit")]
+        # The percentage in words, with a scale that is decoration (the number and the words say it).
+        self.assertIn("<strong>${percent}%</strong>", fn)
+        self.assertIn("estimated likelihood that this ad is not a current vacancy", fn)
+        self.assertIn('<div class="ghost-scale" aria-hidden="true">', fn)
+        self.assertIn('<p class="ghost-scale-ends muted" aria-hidden="true">', fn)
+        self.assertIn("$('#ghost-scale-mark').style.left = `${percent}%`", fn)  # a position, set by the script
+        # Every check, each with its state in words and an icon that is decoration.
+        self.assertIn('<h3 class="ghost-sub" id="ghost-why-title">Why this rating</h3>', fn)
+        self.assertIn('<ul class="ghost-checks" aria-labelledby="ghost-why-title">', fn)
+        for words in ("Found", "Not found", "Could not be checked", "strong sign", "moderate sign", "weak sign"):
+            self.assertIn(words, fn)
+        for icon in ("⚠ ", "✓ ", "? "):
+            self.assertIn(f'<span aria-hidden="true">{icon}</span>', fn)
+        for escaped in ("esc(sign.text)", "esc(sign.detail)", "esc(check.label)", "esc(check.note)"):
+            self.assertIn(escaped, fn)
+        self.assertIn("could not be made, so the percentage rests on less", fn)
+        self.assertIn("None of the signs the app looks for were found.", fn)
+        # How it is worked out, without overclaiming.
+        self.assertIn("How the percentage is worked out", fn)
+        self.assertIn("an estimate from the signs above, not a measurement", fn)
+        self.assertIn("never shows 0% or 100%", fn)
 
     def test_the_last_question_follows_the_signs(self):
         fn = self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]
@@ -1500,13 +1571,17 @@ class GhostJobPagesTest(unittest.TestCase):
         rule = re.search(r"[^{}]*\.ghost-why summary[^{}]*\{([^}]*)\}", coarse)
         self.assertIsNotNone(rule)
         self.assertIn("min-height: 44px", rule.group(1))
+        link = re.search(r"a\.ghost-pct \{([^}]*)\}", coarse)  # the job page's link to the explanation
+        self.assertIsNotNone(link)
+        self.assertIn("min-height: 44px", link.group(1))
 
     def test_no_inline_styles_or_handlers_and_meaning_is_not_colour_alone(self):
-        for src in (self.common[self.common.index("function ghostBadge"):self.common.index("function modeOf")],
-                    self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]):
+        for src in (self.common[self.common.index("const GHOST_STRENGTH"):self.common.index("function modeOf")],
+                    self.job[self.job.index("/* ---------- is this a real vacancy?"):self.job.index("function renderFit")]):
             self.assertNotRegex(src, r'style=|\bon[a-z]+=')
-        self.assertIn(".badge.ghost", self.css)
+        self.assertIn(".ghost-pct", self.css)
         self.assertIn(".ghost-signs", self.css)
+        self.assertIn(".ghost-checks", self.css)
 
 
 class BrowserAuditRegressionsTest(unittest.TestCase):
@@ -1585,7 +1660,7 @@ class BrowserAuditRegressionsTest(unittest.TestCase):
             self.assertIn(group + ":", done.stdout)
         source = tool.read_text(encoding="utf-8")
         # the audit must reach the ghost-job pages (it fails a run that can't), and ignore a visually hidden clip
-        self.assertIn("#job-ghost-section:not([hidden]) .ghost-signs", source)
+        self.assertIn("#job-ghost-section:not([hidden]) .ghost-check.found", source)
         self.assertIn("r.width <= 2 || r.height <= 2", source)
 
 
