@@ -2109,8 +2109,10 @@ function initMap() {
   }
   const animate = mapAnimate();
   state.map = L.map('map', { zoomAnimation: animate, fadeAnimation: animate, markerZoomAnimation: animate }).setView([-33.87, 151.21], 9);
+  // The tiles send this site's address (never the page's): OpenStreetMap's servers refuse a request without it,
+  // and the app's Referrer-Policy (same-origin) tells other sites nothing.
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19, referrerPolicy: 'origin', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(state.map);
   state.pinLayer = L.layerGroup().addTo(state.map);
   state.jobLayer = L.layerGroup().addTo(state.map);

@@ -133,6 +133,17 @@ class Policy(unittest.TestCase):
         self.assertRegex((FRONTEND_DIR / "billing.js").read_text(encoding="utf-8"), r"location\.assign\(r\.url\)")
         self.assertNotIn("stripe", POLICY.lower())
 
+    def test_the_map_tiles_say_which_site_they_are_for(self):
+        """``Referrer-Policy: same-origin`` sends no Referer to other sites, and OpenStreetMap's tile servers answer a
+        request without one with an "Access blocked" picture. Each tile layer sets its own policy, ``origin``: this
+        site's address, never the page's."""
+        layers = [(script.name, m.group(0)) for script in SCRIPTS
+                  for m in re.finditer(r"L\.tileLayer\(.*?\}\)", script.read_text(encoding="utf-8"), re.S)]
+        self.assertEqual(sorted(name for name, _ in layers), ["app.js", "job.js"])
+        for name, call in layers:
+            self.assertIn("tile.openstreetmap.org", call, name)
+            self.assertRegex(call, r"referrerPolicy: 'origin'", name)
+
     def test_the_permissions_policy_turns_off_what_the_app_does_not_use(self):
         text = "\n".join(p.read_text(encoding="utf-8") for p in SCRIPTS)
         policy = security_headers.PERMISSIONS_POLICY

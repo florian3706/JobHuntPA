@@ -203,8 +203,11 @@ function drawMap(c, best) {
   if (!view.map) {
     const animate = !reducedMotion();
     view.map = L.map('commute-map', { scrollWheelZoom: false, zoomAnimation: animate, fadeAnimation: animate, markerZoomAnimation: animate });
+    // OpenStreetMap's servers answer with an "Access blocked" picture unless a request says which site it is for,
+    // and the app's Referrer-Policy (same-origin) tells other sites nothing: the tiles alone send this site's
+    // address, never the page's (it holds a job id).
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      maxZoom: 19, referrerPolicy: 'origin', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(view.map);
     view.layer = L.layerGroup().addTo(view.map);
   }

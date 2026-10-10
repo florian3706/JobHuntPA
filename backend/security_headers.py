@@ -24,7 +24,9 @@ it, and the test in tests/test_security_headers.py fails if a page needs more th
 Other headers: ``X-Content-Type-Options: nosniff``; ``Referrer-Policy: same-origin``, not ``no-referrer``, because
 with no-referrer browsers send ``Origin: null`` on same-site POSTs and the app's same-site check (backend/sessions.py)
 would refuse every save, while same-origin still keeps the address of a page (it can hold a job id) from other sites
-when someone follows an ad's link; a ``Permissions-Policy`` that turns off every browser feature the app doesn't use
+when someone follows an ad's link (the map tiles are the one exception: OpenStreetMap's servers refuse a request that
+doesn't say which site it is for, so the two tile layers in app.js and job.js set ``referrerPolicy: 'origin'``, which
+sends this site's address and never the page's); a ``Permissions-Policy`` that turns off every browser feature the app doesn't use
 (it copies text, so ``clipboard-write`` stays); ``Strict-Transport-Security`` only over HTTPS (``sessions.is_secure``),
 because on plain http it would be ignored and on a local install it could only cause harm.
 """
