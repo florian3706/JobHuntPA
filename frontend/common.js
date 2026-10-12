@@ -752,14 +752,15 @@ function sentimentHtml(p) {
 }
 
 /* ================= SOURCES ================= */
-/* A job stored under SEEK's own address, whatever brought it in (a search, a saved page, the browser extension):
-   the full ad can be uploaded from a page saved on SEEK (POST /api/jobs/{id}/import-page). */
+/* A job at one of SEEK's own addresses, whatever brought it in (a search, a saved page, the browser extension):
+   the full ad can be uploaded from a page saved on SEEK (POST /api/jobs/{id}/import-page, which matches the page
+   to the job by SEEK's job number). SEEK lives at au.seek.com now; jobs are stored under www.seek.com.au. */
 function isSeekJob(job) {
-  return job.source === 'seek' || /^https:\/\/www\.seek\.com\.au\/job\/\d+$/.test(job.url || '');
+  return job.source === 'seek' || /^https:\/\/([a-z0-9-]+\.)?seek\.(com|com\.au|co\.nz)\/job\/\d+([/?#]|$)/.test(job.url || '');
 }
 
 /* Sites named by more than their address (backend/job_source.py SITE_NAMES). */
-const SITE_NAMES = { 'seek.com.au': 'SEEK', 'seek.co.nz': 'SEEK', 'linkedin.com': 'LinkedIn', 'indeed.com': 'Indeed' };
+const SITE_NAMES = { 'seek.com.au': 'SEEK', 'seek.co.nz': 'SEEK', 'seek.com': 'SEEK', 'linkedin.com': 'LinkedIn', 'indeed.com': 'Indeed' };
 function siteName(host) {
   const known = Object.keys(SITE_NAMES).find((k) => host === k || host.endsWith(`.${k}`));
   return known ? SITE_NAMES[known] : host;

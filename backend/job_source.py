@@ -19,7 +19,8 @@ from urllib.parse import urlsplit
 BROWSER = "browser"
 SINGLE, BULK = "single", "bulk"
 # Sites named by more than their address: the host (or a host under it) and the name people know.
-SITE_NAMES = {"seek.com.au": "SEEK", "seek.co.nz": "SEEK", "linkedin.com": "LinkedIn", "indeed.com": "Indeed"}
+SITE_NAMES = {"seek.com.au": "SEEK", "seek.co.nz": "SEEK", "seek.com": "SEEK", "linkedin.com": "LinkedIn",
+              "indeed.com": "Indeed"}
 
 
 def host_of(url: Optional[str]) -> str:

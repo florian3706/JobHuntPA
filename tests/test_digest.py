@@ -725,6 +725,7 @@ class EmailTests(Base):
         for raw, label in (("seek", "SEEK"), ("import", "imported page"), ("browser", "browser extension"),
                            ("browser:bulk:seek.com.au", "SEEK - browser extension (bulk)"),
                            ("browser:single:seek.com.au", "SEEK - browser extension (single)"),
+                           ("browser:bulk:au.seek.com", "SEEK - browser extension (bulk)"),
                            ("browser:single:au.linkedin.com", "LinkedIn - browser extension (single)"),
                            ("browser:single:careers.acme.example", "careers.acme.example - browser extension (single)"),
                            ("browser:bulk:", "browser extension (bulk)"),

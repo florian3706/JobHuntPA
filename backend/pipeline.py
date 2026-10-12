@@ -253,6 +253,54 @@ def name_browser_sources(db: Session, ws: int) -> int:
     return len(old)
 
 
+def seek_addresses(db: Session, ws: int) -> int:
+    """Once per workspace: jobs stored under SEEK's newer address (``au.seek.com/job/<id>``, which
+    ``extension.seek_job_id`` didn't take for SEEK's before 2026-10-12, so the extension's jobs from there were
+    stored as some other site's) become the SEEK jobs they are: SEEK's job number, SEEK as the site of a
+    browser-extension source, and the address the searches use. When the workspace already has a job under that
+    address, the two are the same ad: they are merged (``backend.duplicates``) and the copy keeps its old address.
+    Returns how many jobs were put right. Run like ``name_browser_sources``, after it."""
+    from backend.adapters.seek import JOB_URL
+    from backend.db import AppSetting
+    from backend.duplicates import Ranking, merge, record, root_of
+    from backend.extension import seek_job_id
+
+    key = "seek_address_workspaces"
+    row = db.get(AppSetting, key)
+    done = set(json.loads(row.value_json)) if row else set()
+    if ws in done:
+        return 0
+    # Decided in Python: a private job's address is sealed. (A pool link's address is the pool's, always SEEK's own.)
+    old = [(job_id, seek_job_id(url)) for job_id, url in db.query(Job.id, Job._url)
+           .filter(Job.workspace_id == ws, Job.posting_id.is_(None)) if url]
+    old = [(job_id, seek_id) for job_id, seek_id in old if seek_id]
+    crit = ranking = None
+    fixed = 0
+    for job_id, seek_id in old:
+        job = db.get(Job, job_id)
+        address = JOB_URL.format(id=seek_id)
+        if job.url == address and job.external_id == seek_id:
+            continue
+        how = job_source.browser_parts(job.source)
+        if how is not None:
+            job.source = job_source.browser(how[0], address)
+        job.external_id = seek_id
+        twin = job_by_url(db, ws, address)
+        if twin is None:
+            job.url = address
+            db.flush()  # the next job with this number finds this one
+        elif twin.id != job.id:
+            a, b = root_of(db, twin), root_of(db, job)
+            if a.id != b.id:
+                crit, ranking = crit or load_criteria(db, ws), ranking or Ranking(db, ws)
+                listed = merge(db, [a, b], crit, ranking)
+                record(db, ws, listed.id, b.id if listed.id == a.id else a.id, "merged", "auto")
+        fixed += 1
+    db.merge(AppSetting(key=key, value_json=json.dumps(sorted(done | {ws}))))
+    db.commit()
+    return fixed
+
+
 def update_job_from_posting(db: Session, job: Job, p: Posting) -> None:
     """Replace a stored job's data with a fuller posting (e.g. a saved SEEK job page for a listing we only had a
     summary of), then re-filter it. The page is the user's own: it's kept on this workspace's job, and the shared
@@ -423,6 +471,7 @@ def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
         crit = load_criteria(db, ws)
         repair_geocodes(db, ws, crit, progress)
         name_browser_sources(db, ws)
+        seek_addresses(db, ws)
         reports: list[SourceReport] = []
         found: set[int] = set()  # jobs this run listed, for scoring just those
         for src, adapter in build_adapters(db, ws, client):

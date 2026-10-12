@@ -1239,8 +1239,8 @@ the key checks in `backend/sessions.py`, `frontend/extension.js` (Settings > Bro
   `field: "jobs"`, past that; the extension sends a longer page in parts), a summary of at most 5,000 characters,
   a classification of at most 200.
   - **The address** (`extension.listed_url`): the job's address joined to the page's must be an http(s) address
-    on exactly the page's host and port with no user name, and a SEEK job is stored as
-    `https://www.seek.com.au/job/{id}` with `external_id`, as the searches store it. A job with an address on
+    on exactly the page's host and port with no user name, and a SEEK job (on any of SEEK's sites: see *SEEK's
+    address* below) is stored as `https://www.seek.com.au/job/{id}` with `external_id`, as the searches store it. A job with an address on
     another site, or without a title, refuses the whole request (422 `invalid`, `field` `url` or `title`) before
     anything is stored: the extension sends neither, so one means the page or the extension is not what it seems.
   - **It only adds** (`pool.add_listed`, `pipeline.add_listed`): a job the workspace has with that address is
@@ -1272,6 +1272,19 @@ the key checks in `backend/sessions.py`, `frontend/extension.js` (Settings > Bro
   - **The full ad:** a job at SEEK's address with only a summary gets **Upload full ad** on its card whatever
     brought it in (`isSeekJob` in frontend/common.js; before, only `source = "seek"`), since the upload
     (`POST /api/jobs/{id}/import-page`) matches the saved page to the job by SEEK's job number.
+  - **SEEK's address (2026-10-12, the same day):** SEEK lives at `au.seek.com` now (`www.seek.com.au` redirects
+    there), so that is the page the extension reads and the address it sends. `seek_job_id` only knew
+    `seek.com.au` and `seek.co.nz`, so the first pages of jobs the user imported were stored as another site's:
+    under `https://au.seek.com/job/{id}`, without SEEK's job number, not matched to the searches' own SEEK jobs,
+    and without **Upload full ad** (the user's report). The saved page this was built from was tested at the old
+    address although its own canonical link said `au.seek.com`; the extension's tests now open SEEK's pages
+    there. `SEEK_HOSTS` and `job_source.SITE_NAMES` include `seek.com`. `pipeline.seek_addresses` puts the stored
+    jobs right once per workspace, when its jobs are next listed or it next searches (after
+    `name_browser_sources`; `app_settings.seek_address_workspaces`): a private job at one of SEEK's addresses gets
+    SEEK's job number, SEEK as its source's site and the address the searches use. When the workspace already
+    has a job under that address (the search's own, or another copy) the two are the same ad and are merged like
+    any duplicates (`duplicates.merge`, recorded as an automatic merge); the copy keeps its old address, which
+    `isSeekJob` and the upload (matched by job number) still take.
   - **Not done:** other job boards' results pages (each needs its own card rules in the extension;
     `listed_url` and the endpoint are not SEEK's alone), and a batch preview ("which of these do I have?"):
     since a batch never changes a job, sending is the check.

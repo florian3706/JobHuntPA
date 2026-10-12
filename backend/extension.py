@@ -75,7 +75,9 @@ MAX_BODY = 512 * 1024       # bytes: the longest job the contract allows is ~110
 MAX_KEYS = 20               # extension keys per account
 LABEL_MAX = 80
 FULL_AD_CHARS = 200         # a description at least this long counts as the full ad (like the JSON-LD importer)
-SEEK_HOSTS = ("seek.com.au", "seek.co.nz")
+# SEEK's own sites: the old addresses, and seek.com, where they now live (au.seek.com, nz.seek.com; www.seek.com.au
+# redirects there).
+SEEK_HOSTS = ("seek.com.au", "seek.co.nz", "seek.com")
 WORK_MODES = ("onsite", "hybrid", "remote", "unknown")
 # The longest value of each field (characters), as the contract states them.
 LIMITS = {"url": 2048, "canonical_url": 2048, "title": 500, "company": 500, "location_text": 500, "salary_text": 500,
@@ -352,8 +354,8 @@ def _host_port(url: str) -> Optional[tuple[str, int]]:
 
 
 def seek_job_id(url: str) -> Optional[str]:
-    """SEEK's id of the job at ``url`` when it is one of SEEK's own sites (seek.com.au, seek.co.nz or a subdomain of
-    one) showing a job: ``/job/<digits>`` or ``?jobId=<digits>``. Else None."""
+    """SEEK's id of the job at ``url`` when it is one of SEEK's own sites (``SEEK_HOSTS`` or a subdomain of one,
+    such as au.seek.com) showing a job: ``/job/<digits>`` or ``?jobId=<digits>``. Else None."""
     site = _host_port(url)
     if site is None or not any(site[0] == d or site[0].endswith("." + d) for d in SEEK_HOSTS):
         return None
