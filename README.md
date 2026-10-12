@@ -849,6 +849,12 @@ To connect it:
 3. Copy the **server address** and the **extension key** it shows into the extension's options, then pick a
    workspace. The key is shown only once. Keep it secret: like a signed-in browser, it opens your data.
 
+In the extension, **Settings** (the button at the top of its popup, from version 1.2) shows which server the
+browser is connected to, under which name, and how long its key works. **Check connection** tries the key,
+**Reconnect** opens the extension's options to connect again (with the saved key, a new one or another
+address), and **Reset** removes the whole setup from the browser after asking. A reset doesn't stop the key:
+disconnect it here as well if you no longer want it.
+
 The card lists your connected extensions with when each was last used. **Disconnect** stops a key at once.
 A key also stops working after 60 days without use, a year after it was made, and whenever your account is
 signed out everywhere: *Sign out everywhere else*, a password change that signs out the other devices, a
