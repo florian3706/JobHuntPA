@@ -375,8 +375,8 @@ class FullRun(MailTestCase):
 
     def browser_extension(self, c):
         """The browser extension: a key named by the person, then jobs it read from pages in their browser (the
-        values, the description and the addresses), previewed and saved, and a source added and tested through the
-        key."""
+        values, the description and the addresses), previewed and saved, a page of search results (each card's
+        address and summary), and a source added and tested through the key."""
         from backend import ratelimit
         from backend.adapters.base import SourceError
 
@@ -404,6 +404,22 @@ class FullRun(MailTestCase):
             self.assertEqual(k.post("/api/extension/jobs", json=bad).status_code, 422)
         too_long = {**page, "job": {**page["job"], "title": "ZQX " * 200}}
         self.assertEqual(k.post("/api/extension/jobs", json=too_long).status_code, 413)
+        listed = {"url": "https://jobs.zqx.example/search?q=zqx+delivery&zqx=new",
+                  "jobs": [{"url": f"/roles/zqx-{n}?zqx=card", "title": f"ZQX Program Lead {n}", "company": "ZQX Corp",
+                            "location_text": "Zqxtown NSW", "salary_text": "ZQX $160k", "employment_type": "ZQX full time",
+                            "work_mode": "remote", "posted_at": "2026-10-09",
+                            "description": "ZQX include: run the ZQX program for Zqx Quillon.\n\n- ZQX point"}
+                           for n in (1, 2)]}
+        r = k.post("/api/extension/jobs/batch", json=listed)
+        self.assertEqual((r.status_code, r.json()["added"]), (200, 2), r.text)
+        self.assertEqual(k.post("/api/extension/jobs/batch", json=listed).json()["existing"], 2)
+        for bad in ({**listed, "jobs": [{**listed["jobs"][0], "title": ""}]},
+                    {**listed, "jobs": [{**listed["jobs"][0], "url": "https://other.zqx.example/roles/zqx-9"}]},
+                    {**listed, "jobs": [{**listed["jobs"][0], "posted_at": "ZQX 3d ago"}]},
+                    {**listed, "jobs": [{**listed["jobs"][0], "html": "<article>ZQX</article>"}]}):
+            self.assertEqual(k.post("/api/extension/jobs/batch", json=bad).status_code, 422)
+        too_long = {**listed, "jobs": [{**listed["jobs"][0], "description": "ZQX " * 2000}]}
+        self.assertEqual(k.post("/api/extension/jobs/batch", json=too_long).status_code, 413)
         r = k.post("/api/sources", json={"url": "https://careers.zqx-two.example/jobs", "label": "ZQX second employer"})
         self.assertEqual(r.status_code, 201, r.text)
         self.source.postings = [_ad(20)]

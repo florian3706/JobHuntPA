@@ -388,6 +388,7 @@ KEY_ENDPOINTS = (
     ("GET", re.compile(r"/api/extension/status")),
     ("POST", re.compile(r"/api/extension/preview")),
     ("POST", re.compile(r"/api/extension/jobs")),
+    ("POST", re.compile(r"/api/extension/jobs/batch")),
     ("GET", re.compile(r"/api/sources")),
     ("POST", re.compile(r"/api/sources")),
     ("POST", re.compile(r"/api/sources/[0-9]{1,18}/test")),

@@ -47,6 +47,23 @@ def page(address: str = PAGE_URL, canonical_url: str = "", **job) -> dict:
     return {"url": address, "canonical_url": canonical_url, "job": values}
 
 
+RESULTS_URL = "https://www.seek.com.au/product-manager-jobs?tags=new"
+
+
+def card(n: int = 81000001, **values) -> dict:
+    """One job of a results page as the extension sends it: its own address and what its card shows."""
+    out = {"url": f"https://www.seek.com.au/job/{n}", "title": f"Product Manager {n}", "company": "Acme",
+           "location_text": "Sydney NSW", "salary_text": "$150,000", "employment_type": "Full time",
+           "work_mode": "hybrid", "posted_at": "2026-10-09", "industry": "Product Management & Development",
+           "description": "Own the roadmap.\n\n- Discovery\n- Delivery\n\nWork type: Full time"}
+    out.update(values)
+    return out
+
+
+def results(*jobs: dict, address: str = RESULTS_URL) -> dict:
+    return {"url": address, "jobs": list(jobs) or [card()]}
+
+
 # ---------------------------------------------------------------------------
 # The address a job is stored under (no database)
 # ---------------------------------------------------------------------------
@@ -89,6 +106,40 @@ class StoredUrlTest(unittest.TestCase):
             self.assertEqual(extension.stored_url(url, "", other), (url, ""), other)
             self.assertEqual(extension.stored_url(url, other, canonical), (canonical, ""), other)
         self.assertEqual(extension.stored_url("https://u:p@jobs.example.com/1", own), ("https://u:p@jobs.example.com/1", ""))
+
+    def test_a_listed_jobs_address_is_one_on_the_results_pages_own_site(self):
+        page_url = "https://www.seek.com.au/product-manager-jobs?page=2"
+        want = ("https://www.seek.com.au/job/81234567", "81234567")
+        for own in ("https://www.seek.com.au/job/81234567", "/job/81234567?type=standard&ref=search-standalone",
+                    "https://www.seek.com.au/job/81234567#sol=a", "  /job/81234567  "):
+            self.assertEqual(extension.listed_url(page_url, own), want, own)
+        # SEEK's other sites store under the same address the searches use
+        self.assertEqual(extension.listed_url("https://www.seek.co.nz/jobs", "/job/5"),
+                         ("https://www.seek.com.au/job/5", "5"))
+        board = "https://jobs.example.com/search?q=pm"
+        self.assertEqual(extension.listed_url(board, "/roles/42"), ("https://jobs.example.com/roles/42", ""))
+        self.assertEqual(extension.listed_url(board, "https://jobs.example.com:443/roles/42"),
+                         ("https://jobs.example.com:443/roles/42", ""))
+        for other in ("", "   ", "https://www.seek.com.au/job/1", "https://evil.example/roles/42",
+                      "https://jobs.example.com@www.seek.com.au/job/1", "https://www.jobs.example.com/roles/42",
+                      "https://jobs.example.com:8443/roles/42", "http://jobs.example.com/roles/42",
+                      "//aggregator.example.net/x/1", "javascript:alert(1)", "ftp://jobs.example.com/x",
+                      "http://user:pw@jobs.example.com/roles/42", "https://[bad"):
+            self.assertIsNone(extension.listed_url(board, other), other)
+        self.assertIsNone(extension.listed_url("https://u:p@jobs.example.com/search", "/roles/42"))
+
+    def test_a_listed_job_is_a_summary_whatever_its_length(self):
+        body = extension.ListedIn.model_validate(card(title="  Product   Owner ", employment_type="Contract/Temp",
+                                                      work_mode="", description="  a  \n\n\n\nb " + "x" * 400))
+        p = extension.listed_posting(RESULTS_URL, body)
+        self.assertEqual((p.url, p.external_id, p.title, p.employment_type, p.work_mode, p.detail_status, p.posted_at),
+                         ("https://www.seek.com.au/job/81000001", "81000001", "Product Owner", "contract", "unknown",
+                          "summary", "2026-10-09"))
+        self.assertTrue(p.description.startswith("a\n\nb"))
+        p = extension.listed_posting(RESULTS_URL, extension.ListedIn.model_validate(card(description="")))
+        self.assertEqual(p.detail_status, "none")
+        self.assertIsNone(extension.listed_posting(RESULTS_URL, extension.ListedIn.model_validate(
+            card(url="https://evil.example/job/1"))))
 
     def test_the_posting_is_the_browsers_values_trimmed(self):
         body = extension.PageIn.model_validate(page(
@@ -275,7 +326,7 @@ class KeyAuthTest(Base):
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertEqual({k: body[k] for k in ("ok", "api", "label", "expires_at", "default_workspace")},
-                         {"ok": True, "api": 1, "label": "Firefox on laptop", "expires_at": made["expires_at"],
+                         {"ok": True, "api": 2, "label": "Firefox on laptop", "expires_at": made["expires_at"],
                           "default_workspace": acct.workspace_id})
         self.assertEqual(body["workspaces"], [{"id": acct.workspace_id, "name": "My job search"},
                                               {"id": second, "name": "Plan B"}])  # sealed names: the key opens them
@@ -297,6 +348,23 @@ class KeyAuthTest(Base):
             r = k.post(f"/api/sources/{source['id']}/test")
         self.assertEqual(r.json()["count"], 1, r.text)
         self.assertEqual([s["label"] for s in c.get("/api/sources").json()], ["Example"])
+        with offline():
+            r = k.post("/api/extension/jobs/batch", json=results())
+        self.assertEqual((r.status_code, r.json()["added"]), (200, 1), r.text)
+
+    def test_a_page_of_results_needs_a_key_or_a_session(self):
+        acct, c = self.account()
+        nobody = TestClient(app)
+        nobody.__enter__()
+        self.addCleanup(nobody.__exit__, None, None, None)
+        r = nobody.post("/api/extension/jobs/batch", json=results())
+        self.assertEqual(r.status_code, 401, r.text)
+        r = self.key_client("jhpa_" + "A" * 43).post("/api/extension/jobs/batch", json=results())
+        self.assertEqual((r.status_code, r.json()["code"]), (401, "token_invalid"))
+        self.assertEqual(self.job_count(acct.workspace_id), 0)
+        with offline():
+            r = c.post("/api/extension/jobs/batch", json=results())
+        self.assertEqual((r.status_code, r.json()["added"]), (200, 1), "a session may use it with its token")
 
     def test_everything_else_is_refused(self):
         acct, c = self.account()
@@ -313,7 +381,10 @@ class KeyAuthTest(Base):
                                    ("delete", f"/api/sources/{source}", None), ("get", "/api/health", None),
                                    ("post", "/api/account/background", {"enabled": True}),
                                    ("get", "/api/account/export", None), ("post", "/api/import/page", None),
-                                   ("get", "/api/admin/users", None), ("get", "/api/extension/status/x", None)):
+                                   ("get", "/api/admin/users", None), ("get", "/api/extension/status/x", None),
+                                   ("get", "/api/extension/jobs/batch", None),
+                                   ("post", "/api/extension/jobs/batch/x", {}),
+                                   ("post", "/api/extension/jobs/other", {})):
             r = getattr(k, method)(path, **({"json": body} if body is not None else {}))
             self.assertEqual((r.status_code, r.json().get("code")), (403, "token_scope"), f"{method} {path}")
         self.assertEqual(len(c.get("/api/sources").json()), 1)
@@ -387,6 +458,7 @@ class KeyAuthTest(Base):
         token = c.headers.pop("X-CSRF-Token")
         try:
             for path, body in (("/api/extension/jobs", page("https://x.example/1")),
+                               ("/api/extension/jobs/batch", results()),
                                ("/api/extension/preview", {"url": "https://x.example/1"}),
                                ("/api/sources", {"url": "https://careers.example.org/y"})):
                 r = c.post(path, json=body)
@@ -407,6 +479,8 @@ class KeyAuthTest(Base):
         for path in ("/api/extension/preview", "/api/extension/jobs"):
             r = k.post(path, json=body, headers={"X-Workspace": str(other.workspace_id)})
             self.assertEqual(r.status_code, 404, path)
+        r = k.post("/api/extension/jobs/batch", json=results(), headers={"X-Workspace": str(other.workspace_id)})
+        self.assertEqual(r.status_code, 404, "a page of results for another account's workspace")
         r = k.get("/api/sources", headers={"X-Workspace": str(other.workspace_id)})
         self.assertEqual(r.status_code, 404)
         self.assertEqual(self.job_count(other.workspace_id), 0)
@@ -509,7 +583,9 @@ class RevokedTogetherTest(Base):
         self.assertEqual(self.status(key), 401, "turning it on again doesn't bring the key back")
 
 
-class PagesTest(Base):
+class SavingBase(Base):
+    """An account, its extension key and no network, for the tests that store jobs."""
+
     def setUp(self):
         super().setUp()
         self.acct, self.c = self.account()
@@ -531,6 +607,7 @@ class PagesTest(Base):
             finally:
                 db.close()
 
+class PagesTest(SavingBase):
     def test_preview_says_the_address_and_the_existing_job_and_stores_nothing(self):
         for body in (page(), {"url": PAGE_URL}, {"url": PAGE_URL, "job": {}}, page(title="")):
             r = self.k.post("/api/extension/preview", json=body)
@@ -745,6 +822,186 @@ class PagesTest(Base):
         for path in ("/api/extension/preview", "/api/extension/jobs"):
             self.assertIn(self.k.post(path, json=body).status_code, (200, 201))
         self.assertLess(time.perf_counter() - start, 5.0)
+
+
+class ResultsPageTest(SavingBase):
+    """POST /api/extension/jobs/batch: the jobs of a results page the person has open. (The pool outlives a test,
+    so the one test that puts a posting in it uses a job number no other test does.)"""
+
+    def batch(self, *jobs: dict, **kw):
+        return self.k.post("/api/extension/jobs/batch", json=results(*jobs, **kw))
+
+    def pooled(self, **values) -> None:
+        from backend import pool
+        from backend.adapters.base import Posting as Scraped
+
+        with helpers.as_account(self.acct):
+            db = SessionLocal()
+            try:
+                pool.upsert_scraped(db, Scraped(**values), "seek", None, utcnow())
+                db.commit()
+            finally:
+                db.close()
+
+    def test_new_jobs_are_added_as_summaries_under_seeks_addresses(self):
+        r = self.batch(card(81000001), card(81000002, url="/job/81000002?type=standard&ref=search-standalone",
+                                             title="Platform Owner", salary_text="", work_mode=""))
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual((body["added"], body["existing"], len(body["jobs"])), (2, 0, 2))
+        first, second = body["jobs"]
+        self.assertEqual(set(first), {"url", "job_id", "created", "title", "company", "link", "excluded_reason"})
+        self.assertEqual((first["url"], first["created"], first["title"], first["company"], first["excluded_reason"]),
+                         ("https://www.seek.com.au/job/81000001", True, "Product Manager 81000001", "Acme", None))
+        self.assertEqual(first["link"], f"/job.html?id={first['job_id']}&ws={self.acct.workspace_id}")
+        self.assertEqual((second["url"], second["title"]), ("https://www.seek.com.au/job/81000002", "Platform Owner"))
+        job = self.stored(first["job_id"])
+        self.assertEqual((job.origin, job.posting_id, job.source, job.url, job.external_id, job.detail_status,
+                          job.work_mode, job.employment_type, job.posted_at, job.status, job.industry),
+                         ("private", None, "browser", "https://www.seek.com.au/job/81000001", "81000001", "summary",
+                          "hybrid", "full_time", "2026-10-09", "to_review", "Product Management & Development"))
+        shown = self.c.get(f"/api/jobs/{first['job_id']}").json()
+        self.assertEqual(shown["description"], card()["description"])
+        self.assertEqual((shown["salary_text"], shown["location_text"]), ("$150,000", "Sydney NSW"))
+        self.assertEqual(sorted(j["id"] for j in self.jobs()), sorted(j["job_id"] for j in body["jobs"]))
+
+    def test_sending_the_page_again_adds_nothing(self):
+        first = self.batch(card(81000001), card(81000002)).json()
+        again = self.batch(card(81000001, title="Renamed"), card(81000002), card(81000003))
+        self.assertEqual(again.status_code, 200, again.text)
+        body = again.json()
+        self.assertEqual((body["added"], body["existing"]), (1, 2))
+        self.assertEqual([j["created"] for j in body["jobs"]], [False, False, True])
+        self.assertEqual([j["job_id"] for j in body["jobs"][:2]], [j["job_id"] for j in first["jobs"]])
+        self.assertEqual(body["jobs"][0]["title"], "Product Manager 81000001", "the stored job, not the card")
+        self.assertEqual(self.job_count(self.acct.workspace_id), 3)
+        # The same job twice in one request is one job
+        r = self.batch(card(81000009), card(81000009, url="https://www.seek.com.au/job/81000009?x=1"))
+        self.assertEqual(([j["created"] for j in r.json()["jobs"]], r.json()["added"]), ([True, False], 1))
+
+    def test_a_job_the_workspace_has_is_left_exactly_as_it_is(self):
+        saved = self.k.post("/api/extension/jobs", json=page("https://www.seek.com.au/job/81000001",
+                                                             title="Senior Product Manager", salary_text="$190,000",
+                                                             posted_at="2026-10-01T09:30:00Z")).json()
+        self.c.patch(f"/api/jobs/{saved['job_id']}", json={"status": "applied"})
+        before = self.c.get(f"/api/jobs/{saved['job_id']}").json()
+        r = self.batch(card(81000001, title="Product Manager", salary_text="$1", location_text="Perth WA",
+                            work_mode="remote", posted_at="2026-10-11", description="A teaser."))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["added"], r.json()["existing"]), (0, 1))
+        listed = r.json()["jobs"][0]
+        self.assertEqual((listed["job_id"], listed["created"], listed["title"]),
+                         (saved["job_id"], False, "Senior Product Manager"))
+        after = self.c.get(f"/api/jobs/{saved['job_id']}").json()
+        for name in ("title", "salary_text", "location_text", "work_mode", "posted_at", "description", "detail_status",
+                     "status", "first_seen"):
+            self.assertEqual(after[name], before[name], name)
+        self.assertEqual(after["description"], AD)
+        self.assertEqual(self.job_count(self.acct.workspace_id), 1)
+
+    def test_a_posting_the_pool_has_is_linked_and_read_as_the_pool_has_it(self):
+        self.pooled(url="https://www.seek.com.au/job/81777001", title="Delivery Lead", company="Seekco",
+                    external_id="81777001", detail_status="summary", description="The pool's summary.",
+                    posted_at="2026-10-08T03:12:45Z", location_text="Melbourne VIC")
+        r = self.batch(card(81777001, title="Delivery Lead (card)", description="The card's teaser.",
+                            posted_at="2026-10-09", location_text="Melbourne"))
+        self.assertEqual((r.status_code, r.json()["added"]), (200, 1), r.text)
+        listed = r.json()["jobs"][0]
+        self.assertEqual((listed["created"], listed["title"], listed["company"]), (True, "Delivery Lead", "Seekco"))
+        job = self.stored(listed["job_id"])
+        self.assertEqual(job.origin, "pool")
+        self.assertIsNotNone(job.posting_id)
+        self.assertFalse(job.has_own_ad, "nothing of the card is kept over the pool's ad")
+        shown = self.c.get(f"/api/jobs/{listed['job_id']}").json()
+        self.assertEqual((shown["description"], shown["posted_at"], shown["location_text"]),
+                         ("The pool's summary.", "2026-10-08T03:12:45Z", "Melbourne VIC"))
+
+    def test_every_job_needs_a_title_and_an_address_on_the_pages_own_site(self):
+        for bad, field in ((card(81000002, title="  "), "title"), (card(81000002, title=""), "title"),
+                           (card(81000002, url="https://evil.example/job/81000002"), "url"),
+                           (card(81000002, url="https://www.seek.co.nz/job/81000002"), "url"),
+                           (card(81000002, url="javascript:alert(1)"), "url"), (card(81000002, url=""), "url"),
+                           (card(81000002, url=None), "url")):
+            r = self.batch(card(81000001), bad, card(81000003))
+            self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "invalid", field), bad)
+        self.assertEqual(self.job_count(self.acct.workspace_id), 0, "nothing is stored unless every job is fine")
+        r = self.batch(card(81000001), address="ftp://files.example/x")
+        self.assertEqual((r.status_code, r.json()["field"]), (422, "url"))
+
+    def test_bad_input_is_422_and_too_much_is_413_with_the_field(self):
+        post = lambda body: self.k.post("/api/extension/jobs/batch", json=body)  # noqa: E731
+        for body, field in (({"jobs": [card()]}, "url"), ({"url": RESULTS_URL}, "jobs"),
+                            ({"url": RESULTS_URL, "jobs": []}, "jobs"), ({"url": RESULTS_URL, "jobs": "all"}, "jobs"),
+                            ({"url": RESULTS_URL, "jobs": ["x"]}, "jobs"), ({"url": 5, "jobs": [card()]}, "url"),
+                            (results(card(title=5)), "title"), (results(card(work_mode="Hybrid")), "work_mode"),
+                            (results(card(posted_at="3d ago")), "posted_at"),
+                            (results(card(description=["a"])), "description"),
+                            (results({k: v for k, v in card().items() if k != "url"}), "url"),
+                            (results(card(html="<article>")), "html"), (results(card(method="site")), "method"),
+                            ({**results(), "html": "<html>"}, "html"), ({**results(), "canonical_url": RESULTS_URL},
+                                                                        "canonical_url")):
+            r = post(body)
+            self.assertEqual((r.status_code, r.json().get("code"), r.json().get("field")), (422, "invalid", field), body)
+        for body, field in ((results(*[card(81000000 + n) for n in range(extension.MAX_BATCH + 1)]), "jobs"),
+                            (results(card(title="t" * 501)), "title"), (results(card(industry="i" * 201)), "industry"),
+                            (results(card(description="d" * (extension.SUMMARY_MAX + 1))), "description"),
+                            (results(card(url="https://www.seek.com.au/job/1?" + "a" * 2050)), "url"),
+                            (results(address="https://www.seek.com.au/jobs?" + "a" * 2050), "url")):
+            r = post(body)
+            self.assertEqual((r.status_code, r.json().get("code"), r.json().get("field")), (413, "too_large", field),
+                             field)
+        self.assertIn("5,000", post(results(card(description="d" * 5001))).json()["detail"])
+        self.assertIn(str(extension.MAX_BATCH), post(results(*[card(n) for n in range(1, 60)])).json()["detail"])
+        r = self.k.post("/api/extension/jobs/batch", json={"url": RESULTS_URL, "padding": "a" * extension.MAX_BODY})
+        self.assertEqual((r.status_code, r.json()["code"]), (413, "too_large"))
+        for raw in (b"not json", b"[1]", b"[" * 200_000 + b"]" * 200_000):
+            r = self.k.post("/api/extension/jobs/batch", content=raw, headers={"Content-Type": "application/json"})
+            self.assertEqual((r.status_code, r.json()["code"]), (422, "invalid"), raw[:20])
+        self.assertEqual(self.job_count(self.acct.workspace_id), 0)
+        self.assertEqual(post(results(card(description="d" * extension.SUMMARY_MAX))).status_code, 200)
+
+    def test_added_jobs_are_filtered_and_wait_for_a_score(self):
+        from backend.scorer import select_jobs
+
+        r = self.c.put("/api/dealbreakers", json={"industries": [], "keywords": ["blockchain"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.batch(card(81000001), card(81000002, title="Chain Analyst", description="A blockchain job."))
+        self.assertEqual((r.status_code, r.json()["added"]), (200, 2), r.text)
+        good, bad = r.json()["jobs"]
+        # The card's classification is the job's industry, which the industry dealbreakers read
+        self.c.put("/api/dealbreakers", json={"industries": ["gambling"], "keywords": ["blockchain"]})
+        by_industry = self.batch(card(81000003, industry="Gambling & Wagering")).json()["jobs"][0]
+        self.assertIn("gambling", by_industry["excluded_reason"])
+        listed = {j["id"]: j for j in self.jobs()}
+        self.assertIsNone(good["excluded_reason"])
+        self.assertTrue(bad["excluded_reason"])
+        self.assertEqual(bad["excluded_reason"], listed[bad["job_id"]]["excluded_reason"])
+        self.assertEqual([j["id"] for j in self.jobs(include="")], [good["job_id"]])
+        with helpers.as_account(self.acct):
+            db = SessionLocal()
+            try:
+                waiting = select_jobs(db, "pending", "x", self.acct.workspace_id)
+            finally:
+                db.close()
+        self.assertIn(good["job_id"], waiting)
+        self.assertNotIn(bad["job_id"], waiting)
+        self.assertNotIn(by_industry["job_id"], waiting)
+
+    def test_a_copy_of_a_job_from_another_site_is_merged_and_the_listed_one_is_linked(self):
+        first = self.k.post("/api/extension/jobs", json=page()).json()
+        r = self.batch(card(81000001, title="Product Owner, Payments", company="Acme", location_text="Melbourne VIC",
+                            description=AD))
+        self.assertEqual((r.status_code, r.json()["added"]), (200, 1), r.text)
+        self.assertEqual(r.json()["jobs"][0]["job_id"], first["job_id"], "the answer links the job that is listed")
+        self.assertEqual([j["id"] for j in self.jobs()], [first["job_id"]])
+
+    def test_a_full_page_is_quick(self):
+        cards = [card(82000000 + n, description=("A line of the summary. " * 10 + "\n") * 20)
+                 for n in range(extension.MAX_BATCH)]
+        start = time.perf_counter()
+        r = self.batch(*cards)
+        self.assertEqual((r.status_code, r.json()["added"]), (200, extension.MAX_BATCH), r.text[:300])
+        self.assertLess(time.perf_counter() - start, 20.0)
 
 
 class SettingsCardTest(unittest.TestCase):

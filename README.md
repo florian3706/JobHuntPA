@@ -820,6 +820,18 @@ The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your curr
   already have (the same address) is brought up to date instead of added twice, and the popup tells you before
   you save. If your filters leave the saved job out of the Jobs list (for example a location or keyword you
   excluded), JobHuntPA tells the extension why; tick **Show excluded** in the Jobs tab to see it.
+- **Jobs on this page**: on a SEEK search results page the popup lists every job on the page with a tick
+  box and adds the ticked ones in one go. It works on whichever view you have open in your own, signed-in
+  browser: *New to you*, sorted by date, page 2 and beyond, which JobHuntPA's own SEEK search can't reach
+  (it gets the first page of each search, in SEEK's order). Jobs SEEK marks as new to you are ticked to start
+  with; **Tick all** takes the whole page. Each job is added from the summary on its card (title, employer,
+  location, salary, work type, classification, the short description and the date it was listed, to the
+  day), as JobHuntPA's own SEEK search stores it; for the full ad, open the job on SEEK and use **Add as a
+  job**, or **Upload full ad** on its card. This only ever adds: a job you already have is left exactly as it is,
+  so going over a page twice does no harm, and the popup says for each job whether it was added or was
+  already there. You move to the next page yourself and press the button again. The extension reads only
+  the page you have open; it never clicks, scrolls or opens anything on SEEK. Needs version 1.1 of the
+  extension.
 - **Add as a company source**: adds the page as a [careers page](#adding-company-careers-pages) of the
   workspace, and **Test** shows what a search would find on it.
 
@@ -1095,7 +1107,7 @@ sessions), `backend/totp.py` (authenticator codes), `backend/admin.py` (the admi
 `backend/background.py` (background access), `backend/key_recovery.py` (the `recover-lost` command),
 `backend/export.py` (data export), `backend/account.py` (preferences, the walkthrough step, deleting
 an account), `backend/extension.py` (the browser extensions' API and keys; the extensions read the page themselves and
-send only the job), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
+send only the job, or the jobs listed on a page of search results), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
 `new-admin-key` and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
 (account cards), `account-email.js` and `email-settings.js` (email address and server settings), `background.js`,
 `extension.js` (Settings > Browser extension),
@@ -1250,5 +1262,9 @@ the owner hasn't turned on background access or the account is turned off.
   SEEK, save the page (Ctrl+S / Cmd+S) and upload the file; the job is updated with the full ad,
   re-filtered and rescored. The uploaded ad is kept on your workspace's job only, never in the
   shared pool. SEEK may also refuse automated access outright (HTTP 403); then save
-  SEEK search pages yourself and use *Search setup → Import saved pages*.
+  SEEK search pages yourself and use *Search setup → Import saved pages*. robots.txt also rules out every
+  search address with options in it (further pages, *New to you*, sorting by date), so JobHuntPA's own search
+  never asks for those. To bring in such a page, open it in your own browser and use the
+  [browser extension](#browser-extension)'s **Jobs on this page**: it reads the page you are looking at, and you
+  turn the pages.
 - Geocoding uses OpenStreetMap Nominatim under its usage policy (≤1 request/s, cached forever).

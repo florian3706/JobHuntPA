@@ -202,6 +202,30 @@ def import_one(posting: Posting, source: str, ws: int) -> tuple[int, bool]:
         db.close()
 
 
+def add_listed(postings: list[Posting], source: str, ws: int) -> list[tuple[int, bool]]:
+    """Jobs from a results page the user had open in their browser (the extension's "add the jobs on this page").
+    Only jobs the workspace doesn't have are added (``pool.add_listed``), placed and filtered like an import; the
+    ones it has are left as they are. Returns (the job's id, new to the workspace) for each, in order."""
+    db = SessionLocal()
+    try:
+        crit = load_criteria(db, ws)
+        now = datetime.utcnow()
+        out = []
+        for p in postings:
+            job, is_new = pool.add_listed(db, ws, p, source, now)
+            if is_new:
+                if job.posting is not None:
+                    pool.refresh_link(job, crit)  # the pool's ad: placed, its office taken over
+                else:
+                    enrich(job, crit)
+                job.excluded_reason = exclusion_reason(job, crit, stage=stage_of(job))
+                db.commit()
+            out.append((job.id, is_new))
+        return out
+    finally:
+        db.close()
+
+
 def update_job_from_posting(db: Session, job: Job, p: Posting) -> None:
     """Replace a stored job's data with a fuller posting (e.g. a saved SEEK job page for a listing we only had a
     summary of), then re-filter it. The page is the user's own: it's kept on this workspace's job, and the shared

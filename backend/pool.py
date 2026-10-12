@@ -14,6 +14,7 @@ module writes postings, so nothing a user adds or decides can reach the pool.
   ``close_unlisted`` (missing from a complete listing of the same listing) and ``sweep`` (not listed anywhere for
   STALE_AFTER).
 - ``import_private``: postings from a page the user saved: private unless the pool already has them.
+- ``add_listed``: a job from a results page the user had open: added when the workspace lacks it, never changed.
 """
 from __future__ import annotations
 
@@ -384,6 +385,24 @@ def import_private(db: Session, ws: int, p: Scraped, source: str, now: datetime)
     if job.posting is None:
         job.closed_at = None
     return job, is_new
+
+
+def add_listed(db: Session, ws: int, p: Scraped, source: str, now: datetime) -> tuple[Job, bool]:
+    """One job from a results page the user had open (a card: the listing's summary). It only ever adds. The
+    workspace's job with the URL stays exactly as it is, since a card says less than what is stored; a posting the
+    pool has is linked and read as the pool has it; else a private job with the card's values, which never enters
+    the pool. Returns (job, new to the workspace)."""
+    job = job_by_url(db, ws, p.url)
+    if job is not None:
+        return job, False
+    posting = posting_by_url(db, p.url)
+    if posting is not None and not posting.not_a_job:
+        return link(db, ws, posting, now)
+    job = Job(workspace_id=ws, url=p.url, origin="private", status="to_review", first_seen=now, last_seen=now)
+    job.source = source
+    db.add(job)
+    apply_own(job, p, now)
+    return job, True
 
 
 def unlinked_count(db: Session) -> int:

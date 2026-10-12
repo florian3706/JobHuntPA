@@ -26,8 +26,9 @@
   function mount(slot) {
     slot.innerHTML = `<div id="ext-card" class="card form-card account-card">
       <div class="card-head"><h3 id="ext-heading" tabindex="-1">Browser extension <span class="scope-tag">This account</span></h3></div>
-      <p>Add the job ad you are looking at, or a company's careers page, to JobHuntPA in one click from Chrome or
-        Firefox. The extension reads the page in your own browser, so ads behind a sign-in work too.</p>
+      <p>Add the job ad you are looking at, the jobs on a SEEK results page, or a company's careers page, to
+        JobHuntPA in one click from Chrome or Firefox. The extension reads the page in your own browser, so ads
+        behind a sign-in work too.</p>
       <p>Get the extension for <a href="${CHROME_URL}" target="_blank" rel="noopener">Chrome${NEW_TAB}</a> or
         <a href="${FIREFOX_URL}" target="_blank" rel="noopener">Firefox${NEW_TAB}</a>, then connect it here.</p>
       <div id="ext-list" class="account-body"><p class="muted">Loading…</p></div>

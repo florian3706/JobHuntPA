@@ -1173,7 +1173,7 @@ the key checks in `backend/sessions.py`, `frontend/extension.js` (Settings > Bro
   always false and sensitive actions refuse.
 - **The allowlist** (`sessions.KEY_ENDPOINTS`; anything else answers 403 `token_scope`, including the key endpoints
   and every admin endpoint): `GET /api/extension/status`, `POST /api/extension/preview`, `POST /api/extension/jobs`,
-  `GET /api/sources`, `POST /api/sources`, `POST /api/sources/{id}/test`. Workspaces are the usual `X-Workspace`
+  `POST /api/extension/jobs/batch`, `GET /api/sources`, `POST /api/sources`, `POST /api/sources/{id}/test`. Workspaces are the usual `X-Workspace`
   check (another account's answers 404). A key can't read jobs, documents, chats or settings.
 - **Jobs (contract v3, 2026-10-10):** the extension reads the page in the person's own browser, on their machine:
   JSON-LD JobPosting data, site-specific elements (SEEK, LinkedIn, Indeed, ...), the heading and titles, and the
@@ -1220,3 +1220,40 @@ the key checks in `backend/sessions.py`, `frontend/extension.js` (Settings > Bro
   `excluded_reason`: why the exclusion filters leave the listed job out of the Jobs list (the same text the list
   shows), or null, so the extension can say where the job went. Answer of `POST /api/extension/jobs`:
   `{"job_id", "created", "title", "company", "link", "excluded_reason"}`.
+- **A page of results (2026-10-12; `status` says `"api": 2`):** the user asked for SEEK's *New to you* view and
+  later pages, which the app's own SEEK search can't ask for: robots.txt disallows every search address with a
+  query string but `?keywords`, and *New to you* needs SEEK to know who is looking. So the extension reads the
+  results page the person has open in their own, signed-in browser, and the person turns the pages; the extension
+  never clicks, scrolls, fetches or opens anything on the site (that would be a crawler under the person's sign-in).
+  On a results page of a job board it knows (SEEK: `article[data-job-id]` and the `data-automation` parts of a
+  card) it lists the jobs with tick boxes, the ones the site marks *New to you* ticked, and sends the ticked ones:
+  `POST /api/extension/jobs/batch` with `{"url": <the results page>, "jobs": [{"url", "title", "company",
+  "location_text", "salary_text", "employment_type", "work_mode", "posted_at", "industry", "description"}, ...]}`.
+  `url` is the job's own address (the extension builds SEEK's from the card's job number); `posted_at` is the
+  card's "3d ago" as a date, to the day ("30d+ ago" gives none); `industry` is the card's classification, which
+  the industry dealbreakers read; `description` is the card's summary as plain text (teaser, points, work type,
+  classification), like the summary the SEEK adapter stores. Whether the site marks a job new, viewed or applied
+  stays in the popup. Nothing about a results page is sent before the person presses Add (the "already there?"
+  preview of the page as a job waits until the Add job tab is opened). Same reader and limits as a job (512 KB,
+  413 `too_large` / 422 `invalid` with `field`, unknown fields refused); 1 to 50 jobs a request (413 `too_large`,
+  `field: "jobs"`, past that; the extension sends a longer page in parts), a summary of at most 5,000 characters,
+  a classification of at most 200.
+  - **The address** (`extension.listed_url`): the job's address joined to the page's must be an http(s) address
+    on exactly the page's host and port with no user name, and a SEEK job is stored as
+    `https://www.seek.com.au/job/{id}` with `external_id`, as the searches store it. A job with an address on
+    another site, or without a title, refuses the whole request (422 `invalid`, `field` `url` or `title`) before
+    anything is stored: the extension sends neither, so one means the page or the extension is not what it seems.
+  - **It only adds** (`pool.add_listed`, `pipeline.add_listed`): a job the workspace has with that address is
+    left exactly as it is, whatever its state (a card says less than a stored ad, and its date is rougher), so a
+    page can be gone over twice and a results page can't change anything the person has. A posting the pool has
+    is linked and read as the pool has it; nothing of the card is kept as the workspace's own. Anything else
+    becomes a private job with the card's values (`source = "browser"`, `detail_status = "summary"`), which
+    never enters the pool; a later search that finds the posting attaches it (`pool.link`). New jobs are placed
+    and filtered like an import and wait for their score; the duplicate scan runs once after the batch.
+  - **The answer:** `{"added", "existing", "jobs": [{"url", "job_id", "created", "title", "company", "link",
+    "excluded_reason"}, ...]}` in the order sent, each as the job that is listed for it (a merged copy's
+    original). An extension from before this never calls it; a server from before it answers the key 403
+    `token_scope`, and the extension checks `api >= 2` first and says to update JobHuntPA.
+  - **Not done:** other job boards' results pages (each needs its own card rules in the extension;
+    `listed_url` and the endpoint are not SEEK's alone), and a batch preview ("which of these do I have?"):
+    since a batch never changes a job, sending is the check.
