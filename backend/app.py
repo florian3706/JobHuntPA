@@ -336,8 +336,14 @@ def list_jobs(office_slack: int = OfficeSlack,
     ``include=hidden`` or both, which the Jobs tab asks for while "Show excluded" / "Show hidden"
     is ticked. ``X-Omitted-Count`` says how many were left out. A job the office-days what-if lets
     through isn't excluded."""
+    from backend.pipeline import name_browser_sources
     from backend.pool import jobs_query
 
+    try:
+        name_browser_sources(db, ws)  # once per workspace: old extension jobs get the source that says how and where
+    except Exception as exc:  # never in the way of the list; tried again with the next one
+        db.rollback()
+        log.warning("Naming the browser extension's old jobs failed in workspace %s: %s", ws, exc.__class__.__name__)
     phash = _profile_hash(db, ws)
     softened = softened_job_ids(db, ws, office_slack)
     leave_out = {"excluded", "hidden"} - set(include.split(","))

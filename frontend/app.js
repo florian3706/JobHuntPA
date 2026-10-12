@@ -362,7 +362,7 @@ function renderJobCard(job) {
       </select>
       <button class="btn btn-ghost btn-sm" type="button" data-act="rescore" aria-describedby="${titleId}">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="desc" aria-describedby="${titleId}">Description</button>
-      ${job.source === 'seek' && job.detail_status === 'summary' ? `<button class="btn btn-sm" type="button" data-act="upload-ad" aria-describedby="${titleId}" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>` : ''}
+      ${isSeekJob(job) && job.detail_status === 'summary' ? `<button class="btn btn-sm" type="button" data-act="upload-ad" aria-describedby="${titleId}" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>` : ''}
       <button class="btn btn-ghost btn-sm" type="button" data-act="hide" aria-describedby="${titleId}">${job.hidden ? 'Unhide' : 'Hide'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="letter" aria-describedby="${titleId}">${job.has_cover_letter ? 'Cover letter<span aria-hidden="true"> ✓</span><span class="visually-hidden"> (drafted)</span>' : 'Draft cover letter'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="chat" aria-describedby="${titleId}" title="Ask questions about this job in a chat on the right">Chat</button>
@@ -439,7 +439,7 @@ function showUploadAd(job) {
   const mac = /Mac/i.test(navigator.platform);
   openHtmlModal(`Full ad: ${job.title} at ${job.company}`, `
     <div class="upload-ad">
-      <p>SEEK only lets the app read the short listing summary. To score this job on the full ad:</p>
+      <p>${job.source === 'seek' ? 'SEEK only lets the app read the short listing summary.' : 'JobHuntPA has only a short summary of this job.'} To score this job on the full ad:</p>
       <ol>
         <li><a href="${esc(job.url)}" target="_blank" rel="noopener">Open the ad on SEEK${NEW_TAB}</a> and wait for it to load.</li>
         <li>Save the page: press <kbd>${mac ? 'Cmd' : 'Ctrl'}</kbd>+<kbd>S</kbd> (any "Webpage" format works).</li>

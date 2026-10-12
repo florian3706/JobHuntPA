@@ -723,6 +723,12 @@ class EmailTests(Base):
         from backend.email_templates import source_label
 
         for raw, label in (("seek", "SEEK"), ("import", "imported page"), ("browser", "browser extension"),
+                           ("browser:bulk:seek.com.au", "SEEK - browser extension (bulk)"),
+                           ("browser:single:seek.com.au", "SEEK - browser extension (single)"),
+                           ("browser:single:au.linkedin.com", "LinkedIn - browser extension (single)"),
+                           ("browser:single:careers.acme.example", "careers.acme.example - browser extension (single)"),
+                           ("browser:bulk:", "browser extension (bulk)"),
+                           ("browser:other:seek.com.au", "SEEK - browser extension"),
                            ("apsjobs:q=x", "APSJobs"),
                            ("site:acme.com", "acme.com"), ("generic:jobs.example.org", "jobs.example.org"),
                            ("workable:compass-education", "compass-education (Workable)"),

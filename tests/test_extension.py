@@ -154,6 +154,41 @@ class StoredUrlTest(unittest.TestCase):
         self.assertEqual(p.detail_status, "none")
 
 
+class SourceNameTest(unittest.TestCase):
+    """backend/job_source.py: what jobs.source says for a job the extension added, and the site it stands for."""
+
+    def test_the_source_says_how_and_the_site(self):
+        from backend import job_source
+
+        self.assertEqual(job_source.browser(job_source.BULK, "https://www.seek.com.au/job/81234567"),
+                         "browser:bulk:seek.com.au")
+        self.assertEqual(job_source.browser(job_source.SINGLE, "https://Careers.Acme.example:8443/jobs/77?x=1"),
+                         "browser:single:careers.acme.example")
+        for odd in ("", None, "not an address", "https://[bad"):
+            self.assertEqual(job_source.browser(job_source.SINGLE, odd), "browser:single:", odd)
+        self.assertEqual(job_source.browser_parts("browser:bulk:seek.com.au"), ("bulk", "seek.com.au"))
+        self.assertEqual(job_source.browser_parts("browser:single:"), ("single", ""))
+        for other in ("browser", "seek", "import", "site:acme.com", "workable:compass-education", "", None):
+            self.assertIsNone(job_source.browser_parts(other), other)
+
+    def test_a_site_is_named_and_stands_for_its_jobs(self):
+        from backend import job_source
+
+        for host, name in (("seek.com.au", "SEEK"), ("seek.co.nz", "SEEK"), ("nz.seek.co.nz", "SEEK"),
+                           ("au.linkedin.com", "LinkedIn"), ("indeed.com", "Indeed"),
+                           ("notseek.com.au", "notseek.com.au"), ("careers.acme.example", "careers.acme.example"),
+                           ("", "")):
+            self.assertEqual(job_source.site_name(host), name, host)
+        # "On the same site" (backend.duplicates): SEEK's jobs are SEEK's however they came in
+        for source, site in (("seek", "seek"), ("browser:bulk:seek.com.au", "seek"),
+                             ("browser:single:seek.com.au", "seek"),
+                             ("browser:single:careers.acme.example", "careers.acme.example"),
+                             ("browser:bulk:careers.acme.example", "careers.acme.example"),
+                             ("browser:single:", "browser"), ("browser", "browser"), ("site:acme.com", "site:acme.com"),
+                             ("workable:compass-education", "workable:compass-education"), ("", ""), (None, "")):
+            self.assertEqual(job_source.site_of(source), site, source)
+
+
 # ---------------------------------------------------------------------------
 # Keys and the API
 # ---------------------------------------------------------------------------
@@ -638,7 +673,8 @@ class PagesTest(SavingBase):
         job = self.stored(saved["job_id"])
         self.assertEqual((job.origin, job.posting_id, job.source, job.work_mode, job.employment_type,
                           job.detail_status, job.posted_at, job.url),
-                         ("private", None, "browser", "hybrid", "full_time", "full", "2026-10-01", PAGE_URL))
+                         ("private", None, "browser:single:careers.acme.example", "hybrid", "full_time", "full",
+                          "2026-10-01", PAGE_URL))
         self.assertIsNone(job.duplicate_of)
         full = self.c.get(f"/api/jobs/{saved['job_id']}").json()  # the session reads what the key sealed
         self.assertEqual(full["description"], AD)
@@ -858,12 +894,14 @@ class ResultsPageTest(SavingBase):
         job = self.stored(first["job_id"])
         self.assertEqual((job.origin, job.posting_id, job.source, job.url, job.external_id, job.detail_status,
                           job.work_mode, job.employment_type, job.posted_at, job.status, job.industry),
-                         ("private", None, "browser", "https://www.seek.com.au/job/81000001", "81000001", "summary",
-                          "hybrid", "full_time", "2026-10-09", "to_review", "Product Management & Development"))
+                         ("private", None, "browser:bulk:seek.com.au", "https://www.seek.com.au/job/81000001",
+                          "81000001", "summary", "hybrid", "full_time", "2026-10-09", "to_review",
+                          "Product Management & Development"))
         shown = self.c.get(f"/api/jobs/{first['job_id']}").json()
         self.assertEqual(shown["description"], card()["description"])
         self.assertEqual((shown["salary_text"], shown["location_text"]), ("$150,000", "Sydney NSW"))
         self.assertEqual(sorted(j["id"] for j in self.jobs()), sorted(j["job_id"] for j in body["jobs"]))
+        self.assertEqual({j["source"] for j in self.jobs()}, {"browser:bulk:seek.com.au"}, "what the pages label")
 
     def test_sending_the_page_again_adds_nothing(self):
         first = self.batch(card(81000001), card(81000002)).json()
@@ -912,6 +950,7 @@ class ResultsPageTest(SavingBase):
         self.assertEqual(job.origin, "pool")
         self.assertIsNotNone(job.posting_id)
         self.assertFalse(job.has_own_ad, "nothing of the card is kept over the pool's ad")
+        self.assertEqual(job.source, "seek", "the pool's ad, so the pool's source")
         shown = self.c.get(f"/api/jobs/{listed['job_id']}").json()
         self.assertEqual((shown["description"], shown["posted_at"], shown["location_text"]),
                          ("The pool's summary.", "2026-10-08T03:12:45Z", "Melbourne VIC"))
@@ -995,6 +1034,98 @@ class ResultsPageTest(SavingBase):
         self.assertEqual(r.json()["jobs"][0]["job_id"], first["job_id"], "the answer links the job that is listed")
         self.assertEqual([j["id"] for j in self.jobs()], [first["job_id"]])
 
+    def test_the_full_ad_of_a_job_added_from_a_results_page_can_be_uploaded(self):
+        added = self.batch(card(81555001, title="Senior Program Manager")).json()["jobs"][0]
+        listed = {j["id"]: j for j in self.jobs()}[added["job_id"]]
+        self.assertEqual((listed["detail_status"], listed["url"]), ("summary", "https://www.seek.com.au/job/81555001"))
+        seek_page = {"jobdetails": {"result": {
+            "workArrangements": {"arrangements": [{"type": "HYBRID", "label": "Hybrid"}]},
+            "job": {"id": "81555001", "title": "Senior Program Manager",
+                    "content": "<p>About the role</p><ul><li>Run the delivery program</li><li>3 days in the office</li></ul>" * 6,
+                    "location": {"label": "Surry Hills, Sydney NSW"}, "advertiser": {"name": "Acme"},
+                    "salary": {"label": "$160,000 - $180,000 per year"}, "listedAt": {"dateTimeUtc": "2026-09-28"}}}}}
+        html = f"<html><script>\n    window.SEEK_REDUX_DATA = {json.dumps(seek_page)};\n</script></html>"
+        other = html.replace("81555001", "81555002")
+        r = self.c.post(f"/api/jobs/{added['job_id']}/import-page", files={"file": ("x.html", other.encode(), "text/html")})
+        self.assertEqual(r.status_code, 422, "another job's page is refused")
+        r = self.c.post(f"/api/jobs/{added['job_id']}/import-page", files={"file": ("ad.html", html.encode(), "text/html")})
+        self.assertEqual(r.status_code, 200, r.text)
+        full = r.json()
+        self.assertEqual((full["detail_status"], full["salary_text"], full["source"]),
+                         ("full", "$160,000 - $180,000 per year", "browser:bulk:seek.com.au"))
+        self.assertIn("Run the delivery program", full["description"])
+        self.assertEqual(self.job_count(self.acct.workspace_id), 1)
+
+    def test_jobs_added_before_the_source_said_how_are_renamed_once(self):
+        """Old rows have the plain source "browser". The jobs of one results page share ``first_seen``."""
+        from backend.db import AppSetting
+
+        ws = self.acct.workspace_id
+        page_time, alone = utcnow() - timedelta(hours=3), utcnow() - timedelta(days=2)
+        with helpers.as_account(self.acct):
+            db = SessionLocal()
+            try:
+                for n, seen, url in ((1, page_time, "https://www.seek.com.au/job/81666001"),
+                                     (2, page_time, "https://www.seek.com.au/job/81666002"),
+                                     (3, page_time, "https://www.seek.com.au/job/81666003"),
+                                     (4, alone, "https://careers.acme.example/jobs/9"),
+                                     (5, alone - timedelta(seconds=1), "https://www.seek.com.au/job/81666005")):
+                    job = Job(workspace_id=ws, url=url, origin="private", status="to_review", first_seen=seen,
+                              last_seen=seen, title=f"Old job {n}", company="Acme")
+                    job.source = "browser"
+                    db.add(job)
+                kept = Job(workspace_id=ws, url="https://www.seek.com.au/job/81666009", origin="private",
+                           status="to_review", first_seen=page_time, last_seen=page_time, title="A saved page's job")
+                kept.source = "seek"
+                db.add(kept)
+                db.commit()
+            finally:
+                db.close()
+        r = self.batch(card(81666020))
+        self.assertEqual((r.status_code, r.json()["added"]), (200, 1), r.text)
+        by_url = {j["url"]: j["source"] for j in self.jobs()}  # listing the jobs renames the old ones first
+        self.assertEqual(by_url, {
+            "https://www.seek.com.au/job/81666001": "browser:bulk:seek.com.au",
+            "https://www.seek.com.au/job/81666002": "browser:bulk:seek.com.au",
+            "https://www.seek.com.au/job/81666003": "browser:bulk:seek.com.au",
+            "https://careers.acme.example/jobs/9": "browser:single:careers.acme.example",
+            "https://www.seek.com.au/job/81666005": "browser:single:seek.com.au",
+            "https://www.seek.com.au/job/81666009": "seek",
+            "https://www.seek.com.au/job/81666020": "browser:bulk:seek.com.au"})
+        db = SessionLocal()
+        try:
+            self.assertIn(ws, json.loads(db.get(AppSetting, "browser_source_workspaces").value_json))
+        finally:
+            db.close()
+
+    def test_a_search_renames_old_jobs_too_and_a_failure_never_stops_the_list(self):
+        from backend import pipeline
+
+        second = self.c.post("/api/workspaces", json={"name": "Plan B"}).json()["id"]
+        for ws in (self.acct.workspace_id, second):
+            with helpers.as_account(self.acct):
+                db = SessionLocal()
+                try:
+                    job = Job(workspace_id=ws, url=f"https://jobs.example.com/roles/{ws}", origin="private",
+                              status="to_review", first_seen=utcnow(), last_seen=utcnow(), title="Old job")
+                    job.source = "browser"
+                    db.add(job)
+                    db.commit()
+                finally:
+                    db.close()
+        with mock.patch.object(pipeline, "name_browser_sources", side_effect=RuntimeError("boom")):
+            self.assertEqual({j["source"] for j in self.jobs()}, {"browser"}, "the list is still there")
+        self.assertEqual({j["source"] for j in self.jobs()}, {"browser:single:jobs.example.com"}, "and the next one names it")
+        with helpers.as_account(self.acct):
+            db = SessionLocal()
+            try:
+                self.assertEqual(pipeline.name_browser_sources(db, second), 1, "what a search does first")
+                self.assertEqual(pipeline.name_browser_sources(db, second), 0, "once")
+                self.assertEqual([j.source for j in db.query(Job).filter(Job.workspace_id == second)],
+                                 ["browser:single:jobs.example.com"])
+            finally:
+                db.close()
+
     def test_a_full_page_is_quick(self):
         cards = [card(82000000 + n, description=("A line of the summary. " * 10 + "\n") * 20)
                  for n in range(extension.MAX_BATCH)]
@@ -1002,6 +1133,38 @@ class ResultsPageTest(SavingBase):
         r = self.batch(*cards)
         self.assertEqual((r.status_code, r.json()["added"]), (200, extension.MAX_BATCH), r.text[:300])
         self.assertLess(time.perf_counter() - start, 20.0)
+
+
+class PagesSayWhereAJobCameFromTest(unittest.TestCase):
+    """frontend/common.js and app.js: the label of a job the extension added, and "Upload full ad" (no browser
+    needed: the rule is read from the scripts; tests/test_digest.py runs the same rule for the emails)."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = helpers.ROOT / "frontend"
+        cls.common = (root / "common.js").read_text(encoding="utf-8")
+        cls.app = (root / "app.js").read_text(encoding="utf-8")
+
+    def test_the_label_names_the_site_then_the_extension_and_how(self):
+        label = self.common[self.common.index("function sourceLabel(src)"):]
+        label = label[:label.index("\n}\n") + 3]
+        self.assertIn("if (kind === 'browser')", label)
+        self.assertIn("`browser extension${how === 'bulk' || how === 'single' ? ` (${how})` : ''}`", label)
+        self.assertIn("return site ? `${siteName(site)} - ${words}` : words;", label)
+        self.assertIn("if (s === 'browser') return 'browser extension';", label, "an old row keeps its old label")
+        self.assertIn("'seek.com.au': 'SEEK'", self.common)
+        from backend import job_source
+        for host, name in job_source.SITE_NAMES.items():
+            self.assertIn(f"'{host}': '{name}'", self.common, "the pages and the emails name the same sites")
+
+    def test_a_summary_only_job_at_seeks_address_offers_the_full_ad_upload(self):
+        self.assertIn("${isSeekJob(job) && job.detail_status === 'summary' ? `<button class=\"btn btn-sm\" "
+                      "type=\"button\" data-act=\"upload-ad\"", self.app)
+        self.assertNotIn("job.source === 'seek' && job.detail_status === 'summary'", self.app)
+        rule = self.common[self.common.index("function isSeekJob(job)"):]
+        rule = rule[:rule.index("\n}\n")]
+        self.assertIn("job.source === 'seek' ||", rule)
+        self.assertIn(r"/^https:\/\/www\.seek\.com\.au\/job\/\d+$/.test(job.url || '')", rule)
 
 
 class SettingsCardTest(unittest.TestCase):

@@ -1210,8 +1210,8 @@ the key checks in `backend/sessions.py`, `frontend/extension.js` (Settings > Bro
   workspace's job with that address, else with the page's own `url` (saved under it before), as the job that is
   listed for it (a merged copy's `duplicate_of`). **Save** (`POST /api/extension/jobs`) needs a non-empty title
   (422 `invalid`, `field: "title"`).
-- **Storing:** like `POST /api/import/page` (§14.4): `pool.import_private` under `source = "browser"` (shown as
-  "browser extension"): the workspace's job with that address is updated with the job's values as its own
+- **Storing:** like `POST /api/import/page` (§14.4): `pool.import_private` under `source =
+  "browser:single:<site>"` (shown as "SEEK - browser extension (single)"; see *The source* below): the workspace's job with that address is updated with the job's values as its own
   overrides (200, `created: false`), else a pool link when the pool has the address, else a private job (201). The
   exclusion filters and the duplicate scan run as for an import, and the job waits for its score like one (with a
   description its `detail_status` is `full` or `summary`; without one, `none`, like a listing). When the job with that address is a merged copy
@@ -1247,13 +1247,31 @@ the key checks in `backend/sessions.py`, `frontend/extension.js` (Settings > Bro
     left exactly as it is, whatever its state (a card says less than a stored ad, and its date is rougher), so a
     page can be gone over twice and a results page can't change anything the person has. A posting the pool has
     is linked and read as the pool has it; nothing of the card is kept as the workspace's own. Anything else
-    becomes a private job with the card's values (`source = "browser"`, `detail_status = "summary"`), which
+    becomes a private job with the card's values (`source = "browser:bulk:<site>"`, `detail_status = "summary"`), which
     never enters the pool; a later search that finds the posting attaches it (`pool.link`). New jobs are placed
     and filtered like an import and wait for their score; the duplicate scan runs once after the batch.
   - **The answer:** `{"added", "existing", "jobs": [{"url", "job_id", "created", "title", "company", "link",
     "excluded_reason"}, ...]}` in the order sent, each as the job that is listed for it (a merged copy's
     original). An extension from before this never calls it; a server from before it answers the key 403
     `token_scope`, and the extension checks `api >= 2` first and says to update JobHuntPA.
+  - **The source (2026-10-12):** the user asked that these jobs say whether they came in bulk or singly, and
+    name the site: "SEEK - browser extension (bulk)". So a private job the extension makes gets `source =
+    "browser:<how>:<site>"` (`backend/job_source.py`): `single` (read from the job's own page) or `bulk` (a results
+    page's card), and the host of the stored address without "www.". It is set when the job is made, like every
+    source; a job that links a pool posting reads the pool's source, because the ad it reads is the pool's (the
+    source also says how to read the ad's dates: `ghost.edit_date_source`). `sourceLabel` (frontend/common.js) and
+    `email_templates.source_label` turn it into the words, naming a few sites (`SITE_NAMES`: SEEK, LinkedIn,
+    Indeed) and any other by its host. The duplicate scan compares sites, not sources (`job_source.site_of`): a
+    job the extension added on SEEK is on the same site as the searches' SEEK jobs ("one ad per office" there),
+    and its copy from the employer's own site is another site's.
+    Jobs stored before this have the plain `browser`. Sources are sealed, so no migration can rename them; each
+    workspace's are renamed once, under its owner's key, when its jobs are next listed or it next searches
+    (`pipeline.name_browser_sources`, remembered in `app_settings.browser_source_workspaces`). How they came in is
+    read from `first_seen`: the jobs of one results page were stored with one timestamp, so two or more old jobs
+    sharing one came in bulk. (A page that added a single new job reads as "single".)
+  - **The full ad:** a job at SEEK's address with only a summary gets **Upload full ad** on its card whatever
+    brought it in (`isSeekJob` in frontend/common.js; before, only `source = "seek"`), since the upload
+    (`POST /api/jobs/{id}/import-page`) matches the saved page to the job by SEEK's job number.
   - **Not done:** other job boards' results pages (each needs its own card rules in the extension;
     `listed_url` and the endpoint are not SEEK's alone), and a batch preview ("which of these do I have?"):
     since a batch never changes a job, sending is the check.

@@ -24,13 +24,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Optional
 
 from sqlalchemy.orm import Session
 
-from backend import pool
+from backend import job_source, pool
 from backend.adapters.base import Adapter, Posting, SourceError
 from backend.adapters.generic import source_adapter
 from backend.adapters.seek import SeekAdapter
@@ -202,16 +203,17 @@ def import_one(posting: Posting, source: str, ws: int) -> tuple[int, bool]:
         db.close()
 
 
-def add_listed(postings: list[Posting], source: str, ws: int) -> list[tuple[int, bool]]:
-    """Jobs from a results page the user had open in their browser (the extension's "add the jobs on this page").
-    Only jobs the workspace doesn't have are added (``pool.add_listed``), placed and filtered like an import; the
-    ones it has are left as they are. Returns (the job's id, new to the workspace) for each, in order."""
+def add_listed(listed: list[tuple[Posting, str]], ws: int) -> list[tuple[int, bool]]:
+    """Jobs from a results page the user had open in their browser (the extension's "add the jobs on this page"),
+    each with the source a new private job gets. Only jobs the workspace doesn't have are added
+    (``pool.add_listed``), placed and filtered like an import; the ones it has are left as they are. Returns (the
+    job's id, new to the workspace) for each, in order."""
     db = SessionLocal()
     try:
         crit = load_criteria(db, ws)
         now = datetime.utcnow()
         out = []
-        for p in postings:
+        for p, source in listed:
             job, is_new = pool.add_listed(db, ws, p, source, now)
             if is_new:
                 if job.posting is not None:
@@ -224,6 +226,31 @@ def add_listed(postings: list[Posting], source: str, ws: int) -> list[tuple[int,
         return out
     finally:
         db.close()
+
+
+def name_browser_sources(db: Session, ws: int) -> int:
+    """Once per workspace: jobs the browser extension added while their source was plain ``browser`` get the source
+    that says how and from which site (``backend.job_source``). How is read from ``first_seen``: the jobs of one
+    results page were stored with one timestamp, a job from its own page with its own, so two or more old jobs with
+    the same one came in bulk. Returns how many were renamed. Run when the workspace's jobs are next listed
+    (``GET /api/jobs``), and by its next search."""
+    from backend.db import AppSetting
+
+    key = "browser_source_workspaces"
+    row = db.get(AppSetting, key)
+    done = set(json.loads(row.value_json)) if row else set()
+    if ws in done:
+        return 0
+    # Decided in Python: a job's own source is sealed.
+    old = [(job_id, seen) for job_id, own, seen in db.query(Job.id, Job._source, Job.first_seen)
+           .filter(Job.workspace_id == ws) if own == job_source.BROWSER]
+    together = Counter(seen for _, seen in old)
+    for job_id, seen in old:
+        job = db.get(Job, job_id)
+        job.source = job_source.browser(job_source.BULK if together[seen] > 1 else job_source.SINGLE, job.url)
+    db.merge(AppSetting(key=key, value_json=json.dumps(sorted(done | {ws}))))
+    db.commit()
+    return len(old)
 
 
 def update_job_from_posting(db: Session, job: Job, p: Posting) -> None:
@@ -395,6 +422,7 @@ def run_search(ws: int, progress: Progress = lambda stage, info: None) -> dict:
     try:
         crit = load_criteria(db, ws)
         repair_geocodes(db, ws, crit, progress)
+        name_browser_sources(db, ws)
         reports: list[SourceReport] = []
         found: set[int] = set()  # jobs this run listed, for scoring just those
         for src, adapter in build_adapters(db, ws, client):

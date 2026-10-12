@@ -832,6 +832,11 @@ The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your curr
   already there. You move to the next page yourself and press the button again. The extension reads only
   the page you have open; it never clicks, scrolls or opens anything on SEEK. Needs version 1.1 of the
   extension.
+
+A job the extension added says so where its source is shown, with the site and how it came in:
+*SEEK - browser extension (bulk)* for one taken from a results page, *SEEK - browser extension (single)* for one
+read from its own page. A job that has only its summary from SEEK's results page gets the **Upload full ad**
+button on its card, like the jobs of JobHuntPA's own SEEK search.
 - **Add as a company source**: adds the page as a [careers page](#adding-company-careers-pages) of the
   workspace, and **Test** shows what a search would find on it.
 

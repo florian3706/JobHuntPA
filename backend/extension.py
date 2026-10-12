@@ -29,7 +29,8 @@ sign-in, deleting the account).
 the description as plain text (``JobIn``). No HTML and no whole-page text reach the server, and nothing here parses
 or re-reads a page: the request is checked (types, limits), its values trimmed, and the address to store decided
 (``stored_url``), because that decides which job a save updates. The job is then stored like an imported page
-(``pool.import_private``): private to the workspace unless the shared pool already has the address; the exclusion
+(``pool.import_private``, ``source`` ``browser:single:<site>``: backend.job_source): private to the workspace unless
+the shared pool already has the address; the exclusion
 filters, the pipeline's own derived values (country, office days, work mode) and the duplicate scan follow as for an
 import. The save's answer also says ``excluded_reason``: why the filters leave the job out of the Jobs list, or null.
 
@@ -38,7 +39,8 @@ the extension reads the job cards and sends the ones the person ticked: for each
 values, the summary as plain text (``ListIn``). The person turns the pages; nothing here fetches anything. Each
 address must be on the results page's own site (``listed_url``), and a batch only ever adds: a job the workspace
 already has is left exactly as it is, because a card says less than a stored ad; a posting the pool has is linked
-and read as the pool has it; anything else becomes a private job with the card's values (``pool.add_listed``).
+and read as the pool has it; anything else becomes a private job with the card's values (``pool.add_listed``,
+``source`` ``browser:bulk:<site>``).
 """
 from __future__ import annotations
 
@@ -55,7 +57,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from backend import crypto, sessions
+from backend import crypto, job_source, sessions
 from backend.adapters.base import Posting
 from backend.adapters.seek import JOB_URL as SEEK_JOB_URL
 from backend.db import PROJECT_ROOT, AuthSession, Job, UserKeys, Workspace, get_db, scrub_wal, utcnow
@@ -69,7 +71,6 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/extension", tags=["extension"])
 
 API_VERSION = 2            # 2: POST /api/extension/jobs/batch (a page of results)
-SOURCE = "browser"          # jobs.source of a job added from the extension (frontend: "browser extension")
 MAX_BODY = 512 * 1024       # bytes: the longest job the contract allows is ~110,000 characters
 MAX_KEYS = 20               # extension keys per account
 LABEL_MAX = 80
@@ -509,7 +510,7 @@ def save_job(response: Response, page: PageIn = Depends(page_body), user: AuthUs
     known = _known(db, ws, posting.url, page.url)
     if known is not None:
         posting.url = known.url or posting.url
-    job_id, created = import_one(posting, SOURCE, ws)
+    job_id, created = import_one(posting, job_source.browser(job_source.SINGLE, posting.url), ws)
     scan_workspace(ws)
     db.expire_all()
     job = _listed(db, db.get(Job, job_id))
@@ -539,7 +540,7 @@ def save_listed(listing: ListIn = Depends(list_body), user: AuthUser = Depends(c
         if not posting.title:
             raise _invalid("A job on this page has no title. Untick it, then add the others.", field="title")
         postings.append(posting)
-    stored = add_listed(postings, SOURCE, ws)
+    stored = add_listed([(posting, job_source.browser(job_source.BULK, posting.url)) for posting in postings], ws)
     added = sum(1 for _, is_new in stored if is_new)
     if added:
         scan_workspace(ws)

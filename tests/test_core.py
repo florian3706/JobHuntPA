@@ -981,6 +981,17 @@ class DuplicateCompareTest(unittest.TestCase):
         # One ad per office on the same site, even in the same city.
         self.assertIsNone(self.compare({**seek, "location_text": "Bella Vista, Sydney NSW"},
                                        {**seek, "location_text": "Chullora, Sydney NSW", "url": "https://seek/2"}))
+        # A job the browser extension added on SEEK is SEEK's: one ad per office there too, however each came in.
+        for how in ("browser:bulk:seek.com.au", "browser:single:seek.com.au"):
+            self.assertIsNone(self.compare({**seek, "location_text": "Bella Vista, Sydney NSW"},
+                                           {**seek, "source": how, "location_text": "Chullora, Sydney NSW",
+                                            "url": "https://seek/2"}), how)
+        self.assertIsNone(self.compare({**seek, "source": "browser:bulk:seek.com.au", "location_text": "Bella Vista, Sydney NSW"},
+                                       {**seek, "source": "browser:single:seek.com.au", "url": "https://seek/2",
+                                        "location_text": "Chullora, Sydney NSW"}))
+        # ... while the same job added from the employer's own site is another site's copy.
+        own = dict(site, source="browser:single:acme.com")
+        self.assertEqual(self.compare(own, {**seek, "source": "browser:bulk:seek.com.au"})["tier"], "sure")
         # The same ad posted twice on one site.
         twice = dict(seek, description="Lead enterprise rollouts across our schools. " * 4)
         self.assertEqual(self.compare(twice, {**twice, "url": "https://seek/2"})["tier"], "sure")

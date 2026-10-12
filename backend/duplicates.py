@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 
 from backend.db import CoverLetter, FitResult, Job, JobDuplicate, SessionLocal, get_db
 from backend.geo import distance_km, guess_country
+from backend.job_source import site_of
 from backend.workspaces import current_workspace, owned
 
 router = APIRouter(prefix="/api", tags=["duplicates"])
@@ -137,7 +138,7 @@ class Ad:
     def __init__(self, job: Job):
         self.job = job
         self.id = job.id
-        self.source = job.source or ""
+        self.source = site_of(job.source)  # the site: a job the browser extension added on SEEK is SEEK's
         self.companies = company_names(job.company or "")
         self.title = title_words(job.title or "", job.location_text or "")
         self.places = place_words(job.location_text or "")
@@ -281,13 +282,13 @@ class Ranking:
         employers: dict[str, set[str]] = defaultdict(set)
         # De-duplicated here, not with DISTINCT: a job's source and company may be its own (sealed) values.
         for job in jobs_query(db).filter(Job.workspace_id == ws):
-            employers[job.source or ""].add((job.company or "").lower())
+            employers[site_of(job.source)].add((job.company or "").lower())
         # A source listing several employers is a job board (SEEK, EdTechJobs...).
         self.boards = {s for s, names in employers.items() if len(names) >= 3} | {"seek"}
 
     def key(self, job: Job) -> tuple:
         first = job.first_seen.timestamp() if job.first_seen else 0
-        return (_DETAIL_RANK.get(job.detail_status or "none", 0), (job.source or "") not in self.boards,
+        return (_DETAIL_RANK.get(job.detail_status or "none", 0), site_of(job.source) not in self.boards,
                 not job.excluded_reason, job.closed_at is None, job.id in self.scored, -first, -job.id)
 
 

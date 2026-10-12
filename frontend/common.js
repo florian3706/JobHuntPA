@@ -752,6 +752,21 @@ function sentimentHtml(p) {
 }
 
 /* ================= SOURCES ================= */
+/* A job stored under SEEK's own address, whatever brought it in (a search, a saved page, the browser extension):
+   the full ad can be uploaded from a page saved on SEEK (POST /api/jobs/{id}/import-page). */
+function isSeekJob(job) {
+  return job.source === 'seek' || /^https:\/\/www\.seek\.com\.au\/job\/\d+$/.test(job.url || '');
+}
+
+/* Sites named by more than their address (backend/job_source.py SITE_NAMES). */
+const SITE_NAMES = { 'seek.com.au': 'SEEK', 'seek.co.nz': 'SEEK', 'linkedin.com': 'LinkedIn', 'indeed.com': 'Indeed' };
+function siteName(host) {
+  const known = Object.keys(SITE_NAMES).find((k) => host === k || host.endsWith(`.${k}`));
+  return known ? SITE_NAMES[known] : host;
+}
+
+/* Where a job's ad came from, in words (backend/job_source.py lists the values; email_templates.source_label
+   follows the same rule). */
 function sourceLabel(src) {
   const s = String(src || '');
   if (s === 'seek') return 'SEEK';
@@ -760,6 +775,12 @@ function sourceLabel(src) {
   const i = s.indexOf(':');
   if (i < 0) return s;
   const kind = s.slice(0, i), rest = s.slice(i + 1);
+  if (kind === 'browser') { // "browser:bulk:seek.com.au": the browser extension, how (one job or a page of them), the site
+    const j = rest.indexOf(':');
+    const how = j < 0 ? rest : rest.slice(0, j), site = j < 0 ? '' : rest.slice(j + 1);
+    const words = `browser extension${how === 'bulk' || how === 'single' ? ` (${how})` : ''}`;
+    return site ? `${siteName(site)} - ${words}` : words;
+  }
   if (kind === 'apsjobs') return 'APSJobs';
   if (kind === 'site' || kind === 'generic') return rest;
   return `${rest.split('/')[0]} (${kind[0].toUpperCase()}${kind.slice(1)})`;

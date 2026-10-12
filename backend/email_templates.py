@@ -21,7 +21,7 @@ from html import escape
 from typing import Any, Iterable, Optional
 from urllib.parse import quote, urlsplit
 
-from backend import mailer
+from backend import job_source, mailer
 from backend.employment import normalise_employment_type
 from backend.keys import ServerKeys
 
@@ -291,6 +291,11 @@ def source_label(source: Any) -> Optional[str]:
         return "imported page"
     if s == "browser":
         return "browser extension"
+    added = job_source.browser_parts(s)
+    if added is not None:  # "browser:bulk:seek.com.au": the browser extension, how, and the site
+        how, site = added
+        words = "browser extension" + (f" ({how})" if how in (job_source.SINGLE, job_source.BULK) else "")
+        return _clean(f"{job_source.site_name(site)} - {words}" if site else words, 80)
     kind, sep, rest = s.partition(":")
     if not sep:
         return _clean(s, 80)
