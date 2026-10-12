@@ -1,8 +1,7 @@
 """Signs that a job ad may not be a real, current vacancy (docs/design/ghost-jobs.md).
 
-An ad can't be proved to be a "ghost job", so this only reports signs, each with a plain reason, a level
-(``likely``: strong evidence, ``possible``, or None) and a percentage worked out from the same signs
-(``percent_of``: an estimate, never a measurement). It never hides, scores or down-ranks a job.
+An ad can't be proved to be a "ghost job", so this only reports signs, each with a plain reason, and a level:
+``likely`` (strong evidence), ``possible``, or None. It never hides, scores or down-ranks a job.
 
 A signal is ``{code, weight, text, detail?}``. The pure functions here turn facts into signals; the rest reads and
 stores them:
@@ -53,13 +52,6 @@ LIKELY_WEIGHT = 5                               # one signal this strong makes "
 LIKELY_TOTAL, LIKELY_SIGNALS = 6, 2             # ... or this much from at least this many moderate signals
 POSSIBLE_TOTAL = 3
 MAX_AD_PHRASES, MAX_PHRASE_CHARS = 4, 100
-# The percentage shown beside the level. Each level has its own band, so the number never disagrees with the level
-# (which the "Hide possible ghost jobs" filter, the digest and the export read), and the total weight places a job in
-# its band. Never 0 or 100: the app can't know.
-BASE_PERCENT, UNFLAGGED_STEP = 5, 10            # no signs: 5%; 15% and 25% for a total of 1 and 2
-POSSIBLE_PERCENT = (35, 60)                     # from a total of POSSIBLE_TOTAL, 5 more a point
-LIKELY_PERCENT = (70, 95)                       # from a total of LIKELY_WEIGHT, 5 more a point
-PERCENT_STEP = 5
 
 ORDER = ("evergreen_wording", "long_open", "reposted", "ad_signs", "company_news_cuts", "date_refreshed",
          "many_similar", "recruiter_no_employer")
@@ -83,21 +75,6 @@ def level_of(signals: Iterable[dict]) -> Optional[str]:
     if total >= LIKELY_TOTAL and sum(1 for w in weights if w >= 2) >= LIKELY_SIGNALS:
         return "likely"
     return "possible" if total >= POSSIBLE_TOTAL else None
-
-
-def percent_of(signals: Iterable[dict]) -> int:
-    """How likely the ad is not a current vacancy, as a percentage for the job card: an estimate from the signs'
-    weights. 5 with no signs, up to 25 below "possible", 35 to 60 for "possible", 70 to 95 for "likely"."""
-    signals = list(signals)
-    total = sum(s["weight"] for s in signals)
-    level = level_of(signals)
-    if level == "likely":
-        low, high = LIKELY_PERCENT
-        return min(high, low + PERCENT_STEP * max(0, total - LIKELY_WEIGHT))
-    if level == "possible":
-        low, high = POSSIBLE_PERCENT
-        return min(high, low + PERCENT_STEP * (total - POSSIBLE_TOTAL))
-    return BASE_PERCENT + UNFLAGGED_STEP * total
 
 
 def strength_of(weight: int) -> str:
@@ -591,7 +568,7 @@ def refresh(db: Session, now: datetime, limit: int = MAX_REFRESH) -> int:
 # A job
 # --------------------------------------------------------------------------
 
-NONE = {"level": None, "percent": BASE_PERCENT, "signals": []}
+NONE = {"level": None, "signals": []}
 
 # Every kind of sign, in the order the job page lists them, with what the app looks for.
 CHECKS = (
@@ -610,8 +587,8 @@ NOT_YET = "Worked out at the end of the next search."
 
 def _checks(job: Job, profiles: dict[str, CompanyProfile], found: set, ad_raw: Optional[str], now: datetime) -> list[dict]:
     """For the job page: each kind of sign as ``{code, label, state, note?}``. ``state`` is "found" (it is in the
-    signals), "clear" (looked for, not there) or "unknown" (it could not be checked, and the note says why): a low
-    percentage means less when half the checks could not be made."""
+    signals), "clear" (looked for, not there) or "unknown" (it could not be checked, and the note says why): a green
+    rating means less when half the checks could not be made."""
     posting = job.posting
     unknown: dict[str, str] = {}
     notes: dict[str, str] = {}
@@ -659,7 +636,7 @@ def _checks(job: Job, profiles: dict[str, CompanyProfile], found: set, ad_raw: O
 
 def assess(job: Job, profiles: dict[str, CompanyProfile], now: Optional[datetime] = None,
            own: Optional[tuple] = None, news_cache: Optional[dict] = None, explain: bool = False) -> dict:
-    """{"level", "percent", "signals": [{code, text, detail?, strength}]} for one job, strongest first. ``own`` is
+    """{"level", "signals": [{code, text, detail?, strength}]} for one job, strongest first. ``own`` is
     ``(description, ad_ghost_json)`` of the job's own columns when it has its own ad (``assess_jobs`` loads them for
     many jobs at once). A job without a posting gets only what its own text and the company research give.
     ``explain`` (the job page) adds ``"checks"``: every kind of sign and whether it was found, clear or could not be
@@ -701,7 +678,7 @@ def assess(job: Job, profiles: dict[str, CompanyProfile], now: Optional[datetime
             continue
         signals.append({k: v for k, v in item.items() if k != "when"})
     signals = ordered(signals)
-    out = {"level": level_of(signals), "percent": percent_of(signals),
+    out = {"level": level_of(signals),
            "signals": [{**{k: v for k, v in s.items() if k != "weight"}, "strength": strength_of(s["weight"])} for s in signals]}
     if explain:
         out["checks"] = _checks(job, profiles, {s["code"] for s in signals}, ad_raw, now)

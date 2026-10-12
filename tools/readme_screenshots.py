@@ -23,7 +23,7 @@ fetches Leaflet (unpkg.com), map tiles (openstreetmap.org) and, for the Dyslexia
 Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide):
     jobs, run-report, job-page, map (light theme), search-setup, company-sources, settings, search-schedule
     (the Scheduled searches card, on the Settings tab), theme-picker (the first rows of the Theme card on the
-    Settings tab), themes, chat, cover-letter, ghost-job (a job card with the ghost-job percentage under its
+    Settings tab), themes, chat, cover-letter, ghost-job (a job card with the ghost-job circle under its
     fit score and its "why?" list opened), settings-account (the account cards on the Settings tab: password, two-step sign-in,
     recovery codes, signed-in devices, email address, background access), settings-data (the digest, download
     your data and delete account cards), admin-people (the admin panel: summary, people, sign-up), admin-server
@@ -408,7 +408,7 @@ def shot_cover_letter(s: Shooter) -> None:
 
 
 def shot_ghost_job(s: Shooter) -> None:
-    """A flagged job's card: the ghost-job percentage under the fit score, and its "why?" list opened."""
+    """A flagged job's card: the ghost-job circle under the fit score, and its "why?" list opened."""
     ctx = s.context()
     page = s.page(ctx)
     page.goto(f"{s.base}/#jobs")

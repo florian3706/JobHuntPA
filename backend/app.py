@@ -280,9 +280,9 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "office_unknown": office_unknown(job),
         "location_verdict": job.location_verdict,
         "recruiter": recruiter,
-        # Signs that the ad may not be a current vacancy (backend/ghost.py): level "likely" | "possible" | null, a
-        # percentage worked out from the same signs, and the reasons (the list page gets code and text; the job page
-        # also a sentence of detail, each sign's strength and what was checked). Never hides a job.
+        # Signs that the ad may not be a current vacancy (backend/ghost.py): level "likely" | "possible" | null, and
+        # the reasons (the list page gets code and text; the job page also a sentence of detail, each sign's strength
+        # and what was checked). Never hides a job.
         "ghost": _ghost_dict(signs, full),
     }
     if full:
@@ -294,8 +294,7 @@ def _ghost_dict(signs: Optional[dict], full: bool) -> dict:
     if not signs:
         return dict(ghost.NONE, signals=[])
     keep = ("code", "text", "detail", "strength") if full else ("code", "text")
-    out = {"level": signs["level"], "percent": signs["percent"],
-           "signals": [{k: s[k] for k in keep if k in s} for s in signs["signals"]]}
+    out = {"level": signs["level"], "signals": [{k: s[k] for k in keep if k in s} for s in signs["signals"]]}
     if full:
         out["checks"] = signs.get("checks", [])
     return out

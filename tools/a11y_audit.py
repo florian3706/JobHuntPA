@@ -630,12 +630,12 @@ def sc_jobs(a, w, theme):
         a.check(page, "index: Jobs tab, nothing matches")
         page.fill("#filter-search", "")
         settle(page, 400)
-    with a.step("index: ghost-job percentages and a Why? list"):
+    with a.step("index: ghost-job circles and a why? list"):
         if not page.query_selector(".job-card details.ghost-why"):
             raise RuntimeError("no job is flagged as a possible ghost job (plant_ghost_signs did not take)")
-        if not page.query_selector(".job-card .ghost-pct"):
-            raise RuntimeError("the job cards show no ghost-job percentage")
-        a.check(page, "index: Jobs tab, ghost-job percentages")
+        if not page.query_selector(".job-card .ghost-dot"):
+            raise RuntimeError("the job cards show no ghost-job circle")
+        a.check(page, "index: Jobs tab, ghost-job circles")
         for summary in page.query_selector_all("details.ghost-why summary")[:2]:
             summary.click()
         settle(page, 300)
@@ -2157,7 +2157,7 @@ def mint_unsubscribe_token(app: App) -> str:
 
 
 def plant_ghost_signs(app: App) -> None:
-    """Ghost-job signs on a few demo jobs, so the Jobs tab and the job page show percentages across the colour scale,
+    """Ghost-job signs on a few demo jobs, so the Jobs tab and the job page show circles of each colour,
     the Why? list and the "Is this a real vacancy?" section with signs found: one job open for 100 days with evergreen wording in its ad (likely), two open
     for 50 and 65 days (possible). Written straight to the database while the app is stopped."""
     code = (

@@ -216,27 +216,6 @@ class LevelTest(unittest.TestCase):
         self.assertEqual(ghost.level_of(weak), "possible")  # even all of them together
         self.assertEqual(ghost.level_of(weak + [{"code": "company_news_cuts", "weight": 2}]), "possible")  # 7, but only one moderate sign
 
-    def percent(self, *weights):
-        return ghost.percent_of([{"code": "x", "weight": w} for w in weights])
-
-    def test_the_percentage_grows_with_the_signs(self):
-        self.assertEqual(self.percent(), 5)  # no signs: low, never 0 (the app can't know)
-        self.assertEqual([self.percent(1), self.percent(1, 1), self.percent(2)], [15, 25, 25])
-        self.assertEqual([self.percent(3), self.percent(3, 1), self.percent(3, 2)], [35, 40, 45])  # possible
-        self.assertEqual([self.percent(5), self.percent(3, 3), self.percent(5, 3), self.percent(5, 5)], [70, 75, 85, 95])  # likely
-        self.assertEqual(self.percent(5, 5, 5, 3, 2, 1), 95)  # never 100
-        self.assertEqual(self.percent(*[1] * 12), 60)  # weak signs alone stay in the "possible" band
-
-    def test_the_percentage_never_disagrees_with_the_level(self):
-        """Every combination of up to five signs: an unflagged job is under 30%, a possible one 35 to 60, a likely
-        one 70 or more, so the card's number, the filter, the digest and the export tell one story."""
-        bands = {None: (5, 25), "possible": (35, 60), "likely": (70, 95)}
-        for n in range(6):
-            for weights in itertools.combinations_with_replacement((1, 2, 3, 5), n):
-                low, high = bands[self.level(*weights)]
-                self.assertTrue(low <= self.percent(*weights) <= high, weights)
-                self.assertEqual(self.percent(*weights) % 5, 0, weights)  # (the colour steps are tenths, rounded)
-
     def test_strength_in_words(self):
         self.assertEqual([ghost.strength_of(w) for w in (1, 2, 3, 5, 6)], ["weak", "moderate", "moderate", "strong", "strong"])
 
@@ -780,7 +759,7 @@ class JobReadTest(unittest.TestCase, Plant):
         p = self.posting(self.db, self.company, "Talent Acquisition Partner", first=2, last=0,
                          text="Build a pipeline of candidates and manage the talent pool. " + AD)
         out = self.read(self.job(self.db, self.ws, p))
-        self.assertEqual(out, {"level": None, "percent": 5, "signals": []})
+        self.assertEqual(out, {"level": None, "signals": []})
 
     def test_long_open_and_news_together(self):
         p = self.posting(self.db, self.company, "Project Manager", first=65, last=0)
@@ -838,8 +817,8 @@ class JobReadTest(unittest.TestCase, Plant):
         self.assertEqual(codes(out["signals"]), ["evergreen_wording", "long_open"])
         self.assertTrue(all(set(s) <= {"code", "text", "detail", "strength"} for s in out["signals"]))  # words, no weight
         self.assertEqual([s["strength"] for s in out["signals"]], ["strong", "strong"])
-        self.assertEqual(set(out), {"level", "percent", "signals"})
-        self.assertEqual((out["level"], out["percent"]), ("likely", 95))
+        self.assertEqual(set(out), {"level", "signals"})  # a level and its reasons: no number is made up for it
+        self.assertEqual(out["level"], "likely")
 
     def explain(self, job, profiles=None):
         self.db.commit()
@@ -855,7 +834,7 @@ class JobReadTest(unittest.TestCase, Plant):
         self.assertTrue(all(set(c) <= {"code", "label", "state", "note"} and c["label"] for c in out["checks"]))
         self.assertNotIn("note", checks["long_open"])  # a found sign has its own text and detail
         self.assertEqual([checks[c]["state"] for c in ("reposted", "many_similar", "recruiter_no_employer")], ["clear"] * 3)
-        # What could not be checked says why: the percentage rests on less.
+        # What could not be checked says why: the rating rests on less.
         self.assertEqual(checks["ad_signs"]["state"], "unknown")
         self.assertIn("when the job is scored", checks["ad_signs"]["note"])
         self.assertEqual(checks["company_news_cuts"]["state"], "unknown")
@@ -868,7 +847,7 @@ class JobReadTest(unittest.TestCase, Plant):
         profile = CompanyProfile(key=self.company.lower(), name=self.company, status="done", news_researched_at=days_ago(5),
                                  controversies_json="[]")
         out, checks = self.explain(self.job(self.db, self.ws, p), {self.company.lower(): profile})
-        self.assertEqual((out["level"], out["percent"], out["signals"]), (None, 5, []))
+        self.assertEqual((out["level"], out["signals"]), (None, []))
         self.assertEqual({c["state"] for c in out["checks"]}, {"clear"})
         self.assertEqual(checks["long_open"]["note"], "Listed for 12 days.")
         # A closed ad isn't "open for" anything, and one a search hasn't finished with has no history yet.
@@ -882,7 +861,7 @@ class JobReadTest(unittest.TestCase, Plant):
     def test_a_job_that_did_not_come_from_a_search_has_no_history_to_check(self):
         job = self.job(self.db, self.ws, None, company=None, title="Analyst", detail_status="summary", description="A teaser.")
         out, checks = self.explain(job)
-        self.assertEqual((out["level"], out["percent"]), (None, 5))
+        self.assertEqual((out["level"], out["signals"]), (None, []))
         for code in ("long_open", "reposted", "date_refreshed", "many_similar"):
             self.assertEqual(checks[code]["state"], "unknown", code)
             self.assertIn("did not come from a search", checks[code]["note"])
@@ -1178,18 +1157,18 @@ class JobJsonTest(unittest.TestCase, Plant):
         private = self.job(self.db, self.ws, None, company=unique("Jsonco"), title="Analyst", description=AD, detail_status="full").id
         self.db.commit()
         jobs = self.listed()
-        self.assertEqual(jobs[ids["plain"]]["ghost"], {"level": None, "percent": 5, "signals": []})
-        self.assertEqual(jobs[private]["ghost"], {"level": None, "percent": 5, "signals": []})
+        self.assertEqual(jobs[ids["plain"]]["ghost"], {"level": None, "signals": []})
+        self.assertEqual(jobs[private]["ghost"], {"level": None, "signals": []})
         self.assertEqual(jobs[ids["evergreen"]]["ghost"],
-                         {"level": "likely", "percent": 70, "signals": [{"code": "evergreen_wording", "text": 'Mentions "talent pool"'}]})
-        self.assertEqual(jobs[ids["stale"]]["ghost"],
-                         {"level": "possible", "percent": 35, "signals": [{"code": "long_open", "text": "Open for 75 days"}]})
+                         {"level": "likely", "signals": [{"code": "evergreen_wording", "text": 'Mentions "talent pool"'}]})
+        self.assertEqual(jobs[ids["stale"]]["ghost"], {"level": "possible", "signals": [{"code": "long_open", "text": "Open for 75 days"}]})
         for job in jobs.values():
-            self.assertEqual(set(job["ghost"]), {"level", "percent", "signals"})
+            self.assertEqual(set(job["ghost"]), {"level", "signals"})
             self.assertTrue(all(set(s) == {"code", "text"} for s in job["ghost"]["signals"]))  # the list has no detail
         # The job page adds a sentence of detail and the strength to each reason, and every check that was made.
         detail = self.client.get(f"/api/jobs/{ids['evergreen']}", headers=self.h).json()["ghost"]
-        self.assertEqual((detail["level"], detail["percent"]), ("likely", 70))
+        self.assertEqual(detail["level"], "likely")
+        self.assertEqual(set(detail), {"level", "signals", "checks"})
         self.assertEqual(set(detail["signals"][0]), {"code", "text", "detail", "strength"})
         self.assertIn("future roles", detail["signals"][0]["detail"])
         self.assertEqual(detail["signals"][0]["strength"], "strong")
@@ -1198,7 +1177,7 @@ class JobJsonTest(unittest.TestCase, Plant):
         # ... also for a job with nothing found (the page says what was looked at), and one that is not from a search.
         for job_id in (ids["plain"], private):
             clean = self.client.get(f"/api/jobs/{job_id}", headers=self.h).json()["ghost"]
-            self.assertEqual((clean["level"], clean["percent"], clean["signals"]), (None, 5, []))
+            self.assertEqual((clean["level"], clean["signals"]), (None, []))
             self.assertEqual(len(clean["checks"]), len(ghost.CHECKS))
             self.assertNotIn("found", {c["state"] for c in clean["checks"]})
 

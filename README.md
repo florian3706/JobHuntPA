@@ -729,22 +729,23 @@ members only; finding jobs, filtering, the map, notes and your settings work for
 ## Ghost jobs
 
 Some ads stay up when nobody is being hired: a "talent pool" ad that collects applications for later, a
-role posted again and again, an ad left open for months. JobHuntPA can't know, so it shows **signs** and an
-**estimate** worked out from them, and never hides, scores or ranks a job down because of them.
+role posted again and again, an ad left open for months. JobHuntPA can't know, so it shows **signs** and a
+rating made from them, and never hides, scores or ranks a job down because of them.
 
-<img src="docs/screenshots/ghost-job.png" alt="A job card with its fit score, 63, and under it the ghost-job percentage, 85%, in red. Possible ghost job (several signs): why? is opened: the ad mentions a talent pool and has been open for 68 days" width="397">
+<img src="docs/screenshots/ghost-job.png" alt="A job card with its fit score, 63, and under it a ghost and a red circle. Possible ghost job (several signs): why? is opened: the ad mentions a talent pool and has been open for 68 days" width="397">
 
-- **The percentage:** under its fit score (🎯), every job card, the map list and the job page show 👻 and a
-  percentage: how likely the ad is not a current vacancy, estimated from the signs below. Its colour runs from
-  green (few or no signs) through yellow (unsure) to red (strong signs), in your theme's own colours; the number
-  says the same. It is an estimate, not a measurement, so it is never 0% or 100%:
-  - 5% with no signs, 15% or 25% with one or two weak ones;
-  - 35% to 60% with some signs: the card adds **Possible ghost job (some signs): why?**, which lists them;
-  - 70% and over with one strong sign, or several moderate ones (**several signs**).
+- **The circle:** under its fit score (🎯), every job card, the map list and the job page show 👻 and a
+  coloured circle:
+  - 🟢 no signs, or only one or two weak ones;
+  - 🟡 some signs: the card adds **Possible ghost job (some signs): why?**, which lists them;
+  - 🔴 one strong sign, or several moderate ones (**several signs**).
+
+  Hover over the circle to read the signs that were found. It is a rating from the signs, not a measurement:
+  the app puts no number on it.
 - **Why this rating:** open the job. **Is this a real vacancy?** lists every kind of sign and says whether it
   was found (and how strong it is), not found, or could not be checked (the company hasn't been researched, or
-  the job didn't come from a search and has no listing history), how the percentage is worked out and, for a
-  flagged job, what to ask the employer. These are signs only and can be wrong: it may be a real job.
+  the job didn't come from a search and has no listing history), what the colours mean and, for a flagged job,
+  what to ask the employer. These are signs only and can be wrong: it may be a real job.
 - **The signs:**
   - the ad has been open for 45 days or more (the longer, the stronger);
   - the same role from the employer was listed before, ended and was listed again;
@@ -755,8 +756,8 @@ role posted again and again, an ad left open for months. JobHuntPA can't know, s
   - recent news of job cuts at the company (from company research);
   - the AI's reading of the ad, when it finds wording that says the job isn't a current vacancy (it can be
     wrong, and alone it is never "several signs").
-- **Hiding them:** tick **Hide possible ghost jobs** in the filters (off by default; it hides the jobs at 35%
-  and over, and the count says how many it hid). Digest emails add a "Possible ghost job" line to a flagged job, and the data export lists the signs.
+- **Hiding them:** tick **Hide possible ghost jobs** in the filters (off by default; it hides the yellow and
+  red ones, and the count says how many it hid). Digest emails add a "Possible ghost job" line to a flagged job, and the data export lists the signs.
 
 ## Adding company careers pages
 
@@ -1132,8 +1133,8 @@ network), `backend/billing.py` (the only module that talks to Stripe, through th
 `backend.billing._client` with a `MagicMock` (`tests/test_membership.py`, `tests/test_billing.py` show the shapes
 Stripe answers with); nothing in the tests reaches the network.
 
-**Ghost jobs** (`docs/design/ghost-jobs.md`): `backend/ghost.py` turns facts about a posting into signs, a level and a percentage (`percent_of`, an estimate
-that always stays inside its level's band), and for the job page lists every check and how it came out.
+**Ghost jobs** (`docs/design/ghost-jobs.md`): `backend/ghost.py` turns facts about a posting into signs and a level, and for the job page lists every check and
+how it came out. The pages show the level as a coloured circle (`ghostMeter` in `frontend/common.js`).
 The ad's own wording is worked out when a posting changes (`ghost.stamp`, called by `backend/pool.py`), the pool's
 history at the end of a search run (`ghost.refresh`), and the rest when a job is read (`ghost.assess_jobs`, used by
 the job list, the job page, the digest and the export). It reads only public ads in Python and never filters or sorts

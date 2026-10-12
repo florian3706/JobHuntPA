@@ -70,12 +70,12 @@ function renderHead() {
 }
 
 /* ---------- is this a real vacancy? ----------
-   Every job has this section: the percentage (the same one as on its card), each kind of sign the app looks for and
-   whether it was found, clear or could not be checked, how the percentage is worked out, and, for a flagged job, what
-   to ask the employer. */
+   Every job has this section: the rating (the same circle as on its card) in words, each kind of sign the app looks
+   for and whether it was found, clear or could not be checked, what the three colours mean, and, for a flagged job,
+   what to ask the employer. */
 const GHOST_VERDICT = {
-  likely: 'Several signs suggest this ad may not be a current vacancy.',
-  possible: 'Some signs suggest this ad may not be a current vacancy.',
+  likely: '<strong>Several signs</strong> suggest this ad may not be a current vacancy (a "ghost job").',
+  possible: '<strong>Some signs</strong> suggest this ad may not be a current vacancy (a "ghost job").',
 };
 const GHOST_STRENGTH_LABEL = { strong: 'strong sign', moderate: 'moderate sign', weak: 'weak sign' };
 const GHOST_STATE_RANK = { found: 0, clear: 1, unknown: 2 };
@@ -94,10 +94,9 @@ function ghostCheckHtml(check, sign) {
 
 function renderGhost() {
   const g = job.ghost;
-  const percent = ghostPercent(job);
   const box = $('#job-ghost-section');
-  box.hidden = percent === null;
-  if (percent === null) return;
+  box.hidden = !g;
+  if (!g) return;
   const signs = g.signals || [];
   const byCode = Object.fromEntries(signs.map((s) => [s.code, s]));
   const order = (c) => (c.state === 'found' ? signs.findIndex((s) => s.code === c.code) : 0); // found: strongest first
@@ -106,20 +105,20 @@ function renderGhost() {
     .slice().sort((a, b) => GHOST_STATE_RANK[a.state] - GHOST_STATE_RANK[b.state] || order(a) - order(b));
   const unknown = checks.filter((c) => c.state === 'unknown').length;
   const verdict = GHOST_VERDICT[g.level]
-    || (signs.length ? `${signs.length === 1 ? 'One weak sign was' : 'A few weak signs were'} found: too little to flag this job.`
-      : 'None of the signs the app looks for were found.');
+    || (signs.length ? `<strong>No strong signs</strong> of a ghost job. ${signs.length === 1 ? 'One weak sign was' : 'A few weak signs were'} found: too little to flag this job.`
+      : '<strong>No signs</strong> of a ghost job: none of the signs the app looks for were found.');
   $('#job-ghost').innerHTML = `
-    <p class="ghost-big ${ghostHue(percent)}"><span aria-hidden="true">👻 </span><strong>${percent}%</strong>
-      estimated likelihood that this ad is not a current vacancy (a "ghost job")</p>
-    <div class="ghost-scale" aria-hidden="true"><span id="ghost-scale-mark" class="ghost-scale-mark"></span></div>
-    <p class="ghost-scale-ends muted" aria-hidden="true"><span>Probably real</span><span>Unsure</span><span>Probably a ghost job</span></p>
-    <p>${verdict}${unknown ? ` ${unknown === 1 ? 'One check' : `${unknown} checks`} could not be made, so the percentage rests on less.` : ''}</p>
+    <p class="ghost-big"><span class="ghost-big-dot" aria-hidden="true">👻 ${ghostDot(job)}</span> <span>${verdict}${
+      unknown ? ` ${unknown === 1 ? 'One check' : `${unknown} checks`} could not be made, so the rating rests on less.` : ''}</span></p>
     <h3 class="ghost-sub" id="ghost-why-title">Why this rating</h3>
     <ul class="ghost-checks" aria-labelledby="ghost-why-title">${checks.map((c) => ghostCheckHtml(c, byCode[c.code])).join('')}</ul>
-    <h3 class="ghost-sub">How the percentage is worked out</h3>
-    <p class="muted">It is an estimate from the signs above, not a measurement: the app can't know whether a job is real, so it never shows 0% or 100%.
-      With no signs it is 5%. Each sign adds to it by its strength: a little for a weak sign, more for a moderate one.
-      From 35% to 60% there are some signs, and the job is flagged as a possible ghost job. From 70% there is one strong sign, or several moderate ones.</p>
+    <h3 class="ghost-sub" id="ghost-key-title">What the colours mean</h3>
+    <ul class="ghost-key" aria-labelledby="ghost-key-title">
+      <li><span aria-hidden="true">🟢 </span><strong>Green:</strong> no signs, or only one or two weak ones.</li>
+      <li><span aria-hidden="true">🟡 </span><strong>Yellow:</strong> some signs. The job is flagged as a possible ghost job.</li>
+      <li><span aria-hidden="true">🔴 </span><strong>Red:</strong> one strong sign, or several moderate ones.</li>
+    </ul>
+    <p class="muted">A rating from the signs above, not proof: the app can't know whether a job is real.</p>
     ${g.level ? `<h3 class="ghost-sub">What to do</h3>
     <p>These are signs, not proof: this may well be a real job. Employers sometimes keep an ad up while they interview, or post it again to reach more people.</p>
     <p>You could ask the recruiter or employer:</p>
@@ -130,7 +129,6 @@ function renderGhost() {
         : signs.some((s) => s.code === 'evergreen_wording' || s.code === 'ad_signs') ? 'Is this for a specific team, or are they building a list of candidates?'
         : 'Has the closing date or the number of openings changed?'}</li>
     </ul>` : ''}`;
-  $('#ghost-scale-mark').style.left = `${percent}%`; // (a position: set here, the page allows no style attributes)
 }
 
 function renderFit() {

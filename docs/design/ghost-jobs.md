@@ -2,14 +2,15 @@
 
 **What the user asked for (2026-10-08):** "tell me if the job post is suspected to be a ghost job."
 
-**Added 2026-10-10:** "use a ghost emoji and a % likelihood for each job (under the score)", coloured from red (likely a
-ghost job) through yellow (unsure) to green (not), "a section on the job page that goes into detail of why this rating
-was given", and 🎯 for the fit score. See [The percentage](#the-percentage) and [The job page](#the-job-page).
+**Added 2026-10-10:** a ghost emoji and a rating for each job, under the score, coloured from red (likely a ghost job)
+through yellow (unsure) to green (not); "a section on the job page that goes into detail of why this rating was given";
+and 🎯 for the fit score. The first version showed a percentage worked out from the weights. The user then asked:
+"Instead of assigning a percentage, use coloured circle emoji and give hover info." So there is no percentage, in the
+pages or in the JSON: the level is the rating. See [The circle](#the-circle) and [The job page](#the-job-page).
 
 A ghost job is an ad that isn't a real, current vacancy: an evergreen "talent pool" ad, a role posted again and again,
 an ad left open for months, or one placed to collect resumes. The app can't know, so it reports **signs**, each with a
-plain reason, a **level** (`likely`: strong evidence, `possible`, or none) and a **percentage** worked out from the
-same signs. A sign never hides, excludes, scores or
+plain reason, and a **level**: `likely` (strong evidence), `possible`, or none. A sign never hides, excludes, scores or
 down-ranks a job. The words describe what was seen ("Open for 74 days"), never accuse an employer, and the job page
 says it may be a real job and suggests what to ask.
 
@@ -57,36 +58,31 @@ first. "Now" is UTC.
 Total = sum of the weights.
 - `likely`: any one signal of weight 5 (long_open at 90+ days, reposted 3+ times, a strong phrase up front, a talent-pool call to apply), or a total of 6+ with at least two signals of weight 2+.
 - `possible`: a total of 3+.
-- none: otherwise. The JSON still lists the weak signals that fired: they raise the percentage, and the job page lists them. The card's "why?" list is for a flagged job only.
+- none: otherwise. The JSON still lists the weak signals that fired: the circle's hover text and the job page list them. The card's "why?" list is for a flagged job only.
 
 All five weak signals together total 5 and have no weight-2 signal, so a few weak signs never reach `likely`. A renewed SEEK ad
 (posted date moved forward) alone is 1, and at 50 days 2: no flag; at 60 days it is `possible` ("Open for 60 days" 3 +
 renewed 1), which is the point where it has been renewed more than once. The LLM's reading alone is at most `possible`, and one phrase alone is not even that. Company news alone (2) never flags; it
 only adds to other signs.
 
-## The percentage
+## The circle
 
-`ghost.percent_of(signals)`: how likely the ad is not a current vacancy, as a number for the card. It is an estimate
-from the weights, not a measurement, and the job page says so.
+`ghostMeter(job)` in `frontend/common.js`: 👻 and a coloured circle under the fit score, from the level.
 
-| level | total weight | percent |
+| level | circle | words |
 |---|---|---|
-| none | 0, 1, 2 | 5, 15, 25 |
-| `possible` | 3 and up | 35, then 5 more a point, at most 60 |
-| `likely` | 5 and up | 70, then 5 more a point, at most 95 |
+| none | 🟢 | No strong signs of a ghost job |
+| `possible` | 🟡 | Possible ghost job: some signs |
+| `likely` | 🔴 | Possible ghost job: several signs |
 
-- **Each level has its own band**, so the number never disagrees with the level. The "Hide possible ghost jobs" filter,
-  the digest and the export read the level; a card that showed 52% beside a job the filter doesn't hide would be two
-  stories. A test runs every combination of up to five signs through both.
-- **Never 0 or 100.** No signs is 5%: nothing found is not proof. The top is 95%.
-- **Weak signs alone stay under 70%**, as they never reach `likely`.
-- Every value is a multiple of 5. The colour has eleven steps (a tenth of the percentage, rounded).
-
-**Colour.** `.ghost-h0` to `.ghost-h10` in `styles.css` set `--g`: the theme's `--ok` at 0, `--warn` at 5, `--danger` at
-10, and `color-mix(in srgb, ...)` of the two neighbours in between. Theme tokens, not fixed colours, so the colour-blind
-themes keep their own hues (there `--ok` is blue). A mix of two colours is never lighter or darker than both, so it keeps
-their contrast: `tests/test_accessibility.py` works out all eleven steps in all 28 themes against `--field` and `--card`
-(4.5:1). The number and the words carry the meaning; the colour only repeats it.
+- **No number.** The level is the rating: the app puts no percentage on it.
+- **Hover text** (`ghostHover`, a `title`): the words, then each sign found, one a line, then "Open the job to see why."
+  A job under the flag with a weak sign or two says so ("No strong signs of a ghost job. One weak sign: ..."). A `title`
+  is the browser's own tooltip, as on the fit score: nothing to dismiss, nothing that covers the page.
+- **Never colour alone.** The circles differ only in colour, and an emoji keeps its colours in every theme (the
+  colour-blind and monochrome ones too). So the words are always there: hidden beside the circle for screen readers, in
+  the hover text, and in view wherever a job is flagged (the card's "Possible ghost job (some signs): why?" line, the
+  same words in the map list's row, the job page's section). A touch screen has no hover: it has those words.
 
 ## The job page
 
@@ -100,8 +96,9 @@ their contrast: `tests/test_accessibility.py` works out all eleven steps in all 
   search"), the posted date can't be read or is an edit date, the AI hasn't read the ad (`ad_ghost_json` NULL), the
   company isn't researched, or no employer is named.
 
-A low percentage means less when half the checks could not be made, so the page counts them ("2 checks could not be
-made, so the percentage rests on less"). A signal on the job page also carries `strength`: `strong` (weight 5+),
+A green circle means less when half the checks could not be made, so the page counts them ("2 checks could not be
+made, so the rating rests on less"). Under the checks the page says what the three colours mean, and that the rating
+is not proof. A signal on the job page also carries `strength`: `strong` (weight 5+),
 `moderate` (2 to 4) or `weak` (1). The weights themselves stay out of the JSON.
 
 **Where I changed the orchestrator's defaults, and why.**
@@ -150,8 +147,8 @@ the NULL marker) and no query per job. `parse_posted` is cached, the empty store
 
 ## What reads it
 
-- **Job JSON** (`app.job_to_dict`): `"ghost": {"level": "likely" | "possible" | null, "percent": 5..95, "signals": [{"code", "text"}]}` on every job in `GET /api/jobs` and `GET /api/jobs/{id}`. The job page also gets `"detail"` (one sentence) and `"strength"` in each signal, and `"checks"` (above).
-- **Pages** (`frontend/common.js`): `ratingsHtml(job)` is the fit score (🎯) with `ghostMeter(job)` (👻 and the percentage) under it, on job cards, the map list and the job page's header (there a link to the section). A flagged job's card also has the `ghostWhy` disclosure, "Possible ghost job (some signs): why?". `job.js` `renderGhost` draws the job page's section for every job. A page that gets no `percent` (an older server) shows no meter. Merged copies are not listed, as before; a merged copy's posting counts toward `reposted` as any posting does: only when it was listed earlier and had ended, not when it is the same ad on another board at once.
+- **Job JSON** (`app.job_to_dict`): `"ghost": {"level": "likely" | "possible" | null, "signals": [{"code", "text"}]}` on every job in `GET /api/jobs` and `GET /api/jobs/{id}`. The job page also gets `"detail"` (one sentence) and `"strength"` in each signal, and `"checks"` (above).
+- **Pages** (`frontend/common.js`): `ratingsHtml(job)` is the fit score (🎯) with `ghostMeter(job)` (👻 and the circle) under it, on job cards, the map list and the job page's header (there a link to the section). A flagged job's card also has the `ghostWhy` disclosure, "Possible ghost job (some signs): why?". `job.js` `renderGhost` draws the job page's section for every job. Merged copies are not listed, as before; a merged copy's posting counts toward `reposted` as any posting does: only when it was listed earlier and had ended, not when it is the same ad on another board at once.
 - **Digest** (`digest.cards` -> `email_templates.digest_card`): the first reason of a flagged job as one line, `Possible ghost job: Open for 74 days` (both levels use "Possible"), in the text and HTML parts.
 - **Export** (`backend/export.py`): a flagged job's file gets `## Is this a real vacancy?` (the signs, one line each with its detail, and a sentence saying it may be real and what to ask), and `Jobs.md` gets a column `Ghost job?` (`Likely` / `Possible` / empty).
 

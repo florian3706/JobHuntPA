@@ -616,27 +616,30 @@ function employmentBadge(job) {
   const label = EMPLOYMENT_LABEL[job.employment_type];
   return label ? `<span class="badge soft"><span class="visually-hidden">Employment type: </span>${label}</span>` : '';
 }
-/* Ghost jobs (backend/ghost.py): how likely the ad is not a current vacancy, as the server estimates it from the signs
-   it found. Every job shows 👻 and the percentage under its fit score. The number and the words say it; the colour
-   (the theme's green through yellow to red, in eleven steps: .ghost-h0 to .ghost-h10) only repeats it. Never an
-   accusation: it is an estimate, and the job page says how it was worked out. */
+/* Ghost jobs (backend/ghost.py): signs that the ad may not be a current vacancy. Every job shows 👻 and a coloured
+   circle under its fit score: 🟢 no strong signs, 🟡 some signs, 🔴 several signs. Hovering over it says which signs
+   were found. The circles differ only in colour, so the words are always there too: hidden beside the circle for
+   screen readers, in the hover text, and in view for a flagged job (the card's "why?" line, the map list, the job
+   page's section). Never an accusation: these are signs, and the job page says how they were weighed. */
 const GHOST_STRENGTH = { likely: 'several signs', possible: 'some signs' };
-function ghostPercent(job) {
-  const p = job.ghost?.percent;
-  return Number.isFinite(p) ? Math.max(0, Math.min(100, Math.round(p))) : null; // (null: an older server sent none)
+const GHOST_DOT = { likely: '🔴', possible: '🟡' };
+const ghostDot = (job) => GHOST_DOT[job.ghost?.level] || '🟢';
+const ghostWords = (job) => (job.ghost?.level ? `Possible ghost job: ${GHOST_STRENGTH[job.ghost.level]}` : 'No strong signs of a ghost job');
+/* The hover text: the rating in words, then each sign found, one a line. */
+function ghostHover(job) {
+  const signs = (job.ghost?.signals || []).map((s) => `• ${s.text}`);
+  if (!job.ghost?.level && !signs.length) return 'No signs of a ghost job were found. Open the job to see what was checked.';
+  const head = job.ghost?.level ? `${ghostWords(job)}.` : `No strong signs of a ghost job. ${signs.length === 1 ? 'One weak sign' : 'Weak signs'}:`;
+  return [head, ...signs, 'Open the job to see why.'].join('\n');
 }
-const ghostHue = (percent) => `ghost-h${Math.round(percent / 10)}`;
-/* 👻 and the percentage. `href` makes it a link to the explanation (the job page's own section). */
+/* 👻 and the circle. `href` makes it a link to the explanation (the job page's own section). */
 function ghostMeter(job, href = '') {
-  const percent = ghostPercent(job);
-  if (percent === null) return '';
-  const words = GHOST_STRENGTH[job.ghost.level] || 'no strong signs';
-  const body = `<span aria-hidden="true">👻 </span><span class="visually-hidden">Ghost job likelihood </span>${percent}%<span class="visually-hidden">, ${words}</span>`;
-  const cls = `ghost-pct ${ghostHue(percent)}`;
-  if (href) return `<a class="${cls}" href="${esc(href)}" title="Why this rating">${body}<span class="visually-hidden">: why this rating</span></a>`;
-  return `<span class="${cls}" title="Estimated likelihood that this ad is not a current vacancy: ${words}. Open the job to see why.">${body}</span>`;
+  if (!job.ghost) return '';
+  const body = `<span aria-hidden="true">👻 ${ghostDot(job)}</span><span class="visually-hidden">${ghostWords(job)}</span>`;
+  if (href) return `<a class="ghost-dot" href="${esc(href)}" title="${esc(ghostHover(job))}">${body}<span class="visually-hidden">: why this rating</span></a>`;
+  return `<span class="ghost-dot" title="${esc(ghostHover(job))}">${body}</span>`;
 }
-// The fit score with the ghost-job likelihood under it (job cards, the map list, the job page).
+// The fit score with the ghost-job rating under it (job cards, the map list, the job page).
 function ratingsHtml(job, ghostHref = '') {
   return `<div class="ratings">${scoreBadge(job)}${ghostMeter(job, ghostHref)}</div>`;
 }
@@ -644,9 +647,9 @@ function ratingsHtml(job, ghostHref = '') {
 function ghostWhy(job) {
   const g = job.ghost;
   if (!g?.level || !(g.signals || []).length) return '';
-  return `<details class="ghost-why" data-section="ghost"><summary><span aria-hidden="true">👻 </span>Possible ghost job (${GHOST_STRENGTH[g.level]}): why?</summary>
+  return `<details class="ghost-why" data-section="ghost"><summary><span aria-hidden="true">👻 ${ghostDot(job)} </span>Possible ghost job (${GHOST_STRENGTH[g.level]}): why?</summary>
     <ul class="ghost-signs">${g.signals.map((s) => `<li>${esc(s.text)}</li>`).join('')}</ul>
-    <p class="hint">This may still be a real job. Ask the employer whether the role is open now. Open the job to see how the percentage was worked out.</p></details>`;
+    <p class="hint">This may still be a real job. Ask the employer whether the role is open now. Open the job to see everything that was checked.</p></details>`;
 }
 function modeOf(job) { return ['remote', 'hybrid', 'onsite'].includes(job.work_mode) ? job.work_mode : 'unknown'; }
 
