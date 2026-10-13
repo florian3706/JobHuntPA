@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "kek": {
+    "current": "k1",
+    "keys": {
+      "k1": "lxkpot+QSvAcv9bDshfp0IyyIXM8/eG2Xm1XPbAAq0M="
+    }
+  },
+  "pepper": {
+    "current": "p1",
+    "keys": {
+      "p1": "fKutSLYndLA3i3bSvDJqVcqKOJg0XxW9ue18feLXaZE="
+    }
+  },
+  "signing": {
+    "current": "s1",
+    "keys": {
+      "s1": "f0yFsCMsq2rVEt2f2NWhUAMd6OqgeXiuhxGyKSEcNHo="
+    },
+    "retired": {}
+  },
+  "created_at": "2026-10-13T23:36:55Z",
+  "encryption_done_at": "2026-10-13T23:36:55Z"
+}
