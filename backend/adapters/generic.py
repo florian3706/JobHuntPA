@@ -21,6 +21,11 @@ in step 1a, and never by the specialised adapters), the mapping is tried
 first: its ``list`` selector picks the job entries and, within each, its
 selectors the title, the link and the rest (``parse_mapped``). When it
 finds nothing (the page has changed), the steps above follow as usual.
+Besides the selectors' own limits (``mapping_format.check_selector``), a
+page is read with a mapping only when it is at most ``MAPPED_HTML_MAX``
+characters and ``MAPPED_DEPTH_MAX`` elements deep, and the matching stops
+at ``MAPPED_SECONDS`` (the clock is looked at between elements): then the
+mapping finds nothing and a note says why.
 
 Every request goes through :class:`PoliteClient` (robots.txt, crawl delay,
 honest User-Agent).
@@ -29,11 +34,14 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import timedelta
 from typing import Optional
 from urllib.parse import parse_qs, urldefrag, urljoin, urlsplit
 
+import soupsieve
 from bs4 import BeautifulSoup, Tag
+from soupsieve.css_match import CSSMatch
 
 from backend import mapping_format
 from backend.adapters.ats import detect_ats, make_ats_adapter
@@ -244,18 +252,68 @@ def parse_listing(html: str, page_url: str, company: str) -> tuple[list[Posting]
 
 MAPPED_TITLE_MAX = 300
 MAPPED_VALUE_MAX = 200
+# A page read with a mapping, besides the selectors' own limits (mapping_format.check_selector): over these the
+# mapping finds nothing (MappedPageRefused) and the page is read the usual ways.
+MAPPED_HTML_MAX = 3_000_000    # characters of the page
+MAPPED_DEPTH_MAX = 80          # elements inside one another
+MAPPED_SECONDS = 10.0          # matching the selectors, in all, checked between elements
 
 
-def _mapped_value(entry: Tag, spec: Optional[dict], default_attribute: Optional[str] = None) -> str:
-    """One field of an entry: the element the selector picks inside it (``:scope``: the entry), as its text or the
-    named attribute's value."""
+class MappedPageRefused(Exception):
+    """A page the mapping isn't run on (too big, too deep) or that took too long to match; the message says which,
+    in plain words, and never quotes the page."""
+
+
+def _too_deep(soup: BeautifulSoup) -> bool:
+    stack = [(soup, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > MAPPED_DEPTH_MAX:
+            return True
+        stack.extend((child, depth + 1) for child in node.contents if isinstance(child, Tag))
+    return False
+
+
+class _Matcher:
+    """Runs checked selectors against one page within a shared deadline. soupsieve does the matching (as
+    ``Tag.select`` does), but the elements are walked here so the clock is looked at between them: a page and a
+    selector that would take long stop at ``MAPPED_SECONDS``."""
+
+    def __init__(self, seconds: Optional[float] = None):
+        self.deadline = time.monotonic() + (MAPPED_SECONDS if seconds is None else seconds)
+
+    def select(self, root: Tag, selector: str, limit: int) -> list[Tag]:
+        compiled = soupsieve.compile(selector)  # (soupsieve keeps the compiled selectors)
+        match = CSSMatch(compiled.selectors, root, compiled.namespaces, compiled.flags).match
+        out: list[Tag] = []
+        for el in root.descendants:
+            if not isinstance(el, Tag):
+                continue
+            if time.monotonic() > self.deadline:
+                raise MappedPageRefused("the page layout took too long to read this page")
+            if match(el):
+                out.append(el)
+                if len(out) >= limit:
+                    break
+        return out
+
+
+def _mapped_value(matcher: _Matcher, entry: Tag, spec: Optional[dict], default_attribute: Optional[str] = None) -> str:
+    """One field of an entry: the first element the selector picks inside it (``:scope``: the entry), as its text or
+    the named attribute's value."""
     if not spec:
         return ""
     selector = spec["selector"]
-    try:
-        el = entry if selector == mapping_format.SCOPE else entry.select_one(selector)
-    except Exception:  # (checked when stored; a selector this engine can't run finds nothing)
-        return ""
+    if selector == mapping_format.SCOPE:
+        el = entry
+    else:
+        try:
+            found = matcher.select(entry, selector, limit=1)
+        except MappedPageRefused:
+            raise
+        except Exception:  # (checked when stored; a selector this engine can't run finds nothing)
+            return ""
+        el = found[0] if found else None
     if el is None:
         return ""
     attribute = spec.get("attribute") or default_attribute
@@ -267,19 +325,32 @@ def _mapped_value(entry: Tag, spec: Optional[dict], default_attribute: Optional[
 
 def parse_mapped(html: str, page_url: str, company: str, mapping: dict) -> list[Posting]:
     """Job-posting stubs from a careers page read with its mapping (kind "careers"): one per entry ``list`` picks
-    that has a title and a link to an http(s) page that isn't on the local network or this computer."""
+    that has a title and a link to an http(s) page that isn't on the local network or this computer.
+    MappedPageRefused for a page over ``MAPPED_HTML_MAX`` or ``MAPPED_DEPTH_MAX``, or matched past
+    ``MAPPED_SECONDS``."""
     from backend.source_bulk import address_flags
 
     fields = mapping["fields"]
+    if len(html) > MAPPED_HTML_MAX:
+        raise MappedPageRefused("the page is too big to read with a page layout")
     soup = BeautifulSoup(html, "lxml")
+    if _too_deep(soup):
+        raise MappedPageRefused("the page's elements are nested too deep to read with a page layout")
+    matcher = _Matcher()
     try:
-        entries = soup.select(fields["list"]["selector"], limit=MAX_POSTINGS)
+        entries = matcher.select(soup, fields["list"]["selector"], limit=MAX_POSTINGS)
+    except MappedPageRefused:
+        raise
     except Exception:
         return []
     postings: dict[str, Posting] = {}
+
+    def value(entry: Tag, name: str, **kw) -> str:
+        return _mapped_value(matcher, entry, fields.get(name), **kw)
+
     for entry in entries:
-        title = _mapped_value(entry, fields.get("title"))[:MAPPED_TITLE_MAX]
-        href = _mapped_value(entry, fields.get("link"), default_attribute="href")
+        title = value(entry, "title")[:MAPPED_TITLE_MAX]
+        href = value(entry, "link", default_attribute="href")
         if not title or not href:
             continue
         try:
@@ -288,14 +359,14 @@ def parse_mapped(html: str, page_url: str, company: str, mapping: dict) -> list[
             continue
         if urlsplit(url).scheme not in ("http", "https") or address_flags(url).blocked or url in postings:
             continue
-        location = _mapped_value(entry, fields.get("location"))[:MAPPED_VALUE_MAX]
-        mode = _mapped_value(entry, fields.get("work_mode"))[:MAPPED_VALUE_MAX]
+        location = value(entry, "location")[:MAPPED_VALUE_MAX]
+        mode = value(entry, "work_mode")[:MAPPED_VALUE_MAX]
         postings[url] = Posting(
             url=url, title=title, company=company, location_text=location, country=guess_country(location),
             work_mode=classify_work_mode("", mode, "") if mode else "unknown",
-            employment_type=normalise_employment_type(_mapped_value(entry, fields.get("employment_type"))[:100]),
-            salary_text=_mapped_value(entry, fields.get("salary"))[:MAPPED_VALUE_MAX],
-            posted_at=_mapped_value(entry, fields.get("date"))[:40])
+            employment_type=normalise_employment_type(value(entry, "employment_type")[:100]),
+            salary_text=value(entry, "salary")[:MAPPED_VALUE_MAX],
+            posted_at=value(entry, "date")[:40])
     return list(postings.values())
 
 
@@ -482,7 +553,11 @@ class GenericAdapter(Adapter):
         return postings
 
     def _mapped(self, page: Response, render: bool = False) -> list[Posting]:
-        postings = parse_mapped(page.text, page.url, self.company, self.mapping)
+        try:
+            postings = parse_mapped(page.text, page.url, self.company, self.mapping)
+        except MappedPageRefused as exc:
+            self.notes.append(str(exc))
+            return []
         if postings:
             self.method = f"careers page read with its worked-out layout ({_site_key(urlsplit(page.url).netloc.lower())})"
             if render:
@@ -507,7 +582,8 @@ class GenericAdapter(Adapter):
             except FetchError as exc:
                 raise SourceError(f"the page layout found no jobs on the careers page ({exc})") from exc
         if not got:
-            raise SourceError("the page layout found no jobs on the careers page")
+            detail = "; ".join(self.notes)
+            raise SourceError("the page layout found no jobs on the careers page" + (f" ({detail})" if detail else ""))
         return got
 
     def _try_ats(self, refs, found_on: str) -> Optional[list[Posting]]:
