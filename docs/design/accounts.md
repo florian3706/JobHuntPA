@@ -4,6 +4,15 @@
 > §16), job digests (§17) and two-step sign-in (TOTP, in §3 and §6) are removed from the code. What this file says
 > about them is history. The rest (encryption §2, sessions §3, the shared pool §14) is still in force. A database
 > from before is cleaned at start-up by `backend/db.py` `_retire_removed_features`.
+>
+> **Phase B:** the admin panel and role (§7), the admin details key (§1.4, its grants, `pii_admin` and the audit
+> log), sign-up and invitations (§5) are removed too: an install has one account (`users.create_account` refuses once
+> one exists), which signs in with a name looked up by the same `email_hash` blind index (an older account's email
+> address is its name until it changes it, `PUT /api/auth/name`, recent sign-in). Whoever is signed in may change
+> every setting (AI provider, commute keys, public address, server key: `backend/app_settings.py`,
+> `backend/maintenance.py`). The identity key (§1.2) stays: it keeps the unconfirmed recovery codes away from the
+> server key. Starting over without a password or recovery code is `backend/reset.py`, run on the computer itself.
+> What this file says about admins, the admin key and sign-up is history.
 
 **Base.** `main` at 48fb435, plus Phase 1 of the documents work (d8eea88 on branch `worktree-agent-a3d7c32a94762a7dd`). Phase 1 adds notes and summaries as `Document` rows (`filetype` "note"/"summary"), `concise_text`, `use_concise`, `summary_of`, `updated_at`, the "preferences" kind and `llm_usage`. Rebase every phase below on it.
 
