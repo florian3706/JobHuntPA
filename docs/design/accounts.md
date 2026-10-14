@@ -9,10 +9,17 @@
 > log), sign-up and invitations (§5) are removed too: an install has one account (`users.create_account` refuses once
 > one exists), which signs in with a name looked up by the same `email_hash` blind index (an older account's email
 > address is its name until it changes it, `PUT /api/auth/name`, recent sign-in). Whoever is signed in may change
-> every setting (AI provider, commute keys, public address, server key: `backend/app_settings.py`,
+> every setting (AI provider, public address, server key: `backend/app_settings.py`,
 > `backend/maintenance.py`). The identity key (§1.2) stays: it keeps the unconfirmed recovery codes away from the
 > server key. Starting over without a password or recovery code is `backend/reset.py`, run on the computer itself.
 > What this file says about admins, the admin key and sign-up is history.
+>
+> **Phase C:** the commute services (Transport for NSW, TomTom, OSRM), their keys and the per-user `commute_cache`
+> (§2.2, §15) are removed: the job page links to Google Maps instead, and the app requests nothing for a commute. The
+> cache's table is dropped at start-up in the same transaction as the other retired tables, then `scrub_wal`. A
+> search setup's starting points are a new sealed column, `user_profile.starting_points`; the old `commute_from`,
+> `commute_arrive_by` and `commute_leave_at` stay (an older database has two of them NOT NULL without a default) and
+> are read only to turn the stations into starting points, then emptied when the search setup is saved.
 
 **Base.** `main` at 48fb435, plus Phase 1 of the documents work (d8eea88 on branch `worktree-agent-a3d7c32a94762a7dd`). Phase 1 adds notes and summaries as `Document` rows (`filetype` "note"/"summary"), `concise_text`, `use_concise`, `summary_of`, `updated_at`, the "preferences" kind and `llm_usage`. Rebase every phase below on it.
 

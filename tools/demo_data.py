@@ -658,7 +658,7 @@ SEARCH_PROFILE = dict(
     keywords_exclude=["graduate", "internship", "security clearance"],
     salary_floor=130000, remote_aus_ok=True, remote_global_ok=False, allow_hybrid=True, max_office_days=3,
     allow_onsite=True, seek_enabled=True, seek_locations=["All Sydney NSW"],
-    commute_from=["Strathfield Station"], commute_arrive_by="09:00", commute_leave_at="17:00",
+    starting_points=[{"label": "Strathfield Station", "pin_id": None, "place": "Strathfield Station NSW", "use": "transit"}],
 )
 DEALBREAKERS = dict(industries=["gambling", "tobacco", "defence"], keywords=["poker machines"])
 
