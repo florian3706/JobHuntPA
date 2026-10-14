@@ -869,8 +869,8 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **"Import from an export" is refused:** "has no import file" means the export was made by a JobHuntPA older
   than 2.0.0 (make a new export there, then import that); "made by a newer JobHuntPA" means update this one
   first; "isn't a JobHuntPA export", "damaged" or "leads out of its folder" mean the zip isn't one Download your
-  data saved, or was changed since (import the zip exactly as it was saved); "too large" means it holds more than
-  an export can (250 MB packed). Only one import runs at a time.
+  data saved, or was changed since (import the zip exactly as it was saved); "too large" or "more than 200,000"
+  means it holds more than an export can. Only one import runs at a time.
 - **"JobHuntPA is waiting for the account that owns the earlier data to sign in":** the one-time
   encryption after an update needs that account's password; it carries on when it signs in.
 - **"Encrypting your data stopped (...)":** JobHuntPA tries again a minute later and whenever that

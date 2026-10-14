@@ -64,14 +64,17 @@ from backend.db import (
     get_db,
     utcnow,
 )
+from backend.export import MAX_EXPORT_BYTES
 from backend.import_file import (
     APPLIED_AT,
     FILE_NAME,
     FIRST_APP_VERSION,
     FORMAT,
     FORMAT_VERSION,
+    CompanyIn,
     ImportFile,
     WorkspaceIn,
+    web_address,
 )
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
@@ -79,9 +82,14 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 
-MAX_ZIP_BYTES = 250 * 1024 * 1024        # the uploaded zip (an export holds at most 200 MB of files, compressed)
-MAX_FILE_BYTES = 120 * 1024 * 1024       # the import file, unpacked
-MAX_UNPACKED_BYTES = 320 * 1024 * 1024   # the import file and the originals together, unpacked
+# An export holds at most MAX_EXPORT_BYTES of files before compression, the import file and every text file in
+# every type included (backend/export.py): each limit here takes in whatever an export can hold.
+MAX_ZIP_BYTES = MAX_EXPORT_BYTES + 50 * 1024 * 1024   # the uploaded zip (and the zip's own headers)
+MAX_FILE_BYTES = MAX_EXPORT_BYTES                    # the import file, unpacked
+MAX_UNPACKED_BYTES = MAX_EXPORT_BYTES + 20 * 1024 * 1024  # the import file and the originals together, unpacked
+# Jobs, documents, chat messages, sources, pins and companies in the whole file: each becomes objects in memory before
+# anything is written, so a file of a great many tiny ones is refused before they are made (a Raspberry Pi has little).
+MAX_ITEMS = 200_000
 MAX_RATIO = 200                          # unpacked / packed, for an entry over RATIO_FROM bytes unpacked
 RATIO_FROM = 1024 * 1024
 MAX_ENTRIES = 200_000
@@ -96,8 +104,8 @@ def problem(status: int, code: str, detail: str) -> AuthProblem:
 
 
 def too_large() -> AuthProblem:
-    return problem(413, "import_too_large", "This file is too large to import: an export from JobHuntPA is at most "
-                                            f"{MAX_ZIP_BYTES // 1024 // 1024} MB.")
+    return problem(413, "import_too_large", f"This file is over {MAX_ZIP_BYTES // 1024 // 1024} MB, which is more "
+                                            "than an export from JobHuntPA holds, so it wasn't imported.")
 
 
 def not_an_export() -> AuthProblem:
@@ -201,6 +209,10 @@ class ExportZip:
             raise problem(422, "import_newer", "This export was made by a newer JobHuntPA (import file format "
                                                f"{version}); this one reads format {FORMAT_VERSION}. Update JobHuntPA, "
                                                "then import it again.")
+        if items(data) > MAX_ITEMS:
+            raise problem(413, "import_too_many", f"This file holds more than {MAX_ITEMS:,} jobs, documents, chat "
+                                                  "messages and other things, which is more than one import takes. "
+                                                  "Nothing was imported.")
         try:
             return ImportFile.model_validate(data)
         except ValidationError as exc:
@@ -211,12 +223,30 @@ class ExportZip:
             raise damaged() from None
 
 
+def items(data: dict) -> int:
+    """How many jobs, documents, chat messages, sources, pins and companies the (parsed, not yet checked) file
+    holds: counted on the plain JSON, before any of them becomes an object."""
+    def size(value) -> int:
+        return len(value) if isinstance(value, list) else 0
+
+    workspaces = data.get("workspaces")
+    total = size(workspaces) + size(data.get("companies"))
+    for ws in workspaces if isinstance(workspaces, list) else []:
+        if not isinstance(ws, dict):
+            continue
+        total += sum(size(ws.get(name)) for name in ("jobs", "documents", "chats", "sources", "pins"))
+        for chat in ws.get("chats") if isinstance(ws.get("chats"), list) else []:
+            total += size(chat.get("messages")) if isinstance(chat, dict) else 0
+    return total
+
+
 def too_large_unpacked() -> AuthProblem:
     return problem(413, "import_too_large", "This zip unpacks to more than an export from JobHuntPA can hold, so it "
                                             "wasn't imported.")
 
 
 def counts(ws: WorkspaceIn) -> dict:
+    """What the file holds for a workspace (the check's list). An import says what it brought in instead."""
     return {"jobs": sum(1 for j in ws.jobs if j.duplicate_of is None), "documents": len(ws.documents),
             "chats": len(ws.chats), "cover_letters": sum(1 for j in ws.jobs if j.cover_letter is not None),
             "sources": len(ws.sources), "pins": len(ws.pins)}
@@ -260,21 +290,7 @@ def starting_points_in(profile: UserProfile, points: list) -> None:
     profile.commute_from = places
 
 
-def _web(url: Optional[str]) -> Optional[str]:
-    return url if url and re.match(r"^https?://\S+$", url, re.I) else None
-
-
-LINK_KEYS = {"url", "link", "href", "source_url", "glassdoor_url"}
-
-
-def _web_only(value):
-    """A research value (JSON) with every address that isn't http(s) taken out: pages turn these into links."""
-    if isinstance(value, dict):
-        return {k: _web_only(v) for k, v in value.items()
-                if not (k in LINK_KEYS and isinstance(v, str) and _web(v) is None)}
-    if isinstance(value, list):
-        return [_web_only(v) for v in value]
-    return value
+_web = web_address  # (pages link these addresses: only a web address is kept)
 
 
 class Importer:
@@ -294,13 +310,14 @@ class Importer:
             ws = Workspace(name=new_name(ws_in.name, taken, today), owner_id=self.user_id)
             self.db.add(ws)
             self.db.flush()
-            self.workspace(ws.id, ws_in)
-            made.append({"id": ws.id, "name": ws.name, **counts(ws_in)})
+            made.append({"id": ws.id, "name": ws.name, **self.workspace(ws.id, ws_in)})
         companies = self.research()
         return {"workspaces": made, "companies": companies}
 
-    def workspace(self, ws: int, data: WorkspaceIn) -> None:
+    def workspace(self, ws: int, data: WorkspaceIn) -> dict:
+        """Writes one workspace's rows; returns what it brought in (as ``counts`` names them)."""
         db = self.db
+        made = {"jobs": 0, "documents": 0, "chats": 0, "cover_letters": 0, "sources": 0, "pins": len(data.pins)}
         setup = data.search_setup
         if setup is not None and setup.model_fields_set - {"dealbreakers"}:  # (a setup can hold dealbreakers alone)
             profile = UserProfile(id=ws, titles=list(setup.titles), keywords_include=list(setup.keywords_include),
@@ -331,14 +348,16 @@ class Importer:
             row = CompanySource(workspace_id=ws, label=s.label or "", careers_url=url, url=url,
                                 source_type=s.type or "auto", enabled=s.enabled)
             db.add(row)
+            made["sources"] += 1
             if s.ref is not None:
                 sources[s.ref] = row
-        self.documents(ws, data)
+        made["documents"] = self.documents(ws, data)
         db.flush()
-        jobs = self.jobs(ws, data, {ref: row.id for ref, row in sources.items()})
-        self.chats(ws, data, jobs)
+        jobs = self.jobs(ws, data, {ref: row.id for ref, row in sources.items()}, made)
+        made["chats"] = self.chats(ws, data, jobs)
+        return made
 
-    def documents(self, ws: int, data: WorkspaceIn) -> None:
+    def documents(self, ws: int, data: WorkspaceIn) -> int:
         rows: dict[int, Document] = {}
         for d in data.documents:
             stored = None
@@ -363,6 +382,7 @@ class Importer:
             if d.summary_of:
                 rows[d.ref].summary_of = [rows[r].id for r in d.summary_of if r in rows and r != d.ref] or None
         self.totals["documents"] += len(rows)
+        return len(rows)
 
     def _postings(self, data: WorkspaceIn) -> dict[str, Posting]:
         """The pool's postings for the jobs' addresses (looked up, never written)."""
@@ -374,7 +394,7 @@ class Importer:
                     found[p.url] = p
         return found
 
-    def jobs(self, ws: int, data: WorkspaceIn, source_ids: dict[int, int]) -> dict[int, int]:
+    def jobs(self, ws: int, data: WorkspaceIn, source_ids: dict[int, int], made: dict) -> dict[int, int]:
         db = self.db
         postings = self._postings(data)
         rows: dict[int, Job] = {}
@@ -419,17 +439,19 @@ class Importer:
                 self.company_keys.add(company_key(job.company))
             if j.fit is not None:
                 f = j.fit
-                db.add(FitResult(job_id=job.id, status=f.status, score=f.score, evidence_json=json.dumps(f.evidence),
+                db.add(FitResult(job_id=job.id, status=f.status, score=f.score, evidence_json=json.dumps(f.evidence.stored()),
                                  error=f.error, profile_hash=f.profile_hash, model=f.model, created_at=f.created_at or now))
             if j.cover_letter is not None:
                 c = j.cover_letter
                 db.add(CoverLetter(job_id=job.id, text=c.text, instructions=c.instructions, edited=c.edited,
                                    model=c.model, reasoning_effort=c.reasoning_effort, created_at=c.created_at or now,
                                    updated_at=c.updated_at or c.created_at or now))
-        self.totals["jobs"] += sum(1 for job in rows.values() if job.duplicate_of is None)
+                made["cover_letters"] += 1
+        made["jobs"] = sum(1 for job in rows.values() if job.duplicate_of is None)
+        self.totals["jobs"] += made["jobs"]
         return {ref: job.id for ref, job in rows.items()}
 
-    def chats(self, ws: int, data: WorkspaceIn, jobs: dict[int, int]) -> None:
+    def chats(self, ws: int, data: WorkspaceIn, jobs: dict[int, int]) -> int:
         now = utcnow()
         for c in data.chats:
             ids = sorted({jobs[r] for r in c.jobs if r in jobs})
@@ -443,9 +465,17 @@ class Importer:
                                         sources_json=json.dumps(pages) if m.sources is not None else None,
                                         web_search=m.web_search, model=m.model, created_at=m.created_at or now))
             self.totals["chats"] += 1
+        return len(data.chats)
 
     def research(self) -> int:
-        """Company research for the imported jobs' companies: taken where the install has none, or an older one."""
+        """Company research for the imported jobs' companies: taken where the install has none, or an older one.
+
+        The rows are shared by every account on the install and read by fixed keys (pages, job chats, the office
+        search), so only the shapes the app writes come in (``import_file.CompanyIn``), no time is later than now
+        (``import_file.When``) and the research version is at most this one's. Offices this install already knows are
+        kept, with the file's added by address."""
+        from backend.research import RESEARCH_VERSION
+
         taken = 0
         for c in self.data.companies:
             key = company_key(c.key)
@@ -462,19 +492,46 @@ class Importer:
             row.name, row.status = c.name or key, c.status if c.status in ("done", "error", "skipped", "missing") else "done"
             row.official_name, row.is_recruiter = c.official_name, c.is_recruiter
             row.business_model, row.ownership, row.headquarters = c.business_model, c.ownership, c.headquarters
-            row.controversies_json = json.dumps(_web_only(c.controversies) if isinstance(c.controversies, list) else [])
+            row.controversies_json = json.dumps([x.stored() for x in c.controversies])
             row.controversy_note, row.news_researched_at = c.controversy_note, c.news_researched_at
-            row.sources_json = json.dumps(_web_only(c.sources) if isinstance(c.sources, list) else [])
+            row.sources_json = json.dumps([x.stored() for x in c.sources])
             row.employee_count, row.glassdoor_url = c.employee_count, _web(c.glassdoor_url)
-            row.sentiment_json = json.dumps(_web_only(c.sentiment)) if c.sentiment is not None else None
-            row.sentiment_researched_at, row.research_version = c.sentiment_researched_at, c.research_version
-            row.offices_json = json.dumps(_web_only(c.offices)) if isinstance(c.offices, list) else None
-            row.offices_checked_at = c.offices_checked_at
-            row.offices_cities = json.dumps(c.offices_cities) if isinstance(c.offices_cities, list) else None
+            row.sentiment_json = json.dumps(c.sentiment.stored()) if c.sentiment is not None else None
+            row.sentiment_researched_at = c.sentiment_researched_at
+            row.research_version = min(c.research_version, RESEARCH_VERSION)
+            self._offices(row, c)
             row.unverified_dropped, row.error, row.model = c.unverified_dropped, c.error, c.model
             row.researched_at = c.researched_at
             taken += 1
         return taken
+
+    @staticmethod
+    def _offices(row: CompanyProfile, c: CompanyIn) -> None:
+        """The file's offices added to those the install knows (by address), as research does (backend/research.py)."""
+        try:
+            known = json.loads(row.offices_json) if row.offices_json else []
+            known = [o for o in known if isinstance(o, dict) and isinstance(o.get("address"), str)] \
+                if isinstance(known, list) else []
+        except ValueError:
+            known = []
+        seen = {o["address"].lower() for o in known}
+        added = []
+        for o in c.offices or []:
+            if o.address.lower() not in seen:
+                seen.add(o.address.lower())
+                added.append(o.stored())
+        if known or c.offices is not None:
+            row.offices_json = json.dumps(known + added)
+        if c.offices_checked_at is not None and (row.offices_checked_at is None
+                                                 or row.offices_checked_at < c.offices_checked_at):
+            row.offices_checked_at = c.offices_checked_at
+        if c.offices_cities is not None:
+            try:
+                mine = json.loads(row.offices_cities) if row.offices_cities else []
+            except ValueError:
+                mine = []
+            mine = [x for x in mine if isinstance(x, str)] if isinstance(mine, list) else []
+            row.offices_cities = json.dumps(sorted(set(mine) | {x.lower() for x in c.offices_cities}))
 
     def undo_uploads(self) -> None:
         for stored in self.stored:

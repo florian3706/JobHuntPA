@@ -667,8 +667,18 @@ plain bytes in the zip, exactly as uploaded.
 is_recruiter, business_model, ownership, headquarters, controversies, controversy_note, news_researched_at, sources,
 employee_count, glassdoor_url, sentiment, sentiment_researched_at, research_version, offices, offices_checked_at,
 offices_cities, unverified_dropped, error, model, researched_at}`. `key` is the company's name in lower case with
-single spaces (`company_key`); `controversies`, `sources`, `sentiment`, `offices` and `offices_cities` are JSON
-values as the research stored them.
+single spaces (`company_key`). The structured values have the shapes research and the office search write
+(backend/research.py, backend/offices.py), since the app reads them by these keys:
+
+| Field | Shape |
+|---|---|
+| `controversies` | `[{title, year, summary, sources: [page]}]`, at most 50 |
+| `sources` | `[page]`: the pages behind the business facts, at most 200 |
+| `sentiment` | `{summary, rating, positives: [text], negatives: [text], sources: [page]}` or null |
+| `offices` | `[{name, address, url, city?}]` or null (none looked up), at most 200 |
+| `offices_cities` | `[text]`: the cities the office search looked in (lower case), or null |
+
+A `page` is `{title, url}` with an http(s) `url`. A `year` or `rating` written as a number is taken as text.
 
 ## What an import does with it
 
@@ -677,13 +687,27 @@ values as the research stored them.
   fields are set on top; any other job is a private job with the whole `ad` and its `closed_at`. Nothing is written
   to the pool.
 - A company's research is taken only for the companies of the imported jobs, and only where the install has no
-  research on it or older research (`researched_at`).
+  research on it or older research (`researched_at`). The research rows are shared by every account on the install,
+  so only the shapes above come in: an item of another shape (a page without a web address, an office without an
+  address, a controversy without a title) is left out, and a `sentiment` of another shape is taken as none. Offices
+  the install already knows are kept, with the file's added by address; `offices_cities` adds to the install's;
+  `research_version` is at most the importing install's. The same goes for a fit result's `evidence`
+  (`{score, summary, requirements: [{point, must_have, matched, evidence: [{bullet, sub_bullets: [text]}]}], gaps:
+  [text]}`, as backend/scorer.py writes it): a requirement without a `point` or evidence without a `bullet` is left
+  out, and evidence of another shape is taken as none.
+- No time is later than the moment of the import: one in the future (which no export holds) is taken as now, so
+  imported research can't look newer than anything researched later.
 - Values are checked against the types and limits above (lengths, ranges, the listed words); a file that breaks them
   is refused as damaged, naming only where (`workspaces.0.jobs.12.status`), never the value. Addresses that are not
   http(s) are dropped wherever a page makes a link of them: a job's address, sources, a chat answer's pages and
   the links in company research. Everything else is stored as data and shown escaped, like any other job or
   document.
-- The zip limits: 250 MB packed, the import file at most 120 MB unpacked, the import file and the originals at most
-  320 MB unpacked together, and no entry over 1 MB unpacking to more than 200 times its packed size; a zip with an
-  entry whose path leaves its folder is refused whole. An upload still arriving after ten minutes plus the time the
-  largest zip needs at 100 KB/s is cut off. One import runs at a time.
+- The limits take in whatever an export can hold (at most 200 MB of files before compression, the import file and
+  every text file in every type included: `export.MAX_EXPORT_BYTES`): 250 MB packed, the import file at most 200 MB
+  unpacked, the import file and the originals at most 220 MB unpacked together, and no entry over 1 MB unpacking to
+  more than 200 times its packed size; a zip with an entry whose path leaves its folder is refused whole. A
+  document's `text` and `concise_text` may be as long as an export can hold (an uploaded .txt keeps all of its text,
+  and a DOCX or PDF can unpack to more text than its upload); an ad, a letter or a message at most 2,000,000
+  characters. The whole file holds at most 200,000 jobs, documents, chats, chat messages, sources, pins and companies
+  together (each becomes objects in memory before anything is written). An upload still arriving after ten minutes
+  plus the time the largest zip needs at 100 KB/s is cut off. One import runs at a time.

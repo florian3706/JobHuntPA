@@ -406,7 +406,7 @@ class RoundTripTest(Base):
         self.assertEqual(r.status_code, 200, r.text)
         made = r.json()["workspaces"][0]
         self.assertEqual(made["name"], "<img src=x onerror=alert(1)>", "kept as text; the page escapes it")
-        self.assertEqual(made["sources"], 2)  # (counted from the file)
+        self.assertEqual(made["sources"], 1, "what was imported (the javascript: source wasn't)")
         db = SessionLocal()
         try:
             with helpers.as_account(self.bob):
@@ -424,6 +424,181 @@ class RoundTripTest(Base):
             self.assertEqual((r.status_code, r.json()["code"]), (422, "import_damaged"), change)
             self.assertIn("workspaces.0.jobs.0", r.json()["detail"])
             self.assertNotIn("moon", r.json()["detail"], "the refusal never quotes the file's text")
+
+
+class ShapeTest(Base):
+    """Research and fit results come in only in the shapes the app reads by fixed keys: the research rows are shared
+    by every account on the install, and the file is someone else's."""
+
+    def malformed(self, blob) -> bytes:
+        data = self.import_data(blob)
+        ws = data["workspaces"][0]
+        main = next(j for j in ws["jobs"] if j["ad"]["url"] == "https://ads.example/bob/main")
+        main["ad"]["location_text"], main["ad"]["work_mode"], main["office"] = "Sydney NSW", "hybrid", None
+        main["fit"]["evidence"] = {"summary": ["not text"], "gaps": {"a": 1}, "score": "high",
+                                   "requirements": [{"matched": True}, 3, {"point": "MARK-real-point", "evidence": "x"},
+                                                    {"point": "MARK-matched", "matched": True,
+                                                     "evidence": [{"bullet": "MARK-bullet", "sub_bullets": ["s", 7, None]},
+                                                                  {"sub_bullets": []}]}]}
+        data["companies"] = [{
+            "key": "acme corp", "name": "Acme Corp", "status": "done", "researched_at": "2099-01-01T00:00:00Z",
+            "news_researched_at": "2099-01-01T00:00:00Z", "sentiment_researched_at": "2099-01-01T00:00:00Z",
+            "offices_checked_at": "2099-01-01T00:00:00Z", "research_version": 999,
+            "controversies": [{"title": "MARK-controversy", "year": 2020, "sources": "x"}, {"year": 2020}, "str",
+                              {"title": {"a": 1}}],
+            "sources": {"a": 1},
+            "sentiment": {"rating": {"x": 1}, "positives": "abc", "negatives": ["MARK-neg", "", 5],
+                          "sources": [{"url": "javascript:alert(1)"}, {"title": "ok", "url": "https://reviews.example/a"}]},
+            "offices": [{"name": "No address"}, {"address": "1 Real St, Sydney NSW", "url": "javascript:x"}, 7,
+                        {"address": ["x"]}, {"address": "1 REAL ST, SYDNEY NSW"}],
+            "offices_cities": "sydney",
+        }]
+        return self.replace_import_file(blob, data)
+
+    def test_malformed_research_and_evidence_come_in_as_the_app_reads_them(self):
+        from backend import job_chat, research
+        import backend.offices as of
+        import backend.pipeline as pl
+
+        db = SessionLocal()
+        try:
+            db.query(CompanyProfile).filter(CompanyProfile.key == "acme corp").delete()
+            db.commit()
+        finally:
+            db.close()
+        r = self.do_import(self.malformed(self.export()))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["companies"], 1)
+        ws = r.json()["workspaces"][0]["id"]
+        db = SessionLocal()
+        try:
+            row = db.get(CompanyProfile, "acme corp")
+            for name in ("researched_at", "news_researched_at", "sentiment_researched_at", "offices_checked_at"):
+                self.assertLessEqual(getattr(row, name), utcnow(), f"{name}: no time later than now")
+            self.assertEqual(row.research_version, research.RESEARCH_VERSION)
+            p = row.to_dict()
+            self.assertEqual(p["controversies"], [{"title": "MARK-controversy", "year": "2020", "summary": "", "sources": []}])
+            self.assertEqual(p["sources"], [])
+            self.assertEqual(p["sentiment"], {"summary": "", "rating": "", "positives": [], "negatives": ["MARK-neg", "5"],
+                                              "sources": [{"title": "ok", "url": "https://reviews.example/a"}]})
+            self.assertEqual(p["offices"], [{"name": "", "address": "1 Real St, Sydney NSW", "url": ""}])
+            self.assertIsNone(row.offices_cities, "a list or nothing")
+            with helpers.as_account(self.bob):
+                job = next(j for j in db.query(Job).filter(Job.workspace_id == ws) if j.url == "https://ads.example/bob/main")
+                job_id = job.id
+                block = job_chat.job_block(db, 1, job, 2000)  # the job chat's context
+                fit = json.loads(db.query(import_file.FitResult).filter(import_file.FitResult.job_id == job_id).one().evidence_json)
+            self.assertIn("MARK-real-point", block)
+            self.assertIn("Employee sentiment", block)
+            self.assertEqual(fit, {"summary": "", "gaps": [], "score": None, "requirements": [
+                {"point": "MARK-real-point", "must_have": True, "matched": False, "evidence": []},
+                {"point": "MARK-matched", "must_have": True, "matched": True,
+                 "evidence": [{"bullet": "MARK-bullet", "sub_bullets": ["s", "7"]}]}]})
+        finally:
+            db.close()
+        # the job page (with the employer's offices near the ad's city) and its fit section
+        point = {"lat": -33.87, "lng": 151.21}
+        with mock.patch.object(of, "geocode", return_value=point), mock.patch.object(pl, "geocode", return_value=point), \
+                helpers.client(self.bob.email) as c:
+            r = c.get(f"/api/jobs/{job_id}", headers={"X-Workspace": str(ws)})
+            self.assertEqual(r.status_code, 200, r.text[:300])
+            self.assertEqual([o["address"] for o in r.json()["office_candidates"]], ["1 Real St, Sydney NSW"])
+            self.assertEqual(len(r.json()["fit"]["requirements"]), 2)
+            r = c.get("/api/companies", headers={"X-Workspace": str(ws)})  # the company panel's data
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()["acme corp"]["offices"][0]["address"], "1 Real St, Sydney NSW")
+        # "Research again" for that company keeps the offices the install knows
+        research._save({"key": "acme corp", "name": "Acme Corp"}, model="test", profile={
+            "is_company": True, "official_name": "Acme", "is_recruiter": False, "business_model": "b", "ownership": "o",
+            "headquarters": "h", "controversies": [], "controversy_note": "", "sources": [], "employee_count": "",
+            "glassdoor_url": "", "sentiment": {"summary": "", "rating": "", "positives": [], "negatives": [], "sources": []},
+            "offices": [{"name": "Head office", "address": "2 Other St, Sydney NSW", "url": "https://acme.example/contact"}]})
+        db = SessionLocal()
+        try:
+            offices = db.get(CompanyProfile, "acme corp").to_dict()["offices"]
+            self.assertEqual([o["address"] for o in offices], ["2 Other St, Sydney NSW", "1 Real St, Sydney NSW"])
+        finally:
+            db.close()
+
+    def test_offices_the_install_found_are_kept(self):
+        """A row the office search made (no research yet) takes the file's research, and keeps its offices."""
+        blob = self.export()
+        data = self.import_data(blob)
+        data["companies"] = [{"key": "hidco", "name": "Hidco", "researched_at": "2026-01-01T00:00:00Z",
+                              "offices": [{"name": "HQ", "address": "1 Known St, Sydney NSW", "url": "https://h.example/a"},
+                                          {"name": "", "address": "5 New Rd, Sydney NSW", "url": "https://h.example/b"}],
+                              "offices_cities": ["Melbourne"]}]
+        checked = datetime(2026, 9, 1)
+        db = SessionLocal()
+        try:
+            db.merge(CompanyProfile(key="hidco", name="Hidco", status="missing", offices_checked_at=checked,
+                                    offices_json=json.dumps([{"name": "Mine", "address": "1 known st, sydney nsw", "url": ""}]),
+                                    offices_cities=json.dumps(["sydney"])))
+            db.commit()
+        finally:
+            db.close()
+        r = self.do_import(self.replace_import_file(blob, data))
+        self.assertEqual(r.status_code, 200, r.text)
+        db = SessionLocal()
+        try:
+            row = db.get(CompanyProfile, "hidco")
+            self.assertEqual([o["address"] for o in json.loads(row.offices_json)],
+                             ["1 known st, sydney nsw", "5 New Rd, Sydney NSW"])
+            self.assertEqual(row.offices_checked_at, checked, "the file had no time: the install's stays")
+            self.assertEqual(json.loads(row.offices_cities), ["melbourne", "sydney"])
+            self.assertIsNotNone(row.researched_at)
+        finally:
+            db.close()
+
+    def test_no_time_is_later_than_now(self):
+        blob = self.export()
+        data = self.import_data(blob)
+        for job in data["workspaces"][0]["jobs"]:
+            job["first_seen"] = job["last_seen"] = "2099-05-05T00:00:00Z"
+        ws = self.do_import(self.replace_import_file(blob, data)).json()["workspaces"][0]["id"]
+        db = SessionLocal()
+        try:
+            with helpers.as_account(self.bob):
+                for job in db.query(Job).filter(Job.workspace_id == ws):
+                    self.assertLessEqual(job.first_seen, utcnow())
+                    self.assertLessEqual(job.last_seen, utcnow())
+        finally:
+            db.close()
+
+
+class LimitTest(Base):
+    def test_the_counts_are_what_was_imported(self):
+        blob = self.export()
+        data = self.import_data(blob)
+        jobs = data["workspaces"][0]["jobs"]
+        twice = dict(jobs[0])  # the same job ref again: skipped
+        jobs.append(twice)
+        data["workspaces"][0]["sources"].append(dict(data["workspaces"][0]["sources"][0]))  # a repeated address
+        blob = self.replace_import_file(blob, data)
+        listed = self.check(blob).json()["workspaces"][0]
+        self.assertEqual((listed["jobs"], listed["sources"]), (8, 2), "the check lists what the file holds")
+        made = self.do_import(blob).json()["workspaces"][0]
+        self.assertEqual({k: made[k] for k in ("jobs", "documents", "chats", "cover_letters", "sources", "pins")},
+                         {"jobs": 7, "documents": 3, "chats": 1, "cover_letters": 1, "sources": 1, "pins": 1})
+
+    def test_a_file_of_too_many_things_is_refused_before_they_are_made(self):
+        blob = self.export()
+        with mock.patch.object(data_import, "MAX_ITEMS", 5), \
+                mock.patch.object(import_file.ImportFile, "model_validate", side_effect=AssertionError("validated")):
+            r = self.check(blob)
+        self.assertEqual((r.status_code, r.json()["code"]), (413, "import_too_many"))
+
+    def test_the_limits_take_in_whatever_an_export_holds(self):
+        from backend import export
+        self.assertGreater(data_import.MAX_ZIP_BYTES, export.MAX_EXPORT_BYTES)
+        self.assertGreaterEqual(data_import.MAX_FILE_BYTES, export.MAX_EXPORT_BYTES)
+        self.assertGreaterEqual(data_import.MAX_UNPACKED_BYTES, export.MAX_EXPORT_BYTES)
+        self.assertGreaterEqual(import_file.DOC_TEXT, docs.MAX_UPLOAD_BYTES, "an uploaded .txt keeps all of its text")
+        self.assertGreaterEqual(import_file.DOC_TEXT, export.MAX_EXPORT_BYTES, "any text an export can hold")
+        long = "x" * (import_file.LONG + 10)
+        doc = import_file.DocumentIn.model_validate({"ref": 1, "filename": "big.txt", "text": long, "concise_text": long})
+        self.assertEqual(len(doc.text), len(long))
+        self.assertNotIn("at most", data_import.too_large().detail)
 
 
 class AddressTest(Base):
@@ -448,8 +623,9 @@ class AddressTest(Base):
             self.assertIn(None, urls, "the job came in, without an address")
             hidco = db.get(CompanyProfile, "hidco").to_dict()
             self.assertIsNone(hidco["glassdoor_url"])
-            self.assertEqual(hidco["sources"], [{"title": "ok", "url": "https://hidco.example/about"}, {"title": "bad"}])
-            self.assertEqual(hidco["controversies"], [{"headline": "x"}])
+            self.assertEqual(hidco["sources"], [{"title": "ok", "url": "https://hidco.example/about"}],
+                             "a page without a web address is left out")
+            self.assertEqual(hidco["controversies"], [], "a controversy without a title is left out")
         finally:
             db.close()
 

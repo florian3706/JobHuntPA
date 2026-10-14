@@ -17,10 +17,21 @@ source) are numbers local to the file (``ref``), never the exporting install's r
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainValidator,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+)
 from sqlalchemy.orm import Session
 
 from backend import schedule
@@ -39,6 +50,7 @@ from backend.db import (
     Pin,
     UserProfile,
     Workspace,
+    utcnow,
 )
 from backend.employment import EMPLOYMENT_TYPES
 
@@ -241,24 +253,88 @@ def build(db: Session, workspaces: list[Workspace], originals: dict[int, str], s
 
 SHORT = 2_000          # characters: names, labels, titles, short values
 URL = 4_000
-LONG = 2_000_000       # an ad, a document, a letter, a chat message
+LONG = 2_000_000       # an ad, a letter, a chat message
+# A document's text: as long as an export can hold (export.MAX_EXPORT_BYTES; the import file is inside that). An
+# uploaded .txt keeps all of its text, and a DOCX or PDF can unpack to more text than its upload size.
+DOC_TEXT = 200 * 1024 * 1024
 MANY = 100_000         # items in one list (jobs in a workspace, messages in a chat...)
 
 
 def _naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """A time as stored (naive UTC), and never later than now: a time in the future would make imported research
+    look newer than anything researched here, and is never true of an export."""
     if value is not None and value.tzinfo is not None:
         value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return min(value, utcnow()) if value is not None else None
+
+
+def web_address(url: Optional[str]) -> Optional[str]:
+    """``url`` when it is an http(s) address (pages turn these into links), else None."""
+    return url if isinstance(url, str) and re.match(r"^https?://\S+$", url, re.I) else None
+
+
+def _as_text(value: Any) -> Any:
+    """Text where text is wanted: a number (a year, a rating) is taken as its text, and null as no text."""
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
     return value
 
 
 Short = Annotated[str, StringConstraints(max_length=SHORT)]
 Long = Annotated[str, StringConstraints(max_length=LONG)]
+DocText = Annotated[str, StringConstraints(max_length=DOC_TEXT)]
 Url = Annotated[str, StringConstraints(max_length=URL)]
 When = Annotated[Optional[datetime], AfterValidator(_naive_utc)]
 Lat = Annotated[float, Field(ge=-90.0, le=90.0)]
 Lng = Annotated[float, Field(ge=-180.0, le=180.0)]
 Ref = Annotated[int, Field(ge=1, le=10_000_000)]
 Tags = Annotated[list[Short], Field(max_length=1_000)]
+# In research and fit results (shapes the app reads by fixed keys): text that may be a number or null in the file.
+ShortText = Annotated[str, BeforeValidator(_as_text), StringConstraints(max_length=SHORT)]
+LongText = Annotated[str, BeforeValidator(_as_text), StringConstraints(max_length=LONG)]
+
+
+def _no_blank(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("empty")
+    return value
+
+
+ShortLine = Annotated[ShortText, AfterValidator(_no_blank)]   # (a list item: a blank one is dropped)
+LongLine = Annotated[LongText, AfterValidator(_no_blank)]
+
+
+def _kept(item: Any, limit: int, *, nullable: bool = False) -> Any:
+    """A list of ``item`` in which an item of another shape is dropped (instead of refusing the whole file), and at
+    most ``limit`` items are read. Anything but a list is an empty list (or None, when ``nullable``)."""
+    adapter = TypeAdapter(item)
+
+    def keep(value: Any) -> Any:
+        if not isinstance(value, list):
+            return None if nullable else []
+        out = []
+        for v in value[:limit]:
+            try:
+                out.append(adapter.validate_python(v))
+            except (ValidationError, ValueError, TypeError):
+                continue
+        return out
+    return Annotated[Optional[list[item]] if nullable else list[item], PlainValidator(keep)]
+
+
+def _or(item: Any, fallback: Any) -> Any:
+    """``item``, or ``fallback()`` when the file's value has another shape (a section dropped, not the file)."""
+    adapter = TypeAdapter(item)
+
+    def one(value: Any) -> Any:
+        try:
+            return adapter.validate_python(value)
+        except (ValidationError, ValueError, TypeError):
+            return fallback()
+    return Annotated[item, PlainValidator(one)]
 
 
 class _In(BaseModel):
@@ -318,8 +394,8 @@ class DocumentIn(_In):
     filename: Short
     filetype: Optional[Annotated[str, StringConstraints(max_length=20)]] = None
     kind: Optional[Literal["resume", "cover_letter", "preferences", "other"]] = None
-    text: Optional[Long] = None
-    concise_text: Optional[Long] = None
+    text: Optional[DocText] = None
+    concise_text: Optional[DocText] = None
     use_concise: bool = False
     use_for_scoring: bool = True
     concise_model: Optional[Short] = None
@@ -360,10 +436,45 @@ class OfficeIn(_In):
     checked_at: When = None
 
 
+class _Shape(BaseModel):
+    """A value the app reads by fixed keys (research, a fit result): unknown keys are dropped, and ``stored()`` is
+    the dict the app writes for it."""
+    model_config = ConfigDict(extra="ignore")
+
+    def stored(self) -> dict:
+        return {name: (value.stored() if isinstance(value, _Shape) else
+                       [v.stored() if isinstance(v, _Shape) else v for v in value] if isinstance(value, list) else value)
+                for name, value in ((n, getattr(self, n)) for n in type(self).model_fields)}
+
+
+class EvidenceItemIn(_Shape):
+    bullet: LongLine
+    sub_bullets: _kept(LongLine, 100) = Field(default_factory=list)
+
+
+class RequirementIn(_Shape):
+    point: ShortLine
+    must_have: _or(bool, lambda: True) = True
+    matched: _or(bool, lambda: False) = False
+    evidence: _kept(EvidenceItemIn, 100) = Field(default_factory=list)
+
+
+class EvidenceIn(_Shape):
+    """A fit result's evidence, as backend/scorer.py writes it."""
+    score: _or(Optional[Annotated[int, Field(ge=0, le=100)]], lambda: None) = None
+    summary: _or(LongText, str) = ""
+    requirements: _kept(RequirementIn, 1_000) = Field(default_factory=list)
+    gaps: _kept(ShortLine, 1_000) = Field(default_factory=list)
+
+    def stored(self) -> dict:
+        # (only what the file had: the round trip keeps the evidence as it was)
+        return {name: value for name, value in super().stored().items() if name in self.model_fields_set}
+
+
 class FitIn(_In):
     status: Literal["ok", "error"] = "ok"
     score: Optional[Annotated[int, Field(ge=0, le=100)]] = None
-    evidence: dict[str, Any] = Field(default_factory=dict)
+    evidence: _or(EvidenceIn, EvidenceIn) = Field(default_factory=EvidenceIn)
     error: Optional[Short] = None
     profile_hash: Optional[Annotated[str, StringConstraints(max_length=200)]] = None
     model: Optional[Short] = None
@@ -437,7 +548,45 @@ class WorkspaceIn(_In):
     chats: Annotated[list[ChatIn], Field(max_length=MANY)] = Field(default_factory=list)
 
 
-Json = Optional[list | dict]
+def _web_page(url: str) -> str:
+    if web_address(url) is None:
+        raise ValueError("not a web address")
+    return url
+
+
+class ResearchPageIn(_Shape):
+    """A page research cites ({title, url}): one whose address isn't http(s) is dropped (pages link it)."""
+    title: _or(ShortText, str) = ""
+    url: Annotated[Url, AfterValidator(_web_page)]
+
+
+class ControversyIn(_Shape):
+    title: ShortLine
+    year: _or(Annotated[ShortText, StringConstraints(max_length=40)], str) = ""
+    summary: _or(LongText, str) = ""
+    sources: _kept(ResearchPageIn, 50) = Field(default_factory=list)
+
+
+class SentimentIn(_Shape):
+    summary: _or(LongText, str) = ""
+    rating: _or(ShortText, str) = ""
+    positives: _kept(ShortLine, 50) = Field(default_factory=list)
+    negatives: _kept(ShortLine, 50) = Field(default_factory=list)
+    sources: _kept(ResearchPageIn, 50) = Field(default_factory=list)
+
+
+class CompanyOfficeIn(_Shape):
+    """An office research or the office search found ({name, address, url}, backend/offices.py)."""
+    name: _or(ShortText, str) = ""
+    address: ShortLine
+    url: _or(Optional[Annotated[Url, AfterValidator(_web_page)]], lambda: None) = None
+    city: _or(Optional[Short], lambda: None) = None
+
+    def stored(self) -> dict:
+        out = {"name": self.name, "address": self.address, "url": self.url or ""}
+        if self.city:
+            out["city"] = self.city
+        return out
 
 
 class CompanyIn(_In):
@@ -449,18 +598,18 @@ class CompanyIn(_In):
     business_model: Optional[Long] = None
     ownership: Optional[Long] = None
     headquarters: Optional[Short] = None
-    controversies: Json = None
+    controversies: _kept(ControversyIn, 50) = Field(default_factory=list)
     controversy_note: Optional[Long] = None
     news_researched_at: When = None
-    sources: Json = None
+    sources: _kept(ResearchPageIn, 200) = Field(default_factory=list)
     employee_count: Optional[Short] = None
     glassdoor_url: Optional[Url] = None
-    sentiment: Json = None
+    sentiment: _or(Optional[SentimentIn], lambda: None) = None
     sentiment_researched_at: When = None
     research_version: Annotated[int, Field(ge=1, le=1_000)] = 1
-    offices: Json = None
+    offices: _kept(CompanyOfficeIn, 200, nullable=True) = None
     offices_checked_at: When = None
-    offices_cities: Json = None
+    offices_cities: _kept(ShortLine, 1_000, nullable=True) = None
     unverified_dropped: Annotated[int, Field(ge=0, le=1_000_000)] = 0
     error: Optional[Long] = None
     model: Optional[Short] = None
