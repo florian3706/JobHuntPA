@@ -1,23 +1,38 @@
-"""Background runs (search + scoring) on a single worker thread.
+"""Background runs (search + scoring) on a single worker thread, and the tasks tray's registry of running AI work.
 
 The UI starts a run, gets its id back immediately, and polls
 ``GET /api/runs/{id}`` for stage/progress/summary.
+
+The tasks tray (spec §1.13): every piece of AI work registers itself while it runs, with ``track``::
+
+    with tasks.track("cover_letter", ws, jobs=[job_id]):
+        letter = ...  # the AI call
+
+and ``GET /api/tasks`` lists the signed-in account's (``for_user``). The registry is in memory: it holds kinds,
+ids and numbers (a workspace, job or document id, done/total, the start time), never text: no job title, company
+name, question or document. The page turns the ids into names itself. A task ends when its block does, whether the
+work finished or raised. A task started inside another one's block (scoring inside a search run, office look-ups
+inside company research) is that one's step (``parent_id``) and isn't counted on its own. Nothing cancels a task
+(spec §1.16). A new kind is one line in ``KINDS``.
 """
 from __future__ import annotations
 
 import contextvars
+import itertools
 import json
 import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Iterable, Iterator, Optional
 
 from sqlalchemy.orm import load_only
 
 from backend import crypto, llm_providers
-from backend.db import SearchRun, SessionLocal
+from backend.db import SearchRun, SessionLocal, Workspace
 from backend.threads import submit
 
 log = logging.getLogger(__name__)
@@ -131,6 +146,7 @@ def _run(run_id: int, job: Callable[[Progress], dict]) -> None:
     last = [0.0]
 
     def progress(stage: str, info: dict) -> None:
+        report_progress(info)  # the tasks tray's numbers (the task the caller works for), never throttled
         now = time.monotonic()
         if now - last[0] < 0.4:
             return
@@ -150,3 +166,133 @@ def _run(run_id: int, job: Callable[[Progress], dict]) -> None:
         return
     _update(run_id, state="done", stage="done", summary_json=json.dumps(summary, default=str),
             finished_at=datetime.utcnow())
+
+
+# --------------------------------------------------------------------------
+# The tasks tray: running AI work (spec §1.13)
+# --------------------------------------------------------------------------
+
+# kind -> what the tray calls it. Registering a new kind of AI work is one line here (and a ``track`` around it).
+KINDS = {
+    "search": "Search run",
+    "scoring": "Scoring new jobs",
+    "rescore": "Scoring",
+    "research": "Company research",
+    "offices": "Finding offices",
+    "cover_letter": "Cover letter",
+    "chat": "Chat answer",
+    "summary": "Document summary",
+    "concise": "Concise version",
+    "titles": "Title suggestions",
+}
+# A task's ``part`` (which piece of the work, where a kind has several) -> words.
+PARTS = {"profile": "profile", "sentiment": "what employees say", "news": "news"}
+# What a task is for, when it is for something: the page names it from the id.
+SUBJECTS = ("job", "company", "document")
+
+
+@dataclass
+class Task:
+    """One piece of running AI work. Ids and numbers only, never text (module docstring)."""
+    id: int
+    kind: str
+    workspace_id: int
+    started_at: datetime
+    subject: Optional[str] = None       # "job" | "company" (named by one of its jobs) | "document" | None
+    job_ids: tuple[int, ...] = ()
+    document_id: Optional[int] = None
+    part: Optional[str] = None
+    parent_id: Optional[int] = None
+    done: Optional[int] = None
+    total: Optional[int] = None
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def progress(self, done: Optional[int], total: Optional[int]) -> None:
+        """How far it is (both numbers, or neither when it isn't known)."""
+        ok = isinstance(done, int) and isinstance(total, int) and not isinstance(done, bool) and total > 0
+        with self._lock:
+            self.done, self.total = (max(0, min(done, total)), total) if ok else (None, None)
+
+    def to_dict(self) -> dict:
+        with self._lock:
+            progress = {"done": self.done, "total": self.total} if self.total else None
+        return {"id": self.id, "kind": self.kind, "what": KINDS[self.kind], "part": self.part,
+                "part_label": PARTS.get(self.part or ""), "workspace_id": self.workspace_id, "subject": self.subject,
+                "job_ids": list(self.job_ids), "document_id": self.document_id, "parent_id": self.parent_id,
+                "started_at": self.started_at.isoformat() + "Z", "progress": progress}
+
+
+_registry: dict[int, Task] = {}
+_registry_lock = threading.Lock()
+_task_ids = itertools.count(1)
+# The innermost task this thread (and the threads it starts through backend.threads.submit) works for.
+current_task: contextvars.ContextVar[Optional[Task]] = contextvars.ContextVar("current_task", default=None)
+
+
+@contextmanager
+def track(kind: str, ws: int, *, jobs: Iterable[int] = (), company_job: Optional[int] = None,
+          document: Optional[int] = None, part: Optional[str] = None) -> Iterator[Task]:
+    """Registers AI work of ``kind`` for workspace ``ws`` while the block runs; it ends with the block, whether the
+    work finished or raised. What it is for: ``jobs`` (job ids), ``company_job`` (a company, named by one of its jobs
+    in the workspace), or ``document`` (a document id). ``part``: a key of ``PARTS``. Inside another task's block
+    it is that task's step."""
+    if kind not in KINDS:
+        raise ValueError(f"unknown task kind {kind!r}: add it to tasks.KINDS")
+    if part is not None and part not in PARTS:
+        raise ValueError(f"unknown task part {part!r}")
+    jobs = tuple(int(j) for j in jobs)
+    subject = ("company" if company_job is not None else "job" if jobs else
+               "document" if document is not None else None)
+    if company_job is not None:
+        jobs = (int(company_job),)
+    parent = current_task.get()
+    task = Task(id=next(_task_ids), kind=kind, workspace_id=int(ws), started_at=datetime.utcnow(), subject=subject,
+                job_ids=jobs, document_id=int(document) if document is not None else None, part=part,
+                parent_id=parent.id if parent is not None else None)
+    with _registry_lock:
+        _registry[task.id] = task
+    token = current_task.set(task)
+    try:
+        yield task
+    finally:
+        current_task.reset(token)
+        with _registry_lock:
+            _registry.pop(task.id, None)
+
+
+def report_progress(info: dict) -> None:
+    """A run's progress (``{"done", "total"}``) on the task this thread works for, if any."""
+    task = current_task.get()
+    if task is not None and isinstance(info, dict):
+        task.progress(info.get("done"), info.get("total"))
+
+
+def running(workspaces: Iterable[int]) -> list[dict]:
+    """The running tasks of these workspaces, oldest first, each step after the task it belongs to."""
+    wanted = set(workspaces)
+    with _registry_lock:
+        mine = [t for t in _registry.values() if t.workspace_id in wanted]
+    ids = {t.id for t in mine}
+    top = sorted((t for t in mine if t.parent_id not in ids), key=lambda t: t.id)
+    out: list[dict] = []
+
+    def add(task: Task, parent_id: Optional[int]) -> None:
+        out.append({**task.to_dict(), "parent_id": parent_id})
+        for child in sorted((t for t in mine if t.parent_id == task.id), key=lambda t: t.id):
+            add(child, task.id)
+
+    for task in top:
+        add(task, None)
+    return out
+
+
+def for_user(user_id: int) -> dict:
+    """``GET /api/tasks``: the running AI work of this account's workspaces (another account's never shows: a
+    workspace belongs to one account). ``count`` is what the header's button shows: tasks, not their steps."""
+    db = SessionLocal()
+    try:
+        workspaces = [ws for (ws,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
+    finally:
+        db.close()
+    items = running(workspaces)
+    return {"count": sum(1 for t in items if t["parent_id"] is None), "tasks": items}

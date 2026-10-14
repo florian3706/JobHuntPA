@@ -16,6 +16,7 @@ none are written from the model's memory.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -161,7 +162,8 @@ def companies_to_research(db: Session, ws: int, mode: str = "missing",
             continue
         entry = by_key.setdefault(key, {"name": job.company.strip(), "key": key, "jobs": []})
         if len(entry["jobs"]) < 3:
-            entry["jobs"].append({"title": job.title, "location": job.location_text, "url": job.url})
+            # (the id names the company in the tasks tray; the agent gets the title, location and link)
+            entry["jobs"].append({"id": job.id, "title": job.title, "location": job.location_text, "url": job.url})
     profiles = {p.key: p for p in db.query(CompanyProfile).all()}
     out = []
     for key, entry in by_key.items():
@@ -177,7 +179,7 @@ def job_context(db: Session, ws: int, name: str, request: str = "all") -> dict:
     from backend.pool import jobs_query
 
     key = company_key(name)
-    jobs = [{"title": j.title, "location": j.location_text, "url": j.url}
+    jobs = [{"id": j.id, "title": j.title, "location": j.location_text, "url": j.url}
             for j in jobs_query(db).filter(Job.workspace_id == ws).order_by(Job.id)
             if company_key(j.company or "") == key][:3]
     return {"name": name.strip(), "key": key, "jobs": jobs,
@@ -465,9 +467,19 @@ def _save(company: dict, *, profile: Optional[dict] = None, dropped: int = 0,
 
 
 def research_one(company: dict, cfg: dict) -> dict:
+    from backend import tasks
+
+    parts = company.get("parts") or list(PARTS)
+    # In the tasks tray as a step of the run, for the company (named by one of its jobs), unless the run is already
+    # this one company's research.
+    run = tasks.current_task.get()
+    step = (tasks.track("research", run.workspace_id, company_job=(company.get("jobs") or [{}])[0].get("id"),
+                        part="profile" if "base" in parts else parts[0] if len(parts) == 1 else None)
+            if run is not None and run.subject != "company" else contextlib.nullcontext())
     try:
-        text, seen = extract(run_agent(company, cfg))
-        profile, dropped = parse_profile(text, seen)
+        with step:
+            text, seen = extract(run_agent(company, cfg))
+            profile, dropped = parse_profile(text, seen)
     except ScorerError as exc:
         # A profile is shared by every workspace: what it keeps is never the provider's address or answer.
         _save(company, error=llm_providers.USER_PROBLEM)

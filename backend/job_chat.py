@@ -231,8 +231,8 @@ def _history(thread: Optional[ChatThread], db: Session) -> list[dict]:
 
 
 def ask(db: Session, ws: int, jobs: list[Job], history: list[dict], message: str, web: bool) -> dict:
-    """{"text", "sources", "model"} for the next answer."""
-    from backend import llm_providers
+    """{"text", "sources", "model"} for the next answer. In the tasks tray while the model answers."""
+    from backend import llm_providers, tasks
     from backend.research import extract
     from backend.scorer import ScorerError, call_model, config_problem, get_config
 
@@ -245,16 +245,17 @@ def ask(db: Session, ws: int, jobs: list[Job], history: list[dict], message: str
     context = context_parts(db, ws, jobs, web)
     turns = history + [{"role": "user", "content": message}]
     try:
-        if web:
-            response = _with_retry(lambda: llm_providers.web_search(
-                cfg, instructions=context, input=turns, context_size="medium", what="web search"))
-            text, seen = extract(response)
-            text = keep_known_links(text, set(seen) | known_links(db, jobs))
-            sources = web_sources(response, text, seen)
-        else:
-            messages = [{"role": "system", "content": context}, *turns]
-            text = call_model(messages, {**cfg, "timeout_s": max(cfg["timeout_s"], 300)}, json_mode=False)
-            text, sources = keep_known_links(text, known_links(db, jobs)), []
+        with tasks.track("chat", ws, jobs=[j.id for j in jobs]):
+            if web:
+                response = _with_retry(lambda: llm_providers.web_search(
+                    cfg, instructions=context, input=turns, context_size="medium", what="web search"))
+                text, seen = extract(response)
+                text = keep_known_links(text, set(seen) | known_links(db, jobs))
+                sources = web_sources(response, text, seen)
+            else:
+                messages = [{"role": "system", "content": context}, *turns]
+                text = call_model(messages, {**cfg, "timeout_s": max(cfg["timeout_s"], 300)}, json_mode=False)
+                text, sources = keep_known_links(text, known_links(db, jobs)), []
     except ScorerError as exc:
         raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     text = (text or "").strip()

@@ -1434,5 +1434,92 @@ class CommuteLinksMarkupTest(unittest.TestCase):
         self.assertIn('id="commute-links-title"', load)
 
 
+class TasksTrayTest(unittest.TestCase):
+    """The tasks tray in the header (tasks-tray.js, open-source spec §1.13): a disclosure button with the number of AI
+    tasks running and the list it opens, on the dashboard and the job page."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = (FRONTEND / "tasks-tray.js").read_text(encoding="utf-8")
+        cls.common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+
+    def nodes(self, page, node_id):
+        found = [n for n in page.nodes if n["attrs"].get("id") == node_id]
+        self.assertEqual(len(found), 1, node_id)
+        return found[0]
+
+    def test_both_pages_have_the_button_and_its_panel_in_the_header(self):
+        for name in ("index.html", "job.html"):
+            page = parse(name)
+            with self.subTest(page=name):
+                btn = self.nodes(page, "tasks-btn")
+                self.assertEqual(btn["tag"], "button")
+                self.assertEqual(btn["attrs"].get("type"), "button")
+                self.assertEqual(btn["attrs"].get("aria-expanded"), "false")
+                self.assertEqual(btn["attrs"].get("aria-controls"), "tasks-panel")
+                self.assertIn("hidden", self.nodes(page, "tasks-panel")["attrs"])
+                self.assertEqual(self.nodes(page, "tasks-list")["tag"], "ul")
+                self.assertEqual(self.nodes(page, "tasks-list")["attrs"].get("aria-labelledby"), "tasks-title")
+                count = self.nodes(page, "tasks-count")
+                self.assertEqual(page.nodes[count["parent"]]["attrs"].get("id"), "tasks-btn", "the number is in the button")
+                self.assertNotIn("aria-label", btn["attrs"], "its name is its text")
+                name_text = " ".join(btn["text"].split())
+                self.assertTrue(name_text.startswith("AI tasks"), name_text)  # the visible words start its name (2.5.3)
+                self.assertIn("running", name_text)
+                src = (FRONTEND / name).read_text(encoding="utf-8")
+                header = src[src.index("<header"):src.index("</header>")]
+                self.assertIn('id="tasks-menu"', header)
+                self.assertLess(src.index('src="./common.js"'), src.index('src="./tasks-tray.js"'))
+                page_js = "./app.js" if name == "index.html" else "./job.js"
+                self.assertLess(src.index('src="./tasks-tray.js"'), src.index(f'src="{page_js}"'),
+                                "the page fills in taskNames, which tasks-tray.js defines")
+
+    def test_count_changes_are_announced_politely_and_the_count_is_written_once(self):
+        block = self.js[self.js.index("function renderTasksCount"):self.js.index("function scheduleTasks")]
+        self.assertIn("setText(badge, String(count));", block)
+        self.assertIn("announce(count ? `${count} AI task${count === 1 ? '' : 's'} running.` : 'No AI tasks running.');", block)
+        self.assertNotIn("announce(count, true)", block)
+        self.assertNotRegex(block, r"announce\([^)]*,\s*true\)", "a count change is not an alert")
+        self.assertIn("tray.count !== null && tray.count !== count", block, "nothing is said for the first count")
+        self.assertNotIn("aria-live", self.js, "the list itself is not a live region (common.js says the count)")
+
+    def test_the_panel_opens_and_closes_like_the_account_menu(self):
+        block = self.js[self.js.index("function initTasksTray"):]
+        self.assertIn("btn.setAttribute('aria-expanded', String(yes));", block)
+        self.assertIn("if (e.key === 'Escape') { e.preventDefault(); open(false); btn.focus(); }", block)
+        self.assertIn("!e.target.closest('#tasks-menu')", block)
+        self.assertIn("menu.addEventListener('focusout'", block)
+
+    def test_redrawing_keeps_the_focus_and_names_go_in_escaped(self):
+        self.assertIn("if (tray.drawn !== html)", self.js)
+        self.assertIn("if (again) again.focus();", self.js)
+        self.assertIn("esc(job.title)", self.js)
+        self.assertIn("esc(job.company)", self.js)
+        self.assertIn("esc(name)", self.js)
+        self.assertNotRegex(self.js, r"style=|\bon[a-z]+=")
+
+    def test_it_says_what_for_which_since_when_and_how_far_and_cannot_cancel(self):
+        for words in ("since ${esc(since)}", "${p.done} of ${p.total} done", ": 'a job'", "for a company",
+                      "for a document", "(another workspace)"):
+            self.assertIn(words, self.js)
+        self.assertNotIn("cancel", self.js.lower().replace("nothing here cancels a task", ""))
+        self.assertNotIn("<button", self.js, "no control in the list: there is nothing to cancel (§1.16)")
+
+    def test_it_comes_from_the_server_and_looks_again_after_a_change(self):
+        self.assertIn("api('/api/tasks')", self.js)
+        self.assertIn("document.dispatchEvent(new Event('jobhunt:api-write'));", self.common)
+        self.assertIn("document.addEventListener('jobhunt:api-write'", self.js)
+        self.assertIn("document.visibilityState !== 'visible'", self.js)
+
+    def test_theme_tokens_and_phones(self):
+        block = self.css[self.css.index("/* The tasks tray"):self.css.index("/* Sign-in pages")]
+        self.assertIn(".tasks-count.is-busy { background: var(--accent); color: var(--on-accent);", block)
+        self.assertIn("background: var(--panel); color: var(--text); border: 1px solid var(--border-strong);", block)
+        self.assertIn(".tasks-panel { position: static; margin-top: 6px; width: auto; }", block, "in the flow on a phone")
+        self.assertIn("overflow-wrap: anywhere", block, "long job titles wrap at 320 px")
+        self.assertNotRegex(block, r"#[0-9a-fA-F]{3,8}\b", "theme tokens only")
+
+
 if __name__ == "__main__":
     unittest.main()

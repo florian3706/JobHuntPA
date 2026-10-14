@@ -458,6 +458,13 @@ can live in their own **workspaces** (switcher at the top right).
 Every feature, the AI ones included, works once you sign in: there are no memberships, payments or
 limits on searches. The AI features use the provider and key set on the Settings tab (AI provider).
 
+- **AI tasks** (the button at the top of every page, with a number): how many AI tasks are
+  running for your account right now: search runs and their scoring, scoring, company research,
+  office look-ups, cover letters, chat answers, document summaries and shorter versions, title
+  suggestions. Click it to see the list: what each task is, for which job, company or document,
+  since when, and how far it is where that is known (*3 of 10 done*). The list comes from
+  JobHuntPA itself, so it is still there after a reload or in another tab, and a screen reader
+  says when the number changes. Tasks can't be cancelled: each one ends by itself.
 - **Scheduled searches** (Settings > Scheduled searches): tick *Run searches automatically* and the
   search runs by itself at 10:00, 12:00, 14:00 and 16:00 Monday to Friday, skipping public
   holidays, including substitute days (a holiday that falls on a weekend moves to the Monday). They
@@ -1125,7 +1132,9 @@ tag, so the tag must exist on GitHub.
 
 ## How a search run works
 
-`Run search` starts a background run (`backend/tasks.py`); the page polls its progress.
+`Run search` starts a background run (`backend/tasks.py`); the page polls its progress. Every
+piece of AI work, the runs included, also registers itself with `tasks.track` while it runs, for the
+header's AI tasks tray (`GET /api/tasks`, `frontend/tasks-tray.js`): kinds, ids and numbers, never text.
 `backend/schedule.py` starts the same run at each workspace's scheduled times (public holidays
 from the `holidays` package); runs never overlap, so a due search waits up to an hour for a
 busy one. A workspace's slot runs under its owner's key (`users.background_key`, the data key

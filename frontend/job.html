@@ -29,6 +29,14 @@
         </span>
       </a>
       <div class="header-tools">
+        <div id="tasks-menu" class="tasks-menu">
+          <button id="tasks-btn" class="btn btn-ghost btn-sm tasks-btn" type="button" aria-expanded="false" aria-controls="tasks-panel">AI tasks <span id="tasks-count" class="tasks-count">0</span><span class="visually-hidden"> running</span></button>
+          <div id="tasks-panel" class="tasks-panel" hidden>
+            <p id="tasks-title" class="tasks-title"><strong>AI tasks running</strong></p>
+            <ul id="tasks-list" class="tasks-list" aria-labelledby="tasks-title" hidden></ul>
+            <p id="tasks-empty" class="muted tasks-empty">No AI tasks are running.</p>
+          </div>
+        </div>
         <a class="help-link" href="https://github.com/florian3706/JobHuntPA#using-it" target="_blank" rel="noopener">Help<span class="visually-hidden"> (opens in a new tab)</span></a>
         <div id="account-menu" class="account-menu">
           <button id="account-btn" class="btn btn-ghost btn-sm" type="button" aria-expanded="false" aria-controls="account-panel">Account<span aria-hidden="true"> ▾</span></button>
@@ -82,6 +90,7 @@
   <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
 
   <script src="./common.js"></script>
+  <script src="./tasks-tray.js"></script>
   <script src="./job.js"></script>
 </body>
 </html>

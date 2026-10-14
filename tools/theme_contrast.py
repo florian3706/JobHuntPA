@@ -44,7 +44,7 @@ _add(["muted"], GROUNDS, TEXT, "secondary text, hints, field labels, placeholder
 _add(["accent-text"], GROUNDS, TEXT, "links, disclosure summaries, link buttons")
 _add(["ok", "warn", "danger"], GROUNDS, TEXT, "status text (saved, failed, warnings), score badges on the field ground")
 _add(["info"], ("card", "panel"), TEXT, "Onsite and Good-fit badges")
-_add(["on-accent"], ["accent"], TEXT, "primary buttons, the selected tab, chip and map mode")
+_add(["on-accent"], ["accent"], TEXT, "primary buttons, the selected tab, chip and map mode, the tasks tray's count")
 # Text on tinted backgrounds
 _add(["ok"], [("ok", 15, "card"), ("ok", 15, "panel")], TEXT, "Remote badge")
 _add(["warn"], [("warn", 14, "card"), ("warn", 14, "panel")], TEXT, "Hybrid badge")

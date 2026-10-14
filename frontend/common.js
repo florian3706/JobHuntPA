@@ -265,6 +265,8 @@ async function apiResponse(url, opts = {}, retried = false) {
   const ws = currentWorkspace(); // 0 before the page knows one: the server then uses the account's first
   const headers = { ...(ws ? { 'X-Workspace': String(ws) } : {}), ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...(opts.headers || {}) };
   if (UNSAFE_METHODS.has(method)) headers['X-CSRF-Token'] = (SESSION.me || await loadSession())?.csrf || '';
+  // A change may start AI work: the tasks tray (tasks-tray.js) looks again soon.
+  if (UNSAFE_METHODS.has(method)) document.dispatchEvent(new Event('jobhunt:api-write'));
   const res = await fetch(url, { ...opts, headers });
   const text = await res.text();
   let data = null;
