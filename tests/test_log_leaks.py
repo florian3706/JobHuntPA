@@ -290,6 +290,7 @@ class FullRun(unittest.TestCase):
             self.sign_up_and_set_up(c)
             ads = self.search_and_score(c)
             self.talk_to_the_ai(c, ads)
+            self.documents_and_saved_pages(c)
             self.commute_links(c)
             self.browser_extension(c)
             self.when_things_fail(c)
@@ -387,6 +388,33 @@ class FullRun(unittest.TestCase):
         r = c.post("/api/companies/research", json={"name": "ZQX Corp"})
         self.assertEqual(self.run_to_end(c, r.json())["state"], "done")
         self.assertIn("zqx corp", c.get("/api/companies").json())
+
+    def documents_and_saved_pages(self, c):
+        """The AI's work on documents (a concise version, a summary of the ticked ones, title suggestions), a rename and
+        the text, a place looked up for the walkthrough (in the query string), and saved pages: one imported as jobs
+        and one uploaded as a job's full ad."""
+        docs = c.get("/api/documents").json()
+        cv = next(d for d in docs if d["kind"] == "resume")
+        self.assertEqual(c.patch(f"/api/documents/{cv['id']}", json={"title": "ZQX renamed resume"}).status_code, 200)
+        r = c.post(f"/api/documents/{cv['id']}/concise")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn(MARK, c.get(f"/api/documents/{cv['id']}/text").text)
+        self.assertEqual(c.post("/api/documents/summary").status_code, 201)
+        r = c.post("/api/documents/suggest-titles")
+        self.assertLess(r.status_code, 500, r.text)
+        self.assertTrue(c.get("/api/geo/lookup", params={"q": "ZQX Street, Zqxtown NSW"}).json()["found"])
+        self.assertFalse(c.get("/api/geo/lookup", params={"q": "Zqxfail Road NSW"}).json()["found"])
+        posting = {"@context": "https://schema.org", "@type": "JobPosting", "title": "ZQX Imported Lead",
+                   "description": "ZQX saved page description.", "url": "https://jobs.zqx-saved.example/1",
+                   "hiringOrganization": {"@type": "Organization", "name": "ZQX Saved Co"},
+                   "jobLocation": {"@type": "Place", "address": {"addressLocality": "Zqxtown"}},
+                   "datePosted": "2026-10-01"}
+        page = (f'<html><head><title>ZQX saved</title><script type="application/ld+json">{json.dumps(posting)}'
+                '</script></head><body>ZQX page body</body></html>').encode()
+        r = c.post("/api/import/page", files={"file": ("ZQX saved page.html", page, "text/html")})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = c.post(f"/api/jobs/{self.job_id}/import-page", files={"file": ("ZQX full ad.html", page, "text/html")})
+        self.assertLess(r.status_code, 500, r.text)
 
     def commute_links(self, c):
         """Starting points (Search setup > Commute, labels and typed places), a refused one, and the job page's places
