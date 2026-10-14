@@ -864,7 +864,8 @@ data many sites embed for search engines, or else follows the links to each ad (
 links), and opens pages that only appear in a real browser in a hidden one. A job feed (RSS)
 can be added by its address, and for government jobs add an APSJobs search (see *Government
 jobs* above). An address on your local network or on this computer, or one that isn't a web link,
-can't be a source, however it is added (one at a time, in bulk, or from an export).
+can't be a source, however it is added (one at a time, in bulk, or from an export), and the app never
+follows a page's redirect to one.
 
 **When the app finds no jobs on a page**, the [browser extension](#browser-extension) can have the AI work
 out where the page lists them: open the careers page in your browser and use the extension's **Add as a
@@ -875,7 +876,9 @@ the page **itself** with that layout and the extension shows you the jobs it fou
 the source saved, with its layout. Searches and **Test** read it the same way (the source says *Read with a
 page layout the AI worked out*). If the site changes and the layout finds nothing, the usual ways are tried
 again; **Forget layout** on the source drops it. A layout is only ever selectors, which JobHuntPA checks; it
-is never run as code. This uses your AI provider, like scoring.
+is never run as code, and a layout too costly to match (long chains of nested parts) is refused. A job board
+the app reads its own way (an APSJobs search, an address on Greenhouse, Lever, Workday and the like) is never
+given a layout. This uses your AI provider, like scoring, and can take a few minutes.
 
 **When a source doesn't work**, its last result in the list (and **Test**) says why:
 

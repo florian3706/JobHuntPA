@@ -845,7 +845,8 @@ as for a job. It only adds; the answer: `{"added", "existing", "jobs": [{"url", 
   careers mapping (8.7), checked again (422 `invalid_mapping`). A URL that isn't http(s): 422 `{"detail": "Not a
   valid URL: ..."}` (no `code`); on the local network or this computer (a raw private or loopback IP, `localhost`,
   a single-label name, `.local`, `.lan`, `.internal` and the like, judged by its shape): 422 `refused_address`
-  (`field: "url"`), since api 3 for every way of adding a source.
+  (`field: "url"`), since api 3 for every way of adding a source. The address is checked before the mapping: a
+  local address with a bad mapping is 422 `refused_address`.
 - `POST /api/sources/{id}/test` (*workspace*): the app reads the page now, through its scraping rules (robots.txt,
   crawl delay), and stores nothing: `{"ok": true, "method": <how it was read>, "count", "sample": [{"title",
   "location", "url"}] (at most 8), "notes": [<text>]}` or `{"ok": false, "error": <why>, "notes": [...]}`. It can
@@ -854,10 +855,21 @@ as for a job. It only adds; the answer: `{"added", "existing", "jobs": [{"url", 
 ## 8.6 Working a page out
 
 `POST /api/extension/work-out` (*workspace*: the tasks tray of that workspace shows it while it runs, as "Working out
-a job site" or "Working out a careers page"). One at a time per account (429 `busy`). It can take as long as the AI
-takes (the AI provider's timeout is up to 180 s by default) and, for a careers page, the app's reading of the page
-(a crawl delay of at least 2 s a request, a rendered page up to 30 s): give it a timeout of at least 300 seconds and
-tell the person it may take a minute.
+a job site" or "Working out a careers page"). One at a time per account (429 `busy`). It can take long:
+
+- **The AI:** up to 3 attempts, each up to the AI provider's timeout (`LLM_TIMEOUT_S` in the app's settings, 180 s
+  by default, and the person may raise it), with pauses of up to a few seconds between them (or what the provider's
+  `Retry-After` says).
+- **A careers page, before the AI:** the app's reading of it the usual ways: up to 15 listing pages at the site's
+  crawl delay (2 s a request at least, up to 30 s when its robots.txt asks); when those find nothing, the page
+  rendered in a headless browser, and its listing pages rendered too (up to about 35 s each, plus the delay).
+- **A careers page, after the AI:** the page read again with the mapping, plain and, when that finds nothing,
+  rendered (matching stops after 10 s each).
+
+Tell the person it may take a few minutes and show that it is still working (the tasks tray shows it too). In the worst case
+it runs for well over ten minutes: give the request a timeout of **at least 30 minutes**, or none. If the extension gives up sooner, the app keeps working until
+it ends, and a new work-out for the account meanwhile answers 429 `busy` (`Retry-After: 5`): say "JobHuntPA is still
+working out the last page; try again in a minute" rather than a general error.
 
 **The request** (all three fields required; any other is 422 `invalid`):
 
@@ -867,7 +879,10 @@ tell the person it may take a minute.
 
 - `kind`: `job` (one job's page on a job site) or `careers` (a company's page that lists its jobs).
 - `url`: the page's address (`location.href`), http(s), at most 2,048 characters (422 `invalid`, `field: "url"`).
-  The AI is told only its scheme, host and path. The **site** is worked out from it (8.8).
+  The AI is told only its scheme, host and path. The **site** is worked out from it (8.8); an address whose host is
+  an IPv6 address in brackets has no site (422 `invalid`, `field: "url"`, a `detail` that says so), and the popup
+  should not offer to work such a page out. For `kind: "careers"`, an address on the local network or this computer
+  (or not a web link) is 422 `refused_address` (`field: "url"`) before that check, IPv6 ones included.
 - `outline`: the trimmed outline of the page, below. The outline is the person's data: the app checks it, sends it
   to the AI, and drops it with the request. It is never stored and never logged.
 
@@ -876,7 +891,10 @@ tell the person it may take a minute.
 - `title` (optional): `document.title`, at most 300 characters.
 - `root`: an element, normally `document.body`. An **element** is an object with these keys, each optional but
   `tag` (any other key is refused):
-  - `tag`: the element's name in lower case (`element.localName`): `^[a-z][a-z0-9-]{0,39}$`.
+  - `tag`: the element's name in lower case (`element.localName`): `^[a-z][a-z0-9-]{0,39}$`. **Leave out any
+    element whose `localName` doesn't match this pattern, with everything inside it** (Word's `o:p`, custom
+    elements with `.` or `_`, MathML or SVG children such as `linearGradient`): one such element in the outline
+    refuses the whole outline (422 `invalid`).
   - `attrs`: an object of at most 12 attributes, each a string of at most 200 characters, from this list only:
     `id`, `class`, `role`, `itemprop`, `itemtype`, `itemscope`, `aria-label`, `href`, `datetime`, `title`,
     `data-testid`, `data-test`, `data-qa`, `data-automation`, `data-cy`. Send the value as `getAttribute` gives it
@@ -923,6 +941,10 @@ a rendered page); only when they find nothing is the AI asked, and the page read
 
 - `worked_out: false` and `mapping: null` when the usual ways found jobs: no AI was asked, and the source needs no
   mapping. `test` is then their result.
+- `worked_out: false` and `mapping: null` also for an address JobHuntPA reads its own way however the page looks
+  (an APSJobs search, or a job board's own address on an applicant-tracking system JobHuntPA knows, such as
+  Greenhouse, Lever, Ashby or Workday), when that finds nothing: searches never read such an address with a mapping, so
+  none is worked out. `test` is `ok: false`, and its `notes` say why. The source can still be saved without one.
 - `test` is the shape of `POST /api/sources/{id}/test` (8.5): `ok: false` with `error` when the page can't be read
   at all (robots.txt, a bot check, an error page: then no AI is asked and `mapping` is null) or the mapping finds
   no jobs.
@@ -948,21 +970,48 @@ own selector functions. Nothing in it is ever evaluated, inserted as HTML or use
   description, keeping its paragraphs; `textContent`, whitespace collapsed, for the rest). The values then fill the
   job of 8.4: `location` is `location_text`, `salary` is `salary_text`, `date` is `posted_at` (sent only when it is
   an ISO date or date-time; else left out), `work_mode` is mapped to the contract's words or left `""`, and
-  `description_from` is `site`, `method` is `site`. A saved mapping "stops working" when it no longer finds a
+  `description_from` is `site`, `method` is `site`. **Cut each value to the 8.4 limit of the field it fills before
+  sending** (`title`, `company`, `location_text`, `salary_text` 500 characters, `employment_type` 100, `description`
+  100,000): a selector that picks a large element would otherwise make preview and save answer 422 `invalid`. A saved mapping "stops working" when it no longer finds a
   title: then offer to work the site out again.
 - **`kind: "careers"`** fields: `list`, `title`, `link`, `location`, `salary`, `employment_type`, `work_mode`, `date`.
   `list`, `title` and `link` are required. Applied by the app only: `list` picks every job entry
   (`querySelectorAll`); every other selector is matched inside one entry, and `":scope"` means the entry itself;
   `link`'s value is its `attribute`, `href` when none is given. Entries without a title or a link to an http(s)
-  page are skipped, as are links on the local network. `list` never has an attribute.
+  page are skipped, as are links on the local network. `list` never has an attribute. The app reads a page with a
+  mapping only when it is at most 3,000,000 characters of HTML and at most 80 elements deep, and stops matching
+  after 10 seconds; then the mapping finds nothing on that page and the usual ways follow (a note says why).
 - Each field is `{"selector", "attribute"?}`: no other key. A field that isn't on the page is left out (in the AI's
   answer it may be null). At most the fields listed for the kind; an unknown field refuses the whole mapping.
 - **A selector** is a string of 1 to 300 characters, trimmed, made only of ASCII letters, digits, space and
   `_ # . : > + ~ * [ ] = ^ $ | " ' ( ) , / ? & % -`; quotes balanced; no `javascript:`, `vbscript:`, `livescript:`,
-  `url(`, `expression(` or `@import` (in any case); pseudo-classes only from `:scope`, `:not()`, `:is()`,
-  `:where()`, `:has()`, `:first-child`, `:last-child`, `:only-child`, `:nth-child()`, `:nth-last-child()`,
-  `:first-of-type`, `:last-of-type`, `:only-of-type`, `:nth-of-type()`, `:nth-last-of-type()`, `:empty`, and no
-  pseudo-element (`::`); and it must parse. `":scope"` alone only in a careers field other than `list`.
+  `url(`, `expression(` or `@import` (in any case), and no comment (`/*` or `*/` anywhere); pseudo-classes only
+  from `:scope`, `:not()`, `:is()`, `:where()`, `:has()`, `:first-child`, `:last-child`, `:only-child`,
+  `:nth-child()`, `:nth-last-child()`, `:first-of-type`, `:last-of-type`, `:only-of-type`, `:nth-of-type()`,
+  `:nth-last-of-type()`, `:empty`, and no pseudo-element (`::`); within the cost limits below; and it must parse
+  (by the app's selector engine, soupsieve, which is stricter than browsers in places: `:has(a b)` doesn't
+  parse). `":scope"` alone only in a careers field other than `list`.
+- **The cost limits** (a selector engine tries every ancestor for each descendant combinator and every earlier
+  sibling for each `~`, remembering nothing between tries, so a few of them on a deep page can take minutes). The
+  selector is read as CSS reads it, outside quoted strings and `[...]`, and counted **in all of it**, the
+  arguments of `:not()`, `:is()`, `:where()` and `:has()` included (error: 422 `invalid_mapping`, or
+  `not_worked_out` for the AI's answer):
+  - at most **4 combinators** (a space between compounds, `>`, `+`, `~`); of them at most **2** a descendant
+    combinator (a space) or `~`, and of those at most **one** `~`. In `:has()` a leading `>`, `+` or `~` counts
+    as a combinator, and an argument without one counts as a descendant combinator (`li:has(a)` has one);
+  - a compound that is only `*` never stands next to a space or `~` (`div *`, `* ~ p` are refused; `div > *` is
+    taken);
+  - `:not()`, `:is()`, `:where()`, `:has()` at most **2 deep** inside one another;
+  - at most **one `:has()`**, never inside another `:has()`. In a compound that has more of the selector after it
+    (not the element the selector picks), `:has()` must be one `>` or `+` and one compound: `section:has(> h2) p`
+    is taken, `:has(h2) p` and `:has(> div > h2) p` are refused;
+  - at most **3 commas** in all (between selectors, in the list or inside a pseudo-class);
+  - `:nth-*()` take only `odd`, `even`, a number of up to 4 digits or `an+b` with numbers of up to 4 digits (no
+    `of S`).
+
+  Examples taken: `h1.job-title`, `#main .jobs > li.job`, `section#jobs li a`, `ul.list li + li ~ li`,
+  `li:not(:is(.ad, .promo))`, `tr:nth-child(2n+1)`. Refused: `section div div span` (3 descendant combinators),
+  `x * *`, `a ~ b ~ c`, `:not(:not(:not(a)))`, `a, b, c, d, e`.
 - **An attribute** is null, absent, or a name of 1 to 40 characters matching `^[a-z][a-z0-9_-]*$` (the app lowers
   its case), never one that starts with `on` and a letter (an event handler).
 - The AI's answer is checked the same way and refused whole when anything breaks a rule (422 `not_worked_out`); the
@@ -1002,5 +1051,7 @@ outline is built from the page the person has open.
 - `POST /api/sources` takes `mapping`; with one, a URL the workspace has gets it (200, `updated: true`) instead of
   409. Sources list their `mapping`.
 - `POST /api/sources` refuses an address on the local network or this computer (422 `refused_address`), as the bulk
-  add and the import do.
+  add and the import do, before it looks at a mapping.
+- The scraping layer no longer follows a redirect from a page on the web to the local network or this computer
+  (the read fails, as a source's Test then says), and a rendered page's requests there are stopped.
 - Unchanged: keys, status's other fields, preview, jobs, jobs/batch and the source test.
