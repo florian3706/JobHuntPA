@@ -225,7 +225,8 @@ class RemovedAdminRoutesTest(Base):
                 # Signed out, every /api route but a few answers 401 first; signed in, nothing is there.
                 self.assertIn(r.status_code, (401, 404, 405), f"{method} {path}: {r.status_code}")
                 self.assertNotEqual(r.status_code, 200, path)
-        paths = {getattr(r, "path", "") for r in app.routes}
+        paths = {path for path, _ in helpers.flat_routes()}
+        self.assertIn("/api/auth/name", paths, "the walk reaches the included routers")
         self.assertFalse([p for p in paths if p.startswith("/api/admin") or "signup" in p or "invite" in p])
 
 

@@ -314,12 +314,15 @@ class NothingOverHttpTest(unittest.TestCase):
         got = scenario('''
 import sys
 from backend.app import app
+from tests.helpers import flat_routes
 out["loaded"] = "backend.reset" in sys.modules
-out["modules"] = sorted({getattr(r, "endpoint", None).__module__ for r in app.routes if getattr(r, "endpoint", None)})
-out["paths"] = sorted({getattr(r, "path", "") for r in app.routes})
+routes = flat_routes(app)
+out["modules"] = sorted({r.endpoint.__module__ for _, r in routes if getattr(r, "endpoint", None)})
+out["paths"] = sorted({path for path, _ in routes})
 ''')
         self.assertFalse(got["loaded"])
         self.assertNotIn("backend.reset", got["modules"])
+        self.assertIn("backend.security", got["modules"], "the walk reaches the included routers")
         for path in got["paths"]:
             self.assertNotRegex(path.lower(), r"reset|wipe|start-over|factory", path)
         remove_scratch_folders()

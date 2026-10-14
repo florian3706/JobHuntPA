@@ -57,6 +57,29 @@ _passwords = {ADMIN_EMAIL: ADMIN_PASSWORD}
 _numbers = itertools.count(1)
 
 
+def flat_routes(application=None) -> list[tuple[str, object]]:
+    """(full path, route) of every route of the app, those of included routers too: FastAPI 0.14x keeps an included
+    router as one entry of ``app.routes``, so a walk of ``app.routes`` alone misses most of the API."""
+    found: list[tuple[str, object]] = []
+
+    def walk(routes, prefix: str) -> None:
+        for route in routes:
+            inner = getattr(route, "original_router", None)
+            if inner is not None:
+                walk(inner.routes, prefix + getattr(getattr(route, "include_context", None), "prefix", ""))
+            elif isinstance(getattr(route, "path", None), str):
+                found.append((prefix + route.path, route))
+
+    walk((application or app).routes, "")
+    return found
+
+
+def api_routes(application=None) -> list[tuple[str, str, object]]:
+    """(method, full path, endpoint) of every route with methods (``flat_routes``)."""
+    return [(method, path, getattr(route, "endpoint", None)) for path, route in flat_routes(application)
+            for method in sorted(getattr(route, "methods", None) or ())]
+
+
 def started() -> None:
     """What the app's start does for accounts (the database, the key file, the first admin), if it hasn't run yet
     in this process. TestClient's ``with`` runs the whole start; this is for tests that need accounts without it."""

@@ -159,7 +159,8 @@ class WhoMayCallTest(Base):
             delete.assert_called_once()
 
     def test_nothing_here_resets_or_wipes(self):
-        routes = {(m, getattr(r, "path", "")) for r in app.routes for m in getattr(r, "methods", ()) or ()}
+        routes = {(m, path) for m, path, _ in helpers.api_routes()}
+        self.assertIn(("PUT", "/api/settings/llm"), routes, "the walk reaches the included routers")
         for method, path in routes:
             if path.startswith("/api/settings") or path.startswith("/api/llm"):
                 self.assertNotRegex(path, r"reset|wipe|start-over|delete-all", path)

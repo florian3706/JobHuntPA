@@ -81,11 +81,14 @@ class FormerlyGatedRoutesTest(unittest.TestCase):
             for dep in dependant.dependencies:
                 yield getattr(dep.call, "__qualname__", "") + " " + getattr(dep.call, "__module__", "")
                 yield from names(dep)
-        for route in app.routes:
+        checked = 0
+        for path, route in helpers.flat_routes():
             dependant = getattr(route, "dependant", None)
             if dependant is not None:
+                checked += 1
                 for name in names(dependant):
-                    self.assertNotIn("membership", name, route.path)
+                    self.assertNotIn("membership", name, path)
+        self.assertGreater(checked, 100, "the walk reaches the included routers")
 
     def test_the_billing_routes_are_gone(self):
         with helpers.client() as c:
