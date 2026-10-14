@@ -85,6 +85,43 @@ class ServiceScriptTest(unittest.TestCase):
             self.assertFalse(self.unit.exists(), args)
         self.assertNotEqual(self.run_script("start").returncode, 0)
 
+    def test_a_data_folder_of_other_files_is_refused(self):
+        """The same rule as the first run's folder step: the uninstaller removes the data folder, so it never takes a
+        folder of the person's own files; a file is refused too. One that already holds JobHuntPA data is fine."""
+        mine = self.top / "Documents"
+        mine.mkdir()
+        (mine / "taxes.pdf").write_text("taxes")
+        done = self.run_script("install", "--data-dir", str(mine))
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("other files", done.stderr)
+        self.assertFalse(self.unit.exists())
+        self.assertEqual(sorted(p.name for p in mine.iterdir()), ["taxes.pdf"])
+        self.assertNotEqual(self.run_script("install", "--data-dir", str(mine / "taxes.pdf")).returncode, 0)
+        self.assertFalse(self.unit.exists())
+        (mine / "jobhunt.db").write_bytes(b"")
+        self.assertEqual(self.run_script("install", "--data-dir", str(mine)).returncode, 0)
+        self.assertIn(f'JOBHUNT_DATA_DIR={mine}"', self.unit.read_text())
+
+    def test_a_dollar_in_the_app_path_is_kept_in_execstart(self):
+        """systemd replaces $NAME in ExecStart=: the script writes $$ for a plain $, and the uninstaller reads it back."""
+        moved = self.top / "Price $HOME" / "JobHuntPA"
+        moved.parent.mkdir()
+        shutil.move(str(self.app), str(moved))
+        self.app = moved
+        done = self.run_script("install", "--data-dir", str(self.top / "d"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        unit = self.unit.read_text()
+        self.assertIn(f'ExecStart="{self.top}/Price $$HOME/JobHuntPA/.venv/bin/python"', unit)
+        self.assertIn(f'WorkingDirectory="{moved}"', unit)  # (no $ expansion there)
+        sys.path.insert(0, str(ROOT / "installer"))
+        import uninstaller
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.home / ".config")}):
+            self.assertEqual(uninstaller.service_data_folder(moved), self.top / "d")
+            self.assertTrue(uninstaller.service_is_ours(moved, unit))
+            self.assertFalse(uninstaller.service_is_ours(self.top / "Price $HOME", unit))
+
     def test_status_and_remove(self):
         self.assertIn("isn't installed", self.run_script("status").stdout)
         self.run_script("install", "--data-dir", str(self.top / "d"))

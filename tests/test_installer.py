@@ -234,19 +234,90 @@ class UninstallerTest(unittest.TestCase):
 
     def test_only_a_jobhuntpa_data_folder_is_ever_deleted(self):
         top = Path(tempfile.mkdtemp())
-        app, home = top / "app", top / "home"
-        app.mkdir()
+        app, home = self._app_with_paths(), top / "home"
         home.mkdir()
         mine = top / "mine"
         mine.mkdir()
-        (mine / "photo.jpg").write_text("x")
+        (mine / "jobhunt.db").write_bytes(b"")
+        (mine / "jobhunt.db.bak-before-encryption").write_bytes(b"")  # JobHuntPA's own backups and temp files
+        (mine / ".server-keys.json-x1.tmp").write_bytes(b"")
+        (mine / "uploads").mkdir()
         with mock.patch.object(Path, "home", return_value=home):
-            self.assertFalse(uninstaller.safe_to_delete(mine, app))
+            self.assertTrue(uninstaller.safe_to_delete(mine, app))
+            (mine / "photo.jpg").write_text("x")
+            self.assertFalse(uninstaller.safe_to_delete(mine, app))  # the person's own file: the folder stays
+            (mine / "photo.jpg").unlink()
             (home / "jobhunt.db").write_bytes(b"")
             self.assertFalse(uninstaller.safe_to_delete(home, app))  # never the home folder, even with data in it
-            self.assertFalse(uninstaller.safe_to_delete(top, app))  # nor one that holds the app
-            (mine / "jobhunt.db").write_bytes(b"")
-            self.assertTrue(uninstaller.safe_to_delete(mine, app))
+            self.assertFalse(uninstaller.safe_to_delete(app.parent, app))  # nor one that holds the app
+            # An app folder without backend/paths.py has no rule to tell JobHuntPA's files apart: kept.
+            self.assertFalse(uninstaller.safe_to_delete(mine, self._app()))
+        documents = top / "home2" / "Documents"
+        documents.mkdir(parents=True)
+        (documents / "jobhunt.db").write_bytes(b"")
+        with mock.patch.object(Path, "home", return_value=top / "home2"):
+            self.assertFalse(uninstaller.safe_to_delete(documents, app))  # the backup is saved there
+
+    def test_a_data_folder_that_holds_other_files_is_kept_with_the_backup(self):
+        """JOBHUNT_DATA_DIR (or service.sh --data-dir) named a folder of the person's own files: the uninstaller backs
+        it up and leaves the folder, their files and the backup where they are."""
+        app = self._app_with_paths()
+        shutil.rmtree(app / "data")
+        top = Path(tempfile.mkdtemp())
+        home = top / "home"
+        documents = home / "Documents"
+        (documents / "mystuff").mkdir(parents=True)
+        (documents / "taxes.pdf").write_text("taxes")
+        (documents / "mystuff" / "thesis.txt").write_text("thesis")
+        (documents / "jobhunt.db").write_bytes(b"db")
+        (documents / "server-keys.json").write_text("{}")
+        code, _ = self._run(app, home, {"JOBHUNT_DATA_DIR": str(documents), "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertEqual((documents / "taxes.pdf").read_text(), "taxes")
+        self.assertEqual((documents / "mystuff" / "thesis.txt").read_text(), "thesis")
+        self.assertTrue((documents / "jobhunt.db").exists())
+        self.assertEqual(len(list(documents.glob("JobHuntPA-backup-*.zip"))), 1)
+
+        # The same folder elsewhere (the backup goes to Documents): still kept, for the person's files.
+        app = self._app_with_paths()
+        shutil.rmtree(app / "data")
+        mine = top / "elsewhere"
+        mine.mkdir()
+        (mine / "jobhunt.db").write_bytes(b"db")
+        (mine / "notes.txt").write_text("mine")
+        home2 = top / "home2"
+        (home2 / "Documents").mkdir(parents=True)
+        code, _ = self._run(app, home2, {"JOBHUNT_DATA_DIR": str(mine), "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertEqual((mine / "notes.txt").read_text(), "mine")
+        self.assertEqual(len(list((home2 / "Documents").glob("JobHuntPA-backup-*.zip"))), 1)
+
+    def test_the_service_of_another_install_is_left_alone(self):
+        """The unit names /…/JobHuntPA-old: uninstalling /…/JobHuntPA neither removes it nor takes its data folder."""
+        app = self._app_with_paths()
+        top = Path(tempfile.mkdtemp())
+        other = Path(f"{app}-old")
+        home, data = top / "home", top / "srv" / "jobhunt"
+        (home / "Documents").mkdir(parents=True)
+        data.mkdir(parents=True)
+        (data / "jobhunt.db").write_bytes(b"db")
+        unit = top / "xdg" / "systemd" / "user" / "jobhuntpa.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text(f'# Made by JobHuntPA service.sh for the app in {other}.\n[Service]\n'
+                        f'WorkingDirectory="{other}"\nEnvironment="JOBHUNT_DATA_DIR={data}"\n'
+                        f'ExecStart="{other}/.venv/bin/python" "-m" "uvicorn" "backend.app:app"\n')
+        code, systemctl = self._run(app, home, {"XDG_CONFIG_HOME": str(top / "xdg"),
+                                                "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertTrue(unit.exists())
+        self.assertTrue((data / "jobhunt.db").exists())
+        systemctl.assert_not_called()
+
+    def test_unit_values_are_read_as_service_sh_quotes_them(self):
+        words = uninstaller._unit_words(r'"/a b/\\x\"q\" 100%%/$$HOME" "--port" "8000"', exec_line=True)
+        self.assertEqual(words, [r'/a b/\x"q" 100%/$HOME', "--port", "8000"])
+        self.assertEqual(uninstaller._unit_words('"JOBHUNT_DATA_DIR=/d 100%%/$$x"'), ["JOBHUNT_DATA_DIR=/d 100%/$$x"])
+        self.assertEqual(uninstaller._unit_words("/plain/path"), ["/plain/path"])
 
     def test_the_appimage_deletes_its_file_not_its_mount(self):
         app = self._app()

@@ -179,6 +179,8 @@ filled in, rather than starting an empty JobHuntPA somewhere else.
 
 - **An existing install isn't asked and nothing moves:** a `data` folder next to the app that already holds
   JobHuntPA's data is used where it is, and an older `.env` next to the app keeps being read and written there.
+  If that `.env` has a `JOBHUNT_DATA_DIR=` line naming a folder that holds JobHuntPA's data, that folder is used
+  too, as before.
 - **The service** ([`service.sh`](#hosting-on-your-own-network)) and other headless setups say where the data is
   with `JOBHUNT_DATA_DIR`; they are never asked.
 - **To move the data later,** stop JobHuntPA, move the folder, and either edit `data-folder.json` or delete it
@@ -539,7 +541,8 @@ where it is: the service runs it from there).
 
 - `--port` is the port on this computer (default 8000); `--data-dir` is the
   [data folder](#where-your-data-lives) (default: the one JobHuntPA already uses, else
-  `~/.local/share/JobHuntPA`). Run `install` again to change them.
+  `~/.local/share/JobHuntPA`). Like the first run's folder question, it takes a new or empty folder or one that
+  already holds JobHuntPA's data, never a folder of your own files. Run `install` again to change them.
 - The service passes the folder to JobHuntPA (`JOBHUNT_DATA_DIR`), so its first run skips the folder question.
   If there is no account yet, open `http://127.0.0.1:8000/first-run.html` on that computer and paste the
   setup code from `first-run.txt` in the data folder (or `journalctl --user -u jobhuntpa | grep first-run`).
@@ -1058,7 +1061,7 @@ The uninstaller first offers to save a **backup** of the [data folder](#where-yo
 `JobHuntPA-backup-<date>.zip` in your Documents folder, readable only by you. Keep it private. It then removes
 the shortcuts and Start-menu entries, the service `service.sh` installed, the data folder, the note of where it
 was (`data-folder.json`), and the app folder (for the AppImage, the AppImage file). A data folder that holds
-anything but JobHuntPA's files is left where it is. It asks before removing the browser component an older
+anything but JobHuntPA's files (or the backup) is left where it is, with your files in it. It asks before removing the browser component an older
 setup downloaded to Playwright's shared folder, and leaves Python installed because other programs may use it.
 To restore a backup, unzip it and, at a new install's first start, choose its `data` folder as the data folder:
 the database and `server-keys.json` must stay together, and you still sign in with your password.

@@ -41,6 +41,8 @@ fi
 
 # systemd reads % as the start of a specifier and needs quotes around words with spaces.
 quote() { local v="${1//%/%%}"; v="${v//\\/\\\\}"; printf '"%s"' "${v//\"/\\\"}"; }
+# In ExecStart= systemd also replaces $NAME and ${NAME} with environment variables: $$ is a plain $.
+quote_exec() { local v; v="$(quote "$1")"; printf '%s' "${v//\$/\$\$}"; }
 
 current_data_dir() {
   # The data folder JobHuntPA would use now (JOBHUNT_DATA_DIR, the first run's pointer, data/ next to the app), else
@@ -73,12 +75,26 @@ install() {
     "~"*) data="$HOME${data#\~}" ;;
   esac
   [[ "$data" = /* ]] || die "--data-dir takes the whole path of a folder, starting with /."
-  mkdir -p "$data"
-  chmod 700 "$data"
+  # The same check as the first run's "Where your data lives" (backend/paths.py check_folder): a new or empty folder,
+  # or one that already holds JobHuntPA's data, never a folder of your own files (the uninstaller deletes the data
+  # folder). It also makes the folder, owner-only.
+  data="$("$PYTHON" -I -c '
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from backend import paths
+try:
+    path, kind = paths.check_folder(sys.argv[2])
+    paths.prepare_folder(path)
+except paths.FolderProblem as problem:
+    print(problem, file=sys.stderr)
+    sys.exit(1)
+print(path)
+' "$APP_DIR" "$data")" || die "--data-dir: that folder can't be JobHuntPA's data folder (see the message above)."
 
   mkdir -p "$UNIT_DIR"
   local exec_line="" word
-  for word in "${START[@]}" --port "$port"; do exec_line+="$(quote "$word") "; done
+  for word in "${START[@]}" --port "$port"; do exec_line+="$(quote_exec "$word") "; done
   cat > "$UNIT" <<EOF
 # Made by JobHuntPA's service.sh for the app in $IDENT. Remove it with: ./service.sh remove
 [Unit]

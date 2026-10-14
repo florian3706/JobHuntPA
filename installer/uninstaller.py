@@ -109,19 +109,67 @@ def service_ident(folder: Path) -> str:
     return os.environ.get("APPIMAGE") or str(folder)
 
 
+def _unit_words(value: str, exec_line: bool = False) -> list[str]:
+    """The words of a unit-file value as service.sh writes them (systemd quoting: "..." with \\ and \" inside, %%
+    for %, and in ExecStart= $$ for $); unquoted words are split at spaces."""
+    words: list[str] = []
+    i, n = 0, len(value)
+    while i < n:
+        if value[i].isspace():
+            i += 1
+            continue
+        word = []
+        if value[i] == '"':
+            i += 1
+            while i < n and value[i] != '"':
+                if value[i] == "\\" and i + 1 < n:
+                    i += 1
+                word.append(value[i])
+                i += 1
+            i += 1
+        else:
+            while i < n and not value[i].isspace():
+                word.append(value[i])
+                i += 1
+        text = "".join(word).replace("%%", "%")
+        words.append(text.replace("$$", "$") if exec_line else text)
+    return words
+
+
+def _unit_settings(text: str) -> dict[str, list[list[str]]]:
+    """The unit file's settings: name -> the words of each line that sets it."""
+    found: dict[str, list[list[str]]] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", ";", "[")) or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        found.setdefault(name.strip(), []).append(_unit_words(value, exec_line=name.strip().startswith("Exec")))
+    return found
+
+
+def service_is_ours(folder: Path, text: str) -> bool:
+    """Whether the unit runs this install: its WorkingDirectory= is this app folder, or its ExecStart= starts with
+    this AppImage. The whole path is compared, so a unit of /home/u/JobHuntPA-old is not taken for /home/u/JobHuntPA."""
+    settings = _unit_settings(text)
+    candidates = [words[0] for words in settings.get("WorkingDirectory", []) + settings.get("ExecStart", []) if words]
+    ident = Path(service_ident(folder))
+    return any(Path(word).is_absolute() and _same(Path(word), ident) for word in candidates)
+
+
 def service_data_folder(folder: Path) -> Path | None:
     """The data folder service.sh gave the service of this app folder (its JOBHUNT_DATA_DIR line), if there is one."""
     try:
         text = service_unit().read_text(encoding="utf-8")
     except OSError:
         return None
-    if service_ident(folder) not in text:
+    if not service_is_ours(folder, text):
         return None
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("Environment=") and "JOBHUNT_DATA_DIR=" in line:
-            value = line.split("JOBHUNT_DATA_DIR=", 1)[1].strip().strip('"').replace("%%", "%")
-            return Path(value) if value and Path(value).is_absolute() else None
+    for words in _unit_settings(text).get("Environment", []):
+        for word in words:
+            if word.startswith("JOBHUNT_DATA_DIR="):
+                value = word.split("=", 1)[1]
+                return Path(value) if value and Path(value).is_absolute() else None
     return None
 
 
@@ -176,10 +224,7 @@ def backup(folder: Path, datas: list[Path] | None = None) -> Path | None:
     if not items:
         say("  Nothing to back up.")
         return None
-    dest_dir = Path.home() / "Documents"
-    if not dest_dir.is_dir():
-        dest_dir = Path.home()
-    dest = dest_dir / f"{APP_NAME}-backup-{datetime.now():%Y%m%d-%H%M%S}.zip"
+    dest = backup_dir() / f"{APP_NAME}-backup-{datetime.now():%Y%m%d-%H%M%S}.zip"
     # Owner-only from the start (0600): it holds the server key file and the API keys. (On Windows the file
     # gets the folder's permissions, which are the user's own in Documents.)
     fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
@@ -213,8 +258,9 @@ def remove_service(folder: Path) -> None:
         text = unit.read_text(encoding="utf-8")
     except OSError:
         return
-    if service_ident(folder) not in text:
+    if not service_is_ours(folder, text):
         return
+
     def systemctl(*args: str) -> None:
         try:
             subprocess.run(["systemctl", "--user", *args], check=False, capture_output=True, timeout=60)
@@ -227,18 +273,36 @@ def remove_service(folder: Path) -> None:
     say("  Removed the service that started JobHuntPA at boot.")
 
 
+def backup_dir() -> Path:
+    """Where backup() saves its zip: Documents in the home folder, or the home folder itself."""
+    documents = Path.home() / "Documents"
+    return documents if documents.is_dir() else Path.home()
+
+
 def safe_to_delete(data: Path, app: Path) -> bool:
-    """Only a folder that holds JobHuntPA data, and never a home folder, a top-level folder, or one that holds the app
-    folder or the home folder."""
+    """Only a folder that holds JobHuntPA data and nothing else (paths.foreign_entries: the person's own files are
+    never deleted with it, even when JOBHUNT_DATA_DIR or service.sh named a folder of theirs), and never a home folder,
+    a top-level folder, one that holds the app folder or the home folder, or the folder the backup was saved in."""
     try:
         data, app, home = data.resolve(), app.resolve(), Path.home().resolve()
+        saved = backup_dir().resolve()
     except OSError:
         return False
     if data in (home, Path(data.anchor)) or data in home.parents or data in app.parents or data == app:
         return False
     if len(data.parts) < 3:
         return False
-    return (data / "jobhunt.db").is_file() or (data / "server-keys.json").is_file()
+    if saved == data or data in saved.parents:  # deleting it would delete the backup just made
+        return False
+    if not ((data / "jobhunt.db").is_file() or (data / "server-keys.json").is_file()):
+        return False
+    paths = load_paths(app)
+    if paths is None or not hasattr(paths, "foreign_entries"):  # no rule to tell JobHuntPA's files apart: keep it
+        return False
+    try:
+        return not paths.foreign_entries(data)
+    except OSError:
+        return False
 
 
 def remove_data_folders(folder: Path, datas: list[Path]) -> None:
@@ -251,8 +315,8 @@ def remove_data_folders(folder: Path, datas: list[Path]) -> None:
         if inside:
             continue
         if not safe_to_delete(data, folder):
-            say(f"  Left {data} in place: it doesn't look like a JobHuntPA data folder only. Delete it yourself if "
-                "it is.")
+            say(f"  Left {data} in place: it holds more than JobHuntPA's data (or your backup). Delete JobHuntPA's "
+                "files in it yourself if you want them gone.")
             continue
         shutil.rmtree(data, ignore_errors=True)
         say(f"  Deleted the data folder {data}")

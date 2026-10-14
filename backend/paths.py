@@ -5,7 +5,8 @@ by its path, before (or without) anything of the app being importable.
 
 **Which folder**, in this order:
   1. ``JOBHUNT_DATA_DIR``: service installs (service.sh), CI, tests and tools. Used as it is and never asked about (a
-     relative path is relative to the app folder).
+     relative path is relative to the app folder). An older install that set it in the ``.env`` next to the app
+     keeps that folder too, while it holds JobHuntPA data.
   2. The ``data`` folder next to the app, **when it already holds JobHuntPA data** (``holds_data``): an install from
      before this version (or one whose first run chose that folder). It is used where it is, nothing moves and nobody
      is asked; it comes before the pointer, which is one per user, so a second copy of the app keeps its own data.
@@ -64,8 +65,8 @@ class FolderProblem(ValueError):
 
 @dataclass(frozen=True)
 class Place:
-    """Where the data is. ``folder`` is None while nothing is chosen; ``how`` is env, pointer, app-folder or "";
-    ``missing`` is the folder a pointer names when that folder has gone (step 1 offers it again)."""
+    """Where the data is. ``folder`` is None while nothing is chosen; ``how`` is env, env-file, pointer, app-folder
+    or ""; ``missing`` is the folder a pointer names when that folder has gone (step 1 offers it again)."""
     folder: Optional[Path]
     how: str
     missing: Optional[Path] = None
@@ -178,6 +179,28 @@ def _from_env(env: Mapping[str, str], root: Path) -> Optional[Path]:
     return path if path.is_absolute() else root / path
 
 
+def _from_old_env_file(root: Path) -> Optional[Path]:
+    """An older install's ``JOBHUNT_DATA_DIR=`` line in the ``.env`` next to the app, when the folder it names holds
+    JobHuntPA data (the setting is read before the settings file is loaded, so the line is looked for here)."""
+    try:
+        lines = (root / ENV_NAME).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    found: Optional[Path] = None
+    for line in lines:
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        name, sep, value = line.partition("=")
+        if not sep or name.strip() != DATA_DIR_ENV:
+            continue
+        value = value.split(" #", 1)[0].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        found = _from_env({DATA_DIR_ENV: value}, root) if value else None  # (the last line wins, as in dotenv)
+    return found if found is not None and holds_data(found) else None
+
+
 def locate(root: Optional[Path] = None, env: Optional[Mapping[str, str]] = None,
            system: Optional[str] = None) -> Place:
     """Where the data is (the order in this module's docstring). Reads, never writes. ``root`` is the app's folder
@@ -187,6 +210,9 @@ def locate(root: Optional[Path] = None, env: Optional[Mapping[str, str]] = None,
     chosen = _from_env(env, root)
     if chosen is not None:
         return Place(chosen, "env")
+    chosen = _from_old_env_file(root)
+    if chosen is not None:
+        return Place(chosen, "env-file")
     beside = root / "data"
     if holds_data(beside):
         return Place(beside, "app-folder")
@@ -246,14 +272,21 @@ def _parse(text: object) -> Path:
     return Path(os.path.normpath(path))
 
 
+def foreign_entries(folder: Path) -> list[str]:
+    """The names in ``folder`` that aren't JobHuntPA's own (its files, the database's backups and crash-left
+    ``.*.tmp`` files). OSError when the folder can't be listed. The uninstaller deletes a data folder only when this is
+    empty, so a folder that also holds the person's own files is never removed."""
+    names = [entry.name for entry in os.scandir(folder)]
+    return sorted(name for name in names if name not in OWN_NAMES and not name.startswith(f"{DB_NAME}.")
+                  and not (name.startswith(".") and name.endswith(".tmp")))
+
+
 def _foreign(folder: Path) -> int:
     """How many entries of ``folder`` aren't JobHuntPA's own."""
     try:
-        names = [entry.name for entry in os.scandir(folder)]
+        return len(foreign_entries(folder))
     except OSError:
         raise FolderProblem("JobHuntPA can't look inside that folder. Choose another one.") from None
-    return sum(1 for name in names if name not in OWN_NAMES and not name.startswith(f"{DB_NAME}.")
-               and not (name.startswith(".") and name.endswith(".tmp")))  # (backups; crash-left temp files)
 
 
 def check_folder(text: object) -> tuple[Path, str]:
