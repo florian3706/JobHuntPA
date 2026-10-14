@@ -826,8 +826,7 @@ summary { cursor: pointer; min-height: 24px; }
 }
 .section-date { font-size: 12.5px; margin-top: 4px; }
 
-/* Notices at the top of a page (common.js pageNotice): recovery codes not saved yet, a membership needed, data
-   being encrypted. On the --card ground with a warn tint, the pair checked for .notice. */
+/* Notices at the top of a page (common.js pageNotice): recovery codes not saved yet, data being encrypted. On the --card ground with a warn tint, the pair checked for .notice. */
 .page-notice {
   margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: 14px;
   background: color-mix(in srgb, var(--warn) 12%, var(--card)); border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
@@ -865,7 +864,6 @@ summary { cursor: pointer; min-height: 24px; }
 .auth-card #auth-status:empty { display: none; }
 .auth-form { display: flex; flex-direction: column; gap: 18px; }
 .auth-step { display: flex; flex-direction: column; gap: 18px; }
-.verify-address { font-size: 18px; overflow-wrap: anywhere; }
 .auth-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .auth-field > label:not(.check) { font-weight: 600; font-size: 15px; }
 .auth-field .hint { margin: 0; font-size: 13.5px; }
@@ -978,16 +976,6 @@ dialog.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 .ext-result { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .ext-result[hidden] { display: none; }
 .ext-result p, .ext-result h4 { margin: 0; }
-.mfa-steps { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 16px; }
-.mfa-steps li { display: flex; flex-direction: column; gap: 8px; }
-.mfa-steps li::marker { font-weight: 700; }
-.qr-box { background: #fff; padding: 4px; border-radius: 8px; width: min(14rem, 100%); align-self: flex-start; }
-.qr-box svg { display: block; width: 100%; height: auto; }
-.mfa-key-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
-.mfa-secret {
-  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 16px; letter-spacing: 0.08em;
-  overflow-wrap: anywhere; user-select: all;
-}
 @media print { /* "Print" on the recovery codes: just the codes and what they are for */
   .auth-page .skip-link, .auth-page .app-header, .auth-help, .codes-actions, .codes-step .auth-field, #codes-continue,
   .toasts, #auth-status { display: none !important; }
@@ -1059,21 +1047,6 @@ dialog.admin-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 .admin-table td[data-label="Role"], .admin-table td[data-label="State"] { overflow-wrap: normal; }
 
-/* Membership page (billing.html) */
-.billing-main { max-width: 760px; }
-.billing-title { margin: 4px 0; font-size: 24px; line-height: 1.25; }
-.billing-card { margin-top: 14px; }
-.billing-card h2 { margin-top: 0; }
-.billing-summary { margin: 0 0 10px; font-size: 16px; }
-.billing-facts { margin: 0 0 12px; display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
-.billing-facts dt { color: var(--muted); }
-.billing-facts dd { margin: 0; overflow-wrap: anywhere; }
-.plan-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-.plan-item { display: flex; justify-content: space-between; align-items: center; gap: 10px 16px; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
-.plan-price { font-weight: 600; }
-.billing-card .btn { min-height: 44px; }
-.billing-main #billing-result[hidden], .billing-main #billing-error[hidden] { display: none; }
-@media (max-width: 480px) { .billing-facts { grid-template-columns: 1fr; } .billing-facts dd { margin-bottom: 6px; } }
 .check[hidden] { display: none; }
 
 /* The fit score (🎯) with the ghost-job rating (👻 and a coloured circle) under it: job cards, the map list, the job page. */

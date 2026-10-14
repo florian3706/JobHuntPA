@@ -1,5 +1,5 @@
-/* JobHuntPA: the account cards on the Settings tab (accounts design, sections 3 and 6): change password, two-step
-   sign-in, recovery codes, sign out everywhere else, and delete account. They apply to the signed-in account, in
+/* JobHuntPA: the account cards on the Settings tab (accounts design, sections 3 and 6): change password, recovery
+   codes, sign out everywhere else, and delete account. They apply to the signed-in account, in
    every workspace.
 
    - Everything that needs a recent sign-in goes through withRecentAuth() (common.js), which asks for the password in
@@ -51,8 +51,7 @@
   function mount() {
     $('#account-security-slot').innerHTML =
       card('acct-pw', 'Password', 'Changing it keeps all your data. It is never sent anywhere, and JobHuntPA can\'t show it to you.')
-      + card('acct-mfa', 'Two-step sign-in', 'After your password, sign-in also asks for a 6-digit code from an authenticator app on your phone.')
-      + card('acct-rc', 'Recovery codes', 'If you forget your password, a recovery code sets a new one and keeps your data. It also works instead of the app\'s code. Each code works once.')
+      + card('acct-rc', 'Recovery codes', 'If you forget your password, a recovery code sets a new one and keeps your data. It is the only way back in: keep them safe. Each code works once.')
       + card('acct-ses', 'Signed-in devices');
     $('#account-delete-slot').innerHTML =
       `<div id="acct-del-card" class="card form-card account-card account-danger">
@@ -127,7 +126,7 @@
       STATE.sec = await api('/api/auth/security');
     } catch (e) {
       STATE.sec = null;
-      for (const id of ['acct-pw', 'acct-mfa', 'acct-rc', 'acct-ses']) {
+      for (const id of ['acct-pw', 'acct-rc', 'acct-ses']) {
         $(`#${id}-body`).innerHTML = '<p class="muted">Couldn\'t load these settings. Reload the page to try again.</p>';
       }
       return false;
@@ -142,7 +141,6 @@
 
   function renderAll() {
     renderPassword();
-    renderMfa();
     renderCodes();
     renderSessions();
   }
@@ -185,140 +183,12 @@
     });
   }
 
-  /* ---------- two-step sign-in ---------- */
-  function renderMfa() {
-    const sec = STATE.sec;
-    if (!sec) return;
-    if (!sec.mfa_enabled) {
-      $('#acct-mfa-body').innerHTML = `<p><strong>Off.</strong> Anyone with your password can sign in.</p>
-        <div><button id="acct-mfa-start" class="btn btn-primary" type="button">Set up two-step sign-in</button></div>`;
-      $('#acct-mfa-start').addEventListener('click', startMfa);
-      return;
-    }
-    $('#acct-mfa-body').innerHTML = `<p><strong>On.</strong> Signing in asks for a code from your app. A recovery code works instead.</p>
-      <div><button id="acct-mfa-off" class="btn" type="button" aria-expanded="false" aria-controls="acct-mfa-off-form">Turn off two-step sign-in</button></div>
-      <form id="acct-mfa-off-form" class="account-form" novalidate hidden>
-        <p class="hint">Enter your password and a code from your app (or a recovery code) to turn it off.</p>
-        ${usernameField()}
-        ${pwField('acct-mfa-off-password', 'Your password', 'current-password')}
-        <div class="auth-field">
-          <label for="acct-mfa-off-code">Code from your app, or a recovery code</label>
-          <input id="acct-mfa-off-code" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required />
-        </div>
-        ${errorBox}
-        <div class="account-actions">
-          <button id="acct-mfa-off-submit" class="btn btn-danger" type="submit">Turn off</button>
-          <button id="acct-mfa-off-cancel" class="btn" type="button">Cancel</button>
-        </div>
-      </form>`;
-    const form = $('#acct-mfa-off-form');
-    const toggle = $('#acct-mfa-off');
-    toggle.addEventListener('click', () => {
-      form.hidden = false;
-      toggle.setAttribute('aria-expanded', 'true');
-      $('#acct-mfa-off-password').focus();
-    });
-    $('#acct-mfa-off-cancel').addEventListener('click', () => {
-      clearForm(form);
-      form.reset();
-      form.hidden = true;
-      toggle.setAttribute('aria-expanded', 'false');
-      toggle.focus();
-    });
-    form.addEventListener('submit', turnOffMfa);
-  }
-
-  /* A code from the app is 6 digits; a recovery code is 16 letters and digits. */
-  const codeBody = (value) => (/^\d{6}$/.test(value.replace(/[\s-]/g, '')) ? { code: value } : { recovery_code: value });
-
-  async function turnOffMfa(e) {
-    e.preventDefault();
-    const form = e.currentTarget;
-    const password = $('#acct-mfa-off-password');
-    const code = $('#acct-mfa-off-code');
-    clearForm(form);
-    if (!password.value) { setFieldError(password, 'Enter your password.'); return; }
-    if (!code.value.trim()) { setFieldError(code, 'Enter a code from your app, or a recovery code.'); return; }
-    await guarded(form, $('#acct-mfa-off-submit'), { password, code, recovery_code: code }, async () => {
-      const res = await recentWith(password.value, () => post('/api/auth/mfa/disable', { password: password.value, ...codeBody(code.value.trim()) }));
-      await refresh('acct-mfa-heading');
-      say('acct-mfa-status', `Two-step sign-in is off.${typeof res.recovery_codes_left === 'number' ? ` You have ${res.recovery_codes_left} recovery codes left.` : ''}`);
-    });
-  }
-
-  async function startMfa(e) {
-    const btn = e.currentTarget;
-    setBusy(btn, true);
-    say('acct-mfa-status', '');
-    try {
-      const setup = await withRecentAuth(() => post('/api/auth/mfa/setup'));
-      if (STATE.sec) STATE.sec.recent_auth = true;
-      renderMfaSetup(setup);
-    } catch (err) {
-      showToastError(err);
-    } finally {
-      setBusy(btn, false);
-    }
-  }
-
-  function showToastError(err) {
-    toast(err.code === 'reauth_required' ? NO_RECENT : err.message, 'err', 8000);
-  }
-
-  function renderMfaSetup(setup) {
-    $('#acct-mfa-body').innerHTML = `<h4 id="acct-mfa-setup-title" tabindex="-1">Set up your authenticator app</h4>
-      <ol class="mfa-steps">
-        <li>
-          <p>Install an authenticator app on your phone if you don't have one. Then scan this QR code with it.</p>
-          <div class="qr-box">${setup.qr_svg}</div>
-          <p><a href="${esc(setup.otpauth_uri)}">Using this device? Open the setup in an authenticator app</a></p>
-        </li>
-        <li>
-          <p id="acct-mfa-key-label">Can't scan? In the app, choose to enter a setup key, and type this one:</p>
-          <p class="mfa-key-row"><code class="mfa-secret">${esc(setup.secret_groups)}</code>
-            <button id="acct-mfa-copy" class="btn btn-sm" type="button">Copy key</button></p>
-        </li>
-        <li>
-          <form id="acct-mfa-on-form" class="account-form" novalidate>
-            <div class="auth-field">
-              <label for="acct-mfa-on-code">Then enter the 6-digit code the app shows</label>
-              <input id="acct-mfa-on-code" type="text" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required />
-            </div>
-            ${errorBox}
-            <div class="account-actions">
-              <button id="acct-mfa-on-submit" class="btn btn-primary" type="submit">Turn on</button>
-              <button id="acct-mfa-on-cancel" class="btn" type="button">Cancel</button>
-            </div>
-          </form>
-        </li>
-      </ol>`;
-    $('#acct-mfa-setup-title').focus();
-    $('#acct-mfa-copy').addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(setup.secret); say('acct-mfa-status', 'Copied the setup key.'); }
-      catch { say('acct-mfa-status', "Your browser didn't allow copying. Select the key and copy it instead."); }
-    });
-    $('#acct-mfa-on-cancel').addEventListener('click', () => { renderMfa(); $('#acct-mfa-start')?.focus(); });
-    $('#acct-mfa-on-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const form = e.currentTarget;
-      const code = $('#acct-mfa-on-code');
-      clearForm(form);
-      if (!code.value.trim()) { setFieldError(code, 'Enter the 6-digit code from your app.'); return; }
-      await guarded(form, $('#acct-mfa-on-submit'), { code }, async () => {
-        const res = await withRecentAuth(() => post('/api/auth/mfa/enable', { code: code.value.trim() }));
-        await refresh('acct-mfa-heading');
-        say('acct-mfa-status', `Two-step sign-in is on. If you lose your phone, a recovery code works instead of the app (you have ${res.recovery_codes_left}), so keep them safe.`);
-      });
-    });
-  }
-
   /* ---------- recovery codes ---------- */
   function renderCodes() {
     const sec = STATE.sec;
     if (!sec) return;
     const left = sec.recovery_codes_left;
     const pending = sec.recovery_codes_pending;
-    const mfa = sec.mfa_enabled;
     const old = sec.recovery_codes_old
       ? `<p class="callout" role="note"><strong>Make new codes.</strong> Your codes were made before the admin key got its own
         protection. Resetting your password with one of them keeps your data, but you would then need another admin to share
@@ -326,28 +196,21 @@
     $('#acct-rc-body').innerHTML = `<p>${pending
       ? '<strong>You haven\'t saved your new codes yet.</strong> <a href="first-run.html">Show my recovery codes</a>'
       : `You have <strong>${left} of 8</strong> recovery codes left.`}</p>${old}
-      <p class="hint">Making new codes replaces all eight at once, including any you haven't used. You then see them once, to copy, download or print. Because a code can set a new password, you enter your password${mfa ? ' and, because they can also stand in for the app, a code from your app' : ''}. We email you to say new codes were made.</p>
+      <p class="hint">Making new codes replaces all eight at once, including any you haven't used. You then see them once, to copy, download or print. Because a code can set a new password, you enter your password.</p>
       <form id="acct-rc-form" class="account-form" novalidate>
         ${usernameField()}
         ${pwField('acct-rc-password', 'Your password', 'current-password')}
-        ${mfa ? `<div class="auth-field">
-          <label for="acct-rc-code">Code from your app, or a recovery code</label>
-          <input id="acct-rc-code" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required />
-        </div>` : ''}
         ${errorBox}
         <div><button id="acct-rc-new" class="btn" type="submit">Make new recovery codes</button></div>
       </form>`;
     $('#acct-rc-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const form = e.currentTarget;
-      const code = $('#acct-rc-code');
       const password = $('#acct-rc-password');
       clearForm(form);
       if (!password.value) { setFieldError(password, 'Enter your password.'); return; }
-      if (code && !code.value.trim()) { setFieldError(code, 'Enter a code from your app, or a recovery code.'); return; }
-      const body = { password: password.value, ...(code ? codeBody(code.value.trim()) : {}) };
-      await guarded(form, $('#acct-rc-new'), { password, code, recovery_code: code }, async () => {
-        const made = await recentWith(password.value, () => post('/api/auth/recovery-codes', body));
+      await guarded(form, $('#acct-rc-new'), { password }, async () => {
+        const made = await recentWith(password.value, () => post('/api/auth/recovery-codes', { password: password.value }));
         stashRecoveryCodes(made.recovery_codes); // (first-run.html shows them; this tab has them without asking again)
         location.assign('first-run.html'); // shows the new codes once and asks to confirm they're saved
       });
@@ -391,18 +254,8 @@
     if (!password.value) { setFieldError(password, 'Enter your password to delete your account.'); return; }
     say('acct-del-status', '');
     await guarded(form, $('#acct-del-submit'), { password }, async () => {
-      const gone = await recentWith(password.value, () => post('/api/account/delete', { password: password.value }));
+      await recentWith(password.value, () => post('/api/account/delete', { password: password.value }));
       try { localStorage.removeItem('jobhunt.ws'); } catch { /* private mode */ }
-      if (gone?.subscription === 'failed') {
-        // Stay long enough to be read: leaving would hide that the payments may go on.
-        say('acct-del-status', 'Your account was deleted, but your subscription may still be active. Please contact the person who runs this JobHuntPA so it can be cancelled. Then go to the sign-in page. ');
-        const link = document.createElement('a');
-        link.href = 'login.html';
-        link.textContent = 'Go to the sign-in page';
-        $('#acct-del-status').append(link);
-        link.focus();
-        return;
-      }
       say('acct-del-status', 'Your account was deleted. Taking you to the sign-in page…');
       leavingPage = true;
       location.replace('login.html');
@@ -415,17 +268,15 @@
     try { await loadSession(); } catch { return; }
     mount();
     await refresh();
-    // The count of other devices, the codes left and two-step sign-in can change elsewhere: redraw those cards when
-    // the tab opens (not the password form, which may be half filled in, nor an open two-step setup).
+    // The count of other devices and the codes left can change elsewhere: redraw those cards when the tab opens (not
+    // the password form, which may be half filled in).
     const panel = $('#tab-settings');
     if (panel && 'MutationObserver' in window) {
       new MutationObserver(async () => {
         if (panel.hidden) return;
-        const wasOn = STATE.sec?.mfa_enabled;
         if (!(await loadSecurity())) return;
         renderCodes();
         renderSessions();
-        if (STATE.sec.mfa_enabled !== wasOn && !$('#acct-mfa-on-form')) renderMfa();
       }).observe(panel, { attributes: true, attributeFilter: ['hidden'] });
     }
   }

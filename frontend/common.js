@@ -279,7 +279,6 @@ async function apiResponse(url, opts = {}, retried = false) {
       await loadSession(true);
       return apiResponse(url, opts, true);
     }
-    if (res.status === 402) showAccessNotice('membership', data);
     // The data is being encrypted: the notice shows the progress and reloads the page when it's done, so callers
     // stop quietly (no "could not load" errors on the way), as for a 401.
     if (res.status === 423) { showAccessNotice('encrypting', data); return new Promise(() => {}); }
@@ -309,7 +308,7 @@ function showSignInNotice() {
 }
 
 /* What the Background access card (background.js) and the walkthrough's automatic-searches step (welcome.js) say.
-   Say only what exists: the server key runs scheduled searches; email digests and reset by email come later. */
+   Say only what exists: the server key runs scheduled searches. */
 const BACKGROUND_ON_COPY = "JobHuntPA keeps a key on the server so it can run scheduled searches while you're away. The server's operator could technically read your data.";
 const BACKGROUND_OFF_COPY = "Only you can unlock your data. JobHuntPA can't run searches while you're away.";
 
@@ -440,41 +439,9 @@ function pageNotice(kind, html) {
   return el;
 }
 
-/* Whether this person is on a trial: billing is on and they aren't a member. The AI features (rescoring, chat, cover
-   letters, company research and Fill missing info, title ideas, shorter versions and summaries of documents) are for
-   members; a free search still finds and scores jobs (and up to freeExtraScores waiting ones). Pages call
-   loadAiAccess() once at start; a failure counts as "not locked" (the server decides anyway, and answers 402). */
-const AI_NOTE = 'AI features are for members. Your free searches still find and score jobs.';
-let aiLockedNow = false;
-let freeSearchLeft = true; // whether a free search can still be run (the server's can_search; true until loaded)
-let freeExtraScores = 5; // waiting jobs a free search scores besides the ones it finds (the server's number, once loaded)
-async function loadAiAccess() {
-  try {
-    const st = await api('/api/billing/status');
-    aiLockedNow = !!(st.billing.enabled && !st.me.member);
-    freeSearchLeft = st.me.can_search !== false;
-    freeExtraScores = st.me.free_search_extra_scores ?? freeExtraScores;
-  } catch { aiLockedNow = false; freeSearchLeft = true; }
-  showAiNotes();
-  return aiLockedNow;
-}
-const aiNoteHtml = () => (aiLockedNow ? `<p class="hint ai-note">${esc(AI_NOTE)} <a href="billing.html">See membership options</a></p>` : '');
-/* Fills the static <p class="hint ai-note" hidden> elements of a page. */
-function showAiNotes() {
-  document.querySelectorAll('.ai-note[hidden]').forEach((el) => {
-    if (!aiLockedNow) return;
-    el.innerHTML = `${esc(AI_NOTE)} <a href="billing.html">See membership options</a>`;
-    el.hidden = false;
-  });
-}
-
-/* 402: a membership is needed for this (Phase I); 423: the data is being encrypted (Phase D). */
+/* 423: the data is being encrypted (Phase D). */
 function showAccessNotice(kind, data) {
-  if (kind === 'membership') {
-    pageNotice('membership', `<p>${esc(data?.detail || 'This needs a membership.')} <a href="billing.html">See membership options</a></p>`);
-  } else if (kind === 'encrypting') {
-    showEncrypting(data);
-  }
+  if (kind === 'encrypting') showEncrypting(data);
 }
 
 /* The one-time encryption of the data from before accounts (backend/migrate_encryption.py). The notice says what
@@ -838,7 +805,7 @@ const RESEARCHED = ['done', 'error', 'skipped'];
 /* Company profile body (info modal and job page). Has a #company-research button. */
 function companyProfileHtml(p, name) {
   if (p && !RESEARCHED.includes(p.status)) p = null; // only offices known so far
-  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>${aiNoteHtml()}`;
+  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>`;
   if (!p) {
     return `<p class="modal-links">${glassdoorLink(p, name)}</p>
       <p class="muted">Not researched yet. <strong>Fill missing info</strong> researches every company in your list, or research just this one:</p>${researchBtn}`;

@@ -470,13 +470,7 @@ function showUploadAd(job) {
         Object.assign(job, await api(`/api/score/${job.id}${slackQuery()}`, { method: 'POST' }));
         status.textContent = `Updated and rescored: ${job.fit?.score ?? '?'}.`;
       } catch (err) {
-        status.textContent = err.status === 402
-          ? (job.fit?.status === 'ok'
-            ? 'Updated with the full ad. Rescoring is for members, so the old score stays until you become one.'
-            : freeSearchLeft
-              ? `Updated with the full ad. Scoring a job by hand is for members; each free search also scores up to ${freeExtraScores} jobs waiting for a score, newest first.`
-              : 'Updated with the full ad. Scoring a job by hand is for members.')
-          : `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
+        status.textContent = `Updated with the full ad, but rescoring failed (${err.message}). Use Rescore on the card later.`;
       }
       renderJobs();
     } catch (err) {
@@ -575,8 +569,7 @@ async function startRun(url, body) {
     const run = await api(url, { method: 'POST', body: JSON.stringify(body) });
     if (run.already_running) toast('A run is already in progress; showing its progress.');
     watchRun(run.id);
-    window.refreshFreeSearchNote?.(); // a free search was used when the run was queued
-  } catch (e) { toast(e.message, 'err', 9000); window.refreshFreeSearchNote?.(); }
+  } catch (e) { toast(e.message, 'err', 9000); }
 }
 
 function watchRun(id) {
@@ -625,7 +618,6 @@ function finishRun(run) {
   loadScorerStatus();
   loadSources();
   loadSchedule({ controls: false });
-  window.refreshFreeSearchNote?.(); // a failed run gives its free search back
 }
 
 function runSummaryText(run) {
@@ -766,7 +758,6 @@ async function showCoverLetter(job) {
       </div>
       <p class="hint">Drafts use only facts from your documents, but always check them before sending.
         Upload earlier cover letters as "Cover letter" documents and drafts will follow your style.</p>
-      ${aiNoteHtml()}
     </div>`);
   const meta = (l) => {
     if (!l) return '';
@@ -1378,8 +1369,7 @@ async function importPages(e) {
       total = { imported: total.imported + r.imported, new: total.new + r.new, kept: total.kept + r.kept };
     } catch (err) { toast(`${f.name}: ${err.message}`, 'err', 8000); }
   }
-  status.textContent = `Imported ${total.imported} job(s): ${total.new} new, ${total.kept} pass your filters`
-    + (aiLockedNow && freeSearchLeft && total.new ? `. Your next free search scores up to ${freeExtraScores} jobs waiting for a score.` : '');
+  status.textContent = `Imported ${total.imported} job(s): ${total.new} new, ${total.kept} pass your filters`;
   $('#import-input').value = '';
   loadJobs();
 }
@@ -1443,9 +1433,6 @@ function scheduledRunLine(run) {
 function renderScheduleStatus(sch) {
   const lines = [];
   if (!sch.enabled) lines.push('<p class="muted">Automatic searches are off.</p>');
-  else if (sch.background !== false && (sch.membership_required || sch.skipped?.reason === 'membership_required')) {
-    lines.push('<p class="sched-warn">Scheduled searches need a membership, so they are skipped. <a href="billing.html">See membership options</a></p>');
-  }
   else if (sch.background === false || sch.skipped) { // no usable key: every slot is passed over (backend/schedule.py), so say so (Phase G)
     const when = sch.skipped?.slot ? ` (${fmtScheduleTime(sch.skipped.slot, sch.timezone)})` : '';
     const again = sch.skipped?.reason === 'key_unusable'; // the server holds a key it can't open: off and on fixes it
@@ -1462,7 +1449,7 @@ function renderScheduleStatus(sch) {
   $('#sched-status').innerHTML = lines.join('');
 
   const note = $('#next-scheduled');
-  const show = sch.enabled && sch.next_run && !sch.nothing_to_search && sch.background !== false && !sch.skipped && !sch.membership_required;
+  const show = sch.enabled && sch.next_run && !sch.nothing_to_search && sch.background !== false && !sch.skipped;
   note.hidden = !show;
   if (show) {
     const away = Intl.DateTimeFormat().resolvedOptions().timeZone !== sch.timezone; // name the zone only when it isn't this browser's
@@ -2536,7 +2523,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   try { me = await loadSession(); } // signed out: goes to the sign-in page and never returns
   catch (e) { toast(e.message, 'err', 15000); return; }
   applyAccount(me);
-  await loadAiAccess(); // trial accounts get a note beside the AI features
   state.ws = storedWorkspace();
   try { await loadWorkspaces(); } catch (e) { toast(`Could not load workspaces: ${e.message}`, 'err'); }
   initWorkspaces();

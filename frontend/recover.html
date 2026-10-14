@@ -57,12 +57,6 @@
             <button class="btn pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show password</button>
           </div>
         </div>
-        <div id="code-field" class="auth-field" hidden>
-          <label for="code">Code from your authenticator app, or a second recovery code</label>
-          <p id="code-hint" class="hint">Your account uses two-step sign-in, so this needs a second proof. Spaces and hyphens are fine.</p>
-          <input id="code" name="code" type="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false"
-                 aria-describedby="code-hint" />
-        </div>
         <div class="auth-field">
           <label class="check"><input id="remember" name="remember" type="checkbox" aria-describedby="remember-hint" /> Keep me signed in</label>
           <p id="remember-hint" class="hint">On this device, until you sign out or haven't used JobHuntPA for 30 days. Don't tick it on a shared computer.</p>
@@ -81,8 +75,6 @@
         <li>Remembered your password? <a href="login.html">Sign in</a> instead.</li>
         <li>Use the email address your account was made with. Capitals and spaces around it don't matter.</li>
         <li>Each recovery code works once. After 5 wrong tries in a row, JobHuntPA asks you to wait a little before the next one.</li>
-        <li id="forgot-item" hidden>No recovery code? <button id="forgot-btn" class="btn-link" type="button">Email me a link</button> to the address typed above. If your data is locked, the link asks you to confirm that it will be deleted.
-          <span id="forgot-status" class="muted" role="status"></span></li>
         <li>No recovery code left? Ask the person who runs this JobHuntPA. Without your password or a recovery code, your encrypted data can't be read by anyone.</li>
       </ul>
     </section>
@@ -92,6 +84,5 @@
 
   <script src="./common.js"></script>
   <script src="./auth.js"></script>
-  <script src="./forgot.js"></script>
 </body>
 </html>

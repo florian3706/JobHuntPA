@@ -15,8 +15,8 @@
    - Problems go in an error summary that takes focus and links to each field, and are repeated under the field
      (aria-describedby), as in auth.js (3.3.1, 3.3.3). Nothing is asked twice (3.3.7).
    - Back, Next and Skip are real buttons; controls are at least 44 px tall (24 px is the minimum, 2.5.8).
-   - Options for features that don't exist yet (scheduled searches, digest emails) appear only when /api/auth/me
-     says they exist: me.features.scheduled_searches and me.features.digests (Phases G and J). */
+   - The scheduled-search option appears only when /api/auth/me says it exists: me.features.scheduled_searches
+     (Phase G). */
 'use strict';
 
 /* The page works on the account's first workspace; the server picks it when none is named. */
@@ -321,28 +321,19 @@ const STEPS = {
 
   /* Shown only when me.features.scheduled_searches is true (background access, Phase G). Searching by itself needs
      the server to hold a key (background access), so ticking this turns that on (it asks for the password again if
-     it was entered a while ago) and the explanation says what that means. The digest email option
-     (me.features.digests, Phase J) is in this step too, saved through /api/account/digest. */
+     it was entered a while ago) and the explanation says what that means. */
   auto: {
     title: 'Automatic searches',
     intro: 'JobHuntPA can look for new jobs by itself while you are away, so they are waiting when you sign in.',
     skippable: true,
     html() {
       const on = !!(wiz.background?.enabled && wiz.schedule?.enabled);
-      const d = wiz.digest;
-      const digest = !wiz.features.digests ? '' : `<div class="form-group">
-          <label class="check"><input type="checkbox" id="wz-digest" aria-describedby="wz-digest-hint" ${d?.enabled ? 'checked' : ''} /> Email me a digest of new jobs</label>
-          <label for="wz-digest-days">How often</label>
-          <select id="wz-digest-days">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<option value="${n}"${n === (d?.every_days || 1) ? ' selected' : ''}>${n === 1 ? 'Every day' : `Every ${n} days`}</option>`).join('')}</select>
-          <p id="wz-digest-hint" class="hint">One email with the new jobs the automatic searches found, best fit first, with a link to stop them. It needs automatic searches and a confirmed email address. You can change this later in Settings.</p>
-        </div>`;
       return `<label class="check"><input type="checkbox" id="wz-auto" aria-describedby="wz-auto-hint" ${on ? 'checked' : ''} /> Search for new jobs automatically</label>
         <div id="wz-auto-hint" class="hint">
           <p><strong>If you tick this:</strong> ${esc(BACKGROUND_ON_COPY)}</p>
           <p><strong>If you leave it empty:</strong> ${esc(BACKGROUND_OFF_COPY)}</p>
           <p>You can change this later in Settings: the days and times under Scheduled searches, and Background access.</p>
-        </div>
-        ${digest}`;
+        </div>`;
     },
     async save() {
       const want = $('#wz-auto').checked;
@@ -354,12 +345,6 @@ const STEPS = {
         method: 'PUT',
         body: JSON.stringify({ enabled: want, times: s.times, days: s.days, skip_holidays: s.skip_holidays, state: s.state }),
       });
-      if (wiz.features.digests) {
-        wiz.digest = await api('/api/account/digest', {
-          method: 'PUT',
-          body: JSON.stringify({ enabled: $('#wz-digest').checked, every_days: Number($('#wz-digest-days').value) }),
-        });
-      }
       return true;
     },
   },
@@ -380,7 +365,7 @@ const STEPS = {
 function buildSteps() {
   if (wiz.short) return ['theme', 'keep'];
   const steps = ['theme', 'titles', 'where', 'extras'];
-  if (wiz.features.scheduled_searches) steps.push('auto'); // Phase G; the digest option (Phase J) is in this step
+  if (wiz.features.scheduled_searches) steps.push('auto'); // Phase G
   steps.push('resume');
   return steps;
 }
@@ -493,7 +478,6 @@ async function start() {
     wiz.pins = pins;
     if (wiz.features.scheduled_searches) {
       [wiz.background, wiz.schedule] = await Promise.all([api('/api/account/background'), api('/api/schedule')]);
-      if (wiz.features.digests) wiz.digest = await api('/api/account/digest');
     }
     wiz.steps = buildSteps();
     status('');

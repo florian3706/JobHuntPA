@@ -8,8 +8,7 @@
      and is repeated under the field it belongs to (aria-describedby).
    - 3.3.7: nothing is asked twice: no "confirm password" field; "Show password" lets people check what they typed.
    - 4.1.3: progress ("Signing in…") is said in a status region.
-   - The code step (two-step sign-in) and recover.html follow the same pattern; the code field is
-     autocomplete="one-time-code" and takes spaces and hyphens. */
+   - recover.html follows the same pattern; the recovery code field takes spaces and hyphens. */
 'use strict';
 
 const PAGE = document.body.dataset.page;
@@ -106,7 +105,7 @@ function hidePasswords() {
 }
 
 /* The server names fields like the API (new_password); the pages' inputs have their own ids. */
-const FIELD_IDS = { new_password: 'password', recovery_code: 'recovery-code', second_recovery_code: 'code' };
+const FIELD_IDS = { new_password: 'password', recovery_code: 'recovery-code' };
 
 function answerProblem(res, fallback) {
   const { data } = res;
@@ -115,56 +114,12 @@ function answerProblem(res, fallback) {
 }
 
 /* ================= login.html ================= */
-let loginEmail = '';
-let usingRecovery = false;
-const EMAIL_KEY = 'jobhunt.login-email'; // this tab only: lets the code step after a reload still name the account
-
-function rememberEmail(email) {
-  loginEmail = email;
-  try { if (email) sessionStorage.setItem(EMAIL_KEY, email); else sessionStorage.removeItem(EMAIL_KEY); } catch { /* private mode */ }
-}
-
-function showPasswordStep() {
-  clearErrors();
-  $('#mfa-form').hidden = true;
-  $('#login-form').hidden = false;
-  $('#page-title').textContent = 'Sign in';
-  document.title = 'Sign in · JobHuntPA';
-  $('#password').value = '';
-}
-
-/* The password was right and the account has two-step sign-in: ask for a code. The session is only half open until
-   the code is accepted (10 minutes); a reload comes back here, because /api/auth/state says mfa_pending. */
-function showCodeStep(recovery = false) {
-  clearErrors();
-  status('');
-  $('#login-form').hidden = true;
-  $('#mfa-form').hidden = false;
-  $('#page-title').textContent = 'Enter your code';
-  document.title = 'Enter your code · JobHuntPA';
-  $('#mfa-username').value = loginEmail;
-  setCodeMode(recovery);
-}
-
-function setCodeMode(recovery) {
-  usingRecovery = recovery;
-  clearErrors();
-  $('#code-field').hidden = recovery;
-  $('#recovery-field').hidden = !recovery;
-  $('#mfa-switch').textContent = recovery ? 'Use my authenticator app instead' : 'Use a recovery code instead';
-  $('#mfa-intro').textContent = recovery
-    ? 'Enter one of your recovery codes. It works once.'
-    : 'Your account uses two-step sign-in. Open your authenticator app and enter the 6-digit code.';
-  (recovery ? $('#recovery-code') : $('#code')).focus();
-}
-
 async function initLogin() {
-  try { loginEmail = sessionStorage.getItem(EMAIL_KEY) || ''; } catch { /* private mode */ }
   const state = await authCall('/api/auth/state');
   if (state.status === 200 && state.data.setup_required) { location.replace('first-run.html'); return; }
   if (state.status === 200 && state.data.signed_in) { location.replace(nextPage()); return; }
   const form = $('#login-form');
-  if (state.status === 200 && state.data.mfa_pending) showCodeStep(); else $('#email').focus();
+  $('#email').focus();
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const email = $('#email').value.trim();
@@ -179,9 +134,7 @@ async function initLogin() {
     hidePasswords();
     const res = await authCall('/api/auth/login', { method: 'POST', body: { email, password, remember: $('#remember').checked } });
     setBusy(btn, false);
-    if (res.status === 200 && res.data.mfa_required) { rememberEmail(email); showCodeStep(); return; }
     if (res.status === 200) {
-      rememberEmail('');
       status('Signed in. Opening JobHuntPA…');
       location.replace(nextPage());
       return;
@@ -192,56 +145,10 @@ async function initLogin() {
     if (res.data.code === 'wrong_password') errors[0].field = 'password';
     showErrors(errors);
   });
-
-  $('#mfa-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const field = usingRecovery ? 'recovery-code' : 'code';
-    const value = $(`#${field}`).value.trim();
-    if (!value) {
-      showErrors([{ field, message: usingRecovery ? 'Enter a recovery code.' : 'Enter the 6-digit code from your app.' }]);
-      return;
-    }
-    const btn = $('#mfa-submit');
-    setBusy(btn, true);
-    status('Checking your code…');
-    const res = await authCall('/api/auth/login/mfa', { method: 'POST', body: usingRecovery ? { recovery_code: value } : { code: value } });
-    setBusy(btn, false);
-    if (res.status === 200) {
-      rememberEmail('');
-      // A recovery code is used up: tell the person how many are left, on the page that opens next (common.js).
-      const left = res.data.recovery_codes_left;
-      if (usingRecovery && typeof left === 'number') {
-        try { sessionStorage.setItem(SIGN_IN_NOTICE_KEY, recoveryLeftText(left)); } catch { /* private mode */ }
-      }
-      status('Signed in. Opening JobHuntPA…');
-      location.replace(nextPage());
-      return;
-    }
-    status('');
-    if (res.data.code === 'mfa_expired') {
-      rememberEmail('');
-      // The half-open session ended (10 minutes, or too many wrong codes): start again from the password.
-      showPasswordStep();
-      showErrors(answerProblem(res, 'That sign-in timed out. Enter your password again.').map((x) => ({ ...x, field: null })));
-      return;
-    }
-    const errors = answerProblem(res, `That didn't work (error ${res.status}). Try again.`);
-    if (['wrong_code', 'wrong_recovery_code', 'invalid'].includes(res.data.code)) errors[0].field = field;
-    showErrors(errors);
-  });
-  $('#mfa-switch').addEventListener('click', () => setCodeMode(!usingRecovery));
-  $('#mfa-restart').addEventListener('click', async () => {
-    await authCall('/api/auth/logout', { method: 'POST', body: {} }); // ends the half-open session; no CSRF before sign-in
-    rememberEmail('');
-    showPasswordStep();
-    $('#password').focus();
-  });
 }
 
 /* ================= recover.html ================= */
-/* Forgot the password, but have a recovery code: set a new one and keep the data. With two-step sign-in on, the
-   server asks for a second proof (an app code or a second recovery code); the page can't know beforehand, which
-   keeps it from telling anyone whether an account has two-step sign-in. */
+/* Forgot the password, but have a recovery code: set a new one and keep the data. */
 function initRecover() {
   $('#email').focus();
   $('#recover-form').addEventListener('submit', async (e) => {
@@ -249,16 +156,13 @@ function initRecover() {
     const email = $('#email').value.trim();
     const recovery = $('#recovery-code').value.trim();
     const password = $('#password').value;
-    const second = $('#code').value.trim();
     const problems = [];
     if (!email) problems.push({ field: 'email', message: 'Enter your email address.' });
     if (!recovery) problems.push({ field: 'recovery-code', message: 'Enter one of your recovery codes.' });
     if (!password) problems.push({ field: 'password', message: 'Choose a new password.' });
     else if (password.length < 10) problems.push({ field: 'password', message: 'Use at least 10 characters. A few random words work well.' });
-    if (!$('#code-field').hidden && !second) problems.push({ field: 'code', message: 'Enter the code from your app, or a second recovery code.' });
     if (problems.length) { showErrors(problems); return; }
     const body = { email, recovery_code: recovery, new_password: password, remember: $('#remember').checked };
-    if (second) body[/^\d{6}$/.test(second.replace(/[\s-]/g, '')) ? 'code' : 'second_recovery_code'] = second;
     const btn = $('#recover-submit');
     setBusy(btn, true);
     status('Setting your new password…');
@@ -267,11 +171,6 @@ function initRecover() {
     setBusy(btn, false);
     status('');
     if (res.status === 200) { showRecovered(res.data.recovery_codes_left, res.data.admin_key_lost); return; }
-    if (res.data.code === 'second_factor_required') {
-      $('#code-field').hidden = false;
-      showErrors([{ field: 'code', message: 'Your account uses two-step sign-in. Enter the code from your app, or a second recovery code.' }]);
-      return;
-    }
     showErrors(answerProblem(res, `That didn't work (error ${res.status}). Try again.`));
   });
 }
@@ -330,35 +229,25 @@ async function initFirstRun() {
 }
 
 /* Each recovery code opens the data key and can set a new password, so a session alone doesn't get to read them: the
-   password (and, with two-step sign-in on, a code) is asked for again. */
+   password is asked for again. */
 async function askForCodes(csrf) {
-  const security = await authCall('/api/auth/security');
-  const mfa = security.status === 200 && Boolean(security.data.mfa_enabled);
   status('');
   document.title = 'Your recovery codes · JobHuntPA';
   $('#page-title').textContent = 'Your recovery codes';
   $('#setup-step').hidden = true;
-  $('#show-code-field').hidden = !mfa;
   $('#show-step').hidden = false;
   $('#show-password').focus();
   $('#show-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const password = $('#show-password').value;
-    const code = $('#show-code').value.trim();
-    const problems = [];
-    if (!password) problems.push({ field: 'show-password', message: 'Enter your password.' });
-    if (mfa && !code) problems.push({ field: 'show-code', message: 'Enter a code from your authenticator app, or a recovery code.' });
-    if (problems.length) { showErrors(problems); return; }
+    if (!password) { showErrors([{ field: 'show-password', message: 'Enter your password.' }]); return; }
     const btn = $('#show-submit');
     setBusy(btn, true);
     hidePasswords();
-    const body = { password };
-    if (mfa) body[/^\d{6}$/.test(code.replace(/[\s-]/g, '')) ? 'code' : 'recovery_code'] = code;
-    const res = await authCall('/api/auth/recovery-codes/show', { method: 'POST', body, csrf });
+    const res = await authCall('/api/auth/recovery-codes/show', { method: 'POST', body: { password }, csrf });
     setBusy(btn, false);
     if (res.status === 200) {
       $('#show-password').value = '';
-      $('#show-code').value = '';
       $('#show-step').hidden = true;
       stashRecoveryCodes(res.data.codes);
       showCodes(res.data.codes, csrf);
@@ -366,7 +255,7 @@ async function askForCodes(csrf) {
     }
     if (res.status === 404 || res.status === 401) { location.replace('./'); return; } // saved already, or signed out
     const errors = answerProblem(res, `That didn't work (error ${res.status}). Try again.`);
-    errors[0].field = errors[0].field === 'password' ? 'show-password' : errors[0].field ? 'show-code' : null;
+    errors[0].field = errors[0].field === 'password' ? 'show-password' : null;
     showErrors(errors);
   });
 }

@@ -44,7 +44,6 @@
             <div id="account-panel" class="account-panel" hidden>
               <p class="account-who">Signed in as <strong id="account-email"></strong> <span id="account-role" class="scope-tag" hidden></span></p>
               <ul class="account-links">
-                <li><a href="billing.html">Membership</a></li>
                 <li id="account-admin" hidden><a href="admin.html">Admin</a></li>
                 <li><button id="account-signout" class="btn btn-sm" type="button">Sign out</button></li>
               </ul>
@@ -68,13 +67,12 @@
       <h2 class="visually-hidden">Jobs</h2>
       <div class="card run-card">
         <div class="toolbar-row">
-          <button id="search-run" class="btn btn-primary" type="button" aria-describedby="free-search-note">Run search</button>
+          <button id="search-run" class="btn btn-primary" type="button">Run search</button>
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
           <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
           <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
           <span id="run-status" class="muted" role="status"></span>
         </div>
-        <p id="free-search-note" class="hint" role="status" hidden></p>
         <div id="next-scheduled" class="muted" hidden></div>
         <div id="run-progress" class="progress" role="progressbar" aria-label="Progress of the run" aria-valuemin="0" aria-valuemax="100" hidden><div class="progress-bar"></div></div>
         <details id="run-report" class="run-report" hidden>
@@ -323,7 +321,6 @@
         <strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
         the chat and title suggestions use them, and cover letters never see them.
         Untick "use for scoring" to keep a document out of every prompt. Changing documents marks existing scores as stale.</p>
-      <p class="hint ai-note" hidden></p>
       <div class="card form-card summary-card">
         <h3>One summary instead of many documents</h3>
         <p class="hint">Every ticked document goes with every request to the AI, repeats and all. <strong>Create summary</strong> merges the
@@ -463,8 +460,7 @@
 
       <!-- Account cards (accounts design §6): they apply to the signed-in account, in every workspace. Each feature
            fills its own slot, so the pieces stay apart. -->
-      <div id="account-security-slot"></div><!-- password, two-step sign-in, recovery codes, sign out everywhere -->
-      <div id="account-address-slot"></div><!-- your email address (frontend/account-email.js) -->
+      <div id="account-security-slot"></div><!-- password, recovery codes, sign out everywhere -->
 
       <div id="account-background-slot"><!-- background access (frontend/background.js) -->
         <div id="background-card" class="card form-card">
@@ -481,8 +477,6 @@
       </div>
 
       <div id="account-extension-slot"></div><!-- browser extension keys (frontend/extension.js) -->
-
-      <div id="account-email-slot"></div><!-- job digest emails -->
 
       <div id="account-export-slot"></div><!-- download your data -->
 
@@ -512,7 +506,6 @@
       <button id="chat-delete" class="btn btn-ghost btn-sm" type="button" title="Delete this conversation">Delete<span class="visually-hidden"> this chat</span></button>
     </div>
     <ul id="chat-jobs" class="chat-jobs" aria-label="Jobs in this chat"></ul>
-    <p class="hint ai-note chat-hint" hidden></p>
     <div id="chat-messages" class="chat-messages" role="region" aria-label="Conversation" tabindex="0"></div>
     <form id="chat-form" class="chat-form" autocomplete="off">
       <label for="chat-input" class="visually-hidden">Your question</label>
@@ -536,8 +529,5 @@
   <script src="./export.js"></script>
   <script src="./background.js"></script>
   <script src="./extension.js"></script>
-  <script src="./account-email.js"></script>
-  <script src="./digest.js"></script>
-  <script src="./free-searches.js"></script>
 </body>
 </html>
