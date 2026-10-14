@@ -482,6 +482,22 @@ class RefusalTest(Base):
         self.assertEqual(self.check(blob).status_code, 200)
         self.assertNotIn(self.bob.id, data_import._running)
 
+    def test_an_upload_that_stalls_gives_the_place_back(self):
+        with helpers.client(self.bob.email) as c:
+            with mock.patch.object(data_import, "READ_SECONDS", 0.001), \
+                    mock.patch.object(data_import.Request, "stream", side_effect=lambda *a, **k: self._slow()):
+                r = c.post("/api/account/import/check", content=b"PK" * 10)
+        self.assertEqual((r.status_code, r.json()["code"]), (408, "import_slow"))
+        self.assertNotIn(self.bob.id, data_import._running)
+        self.assertTrue(data_import._slots.acquire(blocking=False))
+        data_import._slots.release()
+
+    @staticmethod
+    async def _slow():
+        import asyncio
+        await asyncio.sleep(5)
+        yield b"late"
+
     def test_a_failed_import_leaves_nothing_behind(self):
         blob = self.export()
         before = self.workspaces()

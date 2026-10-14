@@ -5,7 +5,8 @@
 
 Both are POSTs with the CSRF token, for the signed-in person only, with the password entered in the last 15 minutes
 (as the export asks): checked before the body is read. One import (or check) per account at a time (429) and
-``MAX_AT_ONCE`` in the whole app (503), since the zip is held in memory.
+``MAX_AT_ONCE`` in the whole app (503), since the zip is held in memory; an upload that hasn't arrived within
+``READ_SECONDS`` gives the place back (408).
 
 **The zip is someone else's file.** It is read in memory from the request body (never spooled or unpacked to disk,
 and never by its own names): at most ``MAX_ZIP_BYTES`` of it, refused when any entry's path could leave its folder
@@ -27,6 +28,7 @@ The log says that user N imported, with counts, never a name or any content.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -78,6 +80,7 @@ MAX_ENTRIES = 200_000
 MAX_AT_ONCE = 1                          # imports (and checks) at the same time, for everyone: the zip is in memory
 NAME_MAX = 80                            # a workspace's name (backend/workspaces.py)
 READ_CHUNK = 1024 * 1024
+READ_SECONDS = 600 + MAX_ZIP_BYTES / (100 * 1024)  # the upload of the largest zip at 100 KB/s, and ten minutes more
 
 
 def problem(status: int, code: str, detail: str) -> AuthProblem:
@@ -465,15 +468,25 @@ _slots = threading.BoundedSemaphore(MAX_AT_ONCE)
 
 
 async def _read_body(request: Request) -> bytes:
+    """The request body (the zip), in memory, at most ``MAX_ZIP_BYTES``, within ``READ_SECONDS``: an upload that
+    stalls must not hold the place for ever."""
     length = request.headers.get("content-length")
     if length is not None and length.strip().isdigit() and int(length) > MAX_ZIP_BYTES:
         raise too_large()
-    chunks, size = [], 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > MAX_ZIP_BYTES:
-            raise too_large()
-        chunks.append(chunk)
+    chunks: list[bytes] = []
+
+    async def read() -> int:
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > MAX_ZIP_BYTES:
+                raise too_large()
+            chunks.append(chunk)
+        return size
+    try:
+        size = await asyncio.wait_for(read(), READ_SECONDS)
+    except asyncio.TimeoutError:
+        raise problem(408, "import_slow", "The file took too long to arrive, so it wasn't imported. Try again.") from None
     if not size:
         raise problem(422, "import_empty", "Choose an export's .zip file first.")
     return b"".join(chunks)

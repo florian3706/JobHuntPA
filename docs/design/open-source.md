@@ -8,7 +8,8 @@ host it on your network as I currently do with the Pi." And, about building it: 
 This file is the one place to build from. Part 1 is the spec: the user's final "Redefined spec" plus the answers they
 gave in the conversation, with nothing from the earlier drafts that they later dropped. Parts 2 to 5 break it into
 phases, one cloud session each, with a ready-to-paste brief for every phase (the layout of
-`docs/design/remaining-phases.md`). Part 6 is what only the user or the local session can do.
+`docs/design/remaining-phases.md`). Part 6 is what only the user or the local session can do. Part 7 describes the
+import file of a data export (Phase E).
 
 It changes direction from `docs/design/accounts.md`: that design turned the app into a service for many people with
 memberships. This one makes it a free program each person runs for themselves. Encryption, sessions and the
@@ -572,3 +573,115 @@ then I1 (AI mappings: app) ── I2 (AI mappings: extensions) ── J (open-so
   address.
 - **Releasing:** raise `VERSION` (2.0.0 fits: it removes features) and push the tag; `release.yml` builds the Windows
   programs and the AppImage.
+
+---
+
+# Part 7: the import file
+
+Every data export (§1.7, `backend/export.py`) holds one machine-readable file beside the text files:
+`JobHuntPA import file.json`, at the top of the export's folder (`JobHuntPA export 2026-10-13/JobHuntPA import
+file.json`). **Settings > Import from an export** (`backend/data_import.py`) reads it and nothing else, except the
+original files it names. `backend/import_file.py` writes it and holds the reader's typed, bounded model of it.
+
+## The envelope
+
+A JSON object (UTF-8):
+
+| Field | Meaning |
+|---|---|
+| `format` | always `"jobhuntpa-import"` |
+| `format_version` | an integer, `1` for this description. An import refuses a higher number with a plain message ("made by a newer JobHuntPA … update JobHuntPA"). |
+| `app_version` | the exporting JobHuntPA's `VERSION` |
+| `exported_at` | when the export was made |
+| `workspaces` | a list of workspaces, below |
+| `companies` | the research on the companies of those workspaces' jobs, below |
+
+An export without this file was made by a JobHuntPA before the first version that writes one (2.0.0,
+`import_file.FIRST_APP_VERSION`); an import says so. Times are ISO 8601 in UTC with a `Z`
+(`2026-10-13T09:30:00Z`); an import also takes an offset. `null` (or a missing field) means "not set" everywhere.
+Fields a reader doesn't know are ignored, so a later version of the same `format_version` may add fields; a change
+that an older reader would misread raises `format_version`.
+
+**Never in it:** the password or anything derived from it, encryption keys, recovery codes, sign-in sessions,
+browser extension keys, the AI key or any other setting in `.env`, the account's sign-in name, caches and logs.
+
+**References.** Inside one workspace, jobs, documents and sources have a `ref`: a number from 1 that is local to the
+file (not a row id). Other fields point at them by that number.
+
+## A workspace
+
+| Field | Meaning |
+|---|---|
+| `name` | its name (an import renames it when the name is taken: §1.7) |
+| `created_at` | when it was made |
+| `search_setup` | `null`, or the object below |
+| `pins` | `[{label, kind, lat, lng, radius_km}]`; `kind` is `home`, `hybrid` or `onsite` |
+| `sources` | `[{ref, label, url, type, enabled}]`: careers pages and feeds; `url` is http(s) |
+| `schedule` | `{enabled, times: ["10:00", …], days: [0-6, Monday = 0], skip_holidays, state: "NSW" …}` |
+| `documents` | below |
+| `jobs` | below |
+| `chats` | below |
+
+**`search_setup`:** `titles`, `keywords_include`, `keywords_exclude`, `seek_locations` (lists of text);
+`salary_floor`, `max_office_days` (integers or null); `remote_aus_ok`, `remote_global_ok`, `allow_hybrid`,
+`allow_onsite`, `seek_enabled` (true/false); `dealbreakers: {industries, keywords}`; and **`starting_points`**: whatever
+the search setup stores for its starting points (§1.8), in the shape it stores them. At format version 1 as first
+written, that is the list of "Commute from" stations (text); once starting points are stored as objects
+(`{label, place, use}`, Phase C), the same field carries those objects. A reader takes either shape: a text item is
+a place, an object's `place` (else `label`) is.
+
+**`documents`:** `{ref, filename, filetype, kind, text, concise_text, use_concise, use_for_scoring, concise_model,
+concise_at, created_at, updated_at, summary_of, original}`. `filetype` is the upload's extension (`.pdf` …), or
+`note` / `summary` for a document written in the app; `kind` is `resume`, `cover_letter`, `preferences` or
+`other`; `summary_of` lists the `ref`s a summary was made from; `original` is the path of the uploaded file inside
+the export's folder (`Workspaces/<workspace>/Documents/Original files/<name>`), or null. The original files are
+plain bytes in the zip, exactly as uploaded.
+
+**`jobs`:** one entry per job, merged copies included:
+
+| Field | Meaning |
+|---|---|
+| `ref` | the job's number in this file |
+| `origin` | `pool` (linked to an ad in the exporting install's shared pool) or `private` |
+| `ad` | the ad as the workspace saw it: `url`, `source`, `external_id`, `company`, `title`, `location_text`, `country`, `work_mode`, `employment_type`, `office_days`, `salary_min`, `salary_max`, `salary_text`, `description`, `description_hash`, `detail_status`, `detail_fetched_at`, `posted_at`, `industry` |
+| `own` | the names of the `ad` fields that were the workspace's own values (an uploaded full ad, details from a merged copy); all of them for a private job |
+| `status` | `to_review`, `shortlisted`, `applied`, `interviewing`, `rejected` or `not_interested` |
+| `first_seen`, `last_seen`, `closed_at` | when the job was first linked to the workspace, last listed by its search, and when the ad closed |
+| `hidden` | the person hid it |
+| `excluded_reason` | why the search filters left it out, or null |
+| `location_verdict` | the person's call on the location: `ok`, `too_far` or null |
+| `office` | `{text, lat, lng, source, checked_at}`: where the office is (`source`: `ad`, `company` or `user`), or null |
+| `lat`, `lng`, `distance_km` | where the job was placed for this workspace |
+| `duplicate_of` | for a merged copy, the `ref` of the job it was merged into |
+| `source` | the `ref` of the source that found it |
+| `fit` | `{status: ok/error, score: 0-100, evidence: {summary, requirements, gaps}, error, profile_hash, model, created_at}` or null |
+| `cover_letter` | `{text, instructions, edited, model, reasoning_effort, created_at, updated_at}` or null |
+
+**`chats`:** `{title, created_at, updated_at, jobs: [job refs], messages: [{role: user/assistant, content, sources:
+[{title, url}], web_search, model, created_at}]}`.
+
+## Companies
+
+`companies` holds the shared research on the companies of the exported jobs: `{key, name, status, official_name,
+is_recruiter, business_model, ownership, headquarters, controversies, controversy_note, news_researched_at, sources,
+employee_count, glassdoor_url, sentiment, sentiment_researched_at, research_version, offices, offices_checked_at,
+offices_cities, unverified_dropped, error, model, researched_at}`. `key` is the company's name in lower case with
+single spaces (`company_key`); `controversies`, `sources`, `sentiment`, `offices` and `offices_cities` are JSON
+values as the research stored them.
+
+## What an import does with it
+
+- Each picked workspace becomes a new workspace of the signed-in account, with the naming rule of §1.7.
+- A job whose `ad.url` the importing install's pool already has is linked to that posting, and only its `own`
+  fields are set on top; any other job is a private job with the whole `ad` and its `closed_at`. Nothing is written
+  to the pool.
+- A company's research is taken only for the companies of the imported jobs, and only where the install has no
+  research on it or older research (`researched_at`).
+- Values are checked against the types and limits above (lengths, ranges, the listed words); a file that breaks them
+  is refused as damaged, naming only where (`workspaces.0.jobs.12.status`), never the value. Addresses that are not
+  http(s) are dropped from sources and from a chat answer's pages. Everything else is stored as data and shown
+  escaped, like any other job or document.
+- The zip limits: 250 MB packed, the import file at most 120 MB unpacked, the import file and the originals at most
+  320 MB unpacked together, and no entry over 1 MB unpacking to more than 200 times its packed size; a zip with an
+  entry whose path leaves its folder is refused whole. An upload still arriving after ten minutes plus the time the
+  largest zip needs at 100 KB/s is cut off. One import runs at a time.
