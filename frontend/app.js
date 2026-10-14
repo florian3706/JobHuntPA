@@ -1648,6 +1648,7 @@ async function loadSources() {
     const sources = await api('/api/sources');
     renderSources(sources);
     $('#sources-error').hidden = true;
+    if (typeof refreshBrowserOffer === 'function') refreshBrowserOffer(); // (browser.js)
   } catch (e) {
     showError($('#sources-error'), `Could not load sources: ${e.message}`);
   }
@@ -1729,6 +1730,7 @@ async function testSource(src, btn, out) {
     if ((r.notes || []).length) out.innerHTML += `<br><span class="muted">${r.notes.map(esc).join('<br>')}</span>`;
   } catch (e) { out.innerHTML = `<span class="err-text"><span aria-hidden="true">✕ </span>Test failed: ${esc(e.message)}</span>`; }
   setBusy(btn, false);
+  if (typeof refreshBrowserOffer === 'function') refreshBrowserOffer(); // a JavaScript-only page asks for the browser
 }
 
 /* ---------- scorer ---------- */

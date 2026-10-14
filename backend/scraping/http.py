@@ -207,12 +207,17 @@ class PoliteClient:
     # -- JS rendering ------------------------------------------------------
     def render(self, url: str, wait_ms: int = 2500) -> Response:
         """Render a JS-heavy page in headless Chromium (robots + throttle apply)."""
+        from backend import browser
+
         self.check_allowed(url)
-        self._throttle(url, self._interval_for(url))
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
             raise FetchError("page needs JavaScript but Playwright is not installed") from exc
+        if not browser.available():  # downloaded only when the person agrees (backend/browser.py)
+            browser.mark_needed()
+            raise FetchError(browser.NEEDED)
+        self._throttle(url, self._interval_for(url))
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -231,6 +236,9 @@ class PoliteClient:
         except FetchError:
             raise
         except Exception as exc:
+            if "Executable doesn't exist" in str(exc):  # a Chromium for an older Playwright: a new one is needed
+                browser.mark_needed()
+                raise FetchError(browser.NEEDED) from exc
             raise FetchError(f"browser render failed: {exc}") from exc
         if status in (401, 403, 429) or status >= 400:
             raise FetchError(f"HTTP {status} rendering {url}", status)

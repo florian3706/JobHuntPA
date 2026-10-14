@@ -31,6 +31,8 @@ from backend.auth import router as auth_router
 from backend.security import router as security_router
 from backend.security_headers import install as install_security_headers
 from backend.background import router as background_router
+from backend.browser import router as browser_router
+from backend.browser import use_data_folder as use_downloaded_browser
 from backend.db import (FOLDER_CHOSEN, CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key,
                         get_db, init_db, scrub_wal)
 from backend.cover_letters import router as cover_letters_router
@@ -147,6 +149,7 @@ async def lifespan(app: FastAPI):
         yield
         return
     init_db()
+    use_downloaded_browser()  # the browser for JavaScript-only careers pages, when it was downloaded into the data folder
     app_settings.retire_env_names()  # an upgraded install's old mail and payment settings leave .env
     threading.Thread(target=hosts.machine_names, daemon=True).start()  # this computer's names (it may ask the network)
     # The server key file, then (with no account yet) the account from the environment or the first-run token
@@ -190,6 +193,7 @@ app.include_router(workspaces_router)
 app.include_router(llm_router)
 app.include_router(app_settings_router)
 app.include_router(maintenance_router)
+app.include_router(browser_router)
 app.include_router(cover_letters_router)
 app.include_router(duplicates_router)
 app.include_router(extension_router)

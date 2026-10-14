@@ -444,6 +444,7 @@ class KeyAuthTest(Base):
             for method, path, body in (("put", "/api/settings/llm", {"model": "x"}), ("get", "/api/settings/usage", None),
                                        ("put", "/api/settings/address", {"public_base_url": ""}),
                                        ("post", "/api/settings/server-key/rotate", None),
+                                       ("post", "/api/settings/browser/install", None),
                                        ("put", "/api/auth/name", {"name": "taken over"})):
                 r = getattr(k, method)(path, **({"json": body} if body is not None else {}))
                 self.assertEqual((r.status_code, r.json()["code"]), (403, "token_scope"), path)

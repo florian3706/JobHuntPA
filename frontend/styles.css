@@ -807,6 +807,9 @@ a.btn { text-decoration: none; display: inline-block; }
   border-radius: 8px; padding: 8px 12px; font-size: 13.5px;
 }
 .callout[hidden], .llm-form .hint[hidden] { display: none; }
+.browser-offer { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.browser-offer h4 { margin: 0; font-size: 15px; }
+.browser-offer p { margin: 0; }
 .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .key-state { font-size: 13.5px; min-height: 20px; }
 .key-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

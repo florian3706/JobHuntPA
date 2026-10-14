@@ -294,6 +294,18 @@
         </div>
         <div id="sources-list" class="docs-list"></div>
         <div id="sources-error" class="error" hidden></div>
+        <!-- The offer to download the browser for JavaScript-only careers pages (browser.js), once one needs it. -->
+        <section id="browser-offer" class="callout browser-offer" aria-labelledby="browser-offer-title" hidden>
+          <h4 id="browser-offer-title">A careers page needs a browser component</h4>
+          <p>One of your careers pages shows its jobs only with JavaScript. To read it, JobHuntPA needs a browser
+            component (Chromium, about <span class="browser-size">180</span> MB), downloaded once into your data folder.
+            Nothing is downloaded unless you choose to.</p>
+          <div class="toolbar-row">
+            <button id="browser-offer-yes" class="btn btn-primary" type="button">Download it</button>
+            <button id="browser-offer-no" class="btn" type="button">Not now</button>
+            <span id="browser-offer-status" class="muted" role="status"></span>
+          </div>
+        </section>
       </div>
     </section>
 
@@ -569,6 +581,17 @@
         </div>
       </form>
 
+      <section class="card form-card install-card" id="browser-card" aria-labelledby="browser-title">
+        <h3 id="browser-title">Browser for JavaScript pages <span class="scope-tag">This JobHuntPA</span></h3>
+        <p class="hint">A few careers pages show their jobs only with JavaScript. JobHuntPA reads those with a browser
+          component (Chromium, through Playwright), about <span class="browser-size">180</span> MB, downloaded once from
+          Playwright's servers into your data folder. Everything else works without it.</p>
+        <p id="browser-state" class="muted" role="status"></p>
+        <div class="toolbar-row">
+          <button id="browser-download" class="btn" type="button" hidden>Download the browser</button>
+        </div>
+      </section>
+
       <div class="card form-card install-card" id="rotate-card">
         <h3>Server key <span class="scope-tag">This JobHuntPA</span></h3>
         <p>The server key protects the keys JobHuntPA keeps for background searches. Replacing it
@@ -726,5 +749,6 @@ Acme,https://jobs.lever.co/acme</pre>
   <script src="./background.js"></script>
   <script src="./extension.js"></script>
   <script src="./sources-bulk.js"></script>
+  <script src="./browser.js"></script>
 </body>
 </html>
