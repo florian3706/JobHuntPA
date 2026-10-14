@@ -1456,6 +1456,6 @@ License, version 3** (`GPL-3.0-only`), as published by the Free Software Foundat
 that it will be useful, but **without any warranty**; without even the implied warranty of merchantability or
 fitness for a particular purpose. See [`LICENSE`](LICENSE) for the full text.
 
-The browser extensions are licensed the same way, in their own repositories. JobHuntPA uses other people's code
-and services under their own licences, all of which may be combined with GPLv3; they are listed in
-[`THIRD-PARTY.md`](THIRD-PARTY.md). Job ads, company research and map data belong to their owners.
+The browser extensions are separate programs in their own repositories, each with its own licence file. JobHuntPA
+uses other people's code and services under their own licences, all of which may be combined with GPLv3; they are
+listed in [`THIRD-PARTY.md`](THIRD-PARTY.md). Job ads, company research and map data belong to their owners.
