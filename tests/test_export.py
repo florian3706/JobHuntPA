@@ -429,7 +429,7 @@ class ExportTest(unittest.TestCase):
         from types import SimpleNamespace
         from backend.sessions import AuthProblem
 
-        def fake(db, user_id, now=None):
+        def fake(db, user_id, now=None, **_kwargs):
             return io.BytesIO(b"zip" * 100_000), 1, "x.zip"
 
         async def drain(response):
@@ -479,7 +479,7 @@ class ExportTest(unittest.TestCase):
         import time
         from types import SimpleNamespace
 
-        def fake(db, user_id, now=None):
+        def fake(db, user_id, now=None, **_kwargs):
             return io.BytesIO(b"zip" * 100_000), 1, "x.zip"
 
         self.assertEqual(export.stream_seconds(0), export.MAX_STREAM_SECONDS)
