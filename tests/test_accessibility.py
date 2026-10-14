@@ -770,6 +770,16 @@ class RestoreCardTest(unittest.TestCase):
         self.assertEqual(self.js.count("setBusy(check, true)"), 1)
         self.assertEqual(self.js.count("setBusy(go, false)"), 1)
 
+    def test_ticking_no_workspace_is_a_field_error_on_the_list(self):
+        """As on the export card's file types: a visible error tied to the fieldset, said at once (WCAG 3.3.1)."""
+        self.assertIn('<p id="restore-pick-error" class="field-error" hidden></p>', self.js)
+        self.assertIn("fieldset.setAttribute('aria-invalid', 'true')", self.js)
+        self.assertIn("fieldset.setAttribute('aria-describedby', 'restore-pick-error')", self.js)
+        self.assertIn("announce(text, true)", self.js)
+        self.assertIn("pickInvalid('Tick at least one workspace to import.')", self.js)
+        self.assertIn("fieldset.removeAttribute('aria-invalid')", self.js)
+        self.assertIn("options.addEventListener('change'", self.js)
+
     def test_what_the_file_holds_goes_in_escaped(self):
         self.assertIn("${esc(w.name)}", self.js)
         self.assertIn("${esc(restoreCounts(w))}", self.js)

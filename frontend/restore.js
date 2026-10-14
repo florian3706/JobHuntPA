@@ -54,6 +54,7 @@ function initRestoreCard() {
         <legend id="restore-legend">Workspaces in this export</legend>
         <div id="restore-options" class="restore-options"></div>
       </fieldset>
+      <p id="restore-pick-error" class="field-error" hidden></p>
       <div class="toolbar-row">
         <button id="restore-go" class="btn btn-primary" type="button">Import the ticked workspaces</button>
       </div>
@@ -65,6 +66,8 @@ function initRestoreCard() {
   const status = document.getElementById('restore-status');
   const pick = document.getElementById('restore-pick');
   const options = document.getElementById('restore-options');
+  const pickError = document.getElementById('restore-pick-error');
+  const fieldset = pick.querySelector('fieldset');
   let checked = null; // the file the list below belongs to
 
   const say = (text) => setText(status, text); // (a status region: setText says it once)
@@ -73,10 +76,31 @@ function initRestoreCard() {
     return say(e.message || `The file could not be ${what}.`);
   };
 
+  // "Tick at least one" is a field error on the list, as on the export card's file types (WCAG 3.3.1).
+  const pickInvalid = (text) => {
+    if (text) {
+      pickError.innerHTML = '<span aria-hidden="true">⚠ </span>';
+      pickError.append(text);
+      pickError.hidden = false;
+      fieldset.setAttribute('aria-invalid', 'true');
+      fieldset.setAttribute('aria-describedby', 'restore-pick-error');
+      announce(text, true);
+    } else {
+      pickError.hidden = true;
+      pickError.textContent = '';
+      fieldset.removeAttribute('aria-invalid');
+      fieldset.removeAttribute('aria-describedby');
+    }
+  };
+  options.addEventListener('change', () => {
+    if (options.querySelector('input:checked')) pickInvalid('');
+  });
+
   input.addEventListener('change', () => {
     setFieldError(input, '');
     pick.hidden = true;
     options.innerHTML = '';
+    pickInvalid('');
     checked = null;
     setText(status, '');
   });
@@ -89,6 +113,7 @@ function initRestoreCard() {
     try {
       const found = await withRecentAuth(() => postZip('/api/account/import/check', file));
       checked = file;
+      pickInvalid('');
       options.innerHTML = found.workspaces.map((w) => `<label class="check restore-option">
           <input type="checkbox" value="${Number(w.index)}" checked />
           <span><strong>${esc(w.name)}</strong> <span class="muted">${esc(restoreCounts(w))}</span></span></label>`).join('');
@@ -105,7 +130,7 @@ function initRestoreCard() {
 
   go.addEventListener('click', async () => {
     const ticked = Array.from(options.querySelectorAll('input:checked')).map((box) => box.value);
-    if (!ticked.length) { say('Tick at least one workspace to import.'); options.querySelector('input')?.focus(); return; }
+    if (!ticked.length) { pickInvalid('Tick at least one workspace to import.'); options.querySelector('input')?.focus(); return; }
     if (!checked) { say('Choose the file again and look inside it first.'); return; }
     setBusy(go, true);
     say('Importing. This can take a minute for a lot of jobs…');
