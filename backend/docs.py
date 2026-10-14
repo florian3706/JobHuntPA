@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import access, crypto, llm_providers, membership
+from backend import crypto, llm_providers
 from backend.db import DOCUMENT_KINDS, NOTE_FILETYPE, SUMMARY_FILETYPE, UPLOAD_DIR, Document, get_db
 from backend.workspaces import current_workspace, owned
 
@@ -359,8 +359,7 @@ def _rewrite(cfg: dict, system: str, user: str) -> str:
 
 
 @router.post("/{doc_id}/concise")
-def make_concise(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace),
-                 _gate=Depends(membership.gate(access.CONCISE_OR_SUMMARY))):
+def make_concise(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """Write the document's concise version from its original text (replacing an earlier one) and send that to
     the LLM from now on. The user can edit it, or switch back to the original."""
     from backend.scorer import document_heading
@@ -379,8 +378,7 @@ def make_concise(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(c
 
 
 @router.post("/summary", status_code=201)
-def make_summary(db: Session = Depends(get_db), ws: int = Depends(current_workspace),
-                 _gate=Depends(membership.gate(access.CONCISE_OR_SUMMARY))):
+def make_summary(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """Consolidate every ticked document (not preferences) into one new summary document, from their full text.
     It is created ticked, as a resume (the scorer's primary source). The originals are left as they are: the UI
     suggests unticking them, so their content isn't sent twice."""

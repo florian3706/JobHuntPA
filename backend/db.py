@@ -354,10 +354,6 @@ class Job(Base):
     # the copy keeps its row so later searches recognise its URL, but only the
     # job it points to is listed, scored and researched.
     duplicate_of = Column(Integer, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True)
-    # The search run during which this workspace first got the job (NULL for a link made outside a run, or before
-    # this column): "new since the last digest" (backend.digest). Plain, not a foreign key: a run is never deleted
-    # alone, only with its workspace.
-    first_run_id = Column(Integer, nullable=True)
     # Where the office actually is, when the ad's location is only a city
     # (backend.offices). Its coordinates replace the listing's for the
     # location filter and distance.
@@ -803,8 +799,6 @@ class SearchRun(Base):
     summary_json = Column(SealedText(), nullable=True)
     error = Column(SealedText(), nullable=True)
     error_code = Column(String, nullable=True)  # a short code written without any key, e.g. "interrupted"
-    # Queueing this run used one of its owner's free searches (backend.membership gives it back if the run fails).
-    free_search = Column(Boolean, nullable=False, default=False, server_default="0")
     started_at = Column(DateTime, default=utcnow)
     finished_at = Column(DateTime, nullable=True)
 
@@ -819,7 +813,6 @@ class SearchRun(Base):
             "workspace_id": self.workspace_id,
             "kind": self.kind,
             "scheduled": bool(self.scheduled),
-            "free_search": bool(self.free_search),
             "state": self.state,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
@@ -911,21 +904,18 @@ class User(Base):
     created_at = Column(DateTime, default=utcnow)
     created_via = Column(String, nullable=False)    # first_run | bootstrap | invite | open
     last_active_on = Column(Date, nullable=True)    # by day only, on purpose (design 2.5)
-    email_verified = Column(Boolean, nullable=False, default=False, server_default="0")
     onboarding_step = Column(Integer, nullable=True)  # NULL: done (the sign-up wizard, Phase K)
     # Password: argon2id(salt, params) -> verifier (and the KEK that wraps the DEK, never stored).
     kdf_salt = Column(LargeBinary, nullable=False)
     kdf_params = Column(Text, nullable=False)       # crypto.KdfParams.to_json()
     pw_verifier = Column(LargeBinary, nullable=False)
-    # Two-step sign-in (Phase E). Secrets under the server KEK, so a reset by email can still ask for a code.
-    mfa_enabled = Column(Boolean, nullable=False, default=False, server_default="0")
-    totp_secret_enc = Column(LargeBinary, nullable=True)
-    totp_pending_enc = Column(LargeBinary, nullable=True)
-    totp_last_step = Column(Integer, nullable=True)
     # Not used since Phase L: wrong passwords are counted in memory, per account and per source (backend/ratelimit.py,
     # backend/lockout.py). The columns stay so older databases keep working.
     failed_logins = Column(Integer, nullable=False, default=0, server_default="0")
     locked_until = Column(DateTime, nullable=True)
+    # A database made before the open-source version also has email_verified, mfa_enabled, totp_secret_enc,
+    # totp_pending_enc and totp_last_step (email and two-step sign-in, removed). Nothing maps them; start-up empties
+    # the two-step ones (``_retire_removed_features``).
     # {email, name}: sealed to the admin details key (pii_admin), and under the user's own DEK (pii_self).
     pii_admin = Column(LargeBinary, nullable=True)
     pii_admin_version = Column(Integer, nullable=True)
@@ -984,10 +974,10 @@ class AuthSession(Base):
 
     id = Column(String, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    # pending_mfa | active | extension
+    # active | extension
     state = Column(String, nullable=False, default="active", server_default="active")
     wrapped_dek = Column(LargeBinary, nullable=False)
-    # The IK under the same cookie-derived key: "sess-ik|{sid}", or "pend-ik|{sid}" while pending_mfa. NULL for a session
+    # The IK under the same cookie-derived key: "sess-ik|{sid}". NULL for a session
     # made before the IK existed (the admin panel then asks to sign in again).
     wrapped_ik = Column(LargeBinary, nullable=True)
     persistent = Column(Boolean, nullable=False, default=False, server_default="0")  # "Keep me signed in"
@@ -996,7 +986,6 @@ class AuthSession(Base):
     idle_expires_at = Column(DateTime, nullable=False)
     absolute_expires_at = Column(DateTime, nullable=False)
     reauth_at = Column(DateTime, nullable=True)     # the password was last entered (sensitive actions need 15 min)
-    mfa_failures = Column(Integer, nullable=False, default=0, server_default="0")  # wrong codes while pending_mfa (Phase E)
     # Extension keys only. ``public_id``: the short id the Settings card revokes it by (never the hash that
     # authenticates). ``label_enc``: the name the person gave it, ``crypto.seal``ed under their DEK as
     # ``sessions.label|{id}`` (bound to the row), so only they can read it.
@@ -1005,12 +994,13 @@ class AuthSession(Base):
 
 
 class AuthToken(Base):
-    """Single-use links: password reset, invite, email verification and change (Phases F and H)."""
+    """Single-use links: invitations (Phase F). (Kinds ``reset``, ``verify_email`` and ``email_change`` were the email
+    links, removed with email: ``_retire_removed_features`` deletes any left.)"""
 
     __tablename__ = "auth_tokens"
 
     id = Column(Integer, primary_key=True)
-    kind = Column(String, nullable=False)           # reset | invite | verify_email | email_change
+    kind = Column(String, nullable=False)           # invite
     token_hash = Column(LargeBinary, nullable=False, unique=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -1041,54 +1031,6 @@ class AdminAudit(Base):
     action = Column(String, nullable=False)
     target_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     detail_admin = Column(LargeBinary, nullable=True)  # sealed to the admin details key
-
-
-class Membership(Base):
-    """Paid access (Phase I, backend.access and backend.billing). Gating fields are plaintext on purpose."""
-
-    __tablename__ = "memberships"
-
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    exempt = Column(Boolean, nullable=False, default=False, server_default="0")
-    free_searches_used = Column(Integer, nullable=False, default=0, server_default="0")
-    stripe_ref = Column(String, nullable=False, unique=True)  # random, opaque: client_reference_id, metadata.jh_ref
-    stripe_status = Column(String, nullable=True)
-    plan = Column(String, nullable=True)
-    current_period_end = Column(DateTime, nullable=True)
-    cancel_at_period_end = Column(Boolean, nullable=False, default=False, server_default="0")
-    grace_until = Column(DateTime, nullable=True)  # while past_due: access continues until then (access.GRACE)
-    stripe_synced_at = Column(DateTime, nullable=True)
-    stripe_mode = Column(String, nullable=True)  # 'test' | 'live': the kind of Stripe key the status above came from
-    billing_admin = Column(LargeBinary, nullable=True)  # admin details key
-    billing_self = Column(LargeBinary, nullable=True)   # the user's DEK
-
-
-class MembershipGrant(Base):
-    __tablename__ = "membership_grants"
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    kind = Column(String, nullable=False)           # free_period | manual
-    starts_at = Column(DateTime, nullable=False)
-    ends_at = Column(DateTime, nullable=False)
-    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime, default=utcnow)
-    revoked_at = Column(DateTime, nullable=True)
-    note_admin = Column(LargeBinary, nullable=True)  # admin details key
-
-
-class EmailPrefs(Base):
-    """Job digest settings (Phase J). Plaintext: the unsubscribe link must work without anyone's key."""
-
-    __tablename__ = "email_prefs"
-
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    digest_enabled = Column(Boolean, nullable=False, default=False, server_default="0")
-    digest_every_days = Column(Integer, nullable=False, default=1, server_default="1")
-    opted_in_at = Column(DateTime, nullable=True)
-    last_sent_at = Column(DateTime, nullable=True)
-    last_checked_at = Column(DateTime, nullable=True)
-    unsubscribe_id = Column(String, nullable=False, unique=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1303,6 +1245,59 @@ def _ensure_indexes() -> None:
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_public_id ON sessions (public_id)"))
 
 
+# What features taken out of the open-source version (docs/design/open-source.md §1.3) left in a database made
+# before it: the tables of memberships with their free periods (Stripe) and of job digest settings.
+RETIRED_TABLES = ("membership_grants", "memberships", "email_prefs")
+# Links that were sent by email (password reset, address check and change): nothing can use them any more.
+RETIRED_TOKEN_KINDS = ("reset", "verify_email", "email_change")
+# Two-step sign-in: the secrets (under the server key) and what they were checked against.
+_TOTP_CLEARED = {"mfa_enabled": "0", "totp_secret_enc": "NULL", "totp_pending_enc": "NULL", "totp_last_step": "NULL"}
+
+
+def _retire_removed_features() -> bool:
+    """Removes, at start-up, what memberships, email, digests and two-step sign-in left in an older database: the
+    two-step secrets are emptied (every account then signs in with its name and password), sign-ins that were waiting
+    for a two-step code and unused emailed links are deleted, and the retired tables are dropped. These hold secrets
+    and personal details (sealed billing details, a free period's note, an address being confirmed), so it is all one
+    transaction, and the write-ahead log is emptied after it (``scrub_wal``; ``secure_delete`` has zeroed the freed
+    pages of the main file). The emptied columns stay, unmapped (dropping a column needs a newer SQLite than some
+    installs have, or a table rebuild). Does nothing on a database without them. True when something was removed."""
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
+    user_columns = {c["name"] for c in insp.get_columns("users")} if "users" in tables else set()
+    cleared = {name: value for name, value in _TOTP_CLEARED.items() if name in user_columns}
+    counts = {"two_step": 0, "pending": 0, "links": 0, "tables": 0}
+    kinds = ", ".join(f"'{kind}'" for kind in RETIRED_TOKEN_KINDS)
+    with engine.begin() as conn:
+        if not conn.connection.driver_connection.in_transaction:  # (pysqlite would run DROP TABLE on its own)
+            conn.execute(text("BEGIN IMMEDIATE"))
+        if cleared:
+            changed = " OR ".join(f"{name} IS NOT NULL" if value == "NULL" else f"{name} != {value}"
+                                  for name, value in cleared.items())
+            assignments = ", ".join(f"{name} = {value}" for name, value in cleared.items())
+            counts["two_step"] = conn.execute(text(f"UPDATE users SET {assignments} WHERE {changed}")).rowcount
+        if "sessions" in tables:
+            counts["pending"] = conn.execute(text("DELETE FROM sessions WHERE state = 'pending_mfa'")).rowcount
+        if "auth_tokens" in tables:
+            counts["links"] = conn.execute(text(f"DELETE FROM auth_tokens WHERE kind IN ({kinds})")).rowcount
+        if "search_schedules" in tables:  # "skipped: scheduled searches need a membership"
+            conn.execute(text("UPDATE search_schedules SET skipped_reason = NULL, skipped_slot = NULL "
+                              "WHERE skipped_reason = 'membership_required'"))
+        if "app_settings" in tables:
+            conn.execute(text("DELETE FROM app_settings WHERE key IN ('free_searches', 'mail_route_changed_at')"))
+        for name in RETIRED_TABLES:
+            if name in tables:
+                conn.execute(text(f"DROP TABLE {name}"))
+                counts["tables"] += 1
+    if not any(counts.values()):
+        return False
+    scrub_wal()
+    log.info("removed what memberships, email, digests and two-step sign-in left: two-step sign-in turned off for %d "
+             "account(s), %d waiting sign-in(s) and %d emailed link(s) deleted, %d table(s) dropped",
+             counts["two_step"], counts["pending"], counts["links"], counts["tables"])
+    return True
+
+
 def purge_http_cache() -> None:
     """Delete every http_cache row: they are sealed with the key of the process that wrote them, which is gone
     after a restart (and rows from before encryption hold plaintext URLs)."""
@@ -1335,6 +1330,7 @@ def init_db() -> None:
     _add_missing_columns()
     _ensure_indexes()
     _fix_legacy_data()
+    _retire_removed_features()
     purge_http_cache()
     pool_migration.migrate()  # per-workspace job copies -> the shared posting pool (once; resumable)
     # Then the encryption migration (backend.migrate_encryption), which needs the first admin's key: it runs when

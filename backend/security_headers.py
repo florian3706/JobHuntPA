@@ -1,8 +1,7 @@
 """Security headers on every response (accounts design, Phase L), and the middleware order that keeps them there.
 
-``SecurityHeaders`` adds each header the response doesn't already have, so a route can ask for a stricter one (the
-digest's unsubscribe page sets its own ``Content-Security-Policy`` and ``Referrer-Policy: no-referrer``). It runs for
-pages, static files, ``/api``, ``/unsubscribe`` and every error answer, the Host allowlist's included.
+``SecurityHeaders`` adds each header the response doesn't already have, so a route can ask for a stricter one. It
+runs for pages, static files, ``/api`` and every error answer, the Host allowlist's included.
 
 The Content-Security-Policy is built at start-up from the pages in frontend/, so editing a page can't silently break
 it, and the test in tests/test_security_headers.py fails if a page needs more than the policy allows:
@@ -16,8 +15,8 @@ it, and the test in tests/test_security_headers.py fails if a page needs more th
 * ``img-src``: this site, ``data:`` (Leaflet's stylesheet embeds a few images), the OpenStreetMap tile servers the
   map draws from, and Leaflet's own images folder on unpkg.com (the default marker).
 * ``font-src``: Google Fonts' file server, which the stylesheet above points at.
-* ``connect-src 'self'``: the pages only call this server's API (Stripe Checkout is a redirect, not a request).
-* ``form-action 'self'``: no form posts elsewhere, Stripe Checkout included.
+* ``connect-src 'self'``: the pages only call this server's API.
+* ``form-action 'self'``: no form posts elsewhere.
 * ``frame-ancestors 'none'`` (nobody may frame the app: clickjacking), ``base-uri 'none'``, ``object-src 'none'``
   and ``frame-src 'none'`` (the app uses no plug-ins and shows no frames).
 

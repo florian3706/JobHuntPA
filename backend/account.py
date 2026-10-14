@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend import admin_key, crypto, mail_queue, sessions, users
+from backend import admin_key, crypto, sessions, users
 from backend.db import User, UserProfile, Workspace, get_db
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
@@ -50,12 +50,11 @@ SHORT_PATH_LAST_STEP = 2  # on the short path: 1 theme, 2 "keep your current set
 
 
 def features(admin: bool = False) -> dict[str, bool]:
-    """What this version offers the walkthrough and the account menu. The wizard shows the scheduled-search and
-    digest options only when these are true: background access came in Phase G, digests in Phase J, and the digest option
-    only when the server can send email. ``admin_panel`` is true only for an admin (``/api/auth/me``
-    passes the signed-in person's role): the account menu's "Admin" link needs it, and the panel's endpoints check
-    the role again on the server."""
-    return {"admin_panel": bool(admin), "scheduled_searches": True, "digests": mail_queue.enabled()}
+    """What this version offers the walkthrough and the account menu. The wizard shows the scheduled-search option
+    only when ``scheduled_searches`` is true (background access came in Phase G). ``admin_panel`` is true only for an
+    admin (``/api/auth/me`` passes the signed-in person's role): the account menu's "Admin" link needs it, and the
+    panel's endpoints check the role again on the server."""
+    return {"admin_panel": bool(admin), "scheduled_searches": True}
 
 
 def _label(uid: int) -> str:
@@ -164,7 +163,7 @@ def delete_my_account(body: DeleteAccountIn, request: Request, user: AuthUser = 
         raise _last_admin()
     confirm_password(request, db, user, body.password)
     try:
-        result = users.delete_account(db, user.id)
+        users.delete_account(db, user.id)
     except users.AccountBusy:
         raise AuthProblem(409, "run_active", "A search is still running. Wait for it to finish, then try again.") from None
     except users.AccountProtected:
@@ -176,10 +175,7 @@ def delete_my_account(body: DeleteAccountIn, request: Request, user: AuthUser = 
         raise AuthProblem(409, "admin_key_missing", "You don't have the admin key, so you can't delete your account "
                                                     "yourself. Ask another admin to delete it, or to share the key "
                                                     "with you again.") from None
-    body = {"ok": True}
-    if "subscription" in result:  # "cancelled", or "failed": their Stripe subscription couldn't be cancelled; say so
-        body["subscription"] = result["subscription"]
-    response = JSONResponse(body)
+    response = JSONResponse({"ok": True})
     sessions.clear_cookie(response, request.scope)
     response.headers["Clear-Site-Data"] = '"cache"'
     return response

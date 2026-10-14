@@ -29,9 +29,9 @@ Sealed* column types      ``jh/<table>.<column>``     a value moved to another c
 ``seal``/``unseal``       ``jh-value|<label>``        values kept outside a sealed column, under the DEK
 ``wrap``/``unwrap``       ``jh-wrap|<label>``         keys under a key: ``pw|{uid}``, ``rc|{uid}|{code_id}``,
                                                       ``sess|{sid}``, ``ext|{id}`` (an extension key),
-                                                      ``srv|{uid}|{kek_id}``, ``totp|{uid}``, and the
+                                                      ``srv|{uid}|{kek_id}``, and the
                                                       identity key's: ``pw-ik|{uid}``, ``rc-ik|{uid}|{code_id}``,
-                                                      ``sess-ik|{sid}``, ``pend-ik|{sid}``, ``ik-priv|{uid}``,
+                                                      ``sess-ik|{sid}``, ``ik-priv|{uid}``,
                                                       ``pending-codes|{uid}``
 ``seal_file``/``open_*``  ``jh-file|<label>``         an upload, labelled ``file|{stored_name}``: a file
                                                       renamed onto another document's name won't open
@@ -361,8 +361,8 @@ def blind_index(purpose: str, value: Union[str, bytes]) -> bytes:
 
 def wrap(kek: bytes, secret: bytes, label: Label) -> bytes:
     """``secret`` (usually a DEK) encrypted under ``kek``, bound to ``label``: ``pw|{uid}`` under the password KEK,
-    ``rc|{uid}|{code_id}`` under a recovery code's, ``sess|{sid}`` under a session's, ``srv|{uid}|{kek_id}`` and
-    ``totp|{uid}`` under the server KEK. The label stops a wrap being moved to another user, code or session."""
+    ``rc|{uid}|{code_id}`` under a recovery code's, ``sess|{sid}`` under a session's, ``srv|{uid}|{kek_id}``
+    under the server KEK. The label stops a wrap being moved to another user, code or session."""
     kek = _key(kek, "key-encryption key")
     return _seal_with(AESGCM(kek), key_id(kek), secret, _label(b"jh-wrap|", label))
 
@@ -431,7 +431,7 @@ def open_file(path: Union[str, Path], label: Label) -> bytes:
 
 # ---------------------------------------------------------------------------
 # Sealed boxes (X25519): anyone with the public key can seal; only the private key opens. Used for the admin
-# personal-details key (design 1.4), so sign-ups and the Stripe sync can write admin-readable details with no admin
+# personal-details key (design 1.4), so sign-ups can write admin-readable details with no admin
 # signed in.
 # ---------------------------------------------------------------------------
 

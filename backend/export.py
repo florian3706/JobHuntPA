@@ -58,11 +58,8 @@ from backend.db import (
     CoverLetter,
     DealbreakerSet,
     Document,
-    EmailPrefs,
     FitResult,
     Job,
-    Membership,
-    MembershipGrant,
     Pin,
     SearchRun,
     User,
@@ -301,7 +298,7 @@ safe and delete them when you no longer need them.
 
 ## What is where
 
-- `Account.md`: your email, name, sign-in settings, theme and membership.
+- `Account.md`: your email, name, sign-in settings and theme.
 - `Workspaces/`: one folder for each of your {counts['workspaces']} workspace(s):
   - `Search setup.md`: job titles, keywords, dealbreakers, salary, work modes, locations, commute and the search schedule.
   - `Sources.md`: the company career pages and feeds you added.
@@ -313,7 +310,7 @@ safe and delete them when you no longer need them.
 
 ## What is not included
 
-- Your password, recovery codes and encryption keys, and the secret behind two-step sign-in: they can't and shouldn't be exported.
+- Your password, recovery codes and encryption keys: they can't and shouldn't be exported.
 - Sign-in sessions, caches and logs.
 - A job that is another copy of the same ad is not a file of its own: it is listed under "Also advertised at" in the main job's file (or in `Filtered out.md`, when the main job is there).
 - A job the search filters left out and you never touched is only in `Filtered out.md`.
@@ -328,38 +325,15 @@ def _account_md(db: Session, user: User, workspaces: list[Workspace]) -> str:
         who = {}
     prefs = account.read_prefs(db, user.id)
     keys = db.get(UserKeys, user.id)
-    member = db.get(Membership, user.id)
     out = ["# Account\n\n"]
     out.append(facts([
         ("Email", line(who.get("email"))), ("Name", line(who.get("name"))),
         ("Account created", when(user.created_at)), ("Last active", day(user.last_active_on)),
         ("Role", "admin" if user.role == "admin" else "user"),
-        ("Email address confirmed", yes(user.email_verified)),
-        ("Two-step sign-in", "on" if user.mfa_enabled else "off"),
         ("Scheduled searches while signed out (background access)", "on" if keys is not None and keys.server_wrapped_dek is not None else "off"),
         ("Background access allowed since", when(keys.background_since) if keys is not None and keys.server_wrapped_dek is not None else ""),
         ("Theme", line(prefs.get("theme")) or "not chosen"),
     ]))
-    mail = db.get(EmailPrefs, user.id)
-    if mail is not None:
-        every = "every day" if mail.digest_every_days == 1 else f"every {mail.digest_every_days} days"
-        out.append(facts([("Job digest emails", f"on, {every}" if mail.digest_enabled else "off"),
-                          ("Agreed to digest emails", when(mail.opted_in_at)), ("Last digest sent", when(mail.last_sent_at))]))
-    out.append("\n## Membership\n\n")
-    if member is None:
-        out.append("No membership details.\n")
-    else:
-        out.append(facts([
-            ("Exempt from payment", yes(member.exempt)), ("Free searches used", member.free_searches_used),
-            ("Subscription", line(member.stripe_status)), ("Plan", line(member.plan)),
-            ("Paid until", when(member.current_period_end)),
-            ("Ends at the end of the period", yes(member.cancel_at_period_end) if member.stripe_status else ""),
-        ]))
-        grants = db.query(MembershipGrant).filter(MembershipGrant.user_id == user.id).order_by(MembershipGrant.id).all()
-        if grants:
-            out.append("\n### Free periods\n\n")
-            out.append("| Kind | From | Until | Ended early |\n|---|---|---|---|\n")
-            out.append("".join(f"| {cell(g.kind)} | {day(g.starts_at)} | {day(g.ends_at)} | {day(g.revoked_at)} |\n" for g in grants))
     out.append("\n## Workspaces\n\n")
     out.append(bullets(w.name for w in workspaces) or "None.\n")
     return "".join(out)

@@ -22,8 +22,7 @@ database alone opens nothing. A key is checked by backend/sessions.py (``Authori
 other ``Authorization`` value is left to the cookie's checks): no cookie, CSRF token or Origin is used with it, and
 it reaches only the endpoints in ``sessions.KEY_ENDPOINTS``. It never counts as a recent sign-in. It lasts 60 days
 from its last use and a year at most; every "sign out everywhere" ends it (a password change that signs out the
-other devices, a reset, recovery, "Sign out everywhere else", an admin turning off the account or its two-step
-sign-in, deleting the account).
+other devices, recovery, "Sign out everywhere else", an admin turning off the account, deleting the account).
 
 **Jobs.** The extension reads the page in the person's own browser and sends only the finished job: its values and
 the description as plain text (``JobIn``). No HTML and no whole-page text reach the server, and nothing here parses

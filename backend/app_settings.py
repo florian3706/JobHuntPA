@@ -1,7 +1,7 @@
 """App-wide settings made in the admin panel's Server section and kept in .env: the LLM (provider address, model, API
-key), the API keys for commute times, email (SMTP_*, PUBLIC_BASE_URL; saved through backend/email_settings.py) and
-Stripe (STRIPE_*; saved through backend/admin.py). The two endpoints below are the LLM's and the commute keys';
-the others write through ``_save`` with the same rules.
+key) and the API keys for commute times, through the two endpoints below. ``PUBLIC_BASE_URL`` (the address other
+devices use, backend/public_url.py) has a rule here too, so it can only ever be written with a valid value; for now it
+is set by hand in .env.
 
     GET  /api/settings/keys        {"tfnsw": {"set": bool, "hint": "…abcd" | null}, "tomtom": {...}}  (never a key)
     PUT  /api/settings/keys        {"tfnsw"?: "<key>", "tomtom"?: "<key>"}: "" clears a key, an omitted one is unchanged
@@ -19,7 +19,7 @@ A saved value takes effect at once (os.environ is updated; backend.commute.keys(
 read it on every call) and is written to .env (backend.config.ENV_PATH) so it survives a restart. That file holds the
 LLM key, which costs the owner money, and the app can be reachable by other devices, so writing it is locked down:
   * only the names in ENV_RULES can be written, whatever a request says, and each has its own strict value rule
-    (keys: KEY_RE; model: MODEL_RE; address: normalise_base_url; the email and Stripe names: their own): never a
+    (keys: KEY_RE; model: MODEL_RE; address: normalise_base_url; the public address: its own): never a
     newline or a quote, and the keys, model and address no whitespace, "=" or "#" either, so a value can't start a new
     line or a second setting;
   * the LLM address can't be pointed at another server without the API key typed again in the same request, so a
@@ -45,7 +45,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from backend import admin_key, commute, config, llm_providers, mailer, scorer
+from backend import admin_key, commute, config, llm_providers, public_url, scorer
 from backend.db import get_db
 from backend.sessions import AuthUser, require_admin
 
@@ -60,11 +60,6 @@ LABELS = {"tfnsw": "Transport for NSW", "tomtom": "TomTom"}
 KEY_RE = re.compile(r"[A-Za-z0-9._~+/-]{8,4000}")
 # Model ids: OpenRouter's contain "/" (anthropic/claude-sonnet-5.5), Ollama's ":" (llama3.2:3b).
 MODEL_RE = re.compile(r"[A-Za-z0-9._:/@+-]{1,200}")
-# Stripe (admin-set, optional): secret keys are sk_test_/sk_live_ plus letters and digits; webhook signing secrets
-# whsec_ plus base64-ish text; a price lookup key is letters, digits, _ . - (Stripe allows up to 200 characters).
-STRIPE_KEY_RE = re.compile(r"sk_(?:test|live)_[A-Za-z0-9]{16,250}")
-STRIPE_WEBHOOK_RE = re.compile(r"whsec_[A-Za-z0-9+/=_-]{16,250}")
-STRIPE_LOOKUP_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}")
 # An API address: letters, digits and . _ ~ : / [ ] + - only (no whitespace, quotes, "#", "?", "@" or "%").
 URL_RE = re.compile(r"[A-Za-z0-9._~:/\[\]+-]{1,300}")
 HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
@@ -129,18 +124,8 @@ ENV_RULES: dict[str, Callable[[str], bool]] = {
     "LLM_API_KEY": lambda v: KEY_RE.fullmatch(v) is not None,
     "LLM_BASE_URL": _plain_url,
     "LLM_MODEL": lambda v: MODEL_RE.fullmatch(v) is not None,
-    # Email (backend/mailer.py), set by an admin. No value may hold a line break (header injection).
-    "SMTP_HOST": mailer.valid_host,
-    "SMTP_PORT": mailer.valid_port,
-    "SMTP_USER": mailer.valid_user,
-    "SMTP_PASSWORD": mailer.valid_password,
-    "SMTP_PASSWORD_B64": mailer.valid_password_b64,
-    "SMTP_FROM": mailer.valid_from,
-    "SMTP_SECURITY": mailer.valid_security,
-    "PUBLIC_BASE_URL": mailer.valid_public_base_url,
-    "STRIPE_SECRET_KEY": lambda v: STRIPE_KEY_RE.fullmatch(v) is not None,
-    "STRIPE_PRICE_LOOKUP_KEY": lambda v: STRIPE_LOOKUP_RE.fullmatch(v) is not None,
-    "STRIPE_WEBHOOK_SECRET": lambda v: STRIPE_WEBHOOK_RE.fullmatch(v) is not None,
+    # The address other devices use (backend/public_url.py): https, or http only for this computer.
+    "PUBLIC_BASE_URL": public_url.valid_public_base_url,
 }
 
 _write_lock = threading.Lock()

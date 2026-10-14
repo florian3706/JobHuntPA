@@ -1,9 +1,8 @@
 """The admin details key (APK): how admins read personal details, and how the key is shared and replaced
 (accounts design §1.4).
 
-Personal details of other people (email and name in ``users.pii_admin``, billing details, a membership grant's note,
-an audit entry's detail) are sealed to the public half of one X25519 key pair, so a sign-up or a Stripe sync can write
-them with no admin signed in. The private half lives in ``admin_key_grants``, one row per admin, sealed to that
+Personal details of other people (email and name in ``users.pii_admin``, an audit entry's detail) are sealed to the
+public half of one X25519 key pair, so a sign-up can write them with no admin signed in. The private half lives in ``admin_key_grants``, one row per admin, sealed to that
 admin's own X25519 public key. In an admin's request it is opened like this, every time, and kept nowhere:
 
     the admin's identity key (IK: the request's session, ``crypto.open_ik``) -> their X25519 private key
@@ -16,7 +15,6 @@ details key: only an admin who is signed in can (accounts design §1.2 and §1.4
 has none: ``ApkUnavailable.sign_in_again`` says so, and the admin panel asks the admin to sign in again.
 
 Labels (the AAD of each sealed value, so one can't be moved to another place): ``users.pii_admin|{user id}``,
-``memberships.billing_admin|{user id}``, ``membership_grants.note_admin|{grant id}``,
 ``admin_audit.detail_admin|{audit id}`` and ``grant|{admin id}|{apk version}`` for a grant.
 
 **Replacing the key** (``new_key``) makes a new pair, re-seals every value that is sealed to the old one (a value that
@@ -46,8 +44,6 @@ from backend import crypto, users
 from backend.db import (
     AdminAudit,
     AdminKeyGrant,
-    Membership,
-    MembershipGrant,
     SessionLocal,
     User,
     UserKeys,
@@ -78,14 +74,6 @@ class NeedsSignIn(ApkUnavailable):
 
 def pii_label(user_id: int) -> str:
     return f"users.pii_admin|{user_id}"
-
-
-def billing_label(user_id: int) -> str:
-    return f"memberships.billing_admin|{user_id}"
-
-
-def note_label(grant_id: int) -> str:
-    return f"membership_grants.note_admin|{grant_id}"
 
 
 def audit_label(audit_id: int) -> str:
@@ -315,14 +303,6 @@ def _reseal_everything(db: Session, old: Apk, new: Apk, out: Rotation) -> None:
                 continue
         user.pii_admin_version = STALE  # heals from pii_self at the next sign-in
         out.stale += 1
-    for row in db.query(Membership).filter(Membership.billing_admin.isnot(None)):
-        moved = move(row.billing_admin, billing_label(row.user_id))
-        row.billing_admin = moved
-        out.resealed, out.dropped = out.resealed + (moved is not None), out.dropped + (moved is None)
-    for grant in db.query(MembershipGrant).filter(MembershipGrant.note_admin.isnot(None)):
-        moved = move(grant.note_admin, note_label(grant.id))
-        grant.note_admin = moved
-        out.resealed, out.dropped = out.resealed + (moved is not None), out.dropped + (moved is None)
     for entry in db.query(AdminAudit).filter(AdminAudit.detail_admin.isnot(None)):
         moved = move(entry.detail_admin, audit_label(entry.id))
         entry.detail_admin = moved

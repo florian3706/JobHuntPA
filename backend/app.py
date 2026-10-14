@@ -20,13 +20,10 @@ from sqlalchemy.orm import Session
 from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import access, crypto, ghost, hosts, llm_providers, membership, migrate_encryption, schedule, tasks, users
+from backend import crypto, ghost, hosts, llm_providers, migrate_encryption, schedule, tasks, users
 from backend.account import router as account_router
-from backend.account_email import router as account_email_router
 from backend.admin import router as admin_router
 from backend.app_settings import router as app_settings_router
-from backend.email_settings import router as email_settings_router
-from backend.password_reset import router as password_reset_router
 from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
 from backend.auth import router as auth_router
@@ -35,8 +32,6 @@ from backend.security_headers import install as install_security_headers
 from backend.background import router as background_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db, scrub_wal
 from backend.cover_letters import router as cover_letters_router
-from backend.digest import public_router as unsubscribe_router
-from backend.digest import router as digest_router
 from backend.docs import router as docs_router
 from backend.export import router as export_router
 from backend.commute import router as commute_router
@@ -168,13 +163,8 @@ app.add_middleware(NoStoreApi)
 install_security_headers(app, FRONTEND_DIR)
 app.include_router(auth_router)
 app.include_router(security_router)
-app.include_router(password_reset_router)
-app.include_router(account_email_router)
 app.include_router(account_router)
-app.include_router(digest_router)
-app.include_router(unsubscribe_router)  # /unsubscribe: outside /api, so no session (the signed token is the proof)
 app.include_router(export_router)
-app.include_router(membership.router)
 app.include_router(admin_router)
 app.include_router(background_router)
 app.include_router(geo_router)
@@ -185,7 +175,6 @@ app.include_router(sources_router)
 app.include_router(workspaces_router)
 app.include_router(llm_router)
 app.include_router(app_settings_router)
-app.include_router(email_settings_router)
 app.include_router(cover_letters_router)
 app.include_router(duplicates_router)
 app.include_router(extension_router)
@@ -200,13 +189,6 @@ app.include_router(migrate_encryption.router)
 @app.exception_handler(AuthProblem)
 def auth_problem(_request: Request, exc: AuthProblem):
     return exc.response()
-
-
-@app.exception_handler(access.MembershipRequired)
-def membership_required(_request: Request, exc: access.MembershipRequired):
-    """The free searches ran out between the gate's check and the run being queued (backend.membership.charge_search)."""
-    return JSONResponse({"detail": str(exc), "code": "membership_required", "reason": "free_searches_used"},
-                        status_code=402)
 
 
 @app.exception_handler(crypto.KeyMismatch)
@@ -454,27 +436,18 @@ def refilter_jobs(db: Session = Depends(get_db), ws: int = Depends(current_works
 # Background runs
 # ---------------------------------------------------------------------------
 
-def _score(ws: int, mode: str, progress, office_slack: int = 0, only: Optional[set] = None, extra: int = 0) -> dict:
+def _score(ws: int, mode: str, progress, office_slack: int = 0) -> dict:
     from backend.scorer import ScorerError, build_profile, score_jobs, select_jobs
 
     db = SessionLocal()
     try:
-        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws, office_slack, only, extra)
+        ids = select_jobs(db, mode, build_profile(db, ws)[1], ws, office_slack)
     finally:
         db.close()
     try:
         return score_jobs(ws, ids, progress)
     except ScorerError as exc:
         return {"aborted": llm_providers.user_message(exc)}
-
-
-def _run_was_free() -> bool:
-    """Whether the running search used one of the owner's free searches."""
-    db = SessionLocal()
-    try:
-        return bool(db.query(SearchRun.free_search).filter(SearchRun.id == tasks.current_run_id.get()).scalar())
-    finally:
-        db.close()
 
 
 def start_search_run(ws: int, scheduled: bool = False) -> dict:
@@ -486,35 +459,20 @@ def start_search_run(ws: int, scheduled: bool = False) -> dict:
     def job(progress):
         from backend.duplicates import scan_workspace
 
-        run_id = tasks.current_run_id.get()
-        free = _run_was_free()
         summary = {"search": run_search(ws, progress)}
-        if free:
-            # The search itself is done and cost something (the sources were fetched). From here a failure, or a
-            # restart, no longer gives the free search back: otherwise an answer built to break the scoring would
-            # make every search free.
-            tasks._update(run_id, free_search=False)
-        found = set(summary["search"].pop("job_ids", ()))
+        summary["search"].pop("job_ids", None)
         # Before scoring, so the same ad on two sites is scored once.
         progress("checking for duplicate ads", {})
         summary["duplicates"] = scan_workspace(ws)
-        only, extra = None, 0
-        if free:  # a free search scores the jobs it found and a few waiting ones (imported pages), not everything
-            db = SessionLocal()
-            try:
-                found |= {i for (i,) in db.query(Job.id).filter(Job.workspace_id == ws, Job.first_run_id == run_id)}
-            finally:
-                db.close()
-            only, extra = found, access.FREE_SEARCH_EXTRA_SCORES
         summary["scoring"] = ({"skipped": config_problem()} if config_problem()
-                              else _score(ws, "pending", progress, only=only, extra=extra))
+                              else _score(ws, "pending", progress))
         return summary
 
-    return tasks.start("search", job, ws, scheduled=scheduled, charge=membership.charge_search)
+    return tasks.start("search", job, ws, scheduled=scheduled)
 
 
 @app.post("/api/search/run")
-def start_search(ws: int = Depends(current_workspace), _gate=Depends(membership.gate(access.SEARCH))):
+def start_search(ws: int = Depends(current_workspace)):
     return start_search_run(ws)
 
 
@@ -524,8 +482,7 @@ class ScoreRunRequest(BaseModel):
 
 
 @app.post("/api/score/run")
-def start_scoring(payload: ScoreRunRequest, ws: int = Depends(current_workspace),
-                  _gate=Depends(membership.gate(access.RESCORE))):
+def start_scoring(payload: ScoreRunRequest, ws: int = Depends(current_workspace)):
     from backend.scorer import config_problem
 
     if config_problem():
@@ -589,7 +546,7 @@ def scorer_status(office_slack: int = OfficeSlack, db: Session = Depends(get_db)
 
 @app.post("/api/score/{job_id}")
 def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(get_db),
-                 ws: int = Depends(current_workspace), _gate=Depends(membership.gate(access.RESCORE))):
+                 ws: int = Depends(current_workspace)):
     from backend.scorer import ScorerError, build_profile, config_problem, get_config, score_one
 
     cfg = {**get_config("scoring"), "workspace_id": ws}
@@ -629,8 +586,7 @@ class ResearchRequest(BaseModel):
 
 
 @app.post("/api/companies/research")
-def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace),
-                   _gate=Depends(membership.gate(access.RESEARCH))):
+def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace)):
     from backend.research import companies_to_research, job_context, research_companies
     from backend.scorer import ScorerError, config_problem
 

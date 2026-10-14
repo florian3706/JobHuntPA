@@ -12,7 +12,7 @@ Allowed (the port never matters):
 * ``localhost`` and ``*.localhost``,
 * this computer's own names: ``socket.gethostname()``, its first label, either with ``.local``, and
   ``socket.getfqdn()``,
-* the host of PUBLIC_BASE_URL (so the admin's Email settings can open the app to its public name),
+* the host of PUBLIC_BASE_URL (backend/public_url.py: the address other devices use),
 * the names in JOBHUNT_ALLOWED_HOSTS (comma-separated, for example the name ``tailscale serve`` passes on),
 * ``testserver``, only while JOBHUNT_TESTING=1 (Starlette's TestClient).
 

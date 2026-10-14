@@ -24,7 +24,7 @@ from typing import Optional
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, contains_eager, defer, joinedload
 
-from backend import crypto, tasks
+from backend import crypto
 from backend.adapters.base import Posting as Scraped
 from backend.db import DETAIL_RANK, Job, Posting
 
@@ -248,13 +248,11 @@ def attach(job: Job, posting: Posting) -> None:
 def link(db: Session, ws: int, posting: Posting, now: datetime,
          source_id: Optional[int] = None) -> tuple[Job, bool]:
     """The workspace's job for this posting: made when new (``first_seen`` now), attached when the workspace had
-    the URL as a private job. Returns (job, new to the workspace). A new link made during a run records it
-    (``first_run_id``, from ``tasks.current_run_id``); one made outside a run keeps NULL."""
+    the URL as a private job. Returns (job, new to the workspace)."""
     job = job_by_url(db, ws, posting.url)
     is_new = job is None
     if is_new:
-        job = Job(workspace_id=ws, origin="pool", status="to_review", first_seen=now, last_seen=now,
-                  first_run_id=tasks.current_run_id.get())
+        job = Job(workspace_id=ws, origin="pool", status="to_review", first_seen=now, last_seen=now)
         job.posting = posting
         db.add(job)
     elif job.posting_id != posting.id or job.posting is None:
@@ -341,7 +339,7 @@ def match_pool(db: Session, ws: int, crit, now: datetime, limit: int = MAX_POOL_
         if crypto.blind_index("url", posting.url) in linked_urls:
             continue
         job = Job(workspace_id=ws, origin="pool", status="to_review", first_seen=now,
-                  last_seen=posting.last_listed_at, posting_rev=posting.rev, first_run_id=tasks.current_run_id.get())
+                  last_seen=posting.last_listed_at, posting_rev=posting.rev)
         job.posting = posting  # still transient: only added if it passes
         take_ad_office(job)
         enrich(job, crit)

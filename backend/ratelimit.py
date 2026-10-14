@@ -96,7 +96,6 @@ class Limiter:
 
 
 ACCOUNT_CEILING = (100, 60 * 60)  # wrong tries from any source in an hour, before a browser new to the account waits
-CODE_CEILING = (10, 60 * 60)      # the same for wrong two-step codes, which have far fewer guesses to try than a password
 MAX_SOURCES = 200                 # sources remembered per account; the oldest are forgotten first
 FORGET_AFTER_S = 24 * 60 * 60     # a source's failures in a row are forgotten after a day without a try
 
@@ -260,77 +259,21 @@ class GuessGuard:
 # can't tell the two apart).
 guesses = GuessGuard()
 unknown_guesses = GuessGuard()
-# Wrong two-step codes (a reset link, /recover, turning two-step off, an email change, new recovery codes) are also
-# counted here, with a much lower ceiling over all sources: the caller holds a first proof (a link, a recovery code, a
-# password), but a code has only a million values, so guesses spread over many addresses must run out.
-code_guesses = GuessGuard(CODE_CEILING)
-
-
-class Strikes:
-    """Wrong tries counted against one thing (a reset link, a recovery code), whoever sends them. ``strike`` returns how
-    many there have been, this one included; ``clear`` forgets them. The oldest are forgotten first."""
-
-    def __init__(self, keep: float = 2 * 60 * 60):
-        self.keep = keep
-        self._counts: "OrderedDict[Hashable, list]" = OrderedDict()  # key -> [tries, last try]
-        self._lock = threading.Lock()
-
-    def strike(self, key: Hashable, now: Optional[float] = None) -> int:
-        now = time.monotonic() if now is None else now
-        with self._lock:
-            state = self._counts.pop(key, None)
-            if state is None or now - state[1] > self.keep:
-                state = [0, now]
-            state[0] += 1
-            state[1] = now
-            self._counts[key] = state
-            while len(self._counts) > MAX_KEYS:
-                self._counts.popitem(last=False)
-            return state[0]
-
-    def clear(self, key: Hashable) -> None:
-        with self._lock:
-            self._counts.pop(key, None)
-
-    def reset(self) -> None:
-        with self._lock:
-            self._counts.clear()
 
 
 def forget_account(account: Hashable) -> None:
     """The account starts again with no wrong passwords or codes (an admin unlocked it, or its password changed)."""
     guesses.clear(account)
-    code_guesses.clear(account)
 
 
 def forget_user(user_id: int) -> None:
     """Everything counted under a user id, for an account that is deleted (SQLite may give the id to the next one)."""
     forget_account(user_id)
-    for limiter in (RESET_ACCOUNT, FORGOT_NO_LINK, RESET_BY_ADMIN, VERIFY_RESEND, EMAIL_CHANGE, EMAIL_TEST):
-        limiter.clear(user_id)
 
 
-CODE_TRIES = 5  # wrong second-proof codes on one reset link (or against one recovery code) before it is used up
-reset_code_strikes = Strikes()
-recover_code_strikes = Strikes()
-
-# The sign-in endpoints (login, first run; later sign-up, forgot, reset and recover), per client address.
+# The sign-in endpoints (login, first run, sign-up and recover), per client address.
 AUTH = Limiter([(10, 5 * 60), (60, 60 * 60)])
 
-# Email (Phase H). A refused "forgot password" request still answers 202, so a limit can't show whether an account
-# exists: it is counted per typed address (accounts or not) and, for real accounts, per account. The admin's reset
-# button has its own count, so anonymous requests can't use up an admin's. Keyed by what the caller says: an
-# address hash, a user id.
-FORGOT_ADDRESS = Limiter([(3, 60 * 60), (6, 24 * 60 * 60)])
-RESET_ACCOUNT = Limiter([(3, 60 * 60), (6, 24 * 60 * 60)])    # anonymous requests only
-FORGOT_NO_LINK = Limiter([(1, 60 * 60)])                      # per account: the one extra request an hour that goes out
-                                                               # when the limits above are used up and no link is usable
-RESET_BY_ADMIN = Limiter([(3, 60 * 60), (6, 24 * 60 * 60)])    # the admin's button, per account: its own count
-VERIFY_RESEND = Limiter([(3, 60 * 60), (10, 24 * 60 * 60)])   # per signed-in user
-EMAIL_CHANGE = Limiter([(5, 60 * 60)])                         # per signed-in user
-EMAIL_TEST = Limiter([(5, 10 * 60)])                           # per admin
-# The unsubscribe link's POSTs (Phase J, no session): per client address.
-UNSUBSCRIBE = Limiter([(30, 60)])
 # Browser-extension keys that don't work (unknown, revoked, expired, malformed), per client address: past this a key
 # that doesn't work answers 429 instead of 401; one that works still gets in (backend/sessions.py).
 BAD_KEY = Limiter([(20, 5 * 60), (100, 60 * 60)])
@@ -342,8 +285,4 @@ def reset_all() -> None:
     BAD_KEY.reset()
     guesses.reset()
     unknown_guesses.reset()
-    code_guesses.reset()
-    reset_code_strikes.reset()
-    recover_code_strikes.reset()
-    for limiter in (FORGOT_ADDRESS, RESET_ACCOUNT, FORGOT_NO_LINK, RESET_BY_ADMIN, VERIFY_RESEND, EMAIL_CHANGE, EMAIL_TEST, UNSUBSCRIBE):
-        limiter.reset()
+

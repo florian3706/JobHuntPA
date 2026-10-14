@@ -9,11 +9,11 @@ Design: docs/design/accounts.md, section 1.3.
      "encryption_done_at": "2026-10-05T00:00:00Z"}     (optional: see below)
 
 * **kek** wraps what the server must open with nobody signed in: the DEKs of users who turned on background access
-  (``srv|{uid}``) and TOTP secrets (``totp|{uid}``). The wrap's label always ends in ``|{kek_id}``, and the envelope's
+  (``srv|{uid}``). The wrap's label always ends in ``|{kek_id}``, and the envelope's
   kid names the KEK, so the file can hold several KEKs while a rotation is under way.
 * **pepper** keys ``email_hash = HMAC-SHA256(pepper, normalised email)``, so an account is found by email without
   decrypting anything. It isn't a decryption key: leaking it only lets someone confirm guessed addresses.
-* **signing** signs tokens such as unsubscribe links. A retired key keeps verifying for 30 days.
+* **signing** signs tokens such as the lockout's device cookie. A retired key keeps verifying for 30 days.
 * **encryption_done_at** is written once, when the one-time encryption of the data from before accounts has finished
   (backend/migrate_encryption.py), and never removed. It turns strict mode on at every start whatever the database
   says: someone who can only write the database can't turn it off by editing the migration's state there, which would
@@ -132,7 +132,7 @@ def normalise_email(email: str) -> str:
 class KekWrapped:
     """One KEK-wrapped value, as a rotation sees it."""
     ref: Any      # whatever the caller needs to write the new blob back, for example ("user_keys", user_id)
-    label: str    # the label it was wrapped with: "srv|{uid}" or "totp|{uid}" (the "|{kek_id}" is added here)
+    label: str    # the label it was wrapped with: "srv|{uid}" (the "|{kek_id}" is added here)
     blob: bytes
 
 
@@ -425,7 +425,7 @@ class ServerKeys:
 
     @staticmethod
     def _mac(key: bytes, purpose: str, parts: list[str]) -> str:
-        # "unsub|<id>" for an unsubscribe link, as in the design; "<purpose>|<payload>|<expiry>" when it expires.
+        # "<purpose>|<payload>", or "<purpose>|<payload>|<expiry>" when it expires.
         msg = "|".join([purpose, *parts]).encode("ascii")
         return crypto.b64e(hmac.new(key, msg, hashlib.sha256).digest())[:MAC_CHARS]
 
@@ -439,7 +439,7 @@ class ServerKeys:
 
     def sign(self, purpose: str, payload: str, *, ttl: Optional[float] = None, now: Optional[float] = None) -> str:
         """A token carrying ``payload`` (letters, digits, - and _ only): ``payload.mac``, or ``payload.expiry.mac``
-        with a ``ttl`` in seconds. ``purpose`` (for example "unsub") is part of the MAC, so a token made for one
+        with a ``ttl`` in seconds. ``purpose`` (for example "device") is part of the MAC, so a token made for one
         purpose is refused for another."""
         if not _PURPOSE_RE.fullmatch(purpose):
             raise ValueError("A token purpose is 1-32 lowercase letters, digits or _")

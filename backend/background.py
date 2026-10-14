@@ -7,7 +7,7 @@
 **On** needs the password entered in the last 15 minutes (``require_recent_auth``, answered 403
 ``reauth_required``; the page asks again and retries). The signed-in request's data key is wrapped under the
 server KEK into ``user_keys.server_wrapped_dek`` (with ``server_kek_id`` and ``background_since``), with the same
-label as at sign-up (``srv|{uid}``). Scheduled searches (backend.schedule) and, later, digest emails use it.
+label as at sign-up (``srv|{uid}``). Scheduled searches (backend.schedule) use it.
 
 **Off** sets all three to NULL, destroying the server's copy (``PRAGMA secure_delete`` is on). It needs no extra
 sign-in: giving access away is always allowed. Scheduled searches then pass over the account's slots, saying why.

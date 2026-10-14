@@ -1,7 +1,7 @@
 """``python -m backend.keys recover-lost --admin-email X``: carry on after ``data/server-keys.json`` was lost and
 there's no backup of it (accounts design 1.3, "Lost key file"). Run it with JobHuntPA stopped.
 
-The key file holds the server KEK (it wraps the data keys of background-access accounts and the two-step secrets),
+The key file holds the server KEK (it wraps the data keys of background-access accounts),
 the pepper (email addresses are found by ``HMAC(pepper, email)``) and the signing key. Without it nobody can sign in,
 because no email address finds its account. What it can't give back is the KEK's wraps, which are copies of keys
 people can also unlock with their passwords or recovery codes. So:
@@ -13,9 +13,8 @@ people can also unlock with their passwords or recovery codes. So:
      admin details key (APK), which opens every account's ``pii_admin``. (An admin who hasn't signed in since the
      identity key was introduced still has the private key under the data key: that form is read too.)
   3. A new key file is made. Every ``email_hash`` is computed again with the new pepper from the decrypted email
-     address, every ``server_wrapped_dek`` is deleted (background access is off until each person turns it on
-     again) and every two-step secret is deleted (two-step sign-in is off until each person enrols again), in one
-     transaction. The new file's fingerprint is stored.
+     address and every ``server_wrapped_dek`` is deleted (background access is off until each person turns it on
+     again), in one transaction. The new file's fingerprint is stored.
   4. The new file is put in place last. A crash before that leaves a database that matches no key file; running the
      command again starts over from step 1.
 
@@ -155,17 +154,14 @@ def _recover(admin_email: str, ask_password: Callable[[str], str], out, path: Pa
             hashes, missing = _new_hashes(db, apk_private, new, admin, admin_email)
             background = db.query(func.count()).select_from(UserKeys).filter(
                 UserKeys.server_wrapped_dek.isnot(None)).scalar()
-            two_step = db.query(func.count()).select_from(User).filter(User.mfa_enabled.is_(True)).scalar()
             try:
                 for uid, value in hashes.items():
                     db.execute(update(User).where(User.id == uid).values(email_hash=value))
                 db.execute(update(UserKeys).values(server_wrapped_dek=None, server_kek_id=None,
                                                    background_since=None))
-                db.execute(update(User).values(mfa_enabled=False, totp_secret_enc=None, totp_pending_enc=None,
-                                               totp_last_step=None))
                 db.merge(AppSetting(key="server_keys_fingerprint", value_json=json.dumps(new.fingerprint())))
                 db.commit()
-                scrub_wal()  # the old key copies and TOTP secrets must not linger in the write-ahead log
+                scrub_wal()  # the old key copies must not linger in the write-ahead log
             except BaseException:
                 db.rollback()
                 raise
@@ -180,6 +176,6 @@ def _recover(admin_email: str, ask_password: Callable[[str], str], out, path: Pa
     print(f"Email lookup was rebuilt for {len(hashes)} account(s)."
           + (f" {missing} could not be worked out, so they can't sign in by email address (see the README)."
              if missing else ""), file=out)
-    print(f"Background access was switched off for {background} account(s) and two-step sign-in for {two_step}: "
-          "each person turns them on again in Settings. Back up the new file together with the database.", file=out)
+    print(f"Background access was switched off for {background} account(s): each person turns it on again in "
+          "Settings. Back up the new file together with the database.", file=out)
     return 0

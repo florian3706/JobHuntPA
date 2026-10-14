@@ -700,5 +700,5 @@ def assess_jobs(db: Session, jobs: list[Job], profiles: dict[str, CompanyProfile
 
 
 def first_reason(result: dict) -> Optional[str]:
-    """The text of the strongest sign of a flagged job, else None (digest cards, the export)."""
+    """The text of the strongest sign of a flagged job, else None (the export)."""
     return result["signals"][0]["text"] if result.get("level") and result.get("signals") else None

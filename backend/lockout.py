@@ -79,11 +79,11 @@ def remember_device(response: Response, scope, user_id: int) -> None:
 
 def begin(scope, user: Optional[User], email_key: bytes = b"", *, ceiling: bool = True,
           what: str = "passwords") -> ratelimit.Ticket:
-    """Counts one try at a password or code, before the slow check, and returns its ticket (``succeed()`` when the
-    password was right, ``refund()`` when it was right but a code is to come, nothing when it was wrong). Raises the
+    """Counts one try at a password or recovery code, before the slow check, and returns its ticket (``succeed()``
+    when it was right, ``refund()`` when it was right but the try must not count, nothing when it was wrong). Raises the
     429 ``locked`` answer when this source (or, for a browser new to the account, the whole account) must wait.
     ``user`` None is an address with no account, counted under ``email_key``. ``ceiling`` False is for a step
-    taken after a proof only the owner has (the password, a reset link, a recovery code)."""
+    taken after a proof only the owner has (a recovery code)."""
     if user is None:
         guard, account, source, known = ratelimit.unknown_guesses, email_key, sessions.client_address(scope), False
     else:
@@ -96,19 +96,6 @@ def begin(scope, user: Optional[User], email_key: bytes = b"", *, ceiling: bool 
         raise too_many(wait.wait, what, wait.ceiling) from None
 
 
-def begin_code(scope, user: User, what: str = "codes") -> ratelimit.Ticket:
-    """Counts one try at a two-step code against the code-only ceiling (``ratelimit.CODE_CEILING``: about 10 wrong
-    ones an hour from sources that aren't a browser the account signed in from). Call it with ``begin(ceiling=False)``:
-    the password, link or recovery code before it is not enough to try codes without limit, since those can be sent
-    from many addresses at once. Raises the 429 ``locked`` answer; ``succeed()`` the ticket when the code was right."""
-    device = device_id(scope, user)
-    source, known = (f"d:{device}", True) if device else (sessions.client_address(scope), False)
-    try:
-        return ratelimit.code_guesses.begin(user.id, source, known=known, ceiling=True)
-    except ratelimit.Waiting as wait:
-        raise too_many(wait.wait, what, wait.ceiling) from None
-
-
 def forget(user_id: int) -> None:
     """The account starts again with no wrong tries: an admin unlocked it, or its password was changed or reset."""
     ratelimit.forget_account(user_id)
@@ -116,4 +103,4 @@ def forget(user_id: int) -> None:
 
 def waiting(user_id: int) -> float:
     """Seconds some source of the account still waits (the admin panel's "waiting after wrong passwords")."""
-    return max(ratelimit.guesses.waiting(user_id), ratelimit.code_guesses.waiting(user_id))
+    return ratelimit.guesses.waiting(user_id)

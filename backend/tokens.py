@@ -1,4 +1,4 @@
-"""Single-use links kept in ``auth_tokens`` (accounts design §4): invites, password resets and email checks.
+"""Single-use links kept in ``auth_tokens`` (accounts design §4): invitations.
 
 The link carries a random 256-bit token. The database keeps only its SHA-256 (``token_hash``), so a copy of the
 database can't be turned into working links, and a payload (an invite carries the address to pre-fill) sealed under a
@@ -59,7 +59,7 @@ def open_payload(token: str, kind: str, blob: Optional[bytes]) -> Optional[dict]
 def create(db: Session, kind: str, *, ttl: timedelta, created_by: Optional[int] = None, user_id: Optional[int] = None,
            payload: Optional[dict] = None, token: Optional[str] = None) -> tuple[str, AuthToken]:
     """A new token row in ``db``'s transaction (flushed, not committed): ``(token, row)``. The token is not stored
-    anywhere: hand it to the person once. ``token`` is one the caller made (a reset link signs its token)."""
+    anywhere: hand it to the person once. ``token`` is one the caller made."""
     token = token or new_token()
     row = AuthToken(kind=kind, token_hash=hash_token(token), user_id=user_id, created_by=created_by,
                     expires_at=utcnow() + ttl,

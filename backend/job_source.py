@@ -7,9 +7,8 @@ the browser extension added, ``browser:<how>:<site>``. ``<how>`` is ``single`` (
 under, without "www." (``seek.com.au``). Plain ``browser`` is what the extension stored before it said how and
 where: ``pipeline.name_browser_sources`` renames those, once per workspace.
 
-What people read is made from these values in two places that follow one rule: ``sourceLabel`` in
-frontend/common.js and ``email_templates.source_label`` ("SEEK - browser extension (bulk)"). No imports from the
-app here, so anything may use it.
+What people read is made from these values by ``sourceLabel`` in frontend/common.js ("SEEK - browser extension
+(bulk)"). No imports from the app here, so anything may use it.
 """
 from __future__ import annotations
 

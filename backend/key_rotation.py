@@ -2,8 +2,7 @@
 rotate-kek`` (accounts design §1.3).
 
 The KEK wraps what the server must open with nobody signed in: the data keys of people who allowed background access
-(``user_keys.server_wrapped_dek``, label ``srv|{uid}``, with ``server_kek_id`` beside it) and the two-step sign-in
-secrets (``users.totp_secret_enc`` and ``users.totp_pending_enc``, label ``totp|{uid}``).
+(``user_keys.server_wrapped_dek``, label ``srv|{uid}``, with ``server_kek_id`` beside it).
 
 ``keys.ServerKeys.rotate_kek`` does the steps; this module says where the wrapped values are and how to store the
 new ones:
@@ -25,27 +24,12 @@ import os
 import sys
 from typing import Any
 
-from sqlalchemy import or_, update
+from sqlalchemy import update
 
-from backend import crypto, keys
+from backend import keys
 from backend.db import DATA_DIR, AppSetting, SessionLocal, User, UserKeys, engine, init_db, scrub_wal
 
 log = logging.getLogger(__name__)
-
-# The pending enrolment secret may have been wrapped under a label of its own; the one that opens is used.
-_PENDING_LABELS = ("totp|{uid}", "totp_pending|{uid}")
-
-
-def _pending_label(server: keys.ServerKeys, uid: int, blob: bytes) -> str:
-    for template in _PENDING_LABELS:
-        label = template.format(uid=uid)
-        try:
-            server.kek_unwrap(blob, label)
-            return label
-        except crypto.CryptoError:
-            continue
-    return _PENDING_LABELS[0].format(uid=uid)
-
 
 def _rows_factory(server: keys.ServerKeys):
     seen: dict[Any, bytes] = {}  # ref -> the blob that was read, so a store can check it hasn't changed
@@ -57,13 +41,6 @@ def _rows_factory(server: keys.ServerKeys):
             for uid, blob in db.query(UserKeys.user_id, UserKeys.server_wrapped_dek).filter(
                     UserKeys.server_wrapped_dek.isnot(None)):
                 out.append(keys.KekWrapped(("srv", uid), f"srv|{uid}", bytes(blob)))
-            for uid, secret, pending in db.query(User.id, User.totp_secret_enc, User.totp_pending_enc).filter(
-                    or_(User.totp_secret_enc.isnot(None), User.totp_pending_enc.isnot(None))):
-                if secret is not None:
-                    out.append(keys.KekWrapped(("totp", uid), f"totp|{uid}", bytes(secret)))
-                if pending is not None:
-                    out.append(keys.KekWrapped(("totp_pending", uid), _pending_label(server, uid, bytes(pending)),
-                                               bytes(pending)))
         finally:
             db.close()
         seen.update({row.ref: row.blob for row in out})
@@ -77,13 +54,8 @@ def _store_factory(seen: dict[Any, bytes]):
         with engine.begin() as conn:  # one transaction: all of them or none
             for (kind, uid), kek_id, blob in todo:
                 old = seen.get((kind, uid))
-                if kind == "srv":
-                    stmt = (update(UserKeys).where(UserKeys.user_id == uid, UserKeys.server_wrapped_dek == old)
-                            .values(server_wrapped_dek=blob, server_kek_id=kek_id))
-                else:
-                    column = User.totp_secret_enc if kind == "totp" else User.totp_pending_enc
-                    stmt = update(User).where(User.id == uid, column == old).values({column.key: blob})
-                conn.execute(stmt)
+                conn.execute(update(UserKeys).where(UserKeys.user_id == uid, UserKeys.server_wrapped_dek == old)
+                             .values(server_wrapped_dek=blob, server_kek_id=kek_id))
     return store
 
 
