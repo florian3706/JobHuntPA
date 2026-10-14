@@ -43,7 +43,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from backend import docs
+from backend import commute, docs, schedule
 from backend.db import (
     JOB_CONTENT,
     ChatMessage,
@@ -278,16 +278,22 @@ def new_name(wanted: str, taken: set[str], today: date) -> str:
 # Writing the rows
 # ---------------------------------------------------------------------------
 
-def starting_points_in(profile: UserProfile, points: list) -> None:
-    """The search setup's starting points, stored as this version stores them: their places as "Commute from"
-    stations (see ``import_file.starting_points_out``)."""
-    places = []
+def starting_points_in(profile: UserProfile, points: list, pin_ids: dict[int, int]) -> None:
+    """The search setup's starting points, stored as the search setup stores them (backend/commute.py): a pin start
+    names the new copy of its pin (``pin_ids``: file ref to new row id) and is left out when the file has no such pin;
+    a text item (the first import files' "Commute from" stations) is a public-transport place. The older columns are
+    emptied, as a save of the search setup does (backend/profile.py)."""
+    items = []
     for p in points:
-        value = p if isinstance(p, str) else (p.place or p.label or "")
-        value = " ".join(value.split())
-        if value and value not in places:
-            places.append(value)
-    profile.commute_from = places
+        if isinstance(p, str):
+            items.extend(commute.legacy_starting_points([p]))
+        elif p.pin is not None:
+            if p.pin in pin_ids:
+                items.append({"label": p.label or "", "pin_id": pin_ids[p.pin], "use": p.use or "both"})
+        elif p.place:
+            items.append({"label": p.label or "", "place": p.place, "use": p.use or "both"})
+    profile.starting_points = commute.clean_starting_points(items)
+    profile.commute_from, profile.commute_arrive_by, profile.commute_leave_at = None, "", ""
 
 
 _web = web_address  # (pages link these addresses: only a web address is kept)
@@ -318,6 +324,14 @@ class Importer:
         """Writes one workspace's rows; returns what it brought in (as ``counts`` names them)."""
         db = self.db
         made = {"jobs": 0, "documents": 0, "chats": 0, "cover_letters": 0, "sources": 0, "pins": len(data.pins)}
+        pin_ids: dict[int, int] = {}  # (pins first: a starting point names its pin's new row)
+        for p in data.pins:
+            pin = Pin(workspace_id=ws, label=p.label or p.kind.capitalize(), kind=p.kind, lat=p.lat, lng=p.lng,
+                      radius_km=p.radius_km)
+            db.add(pin)
+            if p.ref is not None and p.ref not in pin_ids:
+                db.flush()
+                pin_ids[p.ref] = pin.id
         setup = data.search_setup
         if setup is not None and setup.model_fields_set - {"dealbreakers"}:  # (a setup can hold dealbreakers alone)
             profile = UserProfile(id=ws, titles=list(setup.titles), keywords_include=list(setup.keywords_include),
@@ -326,7 +340,7 @@ class Importer:
                                   allow_hybrid=setup.allow_hybrid, max_office_days=setup.max_office_days,
                                   allow_onsite=setup.allow_onsite, seek_enabled=setup.seek_enabled,
                                   seek_locations=list(setup.seek_locations))
-            starting_points_in(profile, setup.starting_points)
+            starting_points_in(profile, setup.starting_points, pin_ids)
             db.add(profile)
         if setup is not None and setup.dealbreakers is not None:
             db.add(DealbreakerSet(id=ws, industries=list(setup.dealbreakers.industries),
@@ -335,9 +349,8 @@ class Importer:
             s = data.schedule
             db.add(SearchSchedule(id=ws, enabled=s.enabled, times=list(s.times), days=sorted(set(s.days)),
                                   skip_holidays=s.skip_holidays, state=s.state))
-        for p in data.pins:
-            db.add(Pin(workspace_id=ws, label=p.label or p.kind.capitalize(), kind=p.kind, lat=p.lat, lng=p.lng,
-                       radius_km=p.radius_km))
+        else:
+            schedule.start_off(db, ws)  # (a file with no schedule: a new workspace's scheduled searches start off)
         sources: dict[int, CompanySource] = {}
         seen_urls: set[str] = set()
         for s in data.sources:

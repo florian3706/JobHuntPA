@@ -615,7 +615,7 @@ file (not a row id). Other fields point at them by that number.
 | `name` | its name (an import renames it when the name is taken: §1.7) |
 | `created_at` | when it was made |
 | `search_setup` | `null`, or the object below |
-| `pins` | `[{label, kind, lat, lng, radius_km}]`; `kind` is `home`, `hybrid` or `onsite` |
+| `pins` | `[{ref, label, kind, lat, lng, radius_km}]`; `kind` is `home`, `hybrid` or `onsite`; `ref` is the pin's number in this file |
 | `sources` | `[{ref, label, url, type, enabled}]`: careers pages and feeds; `url` is http(s) |
 | `schedule` | `{enabled, times: ["10:00", …], days: [0-6, Monday = 0], skip_holidays, state: "NSW" …}` |
 | `documents` | below |
@@ -624,11 +624,13 @@ file (not a row id). Other fields point at them by that number.
 
 **`search_setup`:** `titles`, `keywords_include`, `keywords_exclude`, `seek_locations` (lists of text);
 `salary_floor`, `max_office_days` (integers or null); `remote_aus_ok`, `remote_global_ok`, `allow_hybrid`,
-`allow_onsite`, `seek_enabled` (true/false); `dealbreakers: {industries, keywords}`; and **`starting_points`**: whatever
-the search setup stores for its starting points (§1.8), in the shape it stores them. At format version 1 as first
-written, that is the list of "Commute from" stations (text); once starting points are stored as objects
-(`{label, place, use}`, Phase C), the same field carries those objects. A reader takes either shape: a text item is
-a place, an object's `place` (else `label`) is.
+`allow_onsite`, `seek_enabled` (true/false); `dealbreakers: {industries, keywords}`; and **`starting_points`**: the
+search setup's own starting points (§1.8; the home pins count without being listed), each `{label, pin, place, use}`:
+`pin` is the `ref` of one of the workspace's `pins` and `place` is null, or `pin` is null and `place` is typed text;
+`use` is `driving`, `transit` or `both`. A search setup saved before starting points came in has its "Commute from"
+stations written as the public-transport starting points the app shows for them; a starting point whose pin was
+deleted is left out. A reader also takes a plain text item (as the first files wrote the stations) as a
+public-transport place, and leaves out a `pin` the file's `pins` don't have.
 
 **`documents`:** `{ref, filename, filetype, kind, text, concise_text, use_concise, use_for_scoring, concise_model,
 concise_at, created_at, updated_at, summary_of, original}`. `filetype` is the upload's extension (`.pdf` …), or

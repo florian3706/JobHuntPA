@@ -279,6 +279,75 @@ class RoundTripTest(Base):
         finally:
             db.close()
 
+    def test_starting_points_and_the_applied_date_come_back(self):
+        """Phase C's starting points (a pin start names the copy of its pin; a gone pin's start is left out) and
+        Phase D's applied date travel in the import file."""
+        from backend import commute
+        from backend.db import Pin, UserProfile
+
+        when = datetime(2026, 10, 3, 9, 30)
+        db = SessionLocal()
+        try:
+            with helpers.as_account(self.bob):
+                ws = self.bob.workspace_id
+                pin = db.query(Pin).filter(Pin.workspace_id == ws).one()
+                db.get(UserProfile, ws).starting_points = [
+                    {"label": "MARK-start-pin", "pin_id": pin.id, "place": None, "use": "driving"},
+                    {"label": "MARK-start-place", "pin_id": None, "place": "MARK-place Hornsby Station", "use": "transit"},
+                    {"label": "MARK-start-gone", "pin_id": pin.id + 100000, "place": None, "use": "both"},
+                ]
+                weird = next(j for j in db.query(Job).filter(Job.workspace_id == ws) if j.url == "https://ads.example/bob/weird")
+                weird.applied_at = when
+                db.commit()
+        finally:
+            db.close()
+        blob = self.export()
+        setup = self.import_data(blob)["workspaces"][0]["search_setup"]
+        self.assertEqual(setup["starting_points"], [
+            {"label": "MARK-start-pin", "pin": 1, "place": None, "use": "driving"},
+            {"label": "MARK-start-place", "pin": None, "place": "MARK-place Hornsby Station", "use": "transit"},
+        ])
+        r = self.do_import(blob)
+        self.assertEqual(r.status_code, 200, r.text)
+        made = r.json()["workspaces"][0]["id"]
+        db = SessionLocal()
+        try:
+            with helpers.as_account(self.bob):
+                new_pin = db.query(Pin).filter(Pin.workspace_id == made).one()
+                profile = db.get(UserProfile, made)
+                self.assertEqual(commute.saved_starting_points(profile), [
+                    {"label": "MARK-start-pin", "pin_id": new_pin.id, "place": None, "use": "driving"},
+                    {"label": "MARK-start-place", "pin_id": None, "place": "MARK-place Hornsby Station", "use": "transit"},
+                ])
+                self.assertIsNone(profile.commute_from)
+                job = next(j for j in db.query(Job).filter(Job.workspace_id == made) if j.url == "https://ads.example/bob/weird")
+                self.assertEqual(job.applied_at, when)
+        finally:
+            db.close()
+        self.assertEqual(self.snapshot(made), self.expected())
+
+    def test_an_older_file_s_stations_and_a_missing_schedule(self):
+        """The first import files wrote the "Commute from" stations as text: each comes in as a public-transport place.
+        A file with no schedule gives a new workspace's schedule: off."""
+        from backend import commute, schedule
+        from backend.db import UserProfile
+
+        blob = self.export()
+        data = self.import_data(blob)
+        data["workspaces"][0]["search_setup"]["starting_points"] = ["MARK-old-station", {"label": "x", "pin": 99}]
+        data["workspaces"][0]["schedule"] = None
+        r = self.do_import(self.replace_import_file(blob, data))
+        self.assertEqual(r.status_code, 200, r.text)
+        made = r.json()["workspaces"][0]["id"]
+        db = SessionLocal()
+        try:
+            with helpers.as_account(self.bob):
+                self.assertEqual(commute.saved_starting_points(db.get(UserProfile, made)), [
+                    {"label": "MARK-old-station", "pin_id": None, "place": "MARK-old-station", "use": "transit"}])
+                self.assertFalse(schedule.get_schedule(db, made).enabled)
+        finally:
+            db.close()
+
     def test_into_another_account(self):
         alice = helpers.make_user(f"MARK-name-alice-{os.urandom(4).hex()}")
         with helpers.as_account(alice):

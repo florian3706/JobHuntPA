@@ -12,7 +12,7 @@ password, keys, sessions, extension keys or the AI key: none of them is read her
 edited or hostile file can't put a value the app doesn't expect into the database (backend/data_import.py).
 
 References between things in one workspace (a job's merged copy, a summary's documents, a chat's jobs, a job's
-source) are numbers local to the file (``ref``), never the exporting install's row ids.
+source, a starting point's pin) are numbers local to the file (``ref``), never the exporting install's row ids.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from pydantic import (
 )
 from sqlalchemy.orm import Session
 
-from backend import schedule
+from backend import commute, schedule
 from backend.db import (
     JOB_CONTENT,
     PROJECT_ROOT,
@@ -92,13 +92,22 @@ def _json(value: Optional[str], fallback: Any = None) -> Any:
 # Writing (the export)
 # ---------------------------------------------------------------------------
 
-def starting_points_out(profile: UserProfile) -> Any:
-    """What the search setup stores for its starting points, as it stores it. Today that is the "Commute from"
-    stations (a list of text); the format calls the field ``starting_points`` whatever its shape (Part 7)."""
-    return list(profile.commute_from or [])
+def starting_points_out(profile: UserProfile, pin_ref: dict[int, int]) -> list[dict]:
+    """The search setup's own starting points (backend/commute.py; not the automatic home pins), as the format holds
+    them: ``{label, pin, place, use}``, where ``pin`` is the ``ref`` of one of the workspace's pins (or null) and
+    ``place`` is typed text (or null). An older search setup's "Commute from" stations come out as the public-transport
+    starting points the app shows for them; a starting point whose pin is gone is left out (there is nothing to
+    point at)."""
+    out = []
+    for p in commute.saved_starting_points(profile):
+        if p["pin_id"] is not None and p["pin_id"] not in pin_ref:
+            continue
+        out.append({"label": p["label"], "pin": pin_ref.get(p["pin_id"]) if p["pin_id"] is not None else None,
+                    "place": p["place"], "use": p["use"]})
+    return out
 
 
-def _search_setup(db: Session, ws: Workspace) -> Optional[dict]:
+def _search_setup(db: Session, ws: Workspace, pin_ref: dict[int, int]) -> Optional[dict]:
     profile = db.get(UserProfile, ws.id)
     dealbreakers = db.get(DealbreakerSet, ws.id)
     if profile is None and dealbreakers is None:
@@ -110,7 +119,7 @@ def _search_setup(db: Session, ws: Workspace) -> Optional[dict]:
                    remote_aus_ok=bool(profile.remote_aus_ok), remote_global_ok=bool(profile.remote_global_ok),
                    allow_hybrid=bool(profile.allow_hybrid), max_office_days=profile.max_office_days,
                    allow_onsite=bool(profile.allow_onsite), seek_enabled=bool(profile.seek_enabled),
-                   seek_locations=list(profile.seek_locations or []), starting_points=starting_points_out(profile))
+                   seek_locations=list(profile.seek_locations or []), starting_points=starting_points_out(profile, pin_ref))
     if dealbreakers is not None:
         out["dealbreakers"] = {"industries": list(dealbreakers.industries or []),
                                "keywords": list(dealbreakers.keywords or [])}
@@ -159,6 +168,8 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tup
     source_ref = {s.id: n for n, s in enumerate(sources, 1)}
     documents = db.query(Document).filter(Document.workspace_id == ws.id).order_by(Document.id).all()
     doc_ref = {d.id: n for n, d in enumerate(documents, 1)}
+    pins = db.query(Pin).filter(Pin.workspace_id == ws.id).order_by(Pin.id).all()
+    pin_ref = {p.id: n for n, p in enumerate(pins, 1)}
     job_ids = [i for (i,) in db.query(Job.id).filter(Job.workspace_id == ws.id).order_by(Job.id)]
     job_ref = {job_id: n for n, job_id in enumerate(job_ids, 1)}
     fits = {f.job_id: f for f in db.query(FitResult).join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws.id)}
@@ -196,9 +207,9 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tup
     data = {
         "name": ws.name,
         "created_at": iso(ws.created_at),
-        "search_setup": _search_setup(db, ws),
-        "pins": [{"label": p.label, "kind": p.kind, "lat": p.lat, "lng": p.lng, "radius_km": p.radius_km}
-                 for p in db.query(Pin).filter(Pin.workspace_id == ws.id).order_by(Pin.id)],
+        "search_setup": _search_setup(db, ws, pin_ref),
+        "pins": [{"ref": pin_ref[p.id], "label": p.label, "kind": p.kind, "lat": p.lat, "lng": p.lng,
+                  "radius_km": p.radius_km} for p in pins],
         "sources": [{"ref": source_ref[s.id], "label": s.label, "url": s.careers_url, "type": s.source_type,
                      "enabled": bool(s.enabled)} for s in sources],
         "schedule": sched.model_dump(),
@@ -347,10 +358,13 @@ class DealbreakersIn(_In):
 
 
 class StartingPointIn(_In):
-    """A starting point stored as an object (the shape Phase C's search setup may store); today's import keeps its
-    place as a "Commute from" station."""
+    """A starting point (backend/commute.py): one of the workspace's pins (``pin``, its ``ref`` in this file) or a
+    typed place, with what it is for. An item that is plain text (as the first import files wrote the "Commute from"
+    stations) is a public-transport place."""
     label: Optional[Short] = None
+    pin: Optional[Ref] = None
     place: Optional[Short] = None
+    use: Optional[Literal["driving", "transit", "both"]] = None
 
 
 class SearchSetupIn(_In):
@@ -370,6 +384,7 @@ class SearchSetupIn(_In):
 
 
 class PinIn(_In):
+    ref: Optional[Ref] = None
     label: Short = ""
     kind: Literal["home", "hybrid", "onsite"]
     lat: Lat
