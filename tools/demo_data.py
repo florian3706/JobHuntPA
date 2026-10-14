@@ -17,10 +17,10 @@ Safety:
   pre-filled for the few addresses the job page would otherwise look up.
 - Documents are text-only rows (``stored_name`` is empty), so no upload is written.
 
-Accounts and encryption: the new database gets a demo admin (``DEMO_EMAIL`` / ``DEMO_PASSWORD``),
-made from the environment as a headless install makes its first admin, and a server key file
+Accounts and encryption: the new database gets a demo account (``DEMO_EMAIL`` / ``DEMO_PASSWORD``),
+made from the environment as a headless install makes its account, and a server key file
 (``server-keys.json``) beside the database; the data folder is the database's folder too
-(``JOBHUNT_DATA_DIR``). Every personal value is written sealed under the demo admin's key, as the
+(``JOBHUNT_DATA_DIR``). Every personal value is written sealed under the demo account's key, as the
 app writes it, so the database looks like a real encrypted install.
 
 The database is built with the app's own models and helpers (``backend.db``,
@@ -41,9 +41,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 WORKSPACE_NAME = "Dummy workspace"
-# The demo database's admin (tools/readme_screenshots.py signs in with these). Made the way a headless install makes
-# its first admin, from the environment, which also encrypts the empty database; everything below is then written
-# under this admin's key, as the app writes it.
+# The demo database's account (tools/readme_screenshots.py signs in with these). Made the way a headless install makes
+# its account, from the environment, which also encrypts the empty database; everything below is then written
+# under this account's key, as the app writes it.
 DEMO_EMAIL, DEMO_PASSWORD = "demo@example.invalid", "demo-password-not-real"
 
 
@@ -72,7 +72,7 @@ def target_path(arg: str, overwrite: bool) -> Path:
 
 def isolate(db_path: Path) -> None:
     """Point the app at ``db_path`` and keep the real .env out of this process. The data folder (uploads, stays
-    empty), the server key file and the demo admin's account live beside the new database."""
+    empty), the server key file and the demo account live beside the new database."""
     os.environ["JOBHUNT_DB_PATH"] = str(db_path)
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
     os.environ["JOBHUNT_DATA_DIR"] = str(db_path.parent)
@@ -792,7 +792,7 @@ def build(db_path: Path) -> None:
     from backend import crypto, users
     from backend.db import SessionLocal, init_db
 
-    # The schema, the key file and the demo admin (from the environment isolate() set), who claims workspace 1.
+    # The schema, the key file and the demo account (from the environment isolate() set), who claims workspace 1.
     init_db()
     users.startup()
     db = SessionLocal()
@@ -801,7 +801,7 @@ def build(db_path: Path) -> None:
         key = users.unlock_with_password(db, admin, DEMO_PASSWORD)
     finally:
         db.close()
-    with crypto.as_user(admin.id, key):  # sealed columns are written under the demo admin's key
+    with crypto.as_user(admin.id, key):  # sealed columns are written under the demo account's key
         _build()
 
 
@@ -1050,7 +1050,7 @@ def _build() -> None:
         reasons_now = [r for (r,) in db.query(Job.excluded_reason)
                        .filter(Job.workspace_id == ws_id, Job.duplicate_of.is_(None))]
         listed, shown = len(reasons_now), sum(1 for r in reasons_now if not r)
-        print(f"Demo database ready: {os.environ['JOBHUNT_DB_PATH']} (admin {DEMO_EMAIL}, data sealed under their key)")
+        print(f"Demo database ready: {os.environ['JOBHUNT_DB_PATH']} (account {DEMO_EMAIL}, data sealed under their key)")
         print(f"  workspace {WORKSPACE_NAME!r}: {listed} jobs listed ({shown} pass the filters, {listed - shown} excluded), "
               f"1 merged copy, {db.query(FitResult).count()} fit scores")
         print(f"  latest scheduled search: {run_start:%Y-%m-%d %H:%M} UTC; duplicate scan {result}")

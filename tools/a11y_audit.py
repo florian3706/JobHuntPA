@@ -46,7 +46,7 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
-import readme_screenshots as shots  # noqa: E402  (its server environment: demo admin, fake LLM, no scheduler)
+import readme_screenshots as shots  # noqa: E402  (its server environment: demo account, fake LLM, no scheduler)
 
 DEMO_EMAIL, DEMO_PASSWORD = shots.DEMO_EMAIL, shots.DEMO_PASSWORD
 PASSWORD = "an audit password 1"
@@ -140,7 +140,7 @@ class Api:
         self.app = app
         self.ctx = playwright.request.new_context(base_url=app.base)
         self.email = email
-        r = self.ctx.post("/api/auth/login", data={"email": email, "password": password})
+        r = self.ctx.post("/api/auth/login", data={"name": email, "password": password})
         if not r.ok:
             raise RuntimeError(f"sign-in as {email} failed: {r.status} {r.text()[:200]}")
         self.me = self.ctx.get("/api/auth/me").json()
@@ -304,7 +304,7 @@ class Auditor:
         ctx.route(re.compile(r"https://(unpkg\.com|[abc]\.tile\.openstreetmap\.org|fonts\.googleapis\.com|fonts\.gstatic\.com)/.*"),
                   self.external)
         if login is not None:
-            r = ctx.request.post(f"{app.base}/api/auth/login", data={"email": login[0], "password": login[1]})
+            r = ctx.request.post(f"{app.base}/api/auth/login", data={"name": login[0], "password": login[1]})
             if not r.ok:
                 raise RuntimeError(f"sign-in as {login[0]} failed: {r.status} {r.text()[:200]}")
         return ctx
@@ -478,7 +478,7 @@ def settle(page, ms: int = 300) -> None:
     page.wait_for_timeout(ms)
 
 
-def admin_ctx(a: Auditor, w: int, theme: str, **kw):
+def owner_ctx(a: Auditor, w: int, theme: str, **kw):
     app = a.apps["demo"]
     return a.context(app, width=w, theme=theme, login=(DEMO_EMAIL, DEMO_PASSWORD),
                      extra_ls={"jobhunt.ws": str(a.fixtures["ws"])}, **kw)
@@ -504,7 +504,7 @@ def open_tab(page, tab: str) -> None:
 
 @scenario("index")
 def sc_jobs(a, w, theme):
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     with a.step("index: Jobs tab"):
         a.check(page, "index: Jobs tab")
@@ -577,7 +577,7 @@ def sc_jobs_empty(a, w, theme):
 
 @scenario("index")
 def sc_tabs(a, w, theme):
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     with a.step("index: Search setup tab"):
         open_tab(page, "search")
@@ -609,7 +609,7 @@ def sc_tabs(a, w, theme):
 
 @scenario("index")
 def sc_dialogs(a, w, theme):
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     first = ".job-card:first-of-type"
     with a.step("index: description modal"):
@@ -658,7 +658,7 @@ def sc_dialogs(a, w, theme):
 @scenario("index")
 def sc_more_states(a, w, theme):
     """Workspace dialogs, messages, an opened document, a form with a problem, a map popup, a new pin."""
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     with a.step("index: new workspace dialog"):
         page.click("#ws-new")
@@ -731,7 +731,7 @@ def sc_theme_sample(a, w, theme):
         page.wait_for_selector("#error-summary:not([hidden])")
         a.check(page, "login: error summary")
     ctx.close()
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     with a.step("themes: Jobs tab"):
         a.check(page, "index: Jobs tab")
@@ -747,12 +747,6 @@ def sc_theme_sample(a, w, theme):
         open_tab(page, "map")
         page.wait_for_selector(".map-job-row")
         a.check(page, "index: Map tab, jobs mode")
-    with a.step("themes: admin"):
-        page.goto("about:blank")
-        page.goto(f"{base}/admin.html")
-        page.wait_for_selector("#users-grid")
-        settle(page, 800)
-        a.check(page, "admin.html: every section")
     ctx.close()
 
 
@@ -784,7 +778,7 @@ def sc_login(a, w, theme):
         page.click("#login-submit")
         page.wait_for_selector("#error-summary:not([hidden])")
         a.check(page, "login: missing fields error summary")
-        fill_submit(page, {"#email": "nobody@example.invalid", "#password": "not the password"}, "#login-submit")
+        fill_submit(page, {"#name": "nobody@example.invalid", "#password": "not the password"}, "#login-submit")
         page.wait_for_function("() => document.querySelector('#error-summary-list li')?.textContent.length > 0")
         settle(page, 300)
         a.check(page, "login: wrong password error")
@@ -833,57 +827,12 @@ def sc_recover(a, w, theme):
     with a.step("recover: a code that isn't right"):
         user = a.fixtures["fresh"]
         page._expect.append((401, "/api/auth/recover"))
-        fill_submit(page, {"#email": user["email"], "#recovery-code": "AAAA-BBBB-CCCC-DDDD", "#password": "another long password"},
+        fill_submit(page, {"#name": user["email"], "#recovery-code": "AAAA-BBBB-CCCC-DDDD", "#password": "another long password"},
                     "#recover-submit")
         page.wait_for_function("() => document.querySelector('#error-summary-list li')?.textContent.length > 0")
         settle(page, 300)
         a.check(page, "recover: wrong recovery code")
     ctx.close()
-
-
-@scenario("auth")
-def sc_signup(a, w, theme):
-    app = a.apps["demo"]
-    admin: Api = a.fixtures["admin"]
-    try:
-        for mode, label in (("invite", "needs an invitation"), ("closed", "closed"), ("open", "open")):
-            admin.call("PUT", "/api/admin/signup", {"mode": mode})
-            ctx = plain_ctx(a, w, theme)
-            page = a.page(ctx, f"signup: {label}")
-            with a.step(f"signup: {label}"):
-                page.goto(f"{app.base}/signup.html")
-                page.wait_for_function("() => !document.querySelector('#auth-status').textContent.includes('Checking')")
-                settle(page, 300)
-                a.check(page, f"signup: {label}")
-            if mode == "open":
-                with a.step("signup: errors"):
-                    page.click("#signup-submit")
-                    page.wait_for_selector("#error-summary:not([hidden])")
-                    a.check(page, "signup: error summary")
-                with a.step("signup: email taken"):
-                    page._expect.append((409, "/api/auth/signup"))
-                    page._expect.append((422, "/api/auth/signup"))
-                    fill_submit(page, {"#email": DEMO_EMAIL, "#password": "a long enough password"}, "#signup-submit")
-                    page.wait_for_function("() => document.querySelector('#error-summary-list li')?.textContent.length > 0")
-                    a.check(page, "signup: address already used")
-            ctx.close()
-        invite = admin.call("POST", "/api/admin/invites", {"email": "invited@example.invalid"})["link"]
-        ctx = plain_ctx(a, w, theme)
-        page = a.page(ctx, "signup: invitation")
-        with a.step("signup: invitation link"):
-            page.goto(invite)
-            page.wait_for_selector("#setup-step:not([hidden])")
-            a.check(page, "signup: invitation link (address filled in)")
-        ctx.close()
-        ctx = plain_ctx(a, w, theme)
-        page = a.page(ctx, "signup: bad invitation")
-        with a.step("signup: used or bad invitation"):
-            page.goto(f"{app.base}/signup.html?invite=nope")
-            page.wait_for_selector("#closed-step:not([hidden]), #setup-step:not([hidden])")
-            a.check(page, "signup: bad invitation")
-        ctx.close()
-    finally:
-        admin.call("PUT", "/api/admin/signup", {"mode": "open"})
 
 
 @scenario("auth")
@@ -961,22 +910,22 @@ def sc_wizard(a, w, theme):
 
 @scenario("wizard")
 def sc_wizard_short(a, w, theme):
-    """The first admin's short path (theme, then keep or review the settings)."""
+    """The first account's short path on an existing install (theme, then keep or review the settings)."""
     app = a.apps["demo"]
-    admin: Api = a.fixtures["admin"]
-    ctx = admin_ctx(a, w, theme)
+    owner: Api = a.fixtures["owner"]
+    ctx = owner_ctx(a, w, theme)
     page = a.page(ctx, "welcome: short path")
     try:
         for n in (1, 2):
-            admin.call("PUT", "/api/account/onboarding", {"step": n})
-            with a.step(f"welcome: first admin, step {n}"):
+            owner.call("PUT", "/api/account/onboarding", {"step": n})
+            with a.step(f"welcome: first account, step {n}"):
                 page.goto("about:blank")
                 page.goto(f"{app.base}/welcome.html")
                 page.wait_for_selector("#step-title")
                 settle(page, 300)
-                a.check(page, f"welcome: first admin's short path, step {n}")
+                a.check(page, f"welcome: first account's short path, step {n}")
     finally:
-        admin.call("PUT", "/api/account/onboarding", {"done": True})
+        owner.call("PUT", "/api/account/onboarding", {"done": True})
         ctx.close()
 
 
@@ -985,7 +934,7 @@ def sc_wizard_short(a, w, theme):
 @scenario("job")
 def sc_job(a, w, theme):
     app = a.apps["demo"]
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = a.page(ctx, "job.html")
     page._expect.append((404, "/api/jobs/"))
     with a.step("job.html"):
@@ -1002,74 +951,34 @@ def sc_job(a, w, theme):
     ctx.close()
 
 
-# -- the admin panel ----------------------------------------------------------------------------------------
+# -- the Settings tab: this JobHuntPA's settings (they were the admin panel's) ----------------------------------
 
-@scenario("admin")
-def sc_admin(a, w, theme):
+@scenario("settings")
+def sc_install_settings(a, w, theme):
+    """The AI provider, AI usage, commute keys, public address, server key and name cards, then every form submitted
+    with a problem (the error under the field)."""
     app = a.apps["demo"]
-    ctx = admin_ctx(a, w, theme)
-    page = a.page(ctx, "admin.html")
-    with a.step("admin.html"):
-        page.goto(f"{app.base}/admin.html")
-        page.wait_for_selector("#users-grid")
-        page.wait_for_function("() => document.querySelector('#usage-tables').children.length > 0", timeout=30000)
+    ctx = owner_ctx(a, w, theme)
+    page = a.page(ctx, "settings: this JobHuntPA")
+    with a.step("settings: this JobHuntPA's cards"):
+        page.goto(f"{app.base}/#settings")
+        page.wait_for_selector("#llm-form")
+        page.wait_for_function("() => document.querySelector('#usage-tiles').children.length > 0", timeout=30000)
         settle(page, 800)
-        a.check(page, "admin.html: every section")
-    with a.step("admin.html: server section opened"):
-        page.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
-        settle(page, 500)
-        a.check(page, "admin.html: every disclosure open")
-    with a.step("admin.html: invitation made"):
-        page.fill("#invite-email", "someone@example.invalid") if page.query_selector("#invite-email") else None
-        btn = page.query_selector("#invite-create, #invite-form button[type=submit]")
-        if btn:
-            btn.click()
-            page.wait_for_selector("#invite-result:not([hidden]), #invite-result-title")
-            settle(page, 400)
-            a.check(page, "admin.html: invitation link shown")
-    with a.step("admin.html: confirm dialog"):
-        page.click('#users-table [data-act="disable"] >> nth=0')
-        page.wait_for_selector("#confirm-dialog[open]")
-        settle(page, 300)
-        a.check(page, "admin: confirm dialog")
-        page.keyboard.press("Escape")
-    ctx.close()
-
-
-@scenario("admin")
-def sc_admin_forms(a, w, theme):
-    """Every settings form submitted with a problem (the error under the field), and the other confirm dialogs."""
-    app = a.apps["demo"]
-    ctx = admin_ctx(a, w, theme)
-    page = a.page(ctx, "admin.html: forms with problems")
-    with a.step("admin.html: forms with problems"):
-        page.goto(f"{app.base}/admin.html")
-        page.wait_for_selector("#users-grid")
-        settle(page, 800)
-        page.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
+        a.check(page, "index: Settings, this JobHuntPA's cards")
+    with a.step("settings: forms with problems"):
         page.fill("#llm-model", "")
         page.fill("#llm-base-url", "not an address")
         page.click("#llm-save")
-        page.fill("#invite-email", "not an address")
-        page._expect.append((422, "/api/admin/invites"))  # (the address is refused, which the error under the field shows)
-        page.click("#invite-create")
-        for sel in ("form.key-field .key-save",):  # the key forms: nothing pasted
-            for btn in page.query_selector_all(sel):
-                btn.click()
+        page._expect.append((422, "/api/settings/address"))  # (refused, which the error under the field shows)
+        page.fill("#public-url", "http://not-https.example")
+        page.click("#address-save")
+        for btn in page.query_selector_all("form.key-field .key-save"):  # the key forms: nothing pasted
+            btn.click()
+        page.fill("#acct-name-input", "")
+        page.click("#acct-name-submit")
         settle(page, 600)
-        a.check(page, "admin.html: forms with problems")
-    with a.step("admin.html: replace the server key dialog"):
-        page.click("#rotate-key")
-        page.wait_for_selector("#confirm-dialog[open]")
-        settle(page, 300)
-        a.check(page, "admin: replace the server key dialog")
-        page.keyboard.press("Escape")
-    with a.step("admin.html: delete unencrypted files dialog"):
-        if page.is_visible("#plain-delete"):
-            page.click("#plain-delete")
-            page.wait_for_selector("#confirm-dialog[open]")
-            a.check(page, "admin: delete the unencrypted files dialog")
-            page.keyboard.press("Escape")
+        a.check(page, "index: Settings, forms with problems")
     ctx.close()
 
 
@@ -1081,7 +990,7 @@ def user_ctx(a: Auditor, w: int, theme: str, user: dict):
 
 @scenario("settings")
 def sc_settings_member(a, w, theme):
-    """An ordinary account (no admin link), background access on."""
+    """Another account (as an older install may have), background access on."""
     app = a.apps["demo"]
     user = new_account(a, a.unique("settings-member"), background=True)
     ctx = user_ctx(a, w, theme, user)
@@ -1212,10 +1121,10 @@ def kb_sign_in(a, w, theme):
         page.goto(f"{app.base}/login.html")
         page.wait_for_selector("#login-form:not([hidden])")
         settle(page, 300)
-        expect_focus(a, page, "sign-in: the email field has focus when the page opens", "email")
+        expect_focus(a, page, "sign-in: the name field has focus when the page opens", "name")
         stops = walk(a, page, "sign-in, password step", until=lambda i: i["id"] == "password")
         page.keyboard.press("Shift+Tab")
-        expect_focus(a, page, "sign-in: Shift+Tab goes back to the email field", "email")
+        expect_focus(a, page, "sign-in: Shift+Tab goes back to the name field", "name")
         page.keyboard.type(user["email"])
         page.keyboard.press("Tab")
         page.keyboard.type(user["password"])
@@ -1314,7 +1223,7 @@ def kb_change_password(a, w, theme):
 
 @scenario("keyboard")
 def kb_job_status(a, w, theme):
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     page.wait_for_selector(".info-btn")
     settle(page, 1500)
@@ -1348,7 +1257,7 @@ def kb_job_status(a, w, theme):
 
 @scenario("keyboard")
 def kb_ghost_why(a, w, theme):
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     with a.step("keyboard: a ghost-job Why? list"):
         card = page.locator(".job-card:has(details.ghost-why)").first
@@ -1373,28 +1282,17 @@ def kb_ghost_why(a, w, theme):
 
 
 @scenario("keyboard")
-def kb_admin(a, w, theme):
+def kb_install_settings(a, w, theme):
+    """The Settings tab's cards for this JobHuntPA (AI provider to the server key), by keyboard alone."""
     app = a.apps["demo"]
-    ctx = admin_ctx(a, w, theme)
-    page = a.page(ctx, "keyboard: admin")
-    with a.step("keyboard: the admin people table and a dialog"):
-        page.goto(f"{app.base}/admin.html")
-        page.wait_for_selector("#users-grid")
+    ctx = owner_ctx(a, w, theme)
+    page = a.page(ctx, "keyboard: this JobHuntPA's settings")
+    with a.step("keyboard: this JobHuntPA's settings"):
+        page.goto(f"{app.base}/#settings")
+        page.wait_for_selector("#llm-form")
         settle(page, 800)
-        walk(a, page, "admin page", until=lambda i: i["id"] == "usage-title" or i["text"] == "Disable", limit=80)
-        walk(a, page, "admin people table", until=lambda i: i["text"] == "Disable", limit=80)
-        # a confirm dialog from a row's Disable button
-        page.focus('#users-table [data-act="disable"]')
-        page.evaluate("() => { window.__opener = document.activeElement; }")
-        page.keyboard.press("Enter")
-        page.wait_for_selector("#confirm-dialog[open]")
-        expect_focus(a, page, "confirm dialog: focus goes to its heading", "confirm-title", in_dialog=True)
-        walk(a, page, "confirm dialog", limit=30, modal=True)
-        page.focus("#confirm-cancel")
-        page.keyboard.press("Enter")  # Cancel
-        page.wait_for_function("() => !document.querySelector(\'#confirm-dialog\').open")
-        if not page.evaluate("() => document.activeElement === window.__opener"):
-            key_problem(a, page, "confirm dialog: Cancel does not return focus to the button that opened it")
+        page.focus("#llm-provider")
+        walk(a, page, "AI provider to the server key", until=lambda i: i["id"] == "rotate-key", limit=120)
     ctx.close()
 
 
@@ -1402,11 +1300,10 @@ def kb_admin(a, w, theme):
 def kb_whole_pages(a, w, theme):
     """Tab from the top to the bottom of the main pages: a focus ring on every stop, none hidden under the sticky header."""
     app = a.apps["demo"]
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = a.page(ctx, "keyboard: whole pages")
     pages = [("the Jobs tab", "/#jobs", ".job-card"), ("the Settings tab", "/#settings", "#export-btn"),
-             ("the job page", f"/job.html?id=1&ws={a.fixtures['ws']}", "#job-company dl.profile"),
-             ("the admin page", "/admin.html", "#users-grid")]
+             ("the job page", f"/job.html?id=1&ws={a.fixtures['ws']}", "#job-company dl.profile")]
     for name, path, ready in pages:
         with a.step(f"keyboard: Tab through {name}"):
             page.goto("about:blank")
@@ -1414,14 +1311,14 @@ def kb_whole_pages(a, w, theme):
             page.wait_for_selector(ready, state="attached")
             settle(page, 1500)
             page.evaluate("() => { document.activeElement && document.activeElement.blur(); window.scrollTo(0, 0); }")
-            walk(a, page, f"Tab through {name}", whole_page=True, limit=2500)  # (the admin page lists every account the audit made)
+            walk(a, page, f"Tab through {name}", whole_page=True, limit=2500)
     ctx.close()
 
 
 @scenario("keyboard")
 def kb_map(a, w, theme):
     """The map has keyboard routes for everything: arrows pan, + and - zoom, Tab leaves it, the list is the way to a place."""
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     page._expect += [(404, "/api/")]
     with a.step("keyboard: map"):
@@ -1474,7 +1371,7 @@ def kb_export(a, w, theme):
 @scenario("keyboard")
 def kb_dialogs(a, w, theme):
     """Dashboard dialogs: Escape closes, focus returns to the button that opened them; the chat panel too."""
-    ctx = admin_ctx(a, w, theme)
+    ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     page.wait_for_selector(".info-btn")
     settle(page, 1500)  # the company icons arrive after the cards and redraw them
@@ -1658,14 +1555,25 @@ def launch_browser(p, chrome: Path | None):
 
 
 def new_account(a: Auditor, name: str, *, onboarding: bool = False, background: bool = False) -> dict:
-    """Signs up a fictional person through the app's own sign-up (the mode is open), and sets the account up."""
+    """A fictional extra account, written straight into the demo database the way an older install's sign-up left
+    one (the app itself makes only the first: one account per install), and set up through the app's API. A small
+    process does the writing with the running app's key file, read but not locked (the app holds the lock)."""
     demo = a.apps["demo"]
     email = f"{name}@example.invalid"
-    anon = a.pw.request.new_context()
-    r = anon.post(f"{demo.base}/api/auth/signup", data={"email": email, "password": PASSWORD, "name": name.title()})
-    if r.status != 201:
-        raise RuntimeError(f"sign-up of {email} answered {r.status}: {r.text()[:200]}")
-    user = {"email": email, "codes": r.json()["recovery_codes"], "name": name, "password": PASSWORD}
+    code = (
+        "import json\nfrom backend import crypto, keys, users\nfrom backend.db import SessionLocal, Workspace\n"
+        "users._server_keys = keys.ServerKeys.load()\ndb = SessionLocal()\n"
+        f"account = users._insert_account(db, name={email!r}, password={PASSWORD!r}, created_via='open', "
+        "background=False)\n"
+        "with crypto.as_user(account.user_id, account.dek):\n"
+        "    db.add(Workspace(name=users.DEFAULT_WORKSPACE, owner_id=account.user_id))\n    db.commit()\n"
+        "print('CODES ' + json.dumps(account.recovery_codes))\n")
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=demo.env(), capture_output=True, text=True,
+                         timeout=60)
+    lines = [line for line in out.stdout.splitlines() if line.startswith("CODES ")]
+    if out.returncode or not lines:
+        raise RuntimeError(f"could not add the account {email}: {out.stderr[-300:]}")
+    user = {"email": email, "codes": json.loads(lines[-1][6:]), "name": name, "password": PASSWORD}
     api = Api(a.pw, demo, email, PASSWORD)
     api.call("POST", "/api/auth/recovery-codes/ack", {})
     if not onboarding:
@@ -1697,14 +1605,13 @@ def plant_ghost_signs(app: App) -> None:
 def setup(a: Auditor) -> None:
     """Accounts and settings the scenarios need."""
     demo = a.apps["demo"]
-    admin = Api(a.pw, demo, DEMO_EMAIL, DEMO_PASSWORD)
-    admin.call("POST", "/api/auth/recovery-codes/ack", {})
-    admin.call("PUT", "/api/account/onboarding", {"done": True})  # the demo admin has finished the walkthrough
-    admin.call("PUT", "/api/admin/signup", {"mode": "open"})
-    ws = next(w for w in admin.call("GET", "/api/workspaces") if w["name"] == "Dummy workspace")
+    owner = Api(a.pw, demo, DEMO_EMAIL, DEMO_PASSWORD)
+    owner.call("POST", "/api/auth/recovery-codes/ack", {})
+    owner.call("PUT", "/api/account/onboarding", {"done": True})  # the demo account has finished the walkthrough
+    ws = next(w for w in owner.call("GET", "/api/workspaces") if w["name"] == "Dummy workspace")
     a.fixtures["ws"] = ws["id"]
-    a.fixtures["empty_ws"] = admin.call("POST", "/api/workspaces", {"name": "Empty audit workspace"})["id"]
-    a.fixtures["admin"] = admin
+    a.fixtures["empty_ws"] = owner.call("POST", "/api/workspaces", {"name": "Empty audit workspace"})["id"]
+    a.fixtures["owner"] = owner
     a.fixtures["fresh"] = new_account(a, "fresh-codes")
     a.fixtures["wizard"] = new_account(a, "wizard", onboarding=True)
     # (the key file is locked while the app runs: stop it for a moment, plant the signs, start it on the same database)

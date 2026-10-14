@@ -297,7 +297,7 @@ safe and delete them when you no longer need them.
 
 ## What is where
 
-- `Account.md`: your email, name, sign-in settings and theme.
+- `Account.md`: your sign-in name, sign-in settings and theme.
 - `Workspaces/`: one folder for each of your {counts['workspaces']} workspace(s):
   - `Search setup.md`: job titles, keywords, dealbreakers, salary, work modes, locations, commute and the search schedule.
   - `Sources.md`: the company career pages and feeds you added.
@@ -313,7 +313,7 @@ safe and delete them when you no longer need them.
 - Sign-in sessions, caches and logs.
 - A job that is another copy of the same ad is not a file of its own: it is listed under "Also advertised at" in the main job's file (or in `Filtered out.md`, when the main job is there).
 - A job the search filters left out and you never touched is only in `Filtered out.md`.
-- Anyone else's data. Admins export only their own account, like everyone else.
+- Anyone else's data: an install from before the open-source version may have other accounts, and each exports only its own.
 """
 
 

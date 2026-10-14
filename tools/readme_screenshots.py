@@ -5,14 +5,14 @@
 
 What it does:
 1. Builds a NEW temporary database with tools/demo_data.py (a "Dummy workspace" full of made-up
-   jobs; nothing from your real data/jobhunt.db). It belongs to a demo admin account, made with
+   jobs; nothing from your real data/jobhunt.db). It belongs to a demo account, made with
    the database, and is sealed under that account's key like a real install, with its server key
    file (server-keys.json) beside it.
 2. Starts the app on a free local port against that database and key file, with the temporary
    folder as its data folder (JOBHUNT_DATA_DIR), fake LLM settings, no commute API keys, a throwaway
    .env path (JOBHUNT_ENV_PATH, so the real .env is neither read nor written, even by the Settings
    tab) and the scheduler off, so nothing can reach an LLM or scrape a site.
-3. Opens it in headless Chromium (Playwright), signed in as the demo admin, and saves the screenshots.
+3. Opens it in headless Chromium (Playwright), signed in as the demo account, and saves the screenshots.
 4. Stops the server and deletes the temporary folder.
 
 Needs the app's requirements plus Playwright's Chromium (setup installs both) and Pillow
@@ -26,8 +26,8 @@ Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide
     Settings tab), themes, chat, cover-letter, ghost-job (a job card with the ghost-job circle under its
     fit score and its "why?" list opened), settings-account (the account cards on the Settings tab: password,
     recovery codes, signed-in devices, background access), settings-data (the download
-    your data and delete account cards), admin-people (the admin panel: summary, people, sign-up), admin-server
-    (the admin panel's Server section: AI provider and commute keys), sign-in (the sign-in page, signed out)
+    your data and delete account cards), settings-install (the Settings tab's AI provider and AI usage cards),
+    sign-in (the sign-in page, signed out)
 """
 from __future__ import annotations
 
@@ -61,14 +61,14 @@ SIZE_LIMIT = 400_000                      # bytes; bigger PNGs are reduced to a 
 # Kept out of the repo: set JOBHUNT_SCREENSHOT_FORBIDDEN="suburb|street" when you run this.
 FORBIDDEN = os.getenv("JOBHUNT_SCREENSHOT_FORBIDDEN", "").strip()
 ALLOWED_HOSTS = ("unpkg.com", "tile.openstreetmap.org", "fonts.googleapis.com", "fonts.gstatic.com")
-# The demo database's admin, made by tools/demo_data.py (the same values: its DEMO_EMAIL / DEMO_PASSWORD).
+# The demo database's account, made by tools/demo_data.py (the same values: its DEMO_EMAIL / DEMO_PASSWORD).
 DEMO_EMAIL, DEMO_PASSWORD = "demo@example.invalid", "demo-password-not-real"
 
 # theme id -> shown in themes.png, in this order
 MONTAGE_THEMES = ["light", "catppuccin-mocha", "catppuccin-latte", "dyslexia", "deuteranomaly-dark", "monochromacy"]
 ALL_SHOTS = ["jobs", "run-report", "job-page", "map", "search-setup", "company-sources", "settings", "search-schedule",
              "theme-picker", "themes", "chat", "cover-letter", "ghost-job", "settings-account", "settings-data",
-             "admin-people", "admin-server", "sign-in"]
+             "settings-install", "sign-in"]
 
 
 # --------------------------------------------------------------------------
@@ -185,14 +185,14 @@ class Shooter:
         ctx.on("request", lambda r: self.hosts.add(urlsplit(r.url).netloc))
         if not signed_in or self.session:
             return ctx
-        # Signed in as the demo admin, once: the session cookie lands in this browser profile and is reused.
-        r = ctx.request.post(f"{self.base}/api/auth/login", data={"email": DEMO_EMAIL, "password": DEMO_PASSWORD})
+        # Signed in as the demo account, once: the session cookie lands in this browser profile and is reused.
+        r = ctx.request.post(f"{self.base}/api/auth/login", data={"name": DEMO_EMAIL, "password": DEMO_PASSWORD})
         if not r.ok:
             sys.exit(f"Signing in to the demo server failed: {r.status} {r.text()[:200]}")
         self.session = ctx.storage_state()
         return ctx
-        # Signed in as the demo admin: the session cookie lands in this browser profile.
-        r = ctx.request.post(f"{self.base}/api/auth/login", data={"email": DEMO_EMAIL, "password": DEMO_PASSWORD})
+        # Signed in as the demo account: the session cookie lands in this browser profile.
+        r = ctx.request.post(f"{self.base}/api/auth/login", data={"name": DEMO_EMAIL, "password": DEMO_PASSWORD})
         if not r.ok:
             sys.exit(f"Signing in to the demo server failed: {r.status} {r.text()[:200]}")
         return ctx
@@ -357,8 +357,8 @@ def shot_search(s: Shooter) -> None:
 
 def shot_settings(s: Shooter) -> None:
     """The Settings tab below the Theme card (Scheduled searches and the AI status with the Rescore buttons), the
-    Scheduled searches card alone, and the top of the Theme card (its first three families of themes). The AI provider,
-    model, key and commute keys are in the admin panel (admin.html#server), not on this tab."""
+    Scheduled searches card alone, and the top of the Theme card (its first three families of themes). The AI provider
+    card has a picture of its own (settings-install)."""
     ctx = s.context()
     page = s.page(ctx)
     page.goto(f"{s.base}/#settings")
@@ -456,24 +456,14 @@ def shot_settings_data(s: Shooter) -> None:
     ctx.close()
 
 
-def admin_page(s: Shooter, hash_: str, wait: str):
-    ctx = s.context()
-    page = s.page(ctx)
-    page.goto(f"{s.base}/admin.html{hash_}")
-    page.wait_for_selector(wait)
-    s.settle(page, 800)
-    return ctx, page
-
-
-def shot_admin_people(s: Shooter) -> None:
-    ctx, page = admin_page(s, "", "#users table tr, #users .person-card, #users li")
-    s.save("admin-people", s.grab(page, span(s, page, "#usage", "#signup")))
-    ctx.close()
-
-
-def shot_admin_server(s: Shooter) -> None:
-    ctx, page = admin_page(s, "#server", "#llm-card")
-    s.save("admin-server", s.grab(page, span(s, page, "#llm-card", "#commute-keys-card")))
+def shot_settings_install(s: Shooter) -> None:
+    """This JobHuntPA's AI cards on the Settings tab: the AI provider (provider, model, key, reasoning levels, Test
+    connection) and AI usage (they were the admin panel's)."""
+    ctx, page = settings_page(s)
+    page.wait_for_selector("#llm-form")
+    page.wait_for_function("() => document.querySelector('#usage-tiles').children.length > 0")
+    s.settle(page)
+    s.save("settings-install", s.grab(page, span(s, page, "#llm-card", "#usage-card")))
     ctx.close()
 
 
@@ -537,7 +527,7 @@ def shot_themes(s: Shooter) -> None:
 SHOTS = {"jobs": shot_jobs, "run-report": shot_run_report, "job-page": shot_job_page, "map": shot_map, "search": shot_search,
          "settings": shot_settings, "chat": shot_chat, "cover-letter": shot_cover_letter, "themes": shot_themes,
          "ghost-job": shot_ghost_job, "settings-account": shot_settings_account, "settings-data": shot_settings_data,
-         "admin-people": shot_admin_people, "admin-server": shot_admin_server, "sign-in": shot_sign_in}
+         "settings-install": shot_settings_install, "sign-in": shot_sign_in}
 GROUP = {"search-setup": "search", "company-sources": "search", "search-schedule": "settings", "theme-picker": "settings"}
 
 
@@ -574,13 +564,13 @@ def main() -> None:
         subprocess.run([sys.executable, str(TOOLS / "demo_data.py"), str(db)], check=True, cwd=ROOT)
         port = free_port()
         proc = start_server(db, env_file, port, work / "server.log")
-        before = counts(db)  # after start-up, which creates the demo admin (app_settings gets its keys)
+        before = counts(db)  # after start-up, which creates the demo account (app_settings gets its keys)
         base = f"http://127.0.0.1:{port}"
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())  # keeps the session cookie
         signed_in = json.load(opener.open(urllib.request.Request(
             f"{base}/api/auth/login", method="POST", headers={"Content-Type": "application/json"},
-            data=json.dumps({"email": DEMO_EMAIL, "password": DEMO_PASSWORD}).encode())))
-        # The demo admin's recovery codes count as saved, so the pages show no reminder about them.
+            data=json.dumps({"name": DEMO_EMAIL, "password": DEMO_PASSWORD}).encode())))
+        # The demo account's recovery codes count as saved, so the pages show no reminder about them.
         opener.open(urllib.request.Request(f"{base}/api/auth/recovery-codes/ack", method="POST", data=b"{}",
                                            headers={"Content-Type": "application/json", "X-CSRF-Token": signed_in["csrf"]}))
         # ... and the setup walkthrough is finished, so the dashboard opens instead of welcome.html.
