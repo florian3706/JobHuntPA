@@ -271,7 +271,7 @@ class BootstrapAndRestartTest(unittest.TestCase):
     def test_environment_bootstrap_then_a_session_survives_a_restart(self):
         boot = scenario(BOOT, env=ADMIN_ENV)
         self.assertEqual({k: boot["state"][k] for k in ("setup_required", "signed_in")},
-                         {"setup_required": False, "folder_required": False, "signed_in": False})
+                         {"setup_required": False, "signed_in": False})
         self.assertFalse(boot["token_file"])
         self.assertEqual(boot["login"], 200)
         self.assertEqual(boot["users"], ["bootstrap"])
