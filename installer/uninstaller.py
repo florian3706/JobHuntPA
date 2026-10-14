@@ -256,9 +256,21 @@ def remove_data_folders(folder: Path, datas: list[Path]) -> None:
             continue
         shutil.rmtree(data, ignore_errors=True)
         say(f"  Deleted the data folder {data}")
+    # The pointer is one per user: removed when it names this install's data folder (or a folder that is gone), and
+    # left for another copy of JobHuntPA otherwise.
     paths = load_paths(folder)
-    if paths is not None and paths.remove_pointer():
-        say("  Removed the note of where the data folder was.")
+    pointed = paths.read_pointer() if paths is not None else None
+    if pointed is not None:
+        ours = any(_same(pointed, data) for data in datas)
+        if (ours or not pointed.exists()) and paths.remove_pointer():
+            say("  Removed the note of where the data folder was.")
+
+
+def _same(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
 
 
 def remove_shortcuts(folder: Path) -> None:

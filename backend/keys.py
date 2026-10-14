@@ -662,14 +662,14 @@ def bench_kdf(profiles: Iterable[str], runs: int = 3, out=None) -> dict[str, flo
 def main(argv: Optional[list[str]] = None, *, ask_password: Optional[Callable[[str], str]] = None) -> int:
     """``ask_password`` replaces getpass for recover-lost (tests)."""
     parser = argparse.ArgumentParser(prog="python -m backend.keys",
-                                     description="JobHuntPA's server keys (data/server-keys.json). Run with the app "
+                                     description="JobHuntPA's server keys (server-keys.json in the data folder). Run with the app "
                                                  "stopped.")
     sub = parser.add_subparsers(dest="command", required=True)
     bench = sub.add_parser("bench-kdf", help="time the password key derivation (argon2id) profiles on this machine")
     bench.add_argument("--profile", choices=["default", "low", "all"], default="all")
     bench.add_argument("--runs", type=int, default=3)
     sub.add_parser("rotate-kek", help="replace the server key and re-wrap everything that uses it")
-    recover = sub.add_parser("recover-lost", help="make a new key file after losing data/server-keys.json (asks for "
+    recover = sub.add_parser("recover-lost", help="make a new key file after losing server-keys.json (asks for "
                                                   "the account's password)")
     # (--admin-email is the older spelling: an older install's sign-in names are email addresses)
     recover.add_argument("--name", "--admin-email", dest="names", action="append", required=True,

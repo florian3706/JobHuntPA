@@ -1,4 +1,4 @@
-"""``python -m backend.keys recover-lost --name X``: carry on after ``data/server-keys.json`` was lost and there's no
+"""``python -m backend.keys recover-lost --name X``: carry on after ``server-keys.json`` (in the data folder) was lost and there's no
 backup of it (accounts design 1.3, "Lost key file"). Run it with JobHuntPA stopped.
 
 The key file holds the server KEK (it wraps the data keys of background-access accounts), the pepper (accounts are

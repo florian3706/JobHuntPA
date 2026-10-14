@@ -279,7 +279,7 @@ def known_to_exist() -> bool:
 
 
 def first_run_path() -> Path:
-    """``first-run.txt`` beside the database (data/first-run.txt in an install)."""
+    """``first-run.txt`` beside the database (in the data folder)."""
     return Path(DB_PATH).parent / FIRST_RUN_FILE
 
 

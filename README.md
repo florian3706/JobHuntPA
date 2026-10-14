@@ -1191,9 +1191,9 @@ the real setup and launch on Linux, macOS and Windows, and builds and starts the
 breakage.
 
 **Where the data lives** is `backend/paths.py` (standard library only, so the launcher, the uninstaller and
-setup load it by its path): `JOBHUNT_DATA_DIR`, then the pointer `data-folder.json` in the per-user configuration
-folder (`JOBHUNT_CONFIG_DIR` moves that folder), then a `data` folder next to the app that holds a database or
-key file. With none of them the app starts in the first run's step 1 (`backend/data_folder.py`): the database
+setup load it by its path): `JOBHUNT_DATA_DIR`, else the pointer `data-folder.json` in the per-user configuration
+folder (`JOBHUNT_CONFIG_DIR` moves that folder), with a `data` folder next to the app that holds a database or
+key file coming before the pointer (the pointer is one per user; a second copy of the app keeps its own data). With none of them the app starts in the first run's step 1 (`backend/data_folder.py`): the database
 is in memory, only health, `/api/auth/state` and the folder step answer, and choosing a folder writes the
 pointer and ends the process with status 3, which `installer/launch.py` answers by starting it again. The
 launcher makes the first-run token and hands it to the app (`JOBHUNT_FIRST_RUN_TOKEN`), so the page it opens

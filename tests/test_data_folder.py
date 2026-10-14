@@ -345,14 +345,15 @@ class PathsTest(unittest.TestCase):
         (self.app / "data").mkdir(parents=True)
         self.env = {"HOME": str(self.top / "home"), "JOBHUNT_CONFIG_DIR": str(self.top / "config")}
 
-    def test_the_order_env_then_pointer_then_data_next_to_the_app(self):
+    def test_the_order_env_then_data_next_to_the_app_then_pointer(self):
         self.assertEqual(paths.locate(self.app, self.env, "Linux"), paths.Place(None, ""))
-        (self.app / "data" / "jobhunt.db").write_bytes(b"")
-        self.assertEqual(paths.locate(self.app, self.env, "Linux"), paths.Place(self.app / "data", "app-folder"))
         chosen = self.top / "chosen"
         chosen.mkdir()
         paths.write_pointer(chosen, self.env)
         self.assertEqual(paths.locate(self.app, self.env, "Linux"), paths.Place(chosen, "pointer"))
+        # A copy of the app with its own data keeps it, whatever the (one per user) pointer says.
+        (self.app / "data" / "jobhunt.db").write_bytes(b"")
+        self.assertEqual(paths.locate(self.app, self.env, "Linux"), paths.Place(self.app / "data", "app-folder"))
         service = {**self.env, "JOBHUNT_DATA_DIR": str(self.top / "service")}
         self.assertEqual(paths.locate(self.app, service, "Linux"), paths.Place(self.top / "service", "env"))
         relative = {**self.env, "JOBHUNT_DATA_DIR": "elsewhere"}

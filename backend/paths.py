@@ -6,12 +6,13 @@ by its path, before (or without) anything of the app being importable.
 **Which folder**, in this order:
   1. ``JOBHUNT_DATA_DIR``: service installs (service.sh), CI, tests and tools. Used as it is and never asked about (a
      relative path is relative to the app folder).
-  2. The **pointer**: ``data-folder.json`` in the per-user configuration folder (``config_dir``), written when the
+  2. The ``data`` folder next to the app, **when it already holds JobHuntPA data** (``holds_data``): an install from
+     before this version (or one whose first run chose that folder). It is used where it is, nothing moves and nobody
+     is asked; it comes before the pointer, which is one per user, so a second copy of the app keeps its own data.
+  3. The **pointer**: ``data-folder.json`` in the per-user configuration folder (``config_dir``), written when the
      first run's step 1 chooses a folder. It is used while the folder it names exists; when that folder has gone (an
      unplugged drive, a deleted folder), the first run asks again with that path filled in, rather than quietly
      starting an empty install somewhere.
-  3. The ``data`` folder next to the app, **when it already holds JobHuntPA data** (``holds_data``): an install from
-     before this version. It is used where it is, nothing moves and nobody is asked.
   4. Otherwise nothing is chosen yet: the app starts in its first run's step 1 (backend/data_folder.py), which offers
      ``default_folder()`` and writes the pointer. Until then nothing but the pointer is written: no database, key file
      or .env (backend/db.py points the database at memory while no folder is chosen).
@@ -186,12 +187,12 @@ def locate(root: Optional[Path] = None, env: Optional[Mapping[str, str]] = None,
     chosen = _from_env(env, root)
     if chosen is not None:
         return Place(chosen, "env")
-    pointed = read_pointer(env, system)
-    if pointed is not None and pointed.is_dir():
-        return Place(pointed, "pointer")
     beside = root / "data"
     if holds_data(beside):
         return Place(beside, "app-folder")
+    pointed = read_pointer(env, system)
+    if pointed is not None and pointed.is_dir():
+        return Place(pointed, "pointer")
     return Place(None, "", missing=pointed)
 
 

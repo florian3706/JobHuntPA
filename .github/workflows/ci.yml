@@ -33,7 +33,9 @@ jobs:
       JOBHUNT_ADMIN_EMAIL: ci@example.invalid
       JOBHUNT_ADMIN_PASSWORD: ci-test-password-123
       JOBHUNT_FIRST_RUN_TOKEN: ci-first-run-token-0123456789abcdefghij
-      JOBHUNT_CONFIG_DIR: ${{ github.workspace }}/../jobhuntpa-config
+      JOBHUNT_CONFIG_DIR: ${{ github.workspace }}-config
+      # The data folder the first run chooses: outside the app folder, as on Linux by default.
+      DATA: ${{ github.workspace }}-data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,7 +45,7 @@ jobs:
       - name: Setup is repeatable, asks nothing and writes no data
         run: |
           ./setup.sh --non-interactive --skip-browser </dev/null
-          test ! -f .env && test ! -f data/jobhunt.db && test ! -f data/.env && test ! -e "$JOBHUNT_CONFIG_DIR"
+          test ! -f .env && test ! -f data/jobhunt.db && test ! -e "$DATA" && test ! -e "$JOBHUNT_CONFIG_DIR"
       - name: First run, where the data lives (nothing is written before the choice)
         run: |
           ./start.sh --no-browser --port 8123 > launch.log 2>&1 &
@@ -51,12 +53,12 @@ jobs:
           curl -sf http://127.0.0.1:8123/api/health
           curl -sf http://127.0.0.1:8123/api/auth/state | grep -q '"folder_required":true'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8123/api/workspaces)" = 401
-          test ! -f data/jobhunt.db && test ! -f data/server-keys.json && test ! -e "$JOBHUNT_CONFIG_DIR"
+          test ! -f data/jobhunt.db && test ! -e "$DATA" && test ! -e "$JOBHUNT_CONFIG_DIR"
           grep -q "first-run.html#token=$JOBHUNT_FIRST_RUN_TOKEN" launch.log
           test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
-            -d "{\"path\":\"$GITHUB_WORKSPACE/data\"}" http://127.0.0.1:8123/api/auth/data-folder)" = 403
+            -d "{\"path\":\"$DATA\"}" http://127.0.0.1:8123/api/auth/data-folder)" = 403
           curl -sf -H 'Content-Type: application/json' \
-            -d "{\"token\":\"$JOBHUNT_FIRST_RUN_TOKEN\",\"path\":\"$GITHUB_WORKSPACE/data\"}" \
+            -d "{\"token\":\"$JOBHUNT_FIRST_RUN_TOKEN\",\"path\":\"$DATA\"}" \
             http://127.0.0.1:8123/api/auth/data-folder | grep -q '"restarting":true'
           # The app restarts on the folder (the launcher starts it again) and makes the account from the environment
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8123/api/auth/state | grep -q '"folder_required":false' && break; sleep 1; done
@@ -77,8 +79,8 @@ jobs:
           curl -sf -b jar -X PUT -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
             -d '{"base_url":"https://example.invalid/v1","model":"test-model","api_key":"test-key-123"}' \
             http://127.0.0.1:8123/api/settings/llm | grep -q '"model":"test-model"'
-          grep -q '^LLM_MODEL=test-model' data/.env && test ! -f .env
-          test -f data/server-keys.json && test ! -f data/first-run.txt
+          grep -q '^LLM_MODEL=test-model' "$DATA/.env" && test ! -f .env
+          test -f "$DATA/server-keys.json" && test ! -f "$DATA/first-run.txt" && test ! -f data/jobhunt.db
       - name: Restart (key file, its fingerprint and database sessions)
         run: |
           pkill -f "uvicorn backend.app:app" || true
@@ -95,21 +97,21 @@ jobs:
       - name: The reset tool refuses while the app runs, then starts over
         run: |
           if ./reset.sh --confirm RESET; then echo "reset ran while the app was running"; exit 1; fi
-          test -f data/server-keys.json
+          test -f "$DATA/server-keys.json"
           pkill -f "uvicorn backend.app:app" || true
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8123/api/health || break; sleep 1; done
           sleep 1
           if ./reset.sh </dev/null; then echo "reset ran without being confirmed"; exit 1; fi
           if ./reset.sh --confirm no; then echo "reset ran without the word"; exit 1; fi
-          test -f data/server-keys.json
+          test -f "$DATA/server-keys.json"
           if ./reset.sh --confirm reset; then echo "reset ran with the word in small letters"; exit 1; fi
           ./reset.sh --confirm RESET
-          test ! -f data/server-keys.json
-          test -f data/.env && grep -q '^LLM_MODEL=test-model' data/.env
+          test ! -f "$DATA/server-keys.json"
+          test -f "$DATA/.env" && grep -q '^LLM_MODEL=test-model' "$DATA/.env"
           # The next start is a first run: here the account comes from the environment again
           ./start.sh --no-browser --port 8123 > launch3.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8123/api/health && break; sleep 1; done
-          test -f data/server-keys.json
+          test -f "$DATA/server-keys.json"
           curl -sf -c jar3 -H 'Content-Type: application/json' \
             -d "{\"name\":\"$JOBHUNT_ADMIN_EMAIL\",\"password\":\"$JOBHUNT_ADMIN_PASSWORD\"}" \
             http://127.0.0.1:8123/api/auth/login
@@ -121,9 +123,8 @@ jobs:
           cp -R "$GITHUB_WORKSPACE" "$RUNNER_TEMP/JobHuntPA-app"
           "$RUNNER_TEMP/JobHuntPA-app/uninstall.sh" --yes
           test ! -d "$RUNNER_TEMP/JobHuntPA-app"
-          # The data folder the pointer names (here the checkout's data/, outside the copy) is backed up and removed,
-          # and so is the pointer
-          test ! -f "$JOBHUNT_CONFIG_DIR/data-folder.json" && test ! -f data/jobhunt.db
+          # The data folder the pointer names, outside the app folder, is backed up and removed, and so is the pointer
+          test ! -e "$DATA" && test ! -f "$JOBHUNT_CONFIG_DIR/data-folder.json"
           backup="$(ls ~/Documents/JobHuntPA-backup-*.zip ~/JobHuntPA-backup-*.zip 2>/dev/null | head -1)"
           test -n "$backup"
           python3 -m zipfile -l "$backup" | grep -q data/server-keys.json
@@ -141,7 +142,9 @@ jobs:
       JOBHUNT_ADMIN_EMAIL: ci@example.invalid
       JOBHUNT_ADMIN_PASSWORD: ci-test-password-123
       JOBHUNT_FIRST_RUN_TOKEN: ci-first-run-token-0123456789abcdefghij
-      JOBHUNT_CONFIG_DIR: ${{ github.workspace }}\..\jobhuntpa-config
+      JOBHUNT_CONFIG_DIR: ${{ github.workspace }}-config
+      # The data folder the first run chooses (Windows suggests data in the install folder; this tests another one).
+      DATA: ${{ github.workspace }}-data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -168,8 +171,8 @@ jobs:
           # The first run's step 1: where the data lives (nothing written before the choice), then the restart
           $state = Invoke-RestMethod http://127.0.0.1:8123/api/auth/state
           if (-not $state.folder_required) { Write-Error "the first run didn't ask where the data lives"; exit 1 }
-          if (Test-Path data\jobhunt.db) { Write-Error "the database was made before the folder was chosen"; exit 1 }
-          $folder = @{ token = $env:JOBHUNT_FIRST_RUN_TOKEN; path = "$env:GITHUB_WORKSPACE\data" } | ConvertTo-Json
+          if ((Test-Path data\jobhunt.db) -or (Test-Path $env:DATA)) { Write-Error "data was written before the folder was chosen"; exit 1 }
+          $folder = @{ token = $env:JOBHUNT_FIRST_RUN_TOKEN; path = $env:DATA } | ConvertTo-Json
           Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8123/api/auth/data-folder -ContentType 'application/json' -Body $folder | Out-Null
           $back = $false
           for ($i = 0; $i -lt 60; $i++) {
@@ -187,21 +190,21 @@ jobs:
           # The reset tool refuses while the app runs (the key file's lock and running.json), as on Linux and macOS
           & dist\JobHuntPA-Reset.exe --confirm RESET
           if ($LASTEXITCODE -eq 0) { Write-Error "the reset ran while the app was running"; exit 1 }
-          if (-not (Test-Path data\server-keys.json)) { Write-Error "the key file went while the app was running"; exit 1 }
+          if (-not (Test-Path "$env:DATA\server-keys.json")) { Write-Error "the key file went while the app was running"; exit 1 }
           exit 0
       - name: JobHuntPA-Reset.exe starts over with the app stopped
         shell: pwsh
         run: |
           Get-Process JobHuntPA, python -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep 3
-          if (-not (Test-Path data\server-keys.json)) { Write-Error "no key file before the reset"; exit 1 }
+          if (-not (Test-Path "$env:DATA\server-keys.json")) { Write-Error "no key file before the reset"; exit 1 }
           & dist\JobHuntPA-Reset.exe --confirm no
           if ($LASTEXITCODE -eq 0) { Write-Error "the reset ran without the word"; exit 1 }
           & dist\JobHuntPA-Reset.exe --confirm reset
           if ($LASTEXITCODE -eq 0) { Write-Error "the reset ran with the word in small letters"; exit 1 }
           & dist\JobHuntPA-Reset.exe --confirm RESET
           if ($LASTEXITCODE -ne 0) { Write-Error "the reset failed"; exit 1 }
-          if (Test-Path data\server-keys.json) { Write-Error "the key file is still there"; exit 1 }
+          if (Test-Path "$env:DATA\server-keys.json") { Write-Error "the key file is still there"; exit 1 }
           exit 0
       - name: JobHuntPA-Uninstall.exe removes the app
         shell: pwsh
@@ -212,6 +215,8 @@ jobs:
           Copy-Item -Recurse $env:GITHUB_WORKSPACE $app
           & dist\JobHuntPA-Uninstall.exe --yes --folder $app
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (Test-Path $env:DATA) { Write-Error "the data folder is still there"; exit 1 }
+          if (Test-Path "$env:JOBHUNT_CONFIG_DIR\data-folder.json") { Write-Error "the pointer is still there"; exit 1 }
           for ($i = 0; $i -lt 30; $i++) { if (-not (Test-Path $app)) { exit 0 }; Start-Sleep 1 }
           Write-Error "app folder still present"; exit 1
 

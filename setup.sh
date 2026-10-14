@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # JobHuntPA one-time setup for Linux and macOS.
 # Usage: ./setup.sh            (or double-click "Setup.command" on a Mac)
-# Options are passed to installer/installer.py: --reconfigure, --skip-browser, --non-interactive
+# It asks nothing about JobHuntPA: where the data lives, the account and the AI provider are the app's first run,
+# in the browser. Options are passed to installer/installer.py: --non-interactive (CI: writes the LLM_* environment
+# variables to the data folder's .env when JOBHUNT_DATA_DIR names it).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -68,6 +70,6 @@ if ! "$PY" -c "import venv, ensurepip" 2>/dev/null; then
   fi
 fi
 
-chmod +x start.sh setup.sh uninstall.sh reset.sh "Setup.command" "Start JobHuntPA.command" "Uninstall JobHuntPA.command" \
+chmod +x start.sh setup.sh uninstall.sh reset.sh service.sh "Setup.command" "Start JobHuntPA.command" "Uninstall JobHuntPA.command" \
   "Reset JobHuntPA.command" 2>/dev/null || true
 exec "$PY" installer/installer.py "$@"
