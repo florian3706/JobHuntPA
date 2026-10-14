@@ -1059,6 +1059,40 @@ class CompanyResearchButtonsTest(unittest.TestCase):
         self.assertIn("JSON.stringify({ name: job.company, part: button.dataset.researchPart })", self.job)
 
 
+class DocumentsTabSmallChangesTest(unittest.TestCase):
+    """Open-source spec §1.11: the two labels, and the warning about long documents that points to Create summary."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.app, cls.index, cls.css = read("app.js"), read("index.html"), read("styles.css")
+
+    def test_the_two_labels_and_the_stored_kinds(self):
+        self.assertIn("['preferences', 'Preferences'], ['other', 'Other/supporting']", self.app)
+        self.assertEqual(self.index.count('<option value="preferences">Preferences</option>'), 2)
+        self.assertIn('<option value="other">Other/supporting</option>', self.index)
+        self.assertIn('<option value="other" selected>Other/supporting</option>', self.index)
+        for old in ("Preferences (private)", "Other (supporting)"):
+            self.assertNotIn(old, self.app + self.index)
+        self.assertIn("cover letters never see them", self.index)  # the hint stays
+
+    def test_the_warning_counts_what_the_ai_gets_of_the_ticked_documents_and_points_to_create_summary(self):
+        self.assertIn("const DOCS_WARN_CHARS = 50000;", self.app)
+        fn = self.app[self.app.index("function renderDocsSize"):self.app.index("function redrawDoc")]
+        self.assertIn("state.docs.list.filter((d) => d.use_for_scoring).reduce((n, d) => n + Number(d.sent_len || 0), 0)", fn)
+        self.assertIn("total > DOCS_WARN_CHARS", fn)
+        self.assertIn("Create summary", fn)
+        self.assertIn("$('#summary-make')", fn)
+        self.assertIn("btn.focus(", fn)
+        self.assertIn("esc(text)", fn)
+        self.assertIn("announce(", fn)  # said once when it appears
+        self.assertNotRegex(fn, r'style=|\bon[a-z]+=')
+        self.assertNotIn("disabled", fn)  # a warning: nothing is blocked
+        # It sits just above the card it points to, and is redrawn whenever the list or a row is.
+        self.assertLess(self.index.index('id="docs-size-warning"'), self.index.index('id="summary-make"'))
+        self.assertEqual(self.app.count("renderDocsSize();"), 2)
+
+
 class BrowserAuditRegressionsTest(unittest.TestCase):
     """Things the browser audit (tools/a11y_audit.py: axe-core, reflow, text spacing, keyboard) found or watches, kept
     as static checks so they can't creep back without a browser."""

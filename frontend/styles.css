@@ -256,6 +256,9 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; paddi
 .note-form h3, .summary-card h3 { margin: 0; }
 .note-form .hint, .summary-card .hint { margin: 0; }
 .summary-card { display: flex; flex-direction: column; gap: 10px; }
+/* Documents tab: the ticked documents are long (app.js renderDocsSize). A warning, not a limit. */
+.docs-size-warning { margin: 0 0 14px; }
+.docs-size-warning p { margin: 0 0 8px; }
 .note-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; }
 .note-grid input, .note-grid select { width: 100%; }
 .doc-textarea {

@@ -1650,7 +1650,10 @@ async function loadScorerStatus() {
 // the text and its concise version. Unsaved edits live in state.docs.drafts, so a row can be redrawn (after a
 // save, a tick, a new concise version) without losing what's typed in another, and focus returns to the
 // control that had it (data-focus). Status lines are kept in state too and announced through #docs-live.
-const DOC_KINDS = [['resume', 'Resume / CV'], ['cover_letter', 'Cover letter'], ['preferences', 'Preferences (private)'], ['other', 'Other (supporting)']];
+const DOC_KINDS = [['resume', 'Resume / CV'], ['cover_letter', 'Cover letter'], ['preferences', 'Preferences'], ['other', 'Other/supporting']];
+// Ticked documents coming to more than this (the text the AI gets: each one's sent_len, which is
+// Document.text_for_llm) are a lot to send with every request: a warning, never a limit.
+const DOCS_WARN_CHARS = 50000;
 const DOC_SOURCE = { file: 'File', note: 'Note', summary: 'Summary' };
 const KEEP_BOTH_KEY = 'jobhunt.summaryKeepBoth'; // summaries the user chose to keep ticked with their originals
 
@@ -1724,6 +1727,30 @@ function renderDocs() {
   $('#docs-empty').hidden = state.docs.list.length !== 0;
   restoreFocus(list, focus);
   renderSummarySuggestion();
+  renderDocsSize();
+}
+
+/* The warning above Create summary when the ticked documents come to more than DOCS_WARN_CHARS characters, counting
+   the version the AI gets. Said once by screen readers when it appears on the open tab (not on every redraw). */
+function renderDocsSize() {
+  const box = $('#docs-size-warning');
+  const total = state.docs.list.filter((d) => d.use_for_scoring).reduce((n, d) => n + Number(d.sent_len || 0), 0);
+  const over = total > DOCS_WARN_CHARS;
+  if (over) {
+    const text = `Your ticked documents come to ${total.toLocaleString()} characters (the versions the AI gets). That is a lot to send with every request to the AI. Create summary merges them into one shorter document.`;
+    if (box.dataset.text !== text) {
+      box.dataset.text = text;
+      box.innerHTML = `<p><strong>Long documents:</strong> ${esc(text)}</p>
+        <button id="docs-size-go" class="btn btn-sm" type="button">Go to Create summary</button>`;
+      box.querySelector('#docs-size-go').addEventListener('click', () => {
+        const btn = $('#summary-make');
+        btn.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+        btn.focus({ preventScroll: true });
+      });
+    }
+  }
+  if (over && box.hidden && !$('#tab-docs').hidden) announce(`Long documents: your ticked documents come to ${total.toLocaleString()} characters. Create summary can merge them into one shorter document.`);
+  box.hidden = !over;
 }
 
 function redrawDoc(id) {
@@ -1735,6 +1762,7 @@ function redrawDoc(id) {
   old.replaceWith(row);
   restoreFocus(row, focus);
   renderSummarySuggestion();
+  renderDocsSize();
 }
 
 function docRow(doc) {

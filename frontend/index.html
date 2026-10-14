@@ -287,8 +287,8 @@
           <select id="upload-kind">
             <option value="resume">Resume / CV</option>
             <option value="cover_letter">Cover letter</option>
-            <option value="preferences">Preferences (private)</option>
-            <option value="other">Other (supporting)</option>
+            <option value="preferences">Preferences</option>
+            <option value="other">Other/supporting</option>
           </select></label>
         <button class="btn btn-primary" type="submit">Upload</button>
         <span id="upload-status" class="muted" role="status" aria-live="polite"></span>
@@ -304,8 +304,8 @@
             <select id="note-kind">
               <option value="resume">Resume / CV</option>
               <option value="cover_letter">Cover letter</option>
-              <option value="preferences">Preferences (private)</option>
-              <option value="other" selected>Other (supporting)</option>
+              <option value="preferences">Preferences</option>
+              <option value="other" selected>Other/supporting</option>
             </select></div>
         </div>
         <div class="field"><label class="field-label" for="note-text">Note</label>
@@ -320,6 +320,7 @@
         <strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
         the chat and title suggestions use them, and cover letters never see them.
         Untick "use for scoring" to keep a document out of every prompt. Changing documents marks existing scores as stale.</p>
+      <div id="docs-size-warning" class="callout docs-size-warning" hidden></div>
       <div class="card form-card summary-card">
         <h3>One summary instead of many documents</h3>
         <p class="hint">Every ticked document goes with every request to the AI, repeats and all. <strong>Create summary</strong> merges the

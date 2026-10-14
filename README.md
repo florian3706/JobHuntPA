@@ -490,8 +490,9 @@ limits on searches. The AI features use the provider and key set on the Settings
   led, or what you want from your next job. A note works like an uploaded document: tick or untick
   *use for scoring*, **Open** it to edit its text, title or type, or **Delete** it. Notes are
   plain text and are stored only in JobHuntPA.
-- **Preferences** (a document type for uploads and notes, shown as *Preferences (private)*): say
-  what you want from a job, such as the commute you'll accept or work you want to avoid. The AI uses
+- **Preferences** (a document type for uploads and notes, next to *Resume / CV*, *Cover letter* and
+  *Other/supporting*): say what you want from a job, such as the commute you'll accept or work you
+  want to avoid. The AI uses
   them when scoring jobs (it names jobs that conflict with them), in job chat and in suggested job
   titles. They are never treated as experience, and they are never sent when drafting cover letters.
 - **Concise versions**: **Open** a document and use *Create concise version* to have the AI write a
@@ -509,7 +510,9 @@ limits on searches. The AI features use the provider and key set on the Settings
   OpenAI, Meta and Mistral it sends a cache key. OpenAI, Meta, xAI, Gemini, DeepSeek, Groq and OpenRouter's other
   models cache on their own, and Ollama runs on your computer. Either way the documents are still
   sent each time; caching only makes a repeat cheaper and faster. Concise versions and a summary
-  cut the size, and with it the cost.
+  cut the size, and with it the cost. When the ticked documents come to more than 50,000
+  characters (counting the concise versions where the AI gets those), the Documents tab says so and
+  points to *Create summary*. It is a warning only: nothing stops you sending more.
 - **Cover letters**: *Draft cover letter* on any job writes a first draft from your documents
   (upload earlier cover letters as "Cover letter" documents to match your style). Edit it, then
   copy it or download it as a Word file. Always check it before sending.
