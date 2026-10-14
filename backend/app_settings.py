@@ -210,6 +210,8 @@ def remove_retired_env(path: Path) -> list[str]:
         kept, removed = [], []
         for line in lines:
             name = _assigned_name(line)
+            if name and name.startswith("export "):  # (written for a shell to source: the secret is there all the same)
+                name = name[len("export "):].strip()
             if name in RETIRED_ENV_NAMES:
                 removed.append(name)
             else:
