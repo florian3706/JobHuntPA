@@ -680,6 +680,12 @@ def main(argv: Optional[list[str]] = None, *, ask_password: Optional[Callable[[s
             parser.error("--runs must be at least 1")
         bench_kdf(["default", "low"] if args.profile == "all" else [args.profile], args.runs)
         return 0
+    from backend import db
+
+    if not db.FOLDER_CHOSEN:  # (before the first run: nothing may be written, and there are no keys yet)
+        print("JobHuntPA's data folder isn't chosen yet (its first run hasn't been done), so there are no keys to "
+              "work on. Nothing was changed.", file=sys.stderr)
+        return 2
     if args.command == "rotate-kek":
         from backend import key_rotation
 

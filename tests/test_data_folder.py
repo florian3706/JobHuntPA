@@ -320,8 +320,8 @@ class NotAskedTest(unittest.TestCase):
         self.assertFalse(gone.exists())
 
 
-class ResetBeforeTheFolderTest(unittest.TestCase):
-    def test_the_reset_tool_has_nothing_to_do_before_the_folder_is_chosen(self):
+class CommandsBeforeTheFolderTest(unittest.TestCase):
+    def test_the_reset_tool_and_the_key_commands_have_nothing_to_do_before_the_folder_is_chosen(self):
         box = Sandbox()
         self.addCleanup(box.remove)
         program = ("import sys\nfrom pathlib import Path\nimport backend.paths as paths\n"
@@ -330,6 +330,12 @@ class ResetBeforeTheFolderTest(unittest.TestCase):
         done = subprocess.run([sys.executable, "-c", program], cwd=str(box.top), env=box.env(), capture_output=True,
                               text=True, timeout=120)
         self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("isn't chosen yet", done.stderr)
+        program = program.replace("from backend import reset", "from backend import keys").replace(
+            "reset.run(confirm='RESET')", "keys.main(['rotate-kek'])")
+        done = subprocess.run([sys.executable, "-c", program], cwd=str(box.top), env=box.env(), capture_output=True,
+                              text=True, timeout=120)
+        self.assertEqual(done.returncode, 2, done.stderr)
         self.assertIn("isn't chosen yet", done.stderr)
         self.assertEqual(box.files(), ["app", os.path.join("app", "data"), os.path.join("app", "data", ".gitkeep"),
                                        "home"])
