@@ -14,8 +14,8 @@ against your CV with an AI model of your choice, drafts cover letters, suggests 
 search for, researches each employer, merges the same job advertised on several sites into one,
 flags ads that may be ghost jobs, and lets you chat with the AI about any job. Your searches and
 documents are stored encrypted under a key of your own (what that does and doesn't cover is
-under [How your data is protected](#how-your-data-is-protected)), and one copy can serve a few
-people, each with an account of their own.
+under [How your data is protected](#how-your-data-is-protected)). It has one account, yours, with a
+name and a password.
 
 ![The Jobs tab: job cards with fit scores, statuses and salaries, under the result of the last scheduled search](docs/screenshots/jobs.png)
 
@@ -43,9 +43,9 @@ underneath.
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
 **Settings**: the theme, scheduled searches (by themselves at set times on workdays, skipping public
-holidays), the AI status with the Rescore buttons, and [your account](#your-account) (password,
-recovery codes, background access, download your data). The admin sets the AI provider and the
-commute keys in the admin panel.
+holidays), the AI provider with the Rescore buttons and the AI usage, the commute keys and the public
+address ([settings for this JobHuntPA](#settings-for-this-jobhuntpa)), and [your account](#your-account)
+(name, password, recovery codes, background access, download your data).
 
 ![The Settings tab: scheduled searches, the AI status and the Rescore buttons](docs/screenshots/settings.png)
 
@@ -74,7 +74,7 @@ previews on the Settings tab.
   [Meta](https://dev.meta.ai/) (Muse Spark), Mistral, Groq, xAI (Grok), DeepSeek or OpenRouter, or
   any other service with an OpenAI-compatible API. A model running on your own computer with
   [Ollama](https://ollama.com/) needs no key. Setup lets you pick the provider, then asks for the
-  model and your key; you can change them any time in the admin panel (Account > Admin > Server). Using the model costs
+  model and your key; you can change them any time on the Settings tab (AI provider). Using the model costs
   money on your provider account. The app still collects and filters jobs without one, but
   scoring, cover letters, title suggestions, chat and company research need it.
 - Company research, finding offices and *Search the web* in chats use the provider's web search,
@@ -98,8 +98,10 @@ says what is encrypted and what isn't.
 4. When it finishes, start JobHuntPA from the **JobHuntPA** shortcut on your Desktop or in the Start
    menu. A window opens with the app's messages and your browser opens the dashboard. Keep that
    window open while you use JobHuntPA; close it to stop the app.
-5. The first time, the browser asks you to [create your account](#your-account). It is the admin
-   account, and anything already in JobHuntPA moves into it.
+5. The first time, the browser asks you to [create your account](#your-account) (a name and a
+   password); anything already in JobHuntPA moves into it. Setup also adds **Reset JobHuntPA** to the
+   Start menu, for [starting over](#starting-over-the-reset-tool) if the password and every recovery
+   code are lost.
 
 ## Install on macOS
 
@@ -127,26 +129,28 @@ the window, press Enter, then run `./setup.sh` once and `./start.sh` to start.
 
 ## Your account
 
-JobHuntPA has accounts, so one copy can serve several people, each with their own workspaces. Your
-account's cards are on the **Settings** tab, below the theme, schedule and AI cards: password,
-recovery codes and signed-in devices, background access, then download your data and delete account.
+JobHuntPA has one account: yours. It signs in with a name and a password, and once it exists nobody
+can make another, so someone who can reach your copy can't sign up and spend your AI key. Your account's
+cards are on the **Settings** tab, below the theme, schedule and AI cards: your name, password,
+recovery codes and signed-in devices, background access, then download your data.
 
 <img src="docs/screenshots/settings-account.png" alt="The Settings tab's account cards: password, recovery codes, signed-in devices and background access" width="760">
 
 <img src="docs/screenshots/settings-data.png" alt="The Settings tab's last cards: download your data and delete account" width="760">
 
-- **The first start** opens a page that creates the first account: your email address (it is only your
-  sign-in name: JobHuntPA never sends mail to it), an optional
-  name and a password of at least 10 characters (a few random words work well; your password manager
-  can fill it in). That account is the **admin**. Everything already in JobHuntPA (workspaces, jobs,
-  documents, searches and settings) moves into it. The page's address carries a one-time setup
-  code; if the browser didn't open, the address is printed in the JobHuntPA window, and the code is
-  in `data/first-run.txt`. Once the account exists the code stops working and the file is deleted.
+- **The first start** opens a page that creates the account: a name to sign in with (any name; it is
+  not an email address, and JobHuntPA never sends mail) and a password of at least 10 characters (a few
+  random words work well; your password manager can fill it in). Everything already in JobHuntPA
+  (workspaces, jobs, documents, searches and settings) moves into it. The page's address carries a
+  one-time setup code; if the browser didn't open, the address is printed in the JobHuntPA window, and
+  the code is in `data/first-run.txt`. Once the account exists the code stops working and the file is
+  deleted.
 - **Recovery codes:** the first-run page then shows 8 recovery codes. Copy, download or print them
   and keep them somewhere safe: if you forget your password, they are how you get back in and keep
   your data. A reminder stays at the top of the dashboard until you confirm you've saved them; to see
   them again before that, JobHuntPA asks for your password. **Keep them safe: a recovery code is the only way
-  back in if you forget your password.**
+  back in if you forget your password.** The page also says that **Download your data** (Settings) is your
+  safety net: a copy of everything, kept wherever you like.
 - **The setup walkthrough:** once your recovery codes are saved, a new account opens a short
   walkthrough (`welcome.html`) instead of the dashboard. It starts with **choosing a theme**, which
   changes the page as you pick it, then sets up your search a step at a time: job titles; places,
@@ -155,13 +159,15 @@ recovery codes and signed-in devices, background access, then download your data
   optional résumé (on the Documents tab, where it powers the fit scores). Every step has Back, Next
   and Skip for now, saves as you go, and picks up where you left off if you close the page. "Skip the
   walkthrough" at the bottom goes straight to the dashboard; everything is on the Search setup tab
-  later. On an existing install the first admin gets a short version: choose a theme, then keep the
+  later. On an existing install the account gets a short version: choose a theme, then keep the
   search settings that moved into the account or review them step by step. Your theme is saved with
   your account (encrypted with your key), so a new browser or device shows it too.
+- **No roles:** whoever is signed in may change every setting, the ones for the whole of this JobHuntPA
+  included (see [Settings for this JobHuntPA](#settings-for-this-jobhuntpa)).
 
 ### Signing in
 
-<img src="docs/screenshots/sign-in.png" alt="The sign-in page: email address, password, keep me signed in, and the Trouble signing in help" width="400">
+<img src="docs/screenshots/sign-in.png" alt="The sign-in page: name, password, keep me signed in, and the Trouble signing in help" width="400">
 
 - **Staying signed in:** you are signed out after 24 hours of not using JobHuntPA, and after 7 days
   whatever you do. Tick *Keep me signed in* on your own device to stay signed in for up to 30 days of not
@@ -169,23 +175,30 @@ recovery codes and signed-in devices, background access, then download your data
   signs this browser out.
 - **Wrong passwords:** after 5 wrong passwords in a row **from one place** (one network address, or one
   browser you have signed in with before), the next try from that place waits 30 seconds, then longer
-  each time, up to 15 minutes. The wait is for that place only: someone who knows your email address and
+  each time, up to 15 minutes. The wait is for that place only: someone who knows your name and
   keeps guessing locks out their own address, never you. If wrong tries come from very many addresses at
   once (100 an hour), a browser you have never signed in with is asked to wait a while; the browsers you
   usually use are not. One network address can also make only 10 sign-in requests in 5 minutes. A small cookie (`jh_device`)
   remembers a browser you have signed in with; it proves nothing about your password and opens nothing.
   The counts are kept in memory, so restarting JobHuntPA clears them.
 - **Forgot your password?** On the sign-in page, *Trouble signing in?* then *I have a recovery code*:
-  enter your email, a recovery code and a new password. **Your data is kept**, because the recovery
+  enter your name, a recovery code and a new password. **Your data is kept**, because the recovery
   code unlocks it; every other browser is signed out and the code is used up. This is the only way to set a
   new password without the old one: JobHuntPA sends no email, so there is no reset link. **Without your
-  password or a recovery code, nobody can open your data**, the admin included: it is encrypted with them.
-- **There is no two-step sign-in:** your email address and password are the whole sign-in. (An account that had
+  password or a recovery code, nobody can open your data**: it is encrypted with them.
+- **No password and no recovery code?** The [reset tool](#starting-over-the-reset-tool), run on the
+  computer JobHuntPA is installed on, deletes the account and its encrypted data and starts JobHuntPA over
+  at the first-run page, keeping your settings. Nothing reachable from the web can do this.
+- **There is no two-step sign-in:** your name and password are the whole sign-in. (An account that had
   two-step sign-in on in an older version signs in with its password after the update; the authenticator app's
   entry can be deleted.)
 
 ### Your details and devices
 
+- **Your name** (Settings > Your name): the name you sign in with. Capitals and spaces around it don't
+  matter when you sign in. Changing it asks for your password if you haven't entered it in the last 15
+  minutes; you then sign in with the new name, and your password, data and sessions stay as they are. On an
+  install from an older version, the email address the account was made with is its name until you change it.
 - **Password, recovery codes and devices** (Settings > Password, Recovery codes and Signed-in devices): change
   your password (your data stays readable, and other browsers are signed out unless you untick that), make 8
   new recovery codes (the old ones stop working; you enter your password, and save the new ones the same way as
@@ -193,27 +206,25 @@ recovery codes and signed-in devices, background access, then download your data
   disconnects your [browser extensions](#browser-extension)). Anything
   sensitive asks you to confirm your password first, if you haven't entered it in the last 15 minutes. If you
   think someone had your session, change your password, make new recovery codes and sign out everywhere else.
-- **Delete your account** (Settings > Delete account): enter your password and everything of yours is
-  removed: workspaces, jobs, documents and the uploaded files, chats, cover letters, keys and
-  sessions. Job postings and company research that everyone shares stay, because they hold nothing of
-  yours. It can't be undone, and it waits while one of your searches is running. An admin can delete
-  their own account while another admin remains (the admin key is replaced for the others, so the one
-  you held opens nothing new); the last admin can't, because nobody would be left to run JobHuntPA.
-  Make someone else an admin first. The admin panel's **Delete** button removes exactly the same things.
-- **What only the admin sees:** the AI provider, model, API key and reasoning levels and the
-  commute API keys are set by the admin for everyone (admin panel, Server). Other accounts see whether AI
-  scoring and commute times are available, and everything of their own: workspaces, search setup,
-  documents, schedule and theme. Each workspace belongs to one account; nobody else can open it. How
-  admins let other people in is under [Sharing JobHuntPA (admins)](#sharing-jobhuntpa-admins).
+- **Starting over:** the account can't be deleted from the app, because that would put JobHuntPA back at its
+  first run, which only the [reset tool](#starting-over-the-reset-tool) on the computer itself may do.
+  Download your data first if you want to keep anything.
+- **An install from an older version with several accounts** keeps them all: each signs in with its own
+  name and password and keeps its own workspaces (nobody else can open them), and none can be added. Each of
+  them except the last can delete itself (Settings > Delete account, with its password): its workspaces,
+  jobs, documents and uploaded files, chats, cover letters, keys and sessions go, and the job ads and
+  company research everyone shares stay. It can't be undone, and it waits while one of its searches runs.
+  Every account may change this JobHuntPA's settings.
 - **Headless servers and CI:** instead of the first-run page, start JobHuntPA with
-  `JOBHUNT_ADMIN_EMAIL` and `JOBHUNT_ADMIN_PASSWORD` in its environment (exported, or in the
-  service definition; never in `.env`, which is ignored for these two) and that admin is created
-  at start-up. Its recovery codes are shown after its first sign-in.
+  `JOBHUNT_ADMIN_EMAIL` (the account's name, despite the variable's older name) and `JOBHUNT_ADMIN_PASSWORD`
+  in its environment (exported, or in the service definition; never in `.env`, which is ignored for these
+  two) and the account is created at start-up. Once an account exists they are ignored. Its recovery codes
+  are shown after its first sign-in.
 
 ### Download your data
 
 **Settings > Download your data** makes a zip file with everything JobHuntPA keeps for your account, as
-Markdown files in folders made for people:
+Markdown files in folders made for people. It is your safety net: keep a recent copy somewhere safe.
 
 - `Account.md`;
 - for each workspace: its search setup, sources, documents (with the original files you uploaded, byte
@@ -227,8 +238,7 @@ last 15 minutes. The zip is made in memory, so nothing is written to disk on the
 refused above 200 MB of files, and the server makes only a couple at a time: try again in a minute. An
 export keeps its place until your download has ended, so a slow or abandoned download holds it for up to
 10 minutes, plus the time the zip needs at 100 KB/s. **The zip is not encrypted**: keep it somewhere
-safe. It holds only your own data (admins can't export other people's), and never your password,
-recovery codes or keys.
+safe. It holds only your own data, and never your password, recovery codes or keys.
 
 ### How your data is protected
 
@@ -243,6 +253,8 @@ JobHuntPA, such as your AI provider.
 > your data back. Without one, your encrypted data can't be opened again by anyone.
 
 **Encrypted** (under your key):
+- your sign-in name (JobHuntPA finds your account by a keyed hash of it, so the name itself isn't stored in
+  the clear);
 - each workspace's name, search setup (titles, keywords, salary, places, commute stations and
   times), dealbreakers and map pins (their places and radii);
 - your jobs: their status, whether you hid them, why the filters excluded them, distance and
@@ -258,23 +270,22 @@ and an excluded job looks the same as one you kept.
 
 **Not encrypted**, because the app needs them without your key or they aren't yours. Someone with the
 database can see:
-- **job ads themselves**: ads are public, so they're stored once and shared by everyone's searches. Which
+- **job ads themselves**: ads are public, so they're stored once and shared by every search. Which
   ads your workspace has is visible (not what you think of them), and that shows roughly what you search
   for and when each ad was first linked to you. A job imported from a saved page is the exception: it is
   sealed, address included;
-- company research (public, shared by everyone), which companies were researched (not by whom), which
-  places were looked up, and AI usage counts for each account and purpose;
+- company research (public, shared by every search), which companies were researched, which
+  places were looked up, and AI usage counts for each purpose;
 - how many workspaces, jobs and documents you have, how long each text is (the stored length is the
   text's length plus 33 bytes), the size of each uploaded file, and every date and time: when jobs were
   seen or closed, when searches, chats and sign-ins happened (your last active day is stored by day only);
 - the kind of each document and pin, which documents are used for scoring, the kind and state of each
   search run, and the AI model names;
 - when each workspace's scheduled searches run, including its state, and which ads you merged or split;
-- your account's sign-in state: role and whether background access is on (your email address and name are
-  encrypted for admins only).
+- your account's sign-in state: whether it is turned on and whether background access is on.
 
 **Logs.** The messages JobHuntPA prints in its window name the kind of failure and an account number,
-and never your email address, names, job text, documents, chats or any password, token or key.
+and never your name, job text, documents, chats or any password, token or key.
 `tests/test_log_leaks.py` runs a whole account through the app with everything planted in it and checks
 this at the most detailed logging level. Two things are outside that check: the one-time setup code is
 printed on purpose, and the traceback of an unhandled error (a bug) could name data.
@@ -287,8 +298,7 @@ printed on purpose, and the traceback of an unhandled error (a bug) could name d
   or reads its memory could capture your password when you next sign in. Nothing stored on disk can
   prevent that.
 - **With [background access](#background-access) on,** whoever runs the server can read your data, using
-  the key file, but not other people's names and emails: the admin key stays closed to the
-  server (see *Background access*).
+  the key file (see *Background access*).
 - **Wrong passwords** are counted per place in memory (see *Signing in*), so a restart gives each place its
   five tries back. A guesser with many addresses gets 5 tries per address up to 100 an hour for the whole
   account; IPv6 addresses count one by one, so a whole /64 can rotate through that
@@ -301,13 +311,9 @@ printed on purpose, and the traceback of an unhandled error (a bug) could name d
   computer's administrator (root) and you can still read everything.
 
 **If someone can change the database file, not only copy it,** a few things in it are not protected by
-your key: the lookup values the app needs before anyone signs in (which account an email address
-belongs to, who is an admin, who is turned off) and the public keys used to share the admin key. With
-those they could receive the admin key the next time an admin is made or the key is replaced. The admin
-key opens only people's names, emails and the admin log's notes, never searches, documents or jobs. Someone who has the database **and**
-`data/server-keys.json` can do anything the server can with the data of accounts that have background
-access, and can still edit the public keys above, but **can't open the admin key**, even when an admin has
-background access (see *Background access*).
+your key: the lookup values the app needs before anyone signs in (which account a name belongs to, which
+account is turned off). Someone who has the database **and** `data/server-keys.json` can do anything the
+server can with the data of an account that has background access.
 
 ### Background access
 
@@ -320,92 +326,37 @@ Settings > **Background access** is a switch for your account.
 
 How it works: turning it on (it asks for your password again if you haven't typed it in the last 15
 minutes) stores a copy of your data key locked with the server's own key, in `data/server-keys.json`.
-Whoever has the database **and** that file can read the data of every account with it on. Turning it
+Whoever has the database **and** that file can read the data of an account with it on. Turning it
 off deletes that copy at once. The setup walkthrough's *Automatic searches* step turns it on for you
 if you tick it. Back up `data/server-keys.json` with the database; it also records that the one-time
 encryption of an older install has finished, so restore the two together.
 
-**Background access doesn't open the admin key.** Everyone's name and email are locked
-with the *admin key*, and an admin opens it with a second key of their own (an *identity key*) that only
-their password, a recovery code or their signed-in browser can unlock, never the server's key. So a copy of
-`data/` (the database and `server-keys.json`, which is what the uninstaller's backup holds) opens the
-searches, documents and jobs of accounts with background access, but **not people's personal details, even
-when the admin who holds the admin key has background access too**. Scheduled searches don't need it and work
-as before. What this means in practice:
-- Admins open people's details only while signed in. A browser that was already signed in when JobHuntPA was
-  updated shows "Sign in again to open people's details" in the admin panel: sign out and in again.
-- An existing account gets its identity key at its next password sign-in (or recovery-code reset); until
-  then an admin's old arrangement still applies, so every admin should sign in once after updating. That
-  sign-in gives the admin a new key pair and replaces the admin key (so a copy of `data/` from before can't
-  open anything current). An admin who hasn't signed in yet doesn't get the new key until they have: sign
-  in, then another admin chooses *Share the admin key again*. Making someone an admin who hasn't signed in
-  since the update waits for their sign-in too, and so does turning on background access.
+Your recovery codes are never under the server's key: background access opens your data, not the codes
+you haven't yet confirmed saving.
+
 - **Delete the old `.bak-*` files** (`data/*.bak-before-encryption`, `*.bak-before-job-pool`, the
-  uninstaller's zips once you have no use for them; the admin panel's **Server** section lists and deletes
-  the first two). They keep the keys from before the update, so someone who has one together with the key
-  file can still read what they held.
-- **Recovery codes saved before the update can't carry the identity key.** (Codes you hadn't yet confirmed
-  saving do carry it, unless the account has background access.) An admin who resets their password with a
-  saved one keeps their data but needs another admin to share the admin key with them again; Settings >
-  Recovery codes suggests making new codes (it takes a minute).
+  uninstaller's zips once you have no use for them; the Settings tab's **Unencrypted copies of data** card
+  lists and deletes the first two). They keep the keys from before the update, so someone who has one
+  together with the key file can still read what they held.
+- **Recovery codes saved in an older version** still reset your password and keep your data.
 
-## Sharing JobHuntPA (admins)
+## Settings for this JobHuntPA
 
-Admins open the **admin panel** from **Account > Admin** (`admin.html`). It never shows anyone's jobs,
-documents or searches. It has five parts:
+The Settings tab's cards marked **This JobHuntPA** apply to every workspace (and, on an older install with
+several accounts, to every account). Whoever is signed in may change them; nothing on them resets or deletes
+your data.
 
-<img src="docs/screenshots/admin-people.png" alt="The admin panel: summary and AI use, the people table and the sign-up and invitations settings" width="760">
+- **AI provider:** the provider, model and API key, the reasoning level for each task and **Test connection**
+  (see [Changing your AI provider or key](#changing-your-ai-provider-or-key)).
+- **AI usage:** the requests and tokens sent to your provider, in all, in the last 7 and 30 days and by task
+  (scoring, research, cover letters, chat ...), with how much the provider served from its cache: handy to
+  compare with your provider's bill.
+- **Commute data:** the two optional commute keys (see [Commute times](#commute-times-optional)).
+- **Public address and host names:** for using JobHuntPA from your phone or other computers (below).
+- **Server key** and **Unencrypted copies of data** (below).
 
-<img src="docs/screenshots/admin-server.png" alt="The admin panel's Server section: AI provider, model and key, reasoning levels, and the commute keys" width="760">
-
-- **Summary and AI use:** people, admins, how many were active in 7 and 30 days and how many joined
-  in 30 days, and the AI service's use for the last 7 to 365 days: requests, tokens in and out, and
-  how much came from the cache, by model and purpose, by person and by day.
-- **People:** each account's email, name, role, status and last active day. The columns
-  sort (below 640 px wide, each person becomes a card with a "Sort by" menu). Buttons make someone an
-  admin or a regular user, disable or enable them (disabling an admin replaces the admin key, and enabling
-  them again does not share it: use *Share the admin key again*), **unlock** someone who has to wait after
-  wrong passwords, and **delete their account** (with everything in it, their uploaded files included; not
-  your own, not the last admin and not while their search is running; deleting an admin replaces the admin
-  key like demoting does). Disabling asks for your password again if you haven't entered it in the last 15
-  minutes: a switched-off account is what a stolen session would use first. An admin never sets or resets
-  anyone's password: a person who forgot theirs uses a recovery code on the sign-in page.
-- **Sign-up and invitations:** choose who can create an account: **only with an invitation link** (the
-  default), **anyone** (open sign-up) or **nobody**. An invitation link (`signup.html?invite=…`) is shown
-  once when you make it, works for one sign-up and lasts 7 days: copy it and send it to the person yourself
-  (JobHuntPA sends no email). Give an email address to fill in the form for them. New people get
-  recovery codes and the setup walkthrough, as on first run. Open sign-up lets anyone who can reach the
-  server use the AI service you pay for, so use it only on a private network.
-- **Server:** the AI provider (provider, model, key, reasoning levels, *Test connection*) and the commute
-  keys; changes are logged by name, never the value;
-  **Replace the server key** (see below); and the report of
-  **unencrypted copies of data** with *Delete these files now* for the backups and old page cache that
-  the one-time encryption leaves.
-- **Audit log:** every admin action, newest first: what was done, by whom, to whom, and details such as
-  dates or counts (never anyone's content). The details are readable while you hold the current admin key.
-
-### The admin key and the server key
-
-**The admin details key.** People's emails, names and the admin log's details are encrypted
-so that only admins can open them, with an *admin key* that each admin holds a copy of (sealed to their
-own identity key, which their password, recovery codes and signed-in browser unlock but the server's key
-does not; see [Background access](#background-access)). Making someone an admin shares the key with them. Making an admin a regular user, or
-**disabling** or deleting one, **replaces the key** and shares the new one only with the admins who
-remain and are turned on, so the person who was removed can't open anything new. (Disabling an admin
-needs your own copy of the key; an admin you enable again gets the key only when you *Share the admin
-key* with them.) These actions ask for your password again if you haven't entered it in
-the last 15 minutes. JobHuntPA keeps you from removing the last admin and warns while only one exists:
-with a single admin who loses their password and recovery codes, nobody can read people's details. If
-an admin shows "Admin key not shared with them", use *Share the admin key again* (another admin does
-this). If no admin can open the key any more, see [Troubleshooting](#troubleshooting).
-
-**The server key.** The server key (`data/server-keys.json`) protects the keys kept for
-background searches. *Replace the server key* moves them all to a new one and drops
-the old one; if something can't be moved, the old key is kept and nothing is lost. You can also run
-`python -m backend.keys rotate-kek` with JobHuntPA stopped. The app holds a lock on its key file for as long
-as it runs, however it was started, and these commands refuse while they can't get it (if the launcher's
-`data/running.json` is left over from a crash, delete it). A running JobHuntPA also won't overwrite a key file that something
-else changed: it stops with "The key file was changed by something else", and a restart picks up the new file.
+Changes take effect at once and are saved in `.env` in the app folder; the log names the settings that
+changed, never their values. Keys are never shown again in full, only their last few characters.
 
 ### Reaching JobHuntPA from other devices and addresses
 
@@ -416,19 +367,21 @@ browser talk to it under a name of its own (a "DNS rebinding" attack). It answer
   or a Tailscale address (`100.x.y.z`);
 - **`localhost`** and names ending in `.localhost`;
 - **this computer's own names**: its host name, with or without `.local` (`http://raspberrypi:8000`);
-- **the public address**, `PUBLIC_BASE_URL` in `.env` (see below);
-- **any other names you list** in `.env`, separated by commas: `JOBHUNT_ALLOWED_HOSTS=jobs.example.com,pi.tail1234.ts.net`.
-  Use names only (no `http://`, port or path); restart JobHuntPA after editing `.env`.
+- **the public address** (Settings > Public address and host names > *Public address*; `PUBLIC_BASE_URL` in `.env`);
+- **any other names you list** there under *More host names* (`JOBHUNT_ALLOWED_HOSTS` in `.env`, separated by
+  commas: `jobs.example.com,pi.tail1234.ts.net`). Use names only (no `http://`, port or path).
 
 The port never matters. Anything else gets "This address isn't allowed" (HTTP 400) and nothing else runs.
 **With `tailscale serve`** (or any proxy that passes the name people typed on), set the public address to
-the address it gives you: add `PUBLIC_BASE_URL=https://pi.tail1234.ts.net` to `.env` (no `/` at the end;
-`http` is accepted only for `localhost`) and restart JobHuntPA. That is enough, and it also makes the
-sign-in cookie secure. Without a public address, list the name in `JOBHUNT_ALLOWED_HOSTS` instead.
-Start JobHuntPA through `start.sh` or the launcher, which already trust the proxy on the same computer
-(`--proxy-headers --forwarded-allow-ips 127.0.0.1`). The proxy must **append** the real visitor's address to
-`X-Forwarded-For` (`tailscale serve` and the usual proxies do); one that passed a visitor's own header through
-unchanged would let anyone choose the address JobHuntPA counts their sign-in tries under.
+the address it gives you: in **Settings > Public address and host names**, type `https://pi.tail1234.ts.net`
+(no `/` at the end; `http` is accepted only for `localhost`) and click **Save**. That is enough, and it also
+makes the sign-in cookie secure; it takes effect at once (this browser may be signed out, because the cookie's
+name changes with https). Without a public address, list the name under *More host names* instead. You can
+also put `PUBLIC_BASE_URL=https://pi.tail1234.ts.net` or `JOBHUNT_ALLOWED_HOSTS=...` in `.env` and restart
+JobHuntPA. Start JobHuntPA through `start.sh` or the launcher, which already trust the proxy on the same
+computer (`--proxy-headers --forwarded-allow-ips 127.0.0.1`). The proxy must **append** the real visitor's
+address to `X-Forwarded-For` (`tailscale serve` and the usual proxies do); one that passed a visitor's own
+header through unchanged would let anyone choose the address JobHuntPA counts their sign-in tries under.
 
 **Give JobHuntPA a host name of its own.** The sign-in cookie is kept per host name, and browsers ignore the port,
 so JobHuntPA puts the port into the cookie's name (`jh_session_8001`): a test copy on port 8001 and the live app
@@ -437,6 +390,40 @@ the same host name still receive the cookie, though, so use a name only JobHuntP
 `jobs.example.com` or its own Tailscale name) rather than sharing `localhost` or a host name with other
 web apps.
 
+### The server key and unencrypted copies
+
+**The server key** (`data/server-keys.json`) protects the keys kept for background searches. *Replace the
+server key* (Settings > Server key, with your password) moves them all to a new one and drops the old one; if
+something can't be moved, the old key is kept and nothing is lost. Do it if the `data` folder or a backup of it
+may have been copied by someone else. You can also run `python -m backend.keys rotate-kek` with JobHuntPA
+stopped. The app holds a lock on its key file for as long as it runs, however it was started, and these
+commands refuse while they can't get it (if the launcher's `data/running.json` is left over from a crash,
+delete it). A running JobHuntPA also won't overwrite a key file that something else changed: it stops with
+"The key file was changed by something else", and a restart picks up the new file.
+
+**Unencrypted copies of data** appears after an older install's data has been encrypted: it lists the files
+that still hold it unencrypted (the backup made before encrypting, older `data/jobhunt.db.bak-*` backups and the
+`data/cache` pages of an earlier version) with **Delete these files now**, which asks for your password.
+
+### Starting over: the reset tool
+
+For when the password and every recovery code are lost, or you want a clean start. It runs on the computer
+JobHuntPA is installed on, never from the web:
+
+- **Linux and macOS:** stop JobHuntPA, then run `./reset.sh` in the app folder (on a Mac you can double-click
+  **`Reset JobHuntPA.command`**; right-click > Open the first time).
+- **Windows:** stop JobHuntPA, then choose **Reset JobHuntPA** in the Start menu.
+
+It says what will be lost and asks you to type **RESET**; anything else stops it with nothing changed. It
+refuses while JobHuntPA is running. Then it deletes the account (every account, on an older install with
+several), its encrypted data (workspaces, jobs, documents and uploaded files, chats, search setup, schedules),
+its keys, recovery codes and sessions, and the server key file. **It keeps** your settings (`.env`: the AI
+provider, model and key, the commute keys and the public address), the reasoning levels, the shared job ads,
+the company research and the AI usage counts (no longer tied to anyone). The next start is a first run, where
+you create a new account. Nothing can bring the deleted data back: if you can still sign in, **Download your
+data** first. For scripts, `./reset.sh --confirm RESET` answers the question (`JobHuntPA-Reset.exe --confirm
+RESET` on Windows).
+
 ## Using it
 
 The dashboard opens at http://127.0.0.1:8000 (sign in first). Start in **Search setup** (job titles, keywords,
@@ -444,8 +431,8 @@ salary, work modes and [company careers pages](#adding-company-careers-pages)), 
 where you can commute on the **Map**, then click **Run search** on the Jobs tab. Separate searches
 can live in their own **workspaces** (switcher at the top right).
 
-Every feature, the AI ones included, works for everyone who signs in: there are no memberships, payments or
-limits on searches. The AI features use the provider and key set in the admin panel.
+Every feature, the AI ones included, works once you sign in: there are no memberships, payments or
+limits on searches. The AI features use the provider and key set on the Settings tab (AI provider).
 
 - **Scheduled searches** (Settings > Scheduled searches): the search runs by itself at 10:00,
   12:00, 14:00 and 16:00 Monday to Friday, skipping public holidays, including substitute days
@@ -569,7 +556,7 @@ limits on searches. The AI features use the provider and key set in the admin pa
   contrast minimums it is a little lighter or darker in the same hue (themes.css lists each change).
   Labels, marks or shapes always accompany colours, so nothing relies on colour alone. See
   [Accessibility](#accessibility).
-- **Reasoning level** (admin panel > Server): how long the AI thinks, set separately for scoring,
+- **Reasoning level** (Settings > AI provider): how long the AI thinks, set separately for scoring,
   cover letters, company research and job chat. *Detect supported levels* shows what your model accepts.
 
 ## Ghost jobs
@@ -704,7 +691,7 @@ disconnect it here as well if you no longer want it.
 The card lists your connected extensions with when each was last used. **Disconnect** stops a key at once.
 A key also stops working after 60 days without use, a year after it was made, and whenever your account is
 signed out everywhere: *Sign out everywhere else*, a password change that signs out the other devices, a
-password reset with a recovery code, and an admin turning your account off. Then connect the extension again. A key can only add
+password reset with a recovery code, and an account being turned off. Then connect the extension again. A key can only add
 jobs and company sources and list your workspaces and sources: it can't read your jobs, documents or
 settings, or change your account.
 
@@ -726,25 +713,25 @@ when you copy or back up either.
 These happen once, on the first start after you update from a version before the feature named.
 
 **Accounts.** The first start opens the page that creates your
-account (see [Your account](#your-account)): it becomes the admin, and all your existing
+account (see [Your account](#your-account)): all your existing
 workspaces, jobs, documents and settings move into it. Until then JobHuntPA shows nothing else and
 scheduled searches wait. It also creates `data/server-keys.json`, the server's key file: it belongs
 with your database, so back them up together.
 
-**Encrypting your existing data.** The first time the admin signs in (or right away, on the first-run
-page), JobHuntPA encrypts everything from before with the admin's key:
+**Encrypting your existing data.** The first time the account that owns it signs in (or right away, on the
+first-run page), JobHuntPA encrypts everything from before with that account's key:
 
 1. It saves a backup first, `data/jobhunt.db.bak-before-encryption` (unencrypted, with the keys from
    before). Delete it once you're sure you don't need to go back.
 2. It encrypts your uploaded files, then your data, in small steps. A few thousand jobs take seconds
    on a computer and up to a minute or two on a Raspberry Pi. Meanwhile the dashboard shows the
    progress and reloads by itself when it's done. If JobHuntPA is stopped halfway, it carries on the
-   next time the admin signs in; nothing is lost or encrypted twice.
+   next time that account signs in; nothing is lost or encrypted twice.
 3. It checks that nothing is left unencrypted, then rebuilds the database file so the old
    unencrypted pages are gone.
 
-Afterwards the dashboard shows admins a notice that links to the admin panel's **Server** section.
-Its "Unencrypted copies of data" part lists the files that still hold your data unencrypted (that
+Afterwards the dashboard shows a notice that links to the Settings tab's **Unencrypted copies of data**
+card. It lists the files that still hold your data unencrypted (that
 backup, older `data/jobhunt.db.bak-*` backups and the `data/cache` pages of an earlier version) with
 **Delete these files now**, which asks for your password, until they're gone. Keep the backup only if you might go back to an older
 version: **older versions can't read the encrypted database**. To go back, stop JobHuntPA, install
@@ -761,18 +748,35 @@ show as closed.
 (password reset links, address checks, invitations by email, security notices), job digest emails and
 two-step sign-in. On the first start after updating:
 
-- Accounts that had **two-step sign-in** on sign in with their email address and password alone. Their
+- Accounts that had **two-step sign-in** on sign in with their name and password alone. Their
   two-step secrets are deleted, so the entry in the authenticator app can be removed.
 - **Forgotten passwords** are reset with a recovery code only (*I have a recovery code* on the sign-in page).
   Links to reset a password or confirm an address that were emailed before the update stop working.
 - The membership, free-period and digest records are deleted. **A Stripe subscription someone still pays is
   not cancelled by JobHuntPA**: cancel it in the Stripe dashboard.
-- The `SMTP_*` and `STRIPE_*` lines in `.env` are ignored; you can delete them. `PUBLIC_BASE_URL` stays: it is
-  the address other devices use (see [Reaching JobHuntPA from other devices and addresses](#reaching-jobhuntpa-from-other-devices-and-addresses)).
+- The `SMTP_*` and `STRIPE_*` lines are **removed from `.env`** (lines that only mention them in a comment
+  stay), so no old mail password or payment key stays on disk; if you no longer use them, also revoke the Stripe
+  key and the mail account's app password where you made them. `PUBLIC_BASE_URL` stays: it is the address other
+  devices use (see [Reaching JobHuntPA from other devices and addresses](#reaching-jobhuntpa-from-other-devices-and-addresses)).
+
+**One account, no admin panel.** This version also takes out the admin panel, the admin role, the admin key
+(which let admins read everyone's name and email address), sign-up and invitations. On the first start after
+updating:
+
+- **Every account keeps working**: it signs in with the email address it was made with (now its *name*, which
+  it can change in Settings > Your name) and its password, and keeps its workspaces and data. No account can be
+  added. An account an admin had turned off stays off: with no admin, nothing turns it on again.
+- **Whoever is signed in may change every setting**: the AI provider, the commute keys, the public address,
+  the server key (they move from the admin panel to the [Settings tab](#settings-for-this-jobhuntpa)), and AI
+  usage is shown there too.
+- The admin key, every copy of people's details sealed to it, the admin audit log and unused invitations are
+  deleted, in one step, and the database's log file is emptied after it. The server key file stays as it is.
+- The last account can't be deleted from the app any more; the [reset tool](#starting-over-the-reset-tool)
+  starts over instead.
 
 ## Changing your AI provider or key
 
-Only the admin account can see or change these; they apply to everyone. Open the **admin panel** (Account > Admin), **Server > AI provider**: pick the provider (it fills in the API address and suggests models),
+Open **Settings > AI provider** (whoever is signed in may change it): pick the provider (it fills in the API address and suggests models),
 choose the model, paste your key and click **Save**. It takes effect straight away; click
 **Detect supported levels** afterwards, as each model offers different reasoning levels, and
 **Test connection** to check the key. The key is saved in the `.env` file in the app folder and
@@ -784,7 +788,7 @@ edit `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` in `.env` and restart the app
 
 ## Commute times (optional)
 
-The commute on each job's page uses two free services. The admin adds their keys in the admin panel under **Server > Commute data** (they work straight away for everyone; **Test saved keys** checks them), or when setup
+The commute on each job's page uses two free services. Add their keys under **Settings > Commute data** (they work straight away; **Test saved keys** checks them), or when setup
 asks, or in `.env` followed by a restart:
 
 - `TFNSW_API_KEY`: public transport in NSW. Sign up at https://opendata.transport.nsw.gov.au,
@@ -798,12 +802,12 @@ asks, or in `.env` followed by a restart:
 Close JobHuntPA first, then:
 
 - **Windows:** *Settings > Apps > Installed apps > JobHuntPA > Uninstall*, or the Start-menu
-  shortcut **Uninstall JobHuntPA**.
+  shortcut **Uninstall JobHuntPA**. It also removes the Start-menu entries **JobHuntPA** and **Reset JobHuntPA**.
 - **macOS:** double-click **`Uninstall JobHuntPA.command`** in the app folder (right-click > Open
   the first time).
 - **Linux:** run `./uninstall.sh` in the app folder.
 
-The uninstaller first offers to save a **backup** (your jobs, documents, workspaces, accounts,
+The uninstaller first offers to save a **backup** (your jobs, documents, workspaces, account,
 settings, API keys and the server's key file `data/server-keys.json`) as
 `JobHuntPA-backup-<date>.zip` in your Documents folder, readable only by you. Keep it private. It
 then removes the shortcuts and the app folder. It asks before removing the shared browser
@@ -816,49 +820,46 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **The browser shows nothing:** check the JobHuntPA window for error messages. If it says
   another copy is running, use that one, or restart your computer.
 - **"LLM not configured" in the app:** your API settings are missing; see *Changing your AI
-  provider or key*. Accounts other than the admin see "AI not set up": the admin sets it.
+  provider or key*.
 - **The first-run page says the setup code isn't right:** close JobHuntPA and start it again; it
   prints a fresh link, and the code is in `data/first-run.txt`. The code only works until the first
   account exists; after that, sign in instead.
 - **Forgotten password:** see [Signing in](#signing-in): a recovery code sets a new password and keeps your
-  data. Without your password or a recovery code, your encrypted data can't be read, by you, the admin or
-  anyone else.
+  data. Without your password or a recovery code, your encrypted data can't be read, by you or anyone else;
+  the [reset tool](#starting-over-the-reset-tool) starts over (it deletes the account and its data and keeps
+  the settings).
+- **The reset tool says "JobHuntPA is running" or that the key file is in use:** stop JobHuntPA (close its
+  window) and run it again. If JobHuntPA really isn't running, delete `data/running.json` (a crash can leave it
+  behind).
 - **"Too many sign-in attempts from this network. Try again in 5 minutes":** one network address is held to 10
   sign-in requests in 5 minutes; wait, then try again. After wrong passwords, the wait is per place and
-  grows up to 15 minutes (an admin can unlock you). Restarting JobHuntPA clears the counts.
+  grows up to 15 minutes. Restarting JobHuntPA clears the counts.
 - **The page says "This address isn't allowed":** JobHuntPA was reached by a name it doesn't know. Open it
-  by its IP address or `localhost` (the address it printed when it started), or add the name you use to
-  `JOBHUNT_ALLOWED_HOSTS` in `.env` (or set `PUBLIC_BASE_URL` there), then restart
-  JobHuntPA. The message names the address that was refused, and the JobHuntPA window logs it once. See
+  by its IP address or `localhost` (the address it printed when it started) and add the name you use under
+  Settings > Public address and host names (or to `JOBHUNT_ALLOWED_HOSTS` in `.env`, then restart
+  JobHuntPA). The message names the address that was refused, and the JobHuntPA window logs it once. See
   [Reaching JobHuntPA from other devices and addresses](#reaching-jobhuntpa-from-other-devices-and-addresses).
 - **"Download your data" is refused:** over 200 MB the zip is too big to make in one go (delete uploaded files you
   no longer need), "other exports are being made" means try again in a minute, and "still being made" means your
   last request hasn't finished or its download is still going: wait for it (a download that has not finished after 10 minutes, plus the time the zip needs at 100 KB/s, is cut off).
-- **The last admin lost their password and every recovery code:** people can still sign in, but
-  admins can't read names and email addresses any more ("Details unavailable until this person
-  signs in"). Stop JobHuntPA and run `python -m backend.keys new-admin-key --email you@example.com`
-  (in the app folder, with the app's Python: `.venv/bin/python` on macOS and Linux, `.venv\Scripts\python` on Windows). That account
-  becomes an admin with a new admin key; everyone's details are re-sealed to it when they next
-  sign in (at once for people with background access).
-- **"JobHuntPA is waiting for its admin to sign in, to finish encrypting the data":** the one-time
-  encryption after an update needs the first admin's password; it carries on when they sign in.
-- **"Encrypting your data stopped (...)":** JobHuntPA tries again a minute later and whenever the
-  admin signs in. If it keeps stopping, the JobHuntPA window says why; your data is safe meanwhile,
+- **"JobHuntPA is waiting for the account that owns the earlier data to sign in":** the one-time
+  encryption after an update needs that account's password; it carries on when it signs in.
+- **"Encrypting your data stopped (...)":** JobHuntPA tries again a minute later and whenever that
+  account signs in. If it keeps stopping, the JobHuntPA window says why; your data is safe meanwhile,
   and the backup `data/jobhunt.db.bak-before-encryption` was saved before anything changed.
 - **JobHuntPA stops at start-up with "Restore data/server-keys.json from your backup":** the key file
   is missing or isn't the one that belongs to this database. Put back the `data/server-keys.json`
   from the same backup as the database. A new key file is never made while accounts exist.
-- **The key file is lost and there is no backup:** nobody can sign in, because email addresses are
-  found through that file. With JobHuntPA stopped (the command refuses while it is running), an active
-  admin can make a new one: run
-  `.venv/bin/python -m backend.keys recover-lost --admin-email you@example.com` (on Windows,
-  `.venv\Scripts\python -m backend.keys ...`) from the JobHuntPA folder and type that admin's
-  password when asked. It writes a new `data/server-keys.json` and works out every account's email
-  lookup again, so everyone signs in as before and **keeps their data**. What everyone must then
-  redo: **turn background access on again** (Settings > Background access; until then scheduled
-  searches are skipped). If it says some
-  accounts "could not be worked out", those accounts can't sign in until the original key file is
-  back. Then back up the new file with the database.
+- **The key file is lost and there is no backup:** nobody can sign in, because names are
+  found through that file. With JobHuntPA stopped (the command refuses while it is running), make a new
+  one: run `.venv/bin/python -m backend.keys recover-lost --name "your name"` (on Windows,
+  `.venv\Scripts\python -m backend.keys ...`) from the JobHuntPA folder and type the account's
+  password when asked (on an older install with several accounts, give `--name` once for each). It writes a
+  new `data/server-keys.json` and works out each named account's lookup again, so it signs in as before and
+  **keeps its data**. Then **turn background access on again** (Settings > Background access; until then
+  scheduled searches are skipped). An account that wasn't named can't sign in until the original key file is
+  back. Then back up the new file with the database. Without the account's password either, the
+  [reset tool](#starting-over-the-reset-tool) starts over.
 - **Some company sites return no jobs:** they may block automated access or need the browser
   component; setup's step 3 installs it. On Linux you can fix a failed browser install with
   `.venv/bin/python -m playwright install --with-deps chromium`.
@@ -889,13 +890,14 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 **How it was tested** (October 2026, `tools/a11y_audit.py`, see [For developers](#for-developers)):
 [axe-core](https://github.com/dequelabs/axe-core) 4.14 with the WCAG 2.0, 2.1 and 2.2 A and AA rules, in
 headless Chromium (Playwright), on every page and every state of it: the dashboard's tabs, cards and
-dialogs, the job page, the sign-in, first-run, recover, sign-up and admin pages, each step of the walkthrough, at 320 and 1280 px wide in the Light, Dark, Dyslexia and
+dialogs, the job page, the sign-in, first-run and recover pages, each step of the walkthrough, at 320 and 1280 px wide in the Light, Dark, Dyslexia and
 Deuteranomaly themes (the colour contrast rule also in all 28 themes): no violations. The same run
 checked reflow at 320 px and WCAG's text spacing, watched the console (no errors, no
 Content-Security-Policy violations) and pressed Tab through the main flows (sign in, the
-walkthrough, change password, a job's status, the admin people table and its dialogs, the
-data export) and through every page: a visible focus ring on every stop, none hidden, no traps, focus back
-where it came from after a dialog, Escape closing it. `tests/test_accessibility.py` keeps the contrast and
+walkthrough, change password, a job's status, the data export) and through every page: a visible focus ring
+on every stop, none hidden, no traps, focus back where it came from after a dialog, Escape closing it. (The
+settings that were on the admin panel then have since moved to the Settings tab, with the same controls;
+`tools/a11y_audit.py` now checks them there.) `tests/test_accessibility.py` keeps the contrast and
 the pages' basics (language, viewport, skip link, headings, labels) checked on every test run.
 
 **Known limitations:**
@@ -929,28 +931,28 @@ Manual run: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
 `.env.example` to `.env`, then `.venv/bin/python installer/launch.py`. Tests:
 `python3 -m unittest discover -s tests -t .`
 
-**Accounts in development and CI:** `JOBHUNT_ADMIN_EMAIL` and `JOBHUNT_ADMIN_PASSWORD` in the process
-environment (not `.env`) create the first admin at start-up, which is how CI signs in
+**Accounts in development and CI:** `JOBHUNT_ADMIN_EMAIL` (the account's name) and `JOBHUNT_ADMIN_PASSWORD` in
+the process environment (not `.env`) create the install's one account at start-up, which is how CI signs in
 (`/api/auth/login`, then the session cookie). Every `/api` route needs a session except
 `/api/health` and the sign-in endpoints; POST, PUT, PATCH and DELETE also need the page's
 `X-CSRF-Token` (from `/api/auth/me`) and must not come from another site. The tests run on a throwaway
 database, `.env` and key file, with `JOBHUNT_TESTING=1` and the fast `JOBHUNT_KDF_PROFILE=test`
 (tests/__init__.py); `tests/helpers.py` gives signed-in clients (`with helpers.client() as c:`),
-other accounts (`helpers.make_user()`) and the admin's key scope (`helpers.as_admin()`). Code and the
-design notes: `backend/users.py` (accounts, first run, deleting an account), `backend/sessions.py`
-(sessions, CSRF, the checks on every request), `backend/auth.py` (signing in, sign-up, resetting with a
-recovery code), `backend/security.py` (password, recovery codes, other sessions), `backend/admin.py` (the
-admin panel's API) with
-`backend/admin_key.py` (the admin key: grants, replacing it, healing details), `backend/signup.py` and
-`backend/tokens.py` (sign-up modes and invitations), `backend/key_rotation.py` (the server key),
+the extra accounts an older install may hold (`helpers.make_user()`, written straight into the database: the
+app makes only the first) and the first account's key scope (`helpers.as_admin()`, an old name). Code and the
+design notes: `backend/users.py` (the account, first run, the sign-in name, deleting an older install's extra
+account), `backend/sessions.py` (sessions, CSRF, the checks on every request), `backend/auth.py` (signing in,
+first run, resetting with a recovery code), `backend/security.py` (password, name, recovery codes, other
+sessions), `backend/app_settings.py` (the settings kept in `.env`: AI provider, commute keys, public address
+and host names), `backend/maintenance.py` (AI usage, leftover plaintext files, replacing the server key),
+`backend/reset.py` (the reset tool), `backend/key_rotation.py` (the server key),
 `backend/background.py` (background access), `backend/key_recovery.py` (the `recover-lost` command),
 `backend/export.py` (data export), `backend/account.py` (preferences, the walkthrough step, deleting
 an account), `backend/extension.py` (the browser extensions' API and keys; the extensions read the page themselves and
 send only the job, or the jobs listed on a page of search results), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
-`new-admin-key` and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
+and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
 (account cards), `background.js`, `extension.js` (Settings > Browser extension),
-`export.js`, `admin.js` and `server-settings.js` (the admin panel), `dialogs.js` (its
-dialogs) and `signup.js`.
+`export.js` and `server-settings.js` (the Settings tab's cards for this JobHuntPA).
 
 **Hardening** (design §2.5 and §18): `backend/hosts.py` (the Host allowlist: 400 before anything else runs) and
 `backend/security_headers.py` (the Content-Security-Policy, built at start-up from the pages, with a hash for each
@@ -963,14 +965,20 @@ stylesheet from another site, or a second inline script, must be added to `backe
 libraries that log a person's data (httpx, the Claude SDK, pypdf, SQLAlchemy's rows) out of the logs at any level;
 `tests/test_log_leaks.py` is the end-to-end check, so add a step to it when a feature handles personal text.
 `/docs`, `/redoc` and `/openapi.json` are off. Every new endpoint decides who may call it (open, signed in,
-admin, a recent sign-in) and gets a test that says so.
+or a recent sign-in) and gets a test that says so. There are no roles, and nothing reachable over HTTP resets
+or wipes the install (`backend/reset.py` is a command run on the computer; `tests/test_reset.py` checks the web
+app never loads it).
 
-**No email, payments or two-step sign-in.** The open-source version sends no mail and takes no payments
-(`docs/design/open-source.md` §1.3). `PUBLIC_BASE_URL` (`backend/public_url.py`) is only the address other devices
+**No email, payments, two-step sign-in or admin panel.** The open-source version sends no mail, takes no
+payments and has one account per install (`docs/design/open-source.md` §1.2, §1.3): `users.create_account` is
+the only way an account is made, and it refuses under the database's write lock once one exists. `PUBLIC_BASE_URL` (`backend/public_url.py`) is only the address other devices
 use: it makes the sign-in cookie Secure behind an HTTPS proxy and lets its host and origin through. A database from
 an older version is cleaned at start-up (`db._retire_removed_features`): two-step secrets, sign-ins waiting for a
-code and emailed links are deleted and the membership and digest tables dropped, in one transaction, then
-`db.scrub_wal()`; `tests/test_upgrade_from_main.py` opens such a database (`tests/fixtures/upgrade_from_main/`).
+code and emailed links are deleted, the admin key's grants, its public half and every copy of people's
+details sealed to it are deleted, roles are set aside, and the membership, digest, admin-key, audit and invitation
+tables dropped, in one transaction, then `db.scrub_wal()`. The retired `SMTP_*` and `STRIPE_*` lines leave
+`.env` (`app_settings.retire_env_names`: names that can only be removed, never set).
+`tests/test_upgrade_from_main.py` opens such a database (`tests/fixtures/upgrade_from_main/`).
 `backend/schedule.py`'s loop also clears expired sessions and links every 10 minutes (`auth.cleanup_tick`; off with
 `JOBHUNT_SCHEDULER=off`).
 
@@ -1005,9 +1013,9 @@ the Pi to check there).
 **README screenshots:** `python3 tools/readme_screenshots.py` (needs `pip install pillow`) builds a
 throwaway database of made-up data with `tools/demo_data.py`, runs the app on it with fake AI
 settings and no scheduler, and saves `docs/screenshots/*.png`. It never touches `data/` or `.env`.
-Re-run it after changing the UI; `--only jobs,map` retakes just those. It signs in once as the demo admin
-(`--only ghost-job,settings-account,settings-data,admin-people,admin-server,sign-in` are the account and
-admin shots). The map and the job page need OpenStreetMap's tiles and OSRM's route, so take those two on a
+Re-run it after changing the UI; `--only jobs,map` retakes just those. It signs in once as the demo account
+(`--only ghost-job,settings-account,settings-data,settings-install,sign-in` are the account and settings
+shots). The map and the job page need OpenStreetMap's tiles and OSRM's route, so take those two on a
 machine that reaches them.
 
 **Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme, the colour
@@ -1021,12 +1029,12 @@ dialog in headless Chromium (Playwright) on made-up data and runs axe-core (the 
 and AA rules) on each state at 320 and 1280 px in four themes. It also checks reflow at 320 px and
 WCAG's text spacing, watches the browser console (any error or Content-Security-Policy violation is
 reported) and walks the main flows with the keyboard (sign in, the walkthrough, change
-password, a job's status, the admin people table and its dialogs, the data export).
+password, a job's status, the Settings tab's cards for this JobHuntPA, the data export).
 `NODE_MODULES` is a folder with `axe-core` in it: `mkdir /tmp/a11y && cd /tmp/a11y && npm install axe-core`
 (add `leaflet@1.9.4` when unpkg.com isn't reachable: the map is then served from there). It uses the
 Playwright and Chromium that setup installs. axe-core is developer-only: nothing in `requirements.txt`
-or the app uses the tool. It starts its own throwaway copy of the app (a demo database, a mail catcher
-for the reset and confirmation links, the sign-in rate limits lifted) and never touches `data/` or
+or the app uses the tool. It starts its own throwaway copy of the app (a demo database and the sign-in rate
+limits lifted) and never touches `data/` or
 `.env`. axe is put into each page by the browser itself, so the page's Content-Security-Policy stays as
 it is. Options: `--widths 320,640,1280`, `--themes light,dark,monochromacy` (or `all`), `--only
 index,keyboard` (`--list` names the groups), `--review` (axe's "needs review" results), `--json FILE`.
