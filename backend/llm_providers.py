@@ -19,8 +19,9 @@ Call sites use two functions and never build a provider's request themselves:
 A message's content is a string, or a list of text parts. ``cached_text(...)`` marks the part that ends a prefix
 later requests repeat byte for byte (the instructions and the candidate's documents), so providers can cache it;
 see "Prompt caching" below for what each provider does with the mark. ``cfg`` may also carry ``purpose`` and
-``workspace_id`` (recorded with the request's token usage in ``llm_usage``) and ``long_output`` (a long text that
-must not be cut off).
+``workspace_id`` (recorded with the request's token usage in ``llm_usage``), ``long_output`` (a long text that
+must not be cut off) and, for ``chat``, ``deadline`` (a ``time.monotonic()`` value: no attempt or pause between
+attempts starts or runs past it, each attempt's timeout is cut to the time left, and past it :class:`OutOfTime`).
 
 ``web_search`` returns the app's normalised search response, in the shape of an OpenAI Responses answer, so the
 link-integrity code (backend.research.extract / parse_profile, backend.job_chat.web_sources) works unchanged
@@ -68,6 +69,28 @@ class ScorerError(Exception):
     def __init__(self, message: str, *, auth: bool = False):
         super().__init__(message)
         self.auth = auth
+
+
+class OutOfTime(ScorerError):
+    """A ``chat`` with a ``deadline`` in its cfg ran out of time."""
+
+
+def time_left(cfg: dict, seconds: float) -> float:
+    """``seconds``, or the time left before ``cfg["deadline"]`` when that is nearer; OutOfTime once it has passed."""
+    deadline = cfg.get("deadline")
+    if deadline is None:
+        return seconds
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise OutOfTime("the AI didn't answer in the time there was")
+    return min(seconds, left)
+
+
+def _pause(cfg: dict, seconds: float) -> None:
+    """Waits between attempts, unless the wait would run past ``cfg["deadline"]`` (then OutOfTime)."""
+    if time_left(cfg, seconds) < seconds:
+        raise OutOfTime("the AI didn't answer in the time there was")
+    time.sleep(seconds)
 
 
 # What a company profile keeps after a failed research run: it is shared by every workspace of the install, so it
@@ -627,11 +650,12 @@ def _chat_openai(messages: list[dict], cfg: dict, json_mode: bool) -> str:
     while attempt < MAX_RETRIES:
         attempt += 1
         try:
-            resp = httpx.post(url, json=payload, headers=headers, timeout=cfg["timeout_s"])
+            resp = httpx.post(url, json=payload, headers=headers, timeout=time_left(cfg, cfg["timeout_s"]))
         except httpx.HTTPError as exc:
+            time_left(cfg, 0)  # (a timeout at the deadline is OutOfTime)
             if attempt == MAX_RETRIES:
                 raise ScorerError(f"connection error: {exc.__class__.__name__}: {exc}") from exc
-            time.sleep(2 ** attempt)
+            _pause(cfg, 2 ** attempt)
             continue
         body = resp.text[:600]
         if _auth_failed(cfg, resp.status_code, body):
@@ -641,7 +665,7 @@ def _chat_openai(messages: list[dict], cfg: dict, json_mode: bool) -> str:
             continue
         if resp.status_code in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
             retry_after = resp.headers.get("retry-after", "")
-            time.sleep(float(retry_after) if retry_after.replace(".", "", 1).isdigit() else 5 * attempt)
+            _pause(cfg, float(retry_after) if retry_after.replace(".", "", 1).isdigit() else 5 * attempt)
             continue
         if resp.status_code >= 400:
             raise ScorerError(f"HTTP {resp.status_code}: {body}")

@@ -76,7 +76,7 @@ def owned(db: Session, model, obj_id: int, ws: int, what: str):
 
 class WorkspaceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    copy_from: Optional[int] = None       # copy settings, sources and pins from this workspace
+    copy_from: Optional[int] = None       # copy settings, sources (none on the local network) and pins from it
     copy_documents: bool = False          # ...and its documents
 
 
@@ -142,7 +142,11 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
     sched = get_schedule(db, src)  # what the source has, the preset schedule included: copied as it is
     db.add(SearchSchedule(id=dst, enabled=sched.enabled, times=sched.times, days=sched.days,
                           skip_holidays=sched.skip_holidays, state=sched.state))
+    from backend.source_bulk import address_flags
+
     for s in db.query(CompanySource).filter(CompanySource.workspace_id == src):
+        if address_flags(s.careers_url or "").blocked:
+            continue  # an older install's source on the local network or this computer: no way of adding one takes it
         db.add(CompanySource(workspace_id=dst, label=s.label, careers_url=s.careers_url, url=s.careers_url,
                              source_type=s.source_type, enabled=s.enabled, mapping=s.mapping))
     if documents:

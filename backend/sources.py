@@ -74,8 +74,11 @@ def normalize_url(url: str) -> str:
     url = (url or "").strip()
     if url and "://" not in url:
         url = "https://" + url
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.netloc:
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # such as an IPv6 address without its closing bracket
+        parts = None
+    if parts is None or parts.scheme not in ("http", "https") or not parts.netloc:
         raise HTTPException(status_code=422, detail=f"Not a valid URL: {url!r}")
     return url
 

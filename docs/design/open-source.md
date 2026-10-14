@@ -739,8 +739,10 @@ history; where they differ, this part holds.
   (`credentials: "omit"`), and `Content-Type: application/json` with a body. No CSRF token and no Origin check apply
   to a key; the server sends no CORS headers (the extension's host permission for the server is what lets it call).
 - **The workspace:** `X-Workspace: <id>` (an integer from `status`) on every request that works on one (marked
-  *workspace* below). Without it, the account's first workspace is used. A workspace that isn't the account's
-  answers 404 `{"detail": "Workspace <id> not found"}` (no `code`): the extension asks the person to pick one again.
+  *workspace* below). Without it, the account's first workspace is used; an account with no workspace answers
+  404 `{"detail": "You have no workspace yet. Create one first."}` (no `code`): say to make one in JobHuntPA. A workspace that isn't the account's answers 404 `{"detail": "Workspace <id> not found"}` (no `code`):
+  the extension asks the person to pick one again. A value that isn't an integer is refused by the web framework
+  (422 with `detail` a list, 8.2).
 - **A key reaches only these endpoints** (method and path; send each path exactly as written, without a trailing
   slash: the key check ignores one, but the app then answers 404 or 405); anything else answers 403 `token_scope`,
   whatever the key:
@@ -769,8 +771,9 @@ history; where they differ, this part holds.
 Every refusal the app makes itself is JSON `{"detail": <a sentence for the person>, "code": <a word>, "field"?: <the
 request's field it is about>}`. `detail` is shown as it is. Some answers carry no `code` (a plain `{"detail": ...}`):
 the 404 for a workspace, 409 and 422 from `POST /api/sources` (see 8.5). A body the web framework itself refuses
-before the app reads it (a missing required field of `POST /api/sources`) answers 422 with `detail` a list: treat a
-`detail` that isn't a string as none and show a general message.
+before the app reads it (a missing required field of `POST /api/sources`, or an `X-Workspace` that isn't an integer
+on any *workspace* endpoint) answers 422 with `detail` a list: treat a `detail` that isn't a string as none and show
+a general message.
 
 | Status | `code` | When |
 |---|---|---|
@@ -780,7 +783,7 @@ before the app reads it (a missing required field of `POST /api/sources`) answer
 | 401 | `signed_out` | no key and no session |
 | 403 | `token_scope` | an endpoint a key can't use (or a server older than the version that added it) |
 | 404 | `not_found` | `GET`/`DELETE /api/extension/mappings/{site}`: no mapping saved for that site |
-| 404 | (none) | another account's workspace, or a source id that isn't the workspace's (`{"detail": "Source <id> not found"}`) |
+| 404 | (none) | another account's workspace, an account with no workspace, or a source id that isn't the workspace's (`{"detail": "Source <id> not found"}`) |
 | 409 | `too_many_mappings` | `PUT` of a new site past the account's 500 saved mappings |
 | 409 | (none) | `POST /api/sources` without a mapping, for a URL the workspace has (`"That URL is already a source"`) |
 | 413 | `too_large` | a body or a value over its limit (`field` names the value when one is) |
@@ -793,13 +796,16 @@ before the app reads it (a missing required field of `POST /api/sources`) answer
 | 429 | `rate_limited` | too many requests with keys that don't work from this address; `Retry-After` (seconds) |
 | 429 | `busy` | work-out: one is already running for this account; `Retry-After: 5` |
 | 502 | `ai_failed` | work-out: the AI provider failed; `detail` says what the person can do |
+| 504 | `timed_out` | work-out: it ran out of its 10 minutes (8.6). Say so; trying again later may help |
 
 ## 8.3 Status
 
 `GET /api/extension/status`: `{"ok": true, "api": 3, "app_version": "1.13.0", "label": <the key's name>,
 "expires_at": "2027-10-09T12:00:00Z", "workspaces": [{"id": 1, "name": "My job search"}, ...],
-"default_workspace": 1}`. `label` and `expires_at` are null for a session. `expires_at` moves on with use (60 days
-without use, a year at most). Times are ISO 8601 UTC with `Z` and no fraction.
+"default_workspace": 1}`. `label` and `expires_at` are null for a session. `default_workspace` is the account's first
+workspace (the one used without `X-Workspace`), null when it has none (`workspaces` is then `[]`). `expires_at` moves
+on with use (60 days without use, a year at most). `expires_at` here and the mappings' `updated_at` (8.8) are ISO
+8601 UTC with `Z` and no fraction; a source's `last_run` (8.5) is not.
 
 ## 8.4 Jobs (unchanged from api 2)
 
@@ -839,7 +845,9 @@ as for a job. It only adds; the answer: `{"added", "existing", "jobs": [{"url", 
 ## 8.5 Company sources
 
 - `GET /api/sources` (*workspace*): `[{"id", "label", "url", "enabled", "last_run", "last_count", "last_error",
-  "last_method", "mapping"}]`. `mapping` (api 3) is the source's careers mapping (8.7) or null. It is also null
+  "last_method", "mapping"}]`. `last_run`: when a search last read it, ISO 8601 in UTC **without** a zone suffix
+  (`2026-10-13T21:04:05.123456`; it may have a fraction), or null: read it as UTC (append `Z` before `new Date()`).
+  `mapping` (api 3) is the source's careers mapping (8.7) or null. It is also null
   for a saved layout the app no longer accepts (such as after an update tightened the rules of 8.7): treat it as
   none (searches then read the page the usual ways) and offer to work the page out again.
 - `POST /api/sources` (*workspace*): `{"url", "label"?, "mapping"?}`. `url` without a scheme gets `https://`. 201
@@ -858,21 +866,23 @@ as for a job. It only adds; the answer: `{"added", "existing", "jobs": [{"url", 
 ## 8.6 Working a page out
 
 `POST /api/extension/work-out` (*workspace*: the tasks tray of that workspace shows it while it runs, as "Working out
-a job site" or "Working out a careers page"). One at a time per account (429 `busy`). It can take long:
+a job site" or "Working out a careers page"). One at a time per account (429 `busy`).
 
-- **The AI:** up to 3 attempts, each up to the AI provider's timeout (`LLM_TIMEOUT_S` in the app's settings, 180 s
-  by default, and the person may raise it), with pauses of up to a few seconds between them (or what the provider's
-  `Retry-After` says).
-- **A careers page, before the AI:** the app's reading of it the usual ways: up to 15 listing pages at the site's
-  crawl delay (2 s a request at least, up to 30 s when its robots.txt asks); when those find nothing, the page
-  rendered in a headless browser, and its listing pages rendered too (up to about 35 s each, plus the delay).
-- **A careers page, after the AI:** the page read again with the mapping, plain and, when that finds nothing,
-  rendered (matching stops after 10 s each).
+**How long it takes: at most 10 minutes**, all of it together. What takes the time: for a careers page, the app's
+reading of it the usual ways first (up to 15 listing pages at the site's crawl delay, 2 s a request at least and up to
+30 s when its robots.txt asks; when those find nothing, the page and its listing pages rendered in a headless browser);
+then the AI (up to 3 attempts, each up to the AI provider's timeout, `LLM_TIMEOUT_S`, 180 s by default); then, for a
+careers page, the page read again with the mapping. Each part cuts its own timeouts to the time left. The 10 minutes
+count from when the app has the whole request. When they are up the app stops and answers **504 `timed_out`** (at
+most 10 seconds later, whatever is still running), never a partial answer; nothing was saved.
 
-Tell the person it may take a few minutes and show that it is still working (the tasks tray shows it too). In the worst case
-it runs for well over ten minutes: give the request a timeout of **at least 30 minutes**, or none. If the extension gives up sooner, the app keeps working until
-it ends, and a new work-out for the account meanwhile answers 429 `busy` (`Retry-After: 5`): say "JobHuntPA is still
-working out the last page; try again in a minute" rather than a general error.
+- Give the request a client timeout of **15 minutes** (never less than 11): the app always answers before that.
+- Tell the person it may take a few minutes and show that it is still working (the tasks tray shows it too). The
+  popup may close meanwhile: the app's answer is then lost (nothing is saved before the person accepts), and the
+  person works the page out again.
+- While one runs for the account, and for a short while after a `timed_out` (until what was still running has
+  stopped), a new work-out answers 429 `busy` (`Retry-After: 5`): say "JobHuntPA is still working out the last
+  page; try again in a minute" rather than a general error.
 
 **The request** (all three fields required; any other is 422 `invalid`):
 
@@ -882,9 +892,10 @@ working out the last page; try again in a minute" rather than a general error.
 
 - `kind`: `job` (one job's page on a job site) or `careers` (a company's page that lists its jobs).
 - `url`: the page's address (`location.href`), http(s), at most 2,048 characters (422 `invalid`, `field: "url"`).
-  The AI is told only its scheme, host and path. The **site** is worked out from it (8.8); an address whose host is
-  an IPv6 address in brackets has no site (422 `invalid`, `field: "url"`, a `detail` that says so), and the popup
-  should not offer to work such a page out. For `kind: "careers"`, an address on the local network or this computer
+  The AI is told only its scheme, host and path. The **site** is worked out from it (8.8): the host must be a host
+  name of letters, digits, hyphens and dots (as punycode, which `location.hostname` gives), so neither an IPv6
+  address in brackets nor a name with `_` has a site (422 `invalid`, `field: "url"`, a `detail` that says the page
+  can't be worked out). The popup should not offer to work such a page out. For `kind: "careers"`, an address on the local network or this computer
   (or not a web link) is 422 `refused_address` (`field: "url"`) before that check, IPv6 ones included.
 - `outline`: the trimmed outline of the page, below. The outline is the person's data: the app checks it, sends it
   to the AI, and drops it with the request. It is never stored and never logged.
@@ -902,7 +913,8 @@ working out the last page; try again in a minute" rather than a general error.
     `id`, `class`, `role`, `itemprop`, `itemtype`, `itemscope`, `aria-label`, `href`, `datetime`, `title`,
     `data-testid`, `data-test`, `data-qa`, `data-automation`, `data-cy`. Send the value as `getAttribute` gives it
     (a boolean attribute such as `itemscope` as `""`); leave out an attribute whose value is longer than 200
-    characters (or cut it, for `class` and `href`). Never `value`, `style`, `src`, an event handler or any other
+    characters (or cut it, for `class` and `href`). The app drops an `href`'s query and fragment (`?...`, `#...`)
+    before the AI sees it, as it does the page's; the extension may drop them before sending. Never `value`, `style`, `src`, an event handler or any other
     attribute.
   - `text`: a sample of the element's **own** text (its text-node children, not its descendants'), whitespace
     collapsed and trimmed, at most 100 characters (cut longer). Empty or left out when it has none.
@@ -965,7 +977,8 @@ own selector functions. Nothing in it is ever evaluated, inserted as HTML or use
 {"version": 1, "kind": "job" | "careers", "fields": {"<field>": {"selector": "<CSS selector>", "attribute": "<name>"}}}
 ```
 
-- `version`: `1` (the app refuses another: 422 `invalid_mapping`). When sending a mapping it may be left out.
+- `kind` and `fields` are required (missing: 422 `invalid_mapping`); `version` is `1` (the app refuses another: 422
+  `invalid_mapping`) and may be left out when sending a mapping. No other key.
 - **`kind: "job"`** fields: `title`, `company`, `location`, `salary`, `employment_type`, `work_mode`, `date`,
   `description`. `title` and `description` are required. Applied by the extension: for each field,
   `el = document.querySelector(selector)` (inside `try`: a selector the browser rejects is a field not found); the
@@ -985,12 +998,14 @@ own selector functions. Nothing in it is ever evaluated, inserted as HTML or use
   page are skipped, as are links on the local network. `list` never has an attribute. The app reads a page with a
   mapping only when it is at most 3,000,000 characters of HTML and at most 80 elements deep, and stops matching
   after 10 seconds (the clock is looked at between elements; within the cost limits below one element's match is
-  at most one pass over the page, a second or two at these sizes); then the mapping finds nothing on that page and
-  the usual ways follow (a note says why).
+  at most about one pass over the page, a second or two at these sizes), or sooner when the work-out's 10 minutes
+  (8.6) run out; then the mapping finds nothing on that page and the usual ways follow (a note says why).
 - Each field is `{"selector", "attribute"?}`: no other key. A field that isn't on the page is left out (in the AI's
   answer it may be null). At most the fields listed for the kind; an unknown field refuses the whole mapping.
 - **A selector** is a string of 1 to 300 characters, trimmed, made only of ASCII letters, digits, space and
-  `_ # . : > + ~ * [ ] = ^ $ | " ' ( ) , / ? & % -`; quotes balanced; no `javascript:`, `vbscript:`, `livescript:`,
+  `_ # . : > + ~ * [ ] = ^ $ | " ' ( ) , / ? & % -`, with `|` only in the `|=` operator inside `[...]` (no
+  namespaces: `svg|a`, `*|*` and `[svg|href]` are refused, as browsers refuse an undeclared prefix); quotes
+  balanced; no `javascript:`, `vbscript:`, `livescript:`,
   `url(`, `expression(` or `@import` (in any case), and no comment (`/*` or `*/` anywhere); pseudo-classes only
   from `:scope`, `:not()`, `:is()`, `:where()`, `:has()`, `:first-child`, `:last-child`, `:only-child`,
   `:nth-child()`, `:nth-last-child()`, `:first-of-type`, `:last-of-type`, `:only-of-type`, `:nth-of-type()`,
@@ -1005,6 +1020,9 @@ own selector functions. Nothing in it is ever evaluated, inserted as HTML or use
   - at most **4 combinators** (a space between compounds, `>`, `+`, `~`); of them at most **2** a descendant
     combinator (a space) or `~`, and of those at most **one** `~`. In `:has()` a leading `>`, `+` or `~` counts
     as a combinator, and an argument without one counts as a descendant combinator (`li:has(a)` has one);
+  - a selector with a `~` has **no descendant combinator** anywhere in it (for the element right of a `~` the
+    engine tries every earlier sibling, and a descendant combinator would walk each one's ancestors too:
+    `article p ~ p.last` is refused, `article > p ~ p.last` is taken);
   - a compound that is only `*` never stands next to a space or `~` (`div *`, `* ~ p` are refused; `div > *` is
     taken);
   - `:not()`, `:is()`, `:where()`, `:has()` at most **2 deep** inside one another;
@@ -1017,9 +1035,10 @@ own selector functions. Nothing in it is ever evaluated, inserted as HTML or use
   - `:nth-*()` take only `odd`, `even`, a number of up to 4 digits or `an+b` with numbers of up to 4 digits (no
     `of S`).
 
-  Examples taken: `h1.job-title`, `#main .jobs > li.job`, `section#jobs li a`, `ul.list li + li ~ li`,
-  `li:not(:is(.ad, .promo))`, `tr:nth-child(2n+1)`. Refused: `section div div span` (3 descendant combinators),
-  `x * *`, `a ~ b ~ c`, `:not(:not(:not(a)))`, `a, b, c, d, e`.
+  Examples taken: `h1.job-title`, `#main .jobs > li.job`, `section#jobs li a`, `ul.list > li + li ~ li`,
+  `li:not(:is(.ad, .promo))`, `tr:nth-child(2n+1)`, `a[lang|=en]`. Refused: `section div div span` (3 descendant
+  combinators), `x * *`, `a ~ b ~ c`, `ul.list li + li ~ li` (a space and a `~`), `:not(:not(:not(a)))`,
+  `a, b, c, d, e`, `svg|a`.
 - **An attribute** is null, absent, or a name of 1 to 40 characters matching `^[a-z][a-z0-9_-]*$` (the app lowers
   its case), never one that starts with `on` and a letter (an event handler).
 - The AI's answer is checked the same way and refused whole when anything breaks a rule (422 `not_worked_out`); the
@@ -1043,8 +1062,8 @@ accepts, such as after an update tightened the rules of 8.7. Treat it as none an
 - `GET /api/extension/mappings`: `{"mappings": [{"site", "fields": [<the field names it has>], "updated_at"}],
   "max": 500}`, by site.
 - `GET /api/extension/mappings/{site}`: `{"site", "mapping", "updated_at"}`, or 404 `not_found`.
-- `PUT /api/extension/mappings/{site}` with `{"mapping": <a job mapping>}` (nothing else; a body of at most 16 KB,
-  else 413 `too_large`): 201 when new, 200 when it replaced one: `{"site", "mapping", "updated_at", "created"}`. A
+- `PUT /api/extension/mappings/{site}` with `{"mapping": <a job mapping>}` (nothing else: a body with any other key,
+  or without `mapping`, is 422 `invalid`, `field: "mapping"`; a body of at most 16 KB, else 413 `too_large`): 201 when new, 200 when it replaced one: `{"site", "mapping", "updated_at", "created"}`. A
   mapping not in the shape of 8.7 or of another kind: 422 `invalid_mapping`.
 - `DELETE /api/extension/mappings/{site}`: `{"ok": true}`, or 404 `not_found`. The person can also forget one in
   Settings > Browser extension (*Job sites the AI worked out*).
@@ -1060,7 +1079,7 @@ outline is built from the page the person has open.
 - `status` says `"api": 3`.
 - New: `POST /api/extension/work-out`, `GET /api/extension/mappings`, `GET`, `PUT` and `DELETE
   /api/extension/mappings/{site}` (8.6 to 8.8), with the codes `ai_not_set_up`, `ai_failed`, `busy`,
-  `not_worked_out`, `outline_too_large`, `invalid_mapping`, `too_many_mappings` and `not_found`.
+  `not_worked_out`, `outline_too_large`, `invalid_mapping`, `too_many_mappings`, `not_found` and `timed_out`.
 - `POST /api/sources` takes `mapping`; with one, a URL the workspace has gets it (200, `updated: true`) instead of
   409. Sources list their `mapping`.
 - `POST /api/sources` refuses an address on the local network or this computer (422 `refused_address`), as the bulk
@@ -1069,5 +1088,5 @@ outline is built from the page the person has open.
   (the read fails, as a source's Test then says). A rendered page's requests there are aborted; a redirect hop
   there, which the browser follows by itself and sends before it can be stopped, fails the whole rendering, so
   nothing it read is kept. These checks go by the address's shape: a public name that resolves to a local address
-  is not caught.
+  is not caught, nor is a rendered page's WebSocket (`ws://`, `wss://`) connection.
 - Unchanged: keys, status's other fields, preview, jobs, jobs/batch and the source test.

@@ -256,7 +256,8 @@ MAPPED_VALUE_MAX = 200
 # mapping finds nothing (MappedPageRefused) and the page is read the usual ways.
 MAPPED_HTML_MAX = 3_000_000    # characters of the page
 MAPPED_DEPTH_MAX = 80          # elements inside one another
-MAPPED_SECONDS = 10.0          # matching the selectors, in all, checked between elements
+MAPPED_SECONDS = 10.0          # matching the selectors, in all, checked between elements (less when the client's
+                               # deadline is nearer: PoliteClient.seconds_left)
 
 
 class MappedPageRefused(Exception):
@@ -323,11 +324,12 @@ def _mapped_value(matcher: _Matcher, entry: Tag, spec: Optional[dict], default_a
     return clean(el.get_text(" "))
 
 
-def parse_mapped(html: str, page_url: str, company: str, mapping: dict) -> list[Posting]:
+def parse_mapped(html: str, page_url: str, company: str, mapping: dict,
+                 seconds: Optional[float] = None) -> list[Posting]:
     """Job-posting stubs from a careers page read with its mapping (kind "careers"): one per entry ``list`` picks
     that has a title and a link to an http(s) page that isn't on the local network or this computer.
     MappedPageRefused for a page over ``MAPPED_HTML_MAX`` or ``MAPPED_DEPTH_MAX``, or matched past
-    ``MAPPED_SECONDS``."""
+    ``MAPPED_SECONDS`` (or ``seconds``, when given)."""
     from backend.source_bulk import address_flags
 
     fields = mapping["fields"]
@@ -336,7 +338,7 @@ def parse_mapped(html: str, page_url: str, company: str, mapping: dict) -> list[
     soup = BeautifulSoup(html, "lxml")
     if _too_deep(soup):
         raise MappedPageRefused("the page's elements are nested too deep to read with a page layout")
-    matcher = _Matcher()
+    matcher = _Matcher(seconds)
     try:
         entries = matcher.select(soup, fields["list"]["selector"], limit=MAX_POSTINGS)
     except MappedPageRefused:
@@ -552,9 +554,14 @@ class GenericAdapter(Adapter):
             raise SourceError("no job postings found on the careers page" + (f" ({detail})" if detail else ""))
         return postings
 
+    def _match_seconds(self) -> float:
+        """How long the mapping may take to match: ``MAPPED_SECONDS``, or less when the client's deadline is nearer."""
+        left = self.client.seconds_left() if isinstance(self.client, PoliteClient) else None
+        return MAPPED_SECONDS if left is None else max(0.0, min(MAPPED_SECONDS, left))
+
     def _mapped(self, page: Response, render: bool = False) -> list[Posting]:
         try:
-            postings = parse_mapped(page.text, page.url, self.company, self.mapping)
+            postings = parse_mapped(page.text, page.url, self.company, self.mapping, seconds=self._match_seconds())
         except MappedPageRefused as exc:
             self.notes.append(str(exc))
             return []

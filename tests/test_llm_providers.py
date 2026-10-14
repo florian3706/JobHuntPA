@@ -1171,5 +1171,56 @@ class ScoringRunTest(ProviderTestCase):
         self.assertEqual(sorted(j for kind, j in events if kind == "start"), sorted(ids))
 
 
+
+class DeadlineTest(ProviderTestCase):
+    """``cfg["deadline"]`` (a work-out's, backend/mappings.py): no attempt or pause runs past it."""
+
+    def test_openai_style_no_request_once_it_has_passed(self):
+        import time
+
+        with mock.patch.object(httpx, "post", side_effect=AssertionError("no request past the deadline")):
+            with self.assertRaises(lp.OutOfTime):
+                lp.chat([{"role": "user", "content": "U"}], {**META, "deadline": time.monotonic() - 1})
+
+    def test_openai_style_timeout_cut_to_the_time_left_and_no_pause_past_it(self):
+        import time
+
+        sent = []
+
+        def post(url, **kw):
+            sent.append(kw["timeout"])
+            return http_reply(status=429, text="slow down", headers={"retry-after": "30"})
+        with mock.patch.object(httpx, "post", side_effect=post), mock.patch("time.sleep") as slept:
+            started = time.monotonic()
+            with self.assertRaises(lp.OutOfTime):
+                lp.chat([{"role": "user", "content": "U"}], {**META, "deadline": time.monotonic() + 2})
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(len(sent), 1)
+        self.assertLessEqual(sent[0], 2)
+        slept.assert_not_called()
+        with mock.patch.object(httpx, "post", side_effect=lambda url, **kw: sent.append(kw["timeout"]) or chat_reply("hi")):
+            self.assertEqual(lp.chat([{"role": "user", "content": "U"}], META), "hi")
+        self.assertEqual(sent[-1], 30, "without a deadline the timeout is the setting's")
+
+    def test_claude_one_attempt_within_the_time_left(self):
+        import time
+
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx2.Response(529, json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}})
+        llm_anthropic._clients[("k", 30.0)] = anthropic.Anthropic(
+            api_key="k", timeout=30, http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handler)))
+        self.addCleanup(llm_anthropic._clients.clear)
+        with no_http():
+            with self.assertRaises(lp.OutOfTime):
+                lp.chat([{"role": "user", "content": "U"}], {**CLAUDE, "deadline": time.monotonic() - 1})
+            self.assertEqual(seen, [], "nothing is sent past the deadline")
+            with self.assertRaises(lp.ScorerError):
+                lp.chat([{"role": "user", "content": "U"}], {**CLAUDE, "deadline": time.monotonic() + 60})
+        self.assertEqual(len(seen), 1, "the SDK starts no retry that could run past the deadline")
+
+
 if __name__ == "__main__":
     unittest.main()

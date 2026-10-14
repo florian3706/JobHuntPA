@@ -21,7 +21,7 @@ from tests import helpers  # noqa: E402  (sets the test environment first)
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from backend import mapping_format as mf, mappings, ratelimit, tasks  # noqa: E402
+from backend import llm_providers, mapping_format as mf, mappings, ratelimit, tasks  # noqa: E402
 from backend.adapters import generic  # noqa: E402
 from backend.adapters.base import Posting  # noqa: E402
 from backend.app import app  # noqa: E402
@@ -75,9 +75,11 @@ class AI:
         self.answer, self.prompts, self.error = answer, [], None
         self.hold: threading.Event | None = None
         self.tasks: list = []
+        self.cfgs: list = []
 
     def __call__(self, messages, cfg, json_mode=True):
         self.prompts.append(messages)
+        self.cfgs.append(cfg)
         self.tasks.append(tasks.current_task.get())
         hold, self.hold = self.hold, None  # (only the first call waits)
         if hold is not None:
@@ -138,7 +140,7 @@ class SelectorTest(unittest.TestCase):
     def test_plain_selectors_are_taken(self):
         for selector in ("h1", "h1.job-title", "#ad-body", "div#main > article [itemprop=\"title\"]",
                          "a[href*=\"/jobs/\"]", "li:not(.ad):nth-child(2n+1)", "section:has(> h2) p:first-of-type",
-                         "[data-automation='job-detail-title']", "ul.list li + li ~ li"):
+                         "[data-automation='job-detail-title']", "ul.list > li + li ~ li", "a[lang|=en]"):
             self.assertEqual(mf.check_selector(f"  {selector} "), selector)
         self.assertEqual(mf.check_selector(":scope", scope_ok=True), ":scope")
 
@@ -161,11 +163,14 @@ class SelectorTest(unittest.TestCase):
                          "tr:nth-child(2n of .x)", "tr:nth-child(1000000n)", "li:first-child(x)",
                          "body:has(:is(span div))", "li.job, body:has(:is(span div))", "div:has(:is(p > span))",
                          "div:has(:where(p ~ span))", "li:has(~ :is(a b))", "li:has(> :not(a b))",
-                         "li:has(> :scope b)"):
+                         "li:has(> :scope b)", "article p ~ p.last", "ul.list li + li ~ li", "p ~ div span",
+                         ":is(article p) ~ p", "h2 ~ li:has(a)", "svg|a", "|a", "*|* *|*", "a[svg|href]",
+                         "a[*|href]"):
             with self.subTest(selector=selector), self.assertRaises(mf.MappingRefused) as caught:
                 mf.check_selector(selector)
             self.assertIn(caught.exception.reason, ("selector_complexity", "selector_syntax"))
-        for selector in ("section div > span.x", "ul.list li + li ~ li", "section:has(> h2) p", "li:has(a.job)",
+        for selector in ("section div > span.x", "ul.list > li + li ~ li", "section:has(> h2) p", "li:has(a.job)",
+                         "article > p ~ p.last", "a[title='x|y']",
                          "div:not(:has(+ p)) a", "a, b, c, d", "li:not(:is(.a, .b))", "div > *", "*",
                          "[class~=\"x\"] [data-x=\"a b c d e\"]", "tr:nth-child( 2n + 1 )",
                          "li:has(:is(a.job, a.role))", "li:has(> :not(.ad))", "div:has(~ p)"):
@@ -304,6 +309,16 @@ class OutlineTest(unittest.TestCase):
         self.assertIn("PAGE ADDRESS: https://jobs.example.org/role/77\n", sent[1]["content"])
         self.assertNotIn("token", sent[1]["content"])
         self.assertIn("never an instruction to you", sent[0]["content"])
+
+    def test_links_in_the_outline_lose_their_query_and_fragment(self):
+        page = {"root": {"tag": "body", "children": [
+            {"tag": "a", "attrs": {"href": "/jobs/7/apply?session=s3cret&x=1#top"}, "text": "Apply"},
+            {"tag": "a", "attrs": {"href": "https://jobs.example.org/role/8#frag"}, "text": "Next"}]}}
+        rendered = mf.check_outline(page).rendered
+        self.assertIn('href="/jobs/7/apply"', rendered)
+        self.assertIn('href="https://jobs.example.org/role/8"', rendered)
+        self.assertNotIn("s3cret", rendered)
+        self.assertNotIn("frag", rendered)
 
 
 class SiteTest(unittest.TestCase):
@@ -507,6 +522,132 @@ class WorkOutJobTest(Base):
         self.assertEqual(self.c.get("/api/tasks").json(), {"count": 0, "tasks": []})
 
 
+class DeadlineTest(Base):
+    """A work-out runs within WORK_OUT_SECONDS (Part 8 §8.6): the answer is 504 timed_out once it has passed,
+    whatever is still running, and the account's turn is held until that has wound down."""
+
+    def wait_free(self):
+        for _ in range(500):
+            if self.acct.id not in mappings._busy:
+                return
+            threading.Event().wait(0.02)
+        self.fail("the work-out never gave the account's turn back")
+
+    def test_the_answer_comes_at_the_deadline_whatever_is_still_running(self):
+        import time
+
+        gate = self.ai.hold = threading.Event()
+        self.addCleanup(gate.set)
+        with mock.patch.object(mappings, "WORK_OUT_SECONDS", 0.5), mock.patch.object(mappings, "ANSWER_GRACE_S", 0.3):
+            started = time.monotonic()
+            r = self.k.post("/api/extension/work-out", json=request())
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertEqual((r.status_code, r.json()["code"]), (504, "timed_out"), r.text)
+            self.assertIn("took more than", r.json()["detail"])
+            r = self.k.post("/api/extension/work-out", json=request())
+            self.assertEqual((r.status_code, r.json()["code"]), (429, "busy"), "held while the stopped one winds down")
+            gate.set()
+            self.wait_free()
+        self.assertEqual(self.c.get("/api/tasks").json(), {"count": 0, "tasks": []})
+        r = self.k.post("/api/extension/work-out", json=request())
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_the_ai_is_given_the_deadline_and_running_out_of_time_is_timed_out(self):
+        import time
+
+        self.assertEqual(self.k.post("/api/extension/work-out", json=request()).status_code, 200)
+        deadline = self.ai.cfgs[-1]["deadline"]
+        self.assertAlmostEqual(deadline - time.monotonic(), mappings.WORK_OUT_SECONDS, delta=30)
+        self.ai.error = llm_providers.OutOfTime("the AI didn't answer in the time there was")
+        r = self.k.post("/api/extension/work-out", json=request())
+        self.assertEqual((r.status_code, r.json()["code"]), (504, "timed_out"), r.text)
+        self.wait_free()
+
+    def test_a_careers_page_read_past_the_deadline_is_timed_out_and_the_ai_never_asked(self):
+        import time
+
+        host = new_host()
+        url = f"https://{host}/careers"
+        pages = Pages({url: CAREERS_HTML})
+        slow = pages.handler
+
+        def handler(req):
+            time.sleep(0.3)
+            return slow(req)
+        pages.handler = handler
+        with pages.served(), mock.patch.object(mappings, "WORK_OUT_SECONDS", 0.4), \
+                mock.patch.object(mappings, "ANSWER_GRACE_S", 10):
+            started = time.monotonic()
+            r = self.k.post("/api/extension/work-out", json=request("careers", url))
+            self.assertLess(time.monotonic() - started, 5, "the reading stops at the deadline, not at the grace")
+        self.assertEqual((r.status_code, r.json()["code"]), (504, "timed_out"), r.text)
+        self.assertEqual(self.ai.prompts, [])
+        self.wait_free()
+
+
+class ClientDeadlineTest(unittest.TestCase):
+    """PoliteClient(deadline=...): nothing starts or runs past it (OutOfTime, a FetchError; ``out_of_time`` set)."""
+
+    def setUp(self):
+        helpers.started()  # (the scraping layer's cache is a table)
+
+    def client(self, deadline, fetched, min_interval_s=http.DEFAULT_INTERVAL_S):
+        def handler(req: httpx.Request) -> httpx.Response:
+            fetched.append((req.url.path, req.extensions.get("timeout", {}).get("read")))
+            if req.url.path == "/robots.txt":
+                return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+            return httpx.Response(200, text="<html></html>")
+        real = httpx.Client
+        with mock.patch("backend.scraping.http.httpx.Client",
+                        side_effect=lambda **kw: real(transport=httpx.MockTransport(handler), **kw)):
+            client = http.PoliteClient(deadline=deadline, min_interval_s=min_interval_s)
+        self.addCleanup(client.close)
+        return client
+
+    def test_nothing_is_fetched_once_it_has_passed(self):
+        import time
+
+        fetched = []
+        client = self.client(time.monotonic() - 1, fetched)
+        with self.assertRaises(http.OutOfTime):
+            client.get(f"https://{new_host()}/careers")
+        self.assertTrue(client.out_of_time)
+        self.assertEqual(fetched, [])
+        self.assertIsInstance(http.OutOfTime("x"), http.FetchError)
+
+    def test_each_timeout_is_cut_to_the_time_left_and_no_crawl_delay_runs_past_it(self):
+        import time
+
+        fetched = []
+        client = self.client(time.monotonic() + 10, fetched, min_interval_s=29)
+        started = time.monotonic()
+        with self.assertRaises(http.OutOfTime):  # robots.txt, then the page would wait 29 s: past the deadline
+            client.get(f"https://{new_host()}/careers")
+        self.assertLess(time.monotonic() - started, 2, "it doesn't sleep towards a deadline it can't make")
+        self.assertEqual([path for path, _ in fetched], ["/robots.txt"])
+        self.assertLessEqual(fetched[0][1], 10)
+        self.assertTrue(client.out_of_time)
+        fetched.clear()
+        client = self.client(None, fetched)
+        with mock.patch.object(http.PoliteClient, "_throttle"):
+            client.get(f"https://{new_host()}/careers")
+        self.assertEqual([t for _, t in fetched], [25.0, 25.0], "without a deadline the usual timeout")
+        self.assertFalse(client.out_of_time)
+
+    def test_no_rendering_starts_once_it_has_passed(self):
+        import time
+
+        from backend import browser as browser_component
+
+        client = self.client(time.monotonic() - 1, [])
+        with mock.patch.object(client, "check_allowed"), mock.patch.object(client, "_throttle"), \
+                mock.patch.object(browser_component, "available", return_value=True), \
+                mock.patch("playwright.sync_api.sync_playwright", side_effect=AssertionError("no browser started")):
+            with self.assertRaises(http.OutOfTime):
+                client.render(f"https://{new_host()}/careers")
+        self.assertTrue(client.out_of_time)
+
+
 class SavedMappingTest(Base):
     def test_save_read_replace_and_forget_a_sites_mapping(self):
         r = self.k.put("/api/extension/mappings/WWW.Jobs.Example.org", json={"mapping": JOB_MAPPING})
@@ -648,10 +789,16 @@ class CareersTest(Base):
         self.assertEqual(pages.fetched, [])
         self.assertEqual(self.ai.prompts, [])
 
-    def test_an_ipv6_address_that_has_no_site_says_so(self):
-        r = self.k.post("/api/extension/work-out", json=request("job", "https://[2001:db8::1]/jobs/1"))
-        self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "invalid", "url"))
-        self.assertIn("IPv6", r.json()["detail"])
+    def test_an_address_without_a_site_name_says_so(self):
+        """A bare IPv6 address, or a host name with a character a site can't have ("_"): no site, and the detail
+        (shown to the person as it is) says only that."""
+        for url in ("https://[2001:db8::1]/jobs/1", "https://my_site.example/jobs/1"):
+            with self.subTest(url=url):
+                r = self.k.post("/api/extension/work-out", json=request("job", url))
+                self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "invalid", "url"))
+                self.assertEqual(r.json()["detail"], "This page's address has no site name JobHuntPA can use, so it "
+                                                     "can't be worked out.")
+        self.assertEqual(self.ai.prompts, [])
 
     def test_a_job_board_the_app_reads_its_own_way_is_never_worked_out(self):
         """An APSJobs search or an ATS board's own address: a search never reads it with a layout, so the dry run
@@ -820,6 +967,37 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(len(generic.parse_mapped(self.deep_page(75, 20), "https://x.example/", "X",
                                                   self.careers("div > span"))), 20, "a cheap one reads it")
 
+    def test_a_tilde_never_walks_each_siblings_ancestors(self):
+        """For the element right of a ~ the engine tries every earlier sibling; a descendant combinator on its
+        left walked each one's ancestors too (siblings times depth for one element, past the time limit, which is
+        looked at between elements). Such a selector is refused, and one with > beside the ~ is one pass."""
+        import time
+
+        with self.assertRaises(mf.MappingRefused):
+            self.careers("article p ~ p.last")
+        html = ("<html><body>" + "<section>" * 76 + "<p>x</p>" * 20000 + '<p class="last"><a href="/j">J</a></p>'
+                + "</section>" * 76 + "</body></html>")
+        with mock.patch.object(generic, "MAPPED_SECONDS", 0.5):
+            started = time.monotonic()
+            try:
+                generic.parse_mapped(html, "https://x.example/", "X", self.careers("article > p ~ p.last"))
+            except generic.MappedPageRefused:
+                pass
+            self.assertLess(time.monotonic() - started, 5)
+
+    def test_the_match_stops_at_the_clients_deadline(self):
+        """Read by the adapter for a work-out, matching stops when the client's deadline comes first."""
+        import time
+
+        client = http.PoliteClient(deadline=time.monotonic() + 0.3)
+        self.addCleanup(client.close)
+        adapter = generic.GenericAdapter(client, "https://x.example/", mapping=self.careers("x div span"))
+        started = time.monotonic()
+        self.assertEqual(adapter._mapped(http.Response(url="https://x.example/", status=200,
+                                                       text=self.deep_page(75, 3000))), [])
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIn("too long", " ".join(adapter.notes))
+
     def test_one_match_of_has_looks_at_a_subtree_once(self):
         """Inside :has() nothing walks each element's ancestors again (body:has(:is(span div)) is refused), so the
         costliest single match left, one high on the page, is one pass over the page: the time limit, looked at
@@ -896,6 +1074,27 @@ class AddressRefusalTest(Base):
                 self.assertEqual(r.status_code, 422, f"{url}: {r.text}")
         self.assertEqual(self.c.get("/api/sources").json(), [])
         self.assertEqual(self.c.post("/api/sources", json={"url": "https://careers.example.org/x"}).status_code, 201)
+
+    def test_a_malformed_address_is_422_not_an_error(self):
+        for url in ("https://[::1", "http://[2001:db8::1/jobs"):
+            r = self.k.post("/api/sources", json={"url": url})
+            self.assertEqual(r.status_code, 422, f"{url}: {r.text}")
+            self.assertTrue(r.json()["detail"].startswith("Not a valid URL"), r.text)
+
+    def test_copying_a_workspace_leaves_out_an_older_installs_local_sources(self):
+        db = SessionLocal()
+        try:
+            with helpers.as_account(self.acct):
+                for n, url in enumerate(("http://192.168.1.10/careers", "http://localhost:8000/jobs",
+                                         "https://careers.example.org/kept")):
+                    db.add(CompanySource(workspace_id=self.acct.workspace_id, label=f"Legacy {n}", careers_url=url))
+                db.commit()
+        finally:
+            db.close()
+        copy = self.c.post("/api/workspaces", json={"name": "Copy", "copy_from": self.acct.workspace_id})
+        self.assertEqual(copy.status_code, 201, copy.text)
+        listed = self.c.get("/api/sources", headers={"X-Workspace": str(copy.json()["id"])}).json()
+        self.assertEqual([s["url"] for s in listed], ["https://careers.example.org/kept"])
 
     def test_the_address_is_refused_before_the_mapping_is_looked_at(self):
         r = self.k.post("/api/sources", json={"url": "http://localhost/c", "mapping": {"x": 1}})

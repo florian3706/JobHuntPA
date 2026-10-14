@@ -880,7 +880,8 @@ page layout the AI worked out*). If the site changes and the layout finds nothin
 again; **Forget layout** on the source drops it. A layout is only ever selectors, which JobHuntPA checks; it
 is never run as code, and a layout too costly to match (long chains of nested parts) is refused. A job board
 the app reads its own way (an APSJobs search, an address on Greenhouse, Lever, Workday and the like) is never
-given a layout. This uses your AI provider, like scoring, and can take a few minutes.
+given a layout. This uses your AI provider, like scoring, and can take a few minutes (at most 10: past that
+JobHuntPA stops and says so).
 
 **When a source doesn't work**, its last result in the list (and **Test**) says why:
 

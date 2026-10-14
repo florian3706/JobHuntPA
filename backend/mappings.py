@@ -24,21 +24,29 @@ and why an answer was refused (a fixed code). **The answer** must be selectors i
 out. **A saved mapping** is data: per site (a normalised host name) and per account (an older install's accounts
 don't share them), sealed under the account's key and found by a blind index of the site. One work-out runs at a time
 per account (429 ``busy``).
+
+**How long a work-out takes** is bounded (Part 8 §8.6): all of it (reading the careers page the usual ways, the AI,
+the dry run with the mapping) runs within ``WORK_OUT_SECONDS`` of the request. The page reading
+(``PoliteClient(deadline=...)``), the AI call (``cfg["deadline"]``) and the matching (``GenericAdapter``) each cut
+their own timeouts to the time left and stop when it is gone; and the request answers 504 ``timed_out`` at most
+``ANSWER_GRACE_S`` after the deadline whatever is still running (the work runs in a thread of its own, which holds the
+account's turn until it has wound down).
 """
 from __future__ import annotations
 
 import json
 import logging
 import threading
-from contextlib import contextmanager
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from backend import crypto, llm_providers, mapping_format, tasks
+from backend import crypto, llm_providers, mapping_format, tasks, threads
 from backend.db import SiteMapping, get_db, utcnow
 from backend.sessions import AuthProblem, AuthUser, current_user
 from backend.workspaces import current_workspace
@@ -59,9 +67,14 @@ NOT_WORKED_OUT = {
                "it can use. Try again later.",
 }
 BUSY = "JobHuntPA is already working out a page for you. Try again when it has finished."
+WORK_OUT_SECONDS = 600.0    # the whole work-out (page reading, the AI, the dry run): Part 8 §8.6 states it
+ANSWER_GRACE_S = 10.0       # past the deadline, the answer (504 timed_out) comes at most this much later
+TIMED_OUT = ("JobHuntPA took more than {minutes} minutes working this page out, so it stopped. Try again later; a "
+             "page that keeps taking this long can't be worked out.")
 
 _busy: set[int] = set()
 _busy_lock = threading.Lock()
+_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="work-out")  # one work-out per account at a time
 
 
 def _invalid(detail: str, field: Optional[str] = None) -> AuthProblem:
@@ -142,8 +155,8 @@ async def work_out_body(request: Request) -> WorkOutIn:
             raise AuthProblem(422, "refused_address", f"This address can't be a source: {why}", field="url")
     url = _http_url(raw)
     if url is None:
-        raise _invalid("This page's address has no site name JobHuntPA can use (a page at a bare IPv6 address, such "
-                       "as http://[2001:db8::1]/, can't be worked out).", field="url")
+        raise _invalid("This page's address has no site name JobHuntPA can use, so it can't be worked out.",
+                       field="url")
     try:
         outline = await run_in_threadpool(mapping_format.check_outline, data.get("outline"))
     except mapping_format.OutlineRefused as exc:
@@ -153,17 +166,36 @@ async def work_out_body(request: Request) -> WorkOutIn:
     return WorkOutIn(kind=kind, url=url, site=mapping_format.site_of(url), outline=outline)
 
 
-@contextmanager
-def one_at_a_time(user_id: int) -> Iterator[None]:
+def _claim(user_id: int) -> None:
+    """The account's turn to work a page out (429 ``busy`` while one runs); ``_release`` gives it back."""
     with _busy_lock:
         if user_id in _busy:
             raise AuthProblem(429, "busy", BUSY, headers={"Retry-After": "5"})
         _busy.add(user_id)
-    try:
-        yield
-    finally:
-        with _busy_lock:
-            _busy.discard(user_id)
+
+
+def _release(user_id: int) -> None:
+    with _busy_lock:
+        _busy.discard(user_id)
+
+
+class Deadline:
+    """When a work-out must end (a ``time.monotonic()`` value, ``at``)."""
+
+    def __init__(self, seconds: float):
+        self.at = time.monotonic() + seconds
+
+    def left(self) -> float:
+        return self.at - time.monotonic()
+
+    def check(self, client=None) -> None:
+        """504 ``timed_out`` once the deadline has passed, or when ``client`` (a PoliteClient) ran out of time."""
+        if self.left() <= 0 or (client is not None and client.out_of_time):
+            raise timed_out()
+
+
+def timed_out() -> AuthProblem:
+    return AuthProblem(504, "timed_out", TIMED_OUT.format(minutes=round(WORK_OUT_SECONDS / 60)))
 
 
 def _ai_config(ws: int) -> dict:
@@ -176,12 +208,19 @@ def _ai_config(ws: int) -> dict:
     return cfg
 
 
-def ask_ai(body: WorkOutIn, cfg: dict, user_id: int) -> dict:
+def ask_ai(body: WorkOutIn, cfg: dict, user_id: int, deadline: Optional[Deadline] = None) -> dict:
     """The mapping the AI works out from the outline, checked (``parse_answer``). 502 ``ai_failed`` when the AI
-    service fails, 422 ``not_worked_out`` when its answer isn't a mapping."""
+    service fails, 422 ``not_worked_out`` when its answer isn't a mapping, 504 ``timed_out`` when ``deadline``
+    passed first."""
+    if deadline is not None:
+        deadline.check()
+        cfg = {**cfg, "deadline": deadline.at}
     try:
         raw = llm_providers.chat(mapping_format.messages(body.kind, body.url, body.outline), cfg, json_mode=True)
     except llm_providers.ScorerError as exc:
+        if deadline is not None and (isinstance(exc, llm_providers.OutOfTime) or deadline.left() <= 0):
+            log.warning("Mapping: user %s, %s page: the AI didn't answer before the deadline", user_id, body.kind)
+            raise timed_out() from None
         log.warning("Mapping: user %s, %s page: the AI service failed (%s)", user_id, body.kind,
                     exc.__class__.__name__)
         raise AuthProblem(502, "ai_failed", llm_providers.user_message(exc)) from None
@@ -201,9 +240,10 @@ def _test(adapter, postings) -> dict:
             "notes": list(adapter.notes)}
 
 
-def _careers(body: WorkOutIn, ws: int, user_id: int) -> dict:
+def _careers(body: WorkOutIn, ws: int, user_id: int, deadline: Deadline) -> dict:
     """A careers page: the app reads it itself, through the scraping layer (robots.txt, crawl delay, honest
-    User-Agent). The usual ways first; when they find no jobs, the AI's mapping, and the page read with it."""
+    User-Agent). The usual ways first; when they find no jobs, the AI's mapping, and the page read with it. All of
+    it within ``deadline`` (504 ``timed_out`` past it, whatever was found)."""
     from backend.adapters.apsjobs import is_apsjobs_url
     from backend.adapters.ats import detect_ats
     from backend.adapters.base import SourceError
@@ -211,11 +251,12 @@ def _careers(body: WorkOutIn, ws: int, user_id: int) -> dict:
     from backend.scraping.http import FetchError, PoliteClient
 
     out = {"site": body.site, "kind": "careers", "url": body.url, "mapping": None, "worked_out": False}
-    client = PoliteClient()
+    client = PoliteClient(deadline=deadline.at)
     try:
         try:
             client.get(body.url, ttl=LISTING_TTL)  # (cached for the readings that follow)
         except FetchError as exc:  # robots.txt, a bot check, an error page: a layout can't help
+            deadline.check(client)
             return {**out, "test": {"ok": False, "error": str(exc), "notes": []}}
         usual = source_adapter(client, body.url)
         error = "no job postings found on the careers page"
@@ -223,6 +264,7 @@ def _careers(body: WorkOutIn, ws: int, user_id: int) -> dict:
             postings = usual.list_postings()
         except (SourceError, FetchError, ValueError) as exc:
             postings, error = [], str(exc) or error
+        deadline.check(client)  # (a reading cut short by the deadline isn't the page's answer)
         if postings:
             return {**out, "test": _test(usual, postings)}
         if is_apsjobs_url(body.url) or detect_ats(body.url):
@@ -231,16 +273,29 @@ def _careers(body: WorkOutIn, ws: int, user_id: int) -> dict:
             notes = list(getattr(usual, "notes", []))
             notes.append("this address is a job board JobHuntPA reads its own way, so a page layout can't help")
             return {**out, "test": {"ok": False, "error": error, "notes": notes}}
-        found = ask_ai(body, _ai_config(ws), user_id)
+        found = ask_ai(body, _ai_config(ws), user_id, deadline)
         adapter = GenericAdapter(client, body.url, mapping=found)
         try:
             postings = adapter.mapped_postings()
             test = _test(adapter, postings)
         except (SourceError, FetchError) as exc:
             test = {"ok": False, "error": str(exc), "notes": list(adapter.notes)}
+        deadline.check(client)
         return {**out, "mapping": found, "worked_out": True, "test": test}
     finally:
         client.close()
+
+
+def _work(body: WorkOutIn, cfg: Optional[dict], ws: int, user_id: int, deadline: Deadline) -> dict:
+    """The work-out itself (in a thread of ``_pool``); gives the account's turn back when it ends."""
+    try:
+        with tasks.track(TASK_KINDS[body.kind], ws):
+            if body.kind == "careers":
+                return _careers(body, ws, user_id, deadline)
+            found = ask_ai(body, cfg, user_id, deadline)
+            return {"site": body.site, "kind": "job", "mapping": found, "worked_out": True}
+    finally:
+        _release(user_id)
 
 
 @router.post("/work-out")
@@ -248,14 +303,22 @@ def work_out(body: WorkOutIn = Depends(work_out_body), user: AuthUser = Depends(
              ws: int = Depends(current_workspace)):
     """Works out a page's layout from its outline. Signed in (a key or a session), any workspace of the account. A
     job page: the mapping (not saved: the extension shows the job it finds, then saves it with PUT). A careers page:
-    the jobs the app found reading it (``test``), with the mapping when one was needed (else null)."""
+    the jobs the app found reading it (``test``), with the mapping when one was needed (else null). Within
+    ``WORK_OUT_SECONDS`` (504 ``timed_out`` at most ``ANSWER_GRACE_S`` later)."""
+    deadline = Deadline(WORK_OUT_SECONDS)
     cfg = _ai_config(ws) if body.kind == "job" else None
-    with one_at_a_time(user.id):
-        with tasks.track(TASK_KINDS[body.kind], ws):
-            if body.kind == "careers":
-                return _careers(body, ws, user.id)
-            found = ask_ai(body, cfg, user.id)
-            return {"site": body.site, "kind": "job", "mapping": found, "worked_out": True}
+    _claim(user.id)
+    try:
+        future = threads.submit(_pool, _work, body, cfg, ws, user.id, deadline)
+    except BaseException:
+        _release(user.id)
+        raise
+    try:
+        return future.result(timeout=max(deadline.left(), 0.0) + ANSWER_GRACE_S)
+    except FutureTimeout:
+        log.warning("Mapping: user %s, %s page: still running past the deadline; answered timed_out", user.id,
+                    body.kind)
+        raise timed_out() from None
 
 
 # ---------------------------------------------------------------------------

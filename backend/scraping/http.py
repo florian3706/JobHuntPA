@@ -18,6 +18,9 @@
   rows are keyed and sealed with a key that lives only in this process
   (``crypto.process_index``, ``crypto.ProcessSealedText``); startup
   deletes them.
+- An optional deadline (``PoliteClient(deadline=...)``, a ``time.monotonic()`` value): no request, crawl-delay pause
+  or rendering starts or runs past it, and each one's timeout is cut to the time left; past it
+  :class:`OutOfTime` (a :class:`FetchError`), and ``out_of_time`` is set so a caller that caught it still knows.
 """
 from __future__ import annotations
 
@@ -56,6 +59,10 @@ class FetchError(Exception):
 
 class RobotsBlocked(FetchError):
     pass
+
+
+class OutOfTime(FetchError):
+    """The client's deadline passed, or would pass before the next request could start."""
 
 
 @dataclass
@@ -129,7 +136,11 @@ def _origin(url: str) -> str:
 
 
 class PoliteClient:
-    def __init__(self, timeout: float = 25.0, min_interval_s: float = DEFAULT_INTERVAL_S):
+    def __init__(self, timeout: float = 25.0, min_interval_s: float = DEFAULT_INTERVAL_S,
+                 deadline: Optional[float] = None):
+        self._timeout = timeout
+        self.deadline = deadline  # a time.monotonic() value, or None for no deadline
+        self.out_of_time = False
         self._client = httpx.Client(
             headers={"User-Agent": USER_AGENT, "Accept-Language": "en-AU,en;q=0.9"},
             timeout=timeout,
@@ -142,6 +153,27 @@ class PoliteClient:
 
     def close(self) -> None:
         self._client.close()
+
+    # -- the deadline -------------------------------------------------------
+    def seconds_left(self) -> Optional[float]:
+        """Seconds until the deadline (0 or less once it has passed), or None without one."""
+        return None if self.deadline is None else self.deadline - time.monotonic()
+
+    def _stop(self) -> None:
+        self.out_of_time = True
+        raise OutOfTime("JobHuntPA ran out of the time it had to read this page")
+
+    def _within(self, seconds: float) -> float:
+        """``seconds``, or the time left when the deadline is nearer; OutOfTime once it has passed."""
+        left = self.seconds_left()
+        if left is None:
+            return seconds
+        if left <= 0:
+            self._stop()
+        return min(seconds, left)
+
+    def _timeout_kw(self) -> dict:
+        return {} if self.deadline is None else {"timeout": self._within(self._timeout)}
 
     # -- robots ------------------------------------------------------------
     def robots_for(self, url: str) -> RobotsRules:
@@ -166,12 +198,14 @@ class PoliteClient:
                     raise FetchError(f"robots.txt redirected to an address on the local network or this computer; "
                                      f"not crawling {_origin(robots_url)}")
                 self._throttle(url, DEFAULT_INTERVAL_S)
-                resp = self._client.get(url)
+                resp = self._client.get(url, **self._timeout_kw())
                 if resp.is_redirect and resp.headers.get("location"):
                     url = urljoin(url, resp.headers["location"])
                     continue
                 break
         except httpx.HTTPError as exc:
+            if self.deadline is not None and self.seconds_left() <= 0:
+                self._stop()
             raise FetchError(f"robots.txt unreachable ({exc.__class__.__name__}); not crawling {_origin(robots_url)}")
         if resp.status_code >= 500:
             # RFC 9309: an unreachable robots.txt means "assume disallow all".
@@ -189,6 +223,9 @@ class PoliteClient:
         host = urlsplit(url).netloc
         with self._lock:
             wait = self._last_hit.get(host, 0.0) + interval - time.monotonic()
+            left = self.seconds_left()
+            if left is not None and max(wait, 0.0) >= left:
+                self._stop()  # (the request couldn't start before the deadline)
             if wait > 0:
                 time.sleep(wait)
             self._last_hit[host] = time.monotonic()
@@ -235,8 +272,10 @@ class PoliteClient:
             self.check_allowed(current)
             self._throttle(current, self._interval_for(current))
             try:
-                resp = self._client.request(method, current, json=json_body, data=form_body)
+                resp = self._client.request(method, current, json=json_body, data=form_body, **self._timeout_kw())
             except httpx.HTTPError as exc:
+                if self.deadline is not None and self.seconds_left() <= 0:
+                    self._stop()
                 raise FetchError(f"{exc.__class__.__name__} fetching {current}") from exc
             if resp.is_redirect and resp.headers.get("location"):
                 current = urljoin(current, resp.headers["location"])
@@ -274,6 +313,7 @@ class PoliteClient:
             browser_component.mark_needed()
             raise FetchError(browser_component.NEEDED)
         self._throttle(url, self._interval_for(url))
+        self._within(0)
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -282,12 +322,12 @@ class PoliteClient:
                     guard = _guard_requests(url)
                     page.route("**/*", guard)
                     page.on("request", guard.request)
-                    resp = page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                    resp = page.goto(url, timeout=max(int(self._within(30.0) * 1000), 1), wait_until="domcontentloaded")
                     _refuse_if_reached_local(guard, url)
                     if resp and bot_challenge(resp.status, resp.headers, "" if resp.status == 202 else "x"):
                         raise FetchError(f"{urlsplit(url).netloc} answered with a bot check; JobHuntPA doesn't bypass those",
                                          resp.status)
-                    page.wait_for_timeout(wait_ms)
+                    page.wait_for_timeout(int(self._within(wait_ms / 1000) * 1000))
                     status = resp.status if resp else 200
                     html = page.content()
                     final_url = page.url
@@ -297,6 +337,8 @@ class PoliteClient:
         except FetchError:
             raise
         except Exception as exc:
+            if self.deadline is not None and self.seconds_left() <= 0:
+                self._stop()
             if "Executable doesn't exist" in str(exc):  # a Chromium for an older Playwright: a new one is needed
                 browser_component.mark_needed()
                 raise FetchError(browser_component.NEEDED) from exc

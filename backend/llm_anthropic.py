@@ -78,6 +78,8 @@ def _client(cfg: dict) -> "anthropic.Anthropic":
 
 def _create(cfg: dict, kwargs: dict) -> Any:
     client = _client(cfg)
+    if cfg.get("deadline") is not None:  # (llm_providers: nothing runs past it, so no retry the SDK would start)
+        client = client.with_options(timeout=lp.time_left(cfg, float(cfg.get("timeout_s") or 180)), max_retries=0)
     fallback = (cfg.get("model") or "").strip() in FALLBACK_MODELS
     api = client.beta.messages if fallback else client.messages
     extra = {"betas": [FALLBACK_BETA], "fallbacks": "default"} if fallback else {}
