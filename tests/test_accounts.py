@@ -866,8 +866,7 @@ class InstallSettingsTest(SignInTestCase):
                 self.assertEqual(c.get("/api/settings/llm").json()["model"], "model-name-xyz")
                 self.assertNotIn("sk-secret-key-1234", c.get("/api/settings/llm").text)
                 self.assertEqual(c.get("/api/llm").status_code, 200)
-                self.assertEqual(c.get("/api/settings/keys").status_code, 200)
-            for path in ("/api/settings/llm", "/api/llm", "/api/settings/keys"):
+            for path in ("/api/settings/llm", "/api/llm"):
                 self.assertEqual(anonymous.get(path).status_code, 401, path)
 
     def test_score_status_shows_the_setup_but_never_the_key(self):
@@ -881,13 +880,6 @@ class InstallSettingsTest(SignInTestCase):
             out = other.get("/api/score/status").json()
             self.assertFalse(out["configured"])
             self.assertIn("in Settings (AI provider)", out["problem"])
-
-    def test_commute_status_says_only_what_is_available(self):
-        user = self.signed_in(helpers.make_user())
-        with mock.patch.dict(os.environ, {"TFNSW_API_KEY": "tfnsw-key-123456", "TOMTOM_API_KEY": ""}):
-            r = user.get("/api/commute/status")
-        self.assertEqual(r.json(), {"transit": True, "traffic": False})
-        self.assertNotIn("tfnsw-key", r.text)
 
 
 class RecoveryCodeTest(SignInTestCase):

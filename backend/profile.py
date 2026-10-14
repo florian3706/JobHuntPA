@@ -1,7 +1,7 @@
 """Search profile, dealbreakers and location pins (API + store helpers).
 
-Endpoints:
-    GET/PUT /api/profile        titles, keywords, salary floor, work modes, SEEK settings
+Endpoints (signed in, for the request's workspace):
+    GET/PUT /api/profile        titles, keywords, salary floor, work modes, SEEK settings, commute starting points
     GET/PUT /api/dealbreakers   {industries[], keywords[]}
     GET/POST /api/pins, PUT/DELETE /api/pins/{id}
 """
@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
+from backend import commute
 from backend.db import DealbreakerSet, Pin, UserProfile, get_db
 from backend.workspaces import current_workspace, owned
 
@@ -20,6 +21,24 @@ router = APIRouter()
 
 PinKind = Literal["home", "hybrid", "onsite"]
 DEFAULT_PIN_RADIUS_KM = 25.0
+
+
+class StartingPoint(BaseModel):
+    """One place the commute links start from: one of the workspace's pins, or a typed place (an address, a station,
+    a bus stop), with what it is for. An empty label shows the place's (or the pin's) name."""
+
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(default="", max_length=commute.LABEL_MAX)
+    pin_id: Optional[int] = Field(default=None, ge=1)
+    place: Optional[str] = Field(default=None, max_length=commute.PLACE_MAX)
+    use: Literal["driving", "transit", "both"] = "both"
+
+    @model_validator(mode="after")
+    def _one_place(self) -> "StartingPoint":
+        typed = bool((self.place or "").strip())
+        if (self.pin_id is None) == (not typed):
+            raise ValueError("A starting point is either a pin (pin_id) or a typed place, not both or neither.")
+        return self
 
 
 class ProfileSchema(BaseModel):
@@ -34,10 +53,9 @@ class ProfileSchema(BaseModel):
     allow_onsite: bool = True
     seek_enabled: bool = True
     seek_locations: list[str] = Field(default_factory=list)
-    # Commute: public transport starts at these stations (empty = home pin)
-    commute_from: list[str] = Field(default_factory=list)
-    commute_arrive_by: str = Field(default="09:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
-    commute_leave_at: str = Field(default="17:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    # Where the job page's Google Maps links start (backend.commute), besides the home pins. Left out of a PUT: kept
+    # as it is.
+    starting_points: Optional[list[StartingPoint]] = None
 
 
 class DealbreakersSchema(BaseModel):
@@ -79,7 +97,7 @@ def _clean_tags(values: Any) -> list[str]:
 def get_profile(db: Session, ws: int) -> dict[str, Any]:
     row = db.get(UserProfile, ws)
     if row is None:
-        return ProfileSchema().model_dump()
+        return {**ProfileSchema().model_dump(), "starting_points": []}
     return {
         "titles": list(row.titles or []),
         "keywords_include": list(row.keywords_include or []),
@@ -92,9 +110,7 @@ def get_profile(db: Session, ws: int) -> dict[str, Any]:
         "allow_onsite": bool(row.allow_onsite),
         "seek_enabled": bool(row.seek_enabled),
         "seek_locations": list(row.seek_locations or []),
-        "commute_from": list(row.commute_from or []),
-        "commute_arrive_by": row.commute_arrive_by or "09:00",
-        "commute_leave_at": row.commute_leave_at or "17:00",
+        "starting_points": commute.saved_starting_points(row),
     }
 
 
@@ -114,8 +130,16 @@ def save_profile(db: Session, ws: int, data: ProfileSchema) -> dict[str, Any]:
     row.allow_onsite = data.allow_onsite
     row.seek_enabled = data.seek_enabled
     row.seek_locations = _clean_tags(data.seek_locations)
-    row.commute_from = _clean_tags(data.commute_from)
-    row.commute_arrive_by, row.commute_leave_at = data.commute_arrive_by, data.commute_leave_at
+    if data.starting_points is not None:
+        points = commute.clean_starting_points(p.model_dump() for p in data.starting_points)
+        pins = {pin_id for (pin_id,) in db.query(Pin.id).filter(Pin.workspace_id == ws)}
+        if any(p["pin_id"] is not None and p["pin_id"] not in pins for p in points):
+            db.rollback()
+            raise HTTPException(status_code=422, detail="A starting point names a pin that isn't in this search. "
+                                                        "Reload the page and choose the pin again.")
+        row.starting_points = points
+        # The older search setup's stations are now starting points, and its times are gone (spec §1.8).
+        row.commute_from, row.commute_arrive_by, row.commute_leave_at = None, "", ""
     db.commit()
     return get_profile(db, ws)
 

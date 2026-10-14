@@ -61,7 +61,6 @@ from backend.db import (
     AuthSession,
     ChatMessage,
     ChatThread,
-    CommuteCache,
     CompanySource,
     CoverLetter,
     DealbreakerSet,
@@ -983,7 +982,7 @@ def _check_deletable(db: Session, user_id: int) -> None:
 def _remove_workspace_data(db: Session, user_id: int, ws_ids: list[int]) -> list[str]:
     """Everything the account saved in its workspaces, in ``db``'s transaction (not committed): jobs with their
     scores, cover letters and merge decisions, documents, chats, profile, dealbreakers, pins, sources, schedules, runs,
-    the workspaces themselves, the commute cache and the pre-accounts search profile when this account holds it.
+    the workspaces themselves and the pre-accounts search profile when this account holds it.
     Returns the stored names of the sealed upload files: delete them (``_remove_uploads``) after the commit. The
     caller holds ``tasks.start_lock`` and the database's write lock."""
     from backend import migrate_encryption
@@ -1003,7 +1002,6 @@ def _remove_workspace_data(db: Session, user_id: int, ws_ids: list[int]) -> list
         db.execute(delete(model).where(model.id.in_(ws_ids)))
     db.execute(update(LlmUsage).where(LlmUsage.workspace_id.in_(ws_ids)).values(workspace_id=None))
     db.execute(delete(Workspace).where(Workspace.owner_id == user_id))
-    db.execute(delete(CommuteCache).where(CommuteCache.owner_id == user_id))
     if migrate_encryption.owner_of(migrate_encryption.state()) == user_id:
         db.execute(delete(SearchProfile))  # the legacy single row, sealed under this account's key
     return files

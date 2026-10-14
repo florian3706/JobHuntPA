@@ -109,7 +109,6 @@ class EnvFileTest(unittest.TestCase):
         with mock.patch.object(installer, "ROOT", self.dir), mock.patch.dict("os.environ", {**env, **admin}), \
                 mock.patch.object(installer, "say"), mock.patch("builtins.input", side_effect=AssertionError("no prompts")):
             installer.configure_llm(interactive=False, reconfigure=False)
-            installer.configure_commute(interactive=False, reconfigure=False)
         values = installer.read_env(self.env)[1]
         self.assertEqual({k: values[k] for k in env}, env)
         # The first admin's details are for the process environment only, never written to .env.
@@ -124,15 +123,15 @@ class EnvFileTest(unittest.TestCase):
         values = self._configure(["s"])
         self.assertEqual(values.get("LLM_API_KEY"), "")
 
-    def test_commute_keys_asked_once(self):
-        def run(answers, reconfigure=False):
-            with mock.patch.object(installer, "ROOT", self.dir), \
-                    mock.patch("builtins.input", side_effect=answers), mock.patch.object(installer, "say"):
-                installer.configure_commute(interactive=True, reconfigure=reconfigure)
-            return installer.read_env(self.env)[1]
-        self.assertEqual(run(["tfnsw-key", ""]), {"TFNSW_API_KEY": "tfnsw-key", "TOMTOM_API_KEY": ""})
-        self.assertEqual(run([])["TFNSW_API_KEY"], "tfnsw-key")  # not asked again
-        self.assertEqual(run(["", "tt"], reconfigure=True)["TOMTOM_API_KEY"], "tt")
+    def test_the_commute_keys_are_not_asked_any_more(self):
+        """The job page links to Google Maps (spec §1.8): setup asks for no commute key and writes none."""
+        self.assertFalse(hasattr(installer, "configure_commute"))
+        values = self._configure(["s"])
+        self.assertNotIn("TFNSW_API_KEY", values)
+        self.assertNotIn("TOMTOM_API_KEY", values)
+        src = Path(installer.__file__).read_text(encoding="utf-8")
+        for gone in ("TFNSW", "TOMTOM", "commute"):
+            self.assertNotIn(gone, src)
 
 
 if __name__ == "__main__":

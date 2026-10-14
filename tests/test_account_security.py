@@ -21,7 +21,6 @@ from backend.db import (  # noqa: E402
     AuthSession,
     ChatMessage,
     ChatThread,
-    CommuteCache,
     CompanyProfile,
     CompanySource,
     CoverLetter,
@@ -505,7 +504,7 @@ WORKSPACE_TABLES = {
     "dealbreakers": "id IN ({ws})",
     "workspaces": "id IN ({ws})",
 }
-ACCOUNT_TABLES = ("sessions", "recovery_codes", "user_keys", "commute_cache")
+ACCOUNT_TABLES = ("sessions", "recovery_codes", "user_keys")
 
 
 class DeleteAccountTest(AccountTestCase):
@@ -543,7 +542,6 @@ class DeleteAccountTest(AccountTestCase):
                     db.add(thread)
                     db.flush()
                     db.add(ChatMessage(thread_id=thread.id, role="user", content=f"{tag} question"))
-                db.add(CommuteCache(key=f"{tag}-{account.id}", owner_id=account.id, result_json="{}"))
                 db.commit()
                 ids = [account.workspace_id, second.id]
         finally:
@@ -557,8 +555,7 @@ class DeleteAccountTest(AccountTestCase):
             for table, where in WORKSPACE_TABLES.items():
                 out[table] = conn.execute(text(f"SELECT COUNT(*) FROM {table} WHERE {where.format(ws=marks)}")).scalar()
             for table in ACCOUNT_TABLES:
-                column = "owner_id" if table == "commute_cache" else "user_id"
-                out[table] = conn.execute(text(f"SELECT COUNT(*) FROM {table} WHERE {column} = :u"), {"u": user_id}).scalar()
+                out[table] = conn.execute(text(f"SELECT COUNT(*) FROM {table} WHERE user_id = :u"), {"u": user_id}).scalar()
             for name, where in (("usage_of_user", "SELECT COUNT(*) FROM llm_usage WHERE user_id = :u"),
                                 ("users", "SELECT COUNT(*) FROM users WHERE id = :u")):
                 out[name] = conn.execute(text(where), {"u": user_id}).scalar()

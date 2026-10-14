@@ -559,11 +559,15 @@ class UserProfile(Base):
     seek_enabled = Column(Boolean, nullable=False, default=True, server_default="1")
     seek_locations = Column(SealedJSON(), nullable=True)
     seek_max_pages = Column(Integer, nullable=False, default=1, server_default="1")  # unused (SEEK pagination is off-limits)
-    # Commute (backend.commute): public transport starts at these stations
-    # (empty = the home pin); peak trips arrive by / leave at these times.
+    # Where the job page's Google Maps links start (backend.commute): [{label, pin_id | place, use}]; NULL = never
+    # saved since starting points came in, and then the old "Commute from" stations below stand in for them.
+    starting_points = Column(SealedJSON(), nullable=True)
+    # Older search setups: public transport from these stations, arriving by / leaving at these times. Read only to
+    # turn the stations into starting points (``backend.commute.saved_starting_points``); saving the search setup
+    # empties them. The columns stay because an older database has them NOT NULL with no SQL default.
     commute_from = Column(SealedJSON(), nullable=True)
-    commute_arrive_by = Column(SealedText(), nullable=False, default="09:00")
-    commute_leave_at = Column(SealedText(), nullable=False, default="17:00")
+    commute_arrive_by = Column(SealedText(), nullable=False, default="")
+    commute_leave_at = Column(SealedText(), nullable=False, default="")
 
 
 class DealbreakerSet(Base):
@@ -857,19 +861,6 @@ class HttpCache(Base):
     url = Column(String, primary_key=True)
     status_code = Column(Integer, nullable=False)
     body = Column(ProcessSealedText("http_cache.body"), nullable=False, default="")
-    fetched_at = Column(DateTime, nullable=False, default=utcnow)
-
-
-class CommuteCache(Base):
-    """Journey planner / routing answers (backend.commute), refreshed weekly. Per user: the origins are their home
-    and stations, so ``key`` is ``crypto.blind_index("commute", ...)`` (hex) under the user's key and the answer
-    is sealed."""
-
-    __tablename__ = "commute_cache"
-
-    key = Column(String, primary_key=True)
-    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
-    result_json = Column(SealedText(), nullable=False, default="null")
     fetched_at = Column(DateTime, nullable=False, default=utcnow)
 
 
@@ -1202,14 +1193,15 @@ def _ensure_indexes() -> None:
                           "ON jobs (workspace_id, url_index)"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_sources_workspace_url_index "
                           "ON company_sources (workspace_id, careers_url_index)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_commute_cache_owner_id ON commute_cache (owner_id)"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_public_id ON sessions (public_id)"))
 
 
 # What features taken out of the open-source version (docs/design/open-source.md §1.3) left in a database made
 # before it: the tables of memberships with their free periods (Stripe) and of job digest settings.
-# Memberships and email (Phase A); the admin panel's key grants and audit log, and invitations (Phase B).
-RETIRED_TABLES = ("membership_grants", "memberships", "email_prefs", "admin_key_grants", "admin_audit", "auth_tokens")
+# Memberships and email (Phase A); the admin panel's key grants and audit log, and invitations (Phase B); the commute
+# services' answers, sealed per user (Phase C: the job page links to Google Maps instead, spec §1.8).
+RETIRED_TABLES = ("membership_grants", "memberships", "email_prefs", "admin_key_grants", "admin_audit", "auth_tokens",
+                  "commute_cache")
 # Two-step sign-in: the secrets (under the server key) and what they were checked against. The admin panel: each
 # account's details sealed to the admin details key, and the role that set the admins apart.
 _USERS_CLEARED = {"mfa_enabled": "0", "totp_secret_enc": "NULL", "totp_pending_enc": "NULL", "totp_last_step": "NULL",
@@ -1223,8 +1215,8 @@ def _retire_removed_features() -> bool:
     database: the two-step secrets are emptied (every account then signs in with its name and password), so are the
     copies of everyone's details sealed to the admin details key and the admin role; sign-ins that were waiting for a
     two-step code are deleted; the retired tables are dropped (with them the admin details key's private half, granted
-    to each admin, the admin audit log and the unused links and invitations); and the admin key's public half and the
-    sign-up mode are deleted from the settings. These hold keys, secrets and personal details, so it is all one
+    to each admin, the admin audit log, the unused links and invitations, and the commute cache with its journeys
+    between the user's places); and the admin key's public half and the sign-up mode are deleted from the settings. These hold keys, secrets and personal details, so it is all one
     transaction, and the write-ahead log is emptied after it (``scrub_wal``; ``secure_delete`` has zeroed the freed
     pages of the main file). The server key file is not touched. The emptied columns stay, unmapped (dropping a column
     needs a newer SQLite than some installs have, or a table rebuild). Every account keeps signing in: nothing here is
@@ -1259,9 +1251,9 @@ def _retire_removed_features() -> bool:
     if not any(counts.values()):
         return False
     scrub_wal()
-    log.info("removed what memberships, email, digests, two-step sign-in and the admin panel left: %d account(s) "
-             "cleaned, %d waiting sign-in(s) and %d link(s) or invitation(s) deleted, %d setting(s) and %d table(s) "
-             "dropped", counts["accounts"], counts["pending"], counts["links"], counts["settings"], counts["tables"])
+    log.info("removed what memberships, email, digests, two-step sign-in, the admin panel and the commute services "
+             "left: %d account(s) cleaned, %d waiting sign-in(s) and %d link(s) or invitation(s) deleted, %d setting(s) "
+             "and %d table(s) dropped", counts["accounts"], counts["pending"], counts["links"], counts["settings"], counts["tables"])
     return True
 
 

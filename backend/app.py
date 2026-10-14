@@ -35,7 +35,6 @@ from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
 from backend.export import router as export_router
 from backend.commute import router as commute_router
-from backend.commute import status_router as commute_status_router
 from backend.duplicates import router as duplicates_router
 from backend.extension import router as extension_router
 from backend.job_chat import router as chat_router
@@ -184,7 +183,6 @@ app.include_router(extension_router)
 app.include_router(chat_router)
 app.include_router(offices_router)
 app.include_router(commute_router)
-app.include_router(commute_status_router)
 app.include_router(schedule.router)
 app.include_router(migrate_encryption.router)
 
@@ -371,7 +369,7 @@ def list_jobs(office_slack: int = OfficeSlack,
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(get_db),
             ws: int = Depends(current_workspace)):
-    from backend.offices import candidates
+    from backend.offices import known_offices
 
     job = owned(db, Job, job_id, ws, "Job")
     fit = db.query(FitResult).filter(FitResult.job_id == job_id).first()
@@ -381,7 +379,7 @@ def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(
     out = _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True, has_letter=letter,
                               recruiter=looks_like_recruiter(job.company or "", profiles), signs=signs),
                   softened_job_ids(db, ws, office_slack))
-    out["office_candidates"] = candidates(db, job) if out["office_unknown"] or job.office_source == "company" else []
+    out["office_candidates"] = known_offices(db, job)
     return _with_copies(out, db.query(Job).filter(Job.duplicate_of == job_id).all())
 
 

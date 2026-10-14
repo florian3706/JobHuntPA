@@ -351,7 +351,7 @@ def unseal(blob: bytes, label: Label) -> bytes:
 
 def blind_index(purpose: str, value: Union[str, bytes]) -> bytes:
     """``HMAC(index_key, purpose \\0 value)[:16]``: the same input gives the same 16 bytes for this user only, so SQL
-    can find a row by a sealed value (``jobs.url_index``, ``company_sources.careers_url_index``, commute cache keys)
+    can find a row by a sealed value (``jobs.url_index``, ``company_sources.careers_url_index``)
     without the operator learning the value. ``purpose`` keeps one index from matching another's."""
     if "\0" in purpose:
         raise ValueError("The purpose can't contain a NUL character")
