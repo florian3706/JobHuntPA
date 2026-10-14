@@ -17,7 +17,7 @@ What is here, all throwaway test data (the test KDF profile, `JOBHUNT_TESTING=1`
 The accounts and rows:
 
 - `owner@example.invalid` / `fixture-owner-password`: the first admin. Two-step sign-in on, background access on,
-  a job digest every 2 days, a CV, a pin, dealbreakers, a shortlisted pool job with a note and an applied private job.
+  a job digest every 2 days, a CV, a pin, dealbreakers, a shortlisted pool job and an applied private job.
 - `member@example.invalid` / `fixture-member-password`: an ordinary account. Two-step sign-in on, a membership row
   marked as an active Stripe subscription, a 30-day free period (grant) with a note sealed to the admin key, two jobs.
 - Queued mail: unused `auth_tokens` links of kinds `reset`, `verify_email` and `email_change`.

@@ -76,7 +76,6 @@ def add_jobs(email, password, ws):
                 description="Lead delivery for the fixture."), "seek", None, now)
             job, _ = pool.link(db, ws, posting, now)
             job.status = "shortlisted"
-            job.notes = "Fixture note"
             private, _ = pool.import_private(db, ws, Scraped(
                 url="https://careers.example.invalid/jobs/7", title="Fixture Private Role", company="Privateco",
                 location_text="Melbourne VIC", country="AU", description="A saved page."), "saved", now)
