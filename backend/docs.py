@@ -345,12 +345,15 @@ def _clean(text: str) -> str:
     return fence.group(1).strip() if fence else text
 
 
-def _rewrite(cfg: dict, system: str, user: str) -> str:
+def _rewrite(cfg: dict, system: str, user: str, task: str, document: Optional[int] = None) -> str:
+    """The model's rewrite; in the tasks tray as ``task`` ("concise" for ``document``, or "summary")."""
+    from backend import tasks
     from backend.scorer import ScorerError, call_model
 
     try:
-        text = _clean(call_model([{"role": "system", "content": system}, {"role": "user", "content": user}], cfg,
-                                 json_mode=False))
+        with tasks.track(task, cfg["workspace_id"], document=document):
+            text = _clean(call_model([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                                     cfg, json_mode=False))
     except ScorerError as exc:
         raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     if not text:
@@ -370,7 +373,7 @@ def make_concise(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(c
         raise HTTPException(status_code=400, detail="This document has no text to shorten.")
     cfg = _llm_config(ws, "concise")
     user = f"THE DOCUMENT:\n{document_heading(doc)}\n<<<\n{original}\n>>>\n\nReturn only the shortened document."
-    doc.concise_text = _rewrite(cfg, concise_prompt(doc.kind), user)
+    doc.concise_text = _rewrite(cfg, concise_prompt(doc.kind), user, "concise", doc_id)
     now = datetime.utcnow()
     doc.use_concise, doc.concise_model, doc.concise_at, doc.updated_at = True, cfg["model"], now, now
     db.commit()
@@ -394,7 +397,7 @@ def make_summary(db: Session = Depends(get_db), ws: int = Depends(current_worksp
     body = "\n\n".join(f"{document_heading(d)}\n{d.text.strip()}" for d in docs)
     user = (f"THE CANDIDATE'S DOCUMENTS ({len(docs)}):\n<<<\n{body}\n>>>\n\n"
             "Return only the consolidated profile.")
-    text = _rewrite(cfg, SUMMARY_PROMPT, user)
+    text = _rewrite(cfg, SUMMARY_PROMPT, user, "summary")
     now = datetime.utcnow()
     summary = Document(workspace_id=ws, filename=f"Summary of {len(docs)} document{'s' if len(docs) != 1 else ''}",
                        filetype=SUMMARY_FILETYPE, stored_name=None, text=text, kind="resume", use_for_scoring=True,

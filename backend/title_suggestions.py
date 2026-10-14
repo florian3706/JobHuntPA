@@ -15,7 +15,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from backend import llm_providers
+from backend import llm_providers, tasks
 from backend.db import Document, get_db
 from backend.profile import get_profile
 from backend.workspaces import current_workspace
@@ -73,7 +73,8 @@ def suggest_titles(db: Session = Depends(get_db), ws: int = Depends(current_work
     user = ("CANDIDATE DOCUMENTS:\n<<<\n" + documents + "\n>>>\n\n"
             "TITLES ALREADY IN THEIR SEARCH: " + (", ".join(current) or "none") + "\n\nReturn only the JSON object.")
     try:
-        raw = call_model([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}], cfg)
+        with tasks.track("titles", ws):
+            raw = call_model([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}], cfg)
     except ScorerError as exc:
         raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     current_l = {c.lower() for c in current}

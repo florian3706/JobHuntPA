@@ -466,7 +466,8 @@ def refilter_jobs(db: Session = Depends(get_db), ws: int = Depends(current_works
 # Background runs
 # ---------------------------------------------------------------------------
 
-def _score(ws: int, mode: str, progress, office_slack: int = 0) -> dict:
+def _score(ws: int, mode: str, progress, office_slack: int = 0, task: str = "rescore") -> dict:
+    """Score the workspace's jobs that ``mode`` picks; in the tasks tray as ``task`` ("scoring": a search run's step)."""
     from backend.scorer import ScorerError, build_profile, score_jobs, select_jobs
 
     db = SessionLocal()
@@ -475,7 +476,8 @@ def _score(ws: int, mode: str, progress, office_slack: int = 0) -> dict:
     finally:
         db.close()
     try:
-        return score_jobs(ws, ids, progress)
+        with tasks.track(task, ws):
+            return score_jobs(ws, ids, progress)
     except ScorerError as exc:
         return {"aborted": llm_providers.user_message(exc)}
 
@@ -489,14 +491,15 @@ def start_search_run(ws: int, scheduled: bool = False) -> dict:
     def job(progress):
         from backend.duplicates import scan_workspace
 
-        summary = {"search": run_search(ws, progress)}
-        summary["search"].pop("job_ids", None)
-        # Before scoring, so the same ad on two sites is scored once.
-        progress("checking for duplicate ads", {})
-        summary["duplicates"] = scan_workspace(ws)
-        summary["scoring"] = ({"skipped": config_problem()} if config_problem()
-                              else _score(ws, "pending", progress))
-        return summary
+        with tasks.track("search", ws):
+            summary = {"search": run_search(ws, progress)}
+            summary["search"].pop("job_ids", None)
+            # Before scoring, so the same ad on two sites is scored once.
+            progress("checking for duplicate ads", {})
+            summary["duplicates"] = scan_workspace(ws)
+            summary["scoring"] = ({"skipped": config_problem()} if config_problem()
+                                  else _score(ws, "pending", progress, task="scoring"))
+            return summary
 
     return tasks.start("search", job, ws, scheduled=scheduled)
 
@@ -518,6 +521,13 @@ def start_scoring(payload: ScoreRunRequest, ws: int = Depends(current_workspace)
     if config_problem():
         raise HTTPException(status_code=400, detail=config_problem())
     return tasks.start("score", lambda progress: {"scoring": _score(ws, payload.mode, progress, payload.office_slack)}, ws)
+
+
+@app.get("/api/tasks")
+def running_tasks(user: AuthUser = Depends(current_user)):
+    """Signed in (a browser session; not an extension key): the AI work running for this account's workspaces, for
+    the header's tasks tray. Kinds, ids and numbers only (backend.tasks): the page names the jobs itself."""
+    return tasks.for_user(user.id)
 
 
 @app.get("/api/runs/latest")
@@ -578,7 +588,8 @@ def score_single(job_id: int, office_slack: int = OfficeSlack, db: Session = Dep
     owned(db, Job, job_id, ws, "Job")
     text, phash = build_profile(db, ws)
     try:
-        score_one(job_id, text, phash, cfg)
+        with tasks.track("rescore", ws, jobs=[job_id]):
+            score_one(job_id, text, phash, cfg)
     except ScorerError as exc:
         raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
     db.expire_all()
@@ -632,6 +643,16 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
                 companies = companies_to_research(db, ws, payload.mode, payload.job_ids)
         finally:
             db.close()
+        # In the tasks tray: one company (named by one of its jobs, and which part) or the batch, whose companies
+        # are its steps (backend.research.research_one).
+        one = companies[0] if payload.name else None
+        track = (tasks.track("research", ws, company_job=(one["jobs"] or [{}])[0].get("id"),
+                             part="profile" if payload.part == "all" else payload.part)
+                 if one is not None else tasks.track("research", ws))
+        with track:
+            return _research(companies, progress)
+
+    def _research(companies, progress):
         progress(f"researching {len(companies)} companies", {"done": 0, "total": len(companies)})
         try:
             summary = {"research": research_companies(companies, progress)}

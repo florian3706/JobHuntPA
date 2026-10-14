@@ -352,7 +352,15 @@ def jobs_needing_office(db: Session, ws: int, job_ids: Optional[list[int]] = Non
 def find_offices(ws: int, job_ids: Optional[list[int]] = None,
                  progress: Callable[[str, dict], None] = lambda s, i: None) -> dict:
     """Read unread ads for an office, then look up employers' offices for
-    the jobs still without one (recruitment agencies are left to the user)."""
+    the jobs still without one (recruitment agencies are left to the user). In the tasks tray while it runs."""
+    from backend import tasks
+
+    with tasks.track("offices", ws):
+        return _find_offices(ws, job_ids, progress)
+
+
+def _find_offices(ws: int, job_ids: Optional[list[int]],
+                  progress: Callable[[str, dict], None]) -> dict:
     from backend import llm_providers
     from backend.scorer import ScorerError, get_config
 
