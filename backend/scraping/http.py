@@ -2,6 +2,9 @@
 
 - Honest User-Agent (``backend.config.USER_AGENT``); no browser spoofing.
 - robots.txt is checked for every URL (including each redirect hop).
+- A redirect (or, in a rendered page, any request) to an address on the local network or this computer, or to one
+  that isn't a web address, is never followed when the page asked for isn't one itself
+  (``source_bulk.address_flags``, by the address's shape): :class:`FetchError`.
   Disallowed URLs raise :class:`RobotsBlocked` instead of being fetched.
 - Per-host minimum interval between requests (robots ``Crawl-delay``
   honoured, capped at 30 s).
@@ -75,6 +78,28 @@ def bot_challenge(status: int, headers: Any, body: str) -> bool:
     return status == 202 and not body.strip()
 
 
+def _leaves_the_web(url: str) -> bool:
+    """True for an address on the local network or this computer, or not a web address (judged by its shape)."""
+    from backend.source_bulk import address_flags  # (no import cycle: source_bulk needs nothing of this module)
+
+    return address_flags(url).blocked
+
+
+def _guard_requests(page_url: str):
+    """A Playwright route handler for a rendered page: aborts http(s) requests to the local network or this
+    computer, unless the page itself is there."""
+    page_is_local = _leaves_the_web(page_url)
+
+    def guard(route) -> None:
+        url = route.request.url
+        if not page_is_local and url.lower().startswith(("http://", "https://")) and _leaves_the_web(url):
+            route.abort()
+        else:
+            route.continue_()
+
+    return guard
+
+
 def _origin(url: str) -> str:
     p = urlsplit(url)
     return f"{p.scheme}://{p.netloc}"
@@ -111,8 +136,12 @@ class PoliteClient:
 
     def _fetch_robots(self, robots_url: str) -> RobotsRules:
         url = robots_url
+        local_ok = _leaves_the_web(robots_url)
         try:
-            for _ in range(MAX_REDIRECTS):
+            for hop in range(MAX_REDIRECTS):
+                if hop and not local_ok and _leaves_the_web(url):
+                    raise FetchError(f"robots.txt redirected to an address on the local network or this computer; "
+                                     f"not crawling {_origin(robots_url)}")
                 self._throttle(url, DEFAULT_INTERVAL_S)
                 resp = self._client.get(url)
                 if resp.is_redirect and resp.headers.get("location"):
@@ -175,7 +204,11 @@ class PoliteClient:
                 return cached
 
         current = url
-        for _ in range(MAX_REDIRECTS + 1):
+        local_ok = _leaves_the_web(url)  # (the address asked for is checked by the callers that take one)
+        for hop in range(MAX_REDIRECTS + 1):
+            if hop and not local_ok and _leaves_the_web(current):
+                raise FetchError(f"{urlsplit(url).netloc} redirected to an address on the local network or this "
+                                 "computer, or one that isn't a web address; JobHuntPA doesn't follow that")
             self.check_allowed(current)
             self._throttle(current, self._interval_for(current))
             try:
@@ -223,6 +256,7 @@ class PoliteClient:
                 browser = p.chromium.launch(headless=True)
                 try:
                     page = browser.new_page(user_agent=USER_AGENT)
+                    page.route("**/*", _guard_requests(url))
                     resp = page.goto(url, timeout=30000, wait_until="domcontentloaded")
                     if resp and bot_challenge(resp.status, resp.headers, "" if resp.status == 202 else "x"):
                         raise FetchError(f"{urlsplit(url).netloc} answered with a bot check; JobHuntPA doesn't bypass those",
