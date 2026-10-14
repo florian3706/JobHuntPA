@@ -336,7 +336,7 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 .pin-kind-hybrid { border-style: dashed; }
 .pin-kind-onsite { border-style: dotted; }
-/* A theme slot as --c, for the pin kinds, the map key and the commute legs (a class, because the page's policy
+/* A theme slot as --c, for the pin kinds and the map key (a class, because the page's policy
    refuses style attributes in markup: backend/security_headers.py). */
 .hue-accent { --c: var(--accent); }
 .hue-border { --c: var(--border); }
@@ -432,6 +432,13 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 .source-main a { word-break: break-all; }
 .source-label { font-weight: 600; width: min(320px, 100%); }
 .sources-ul { display: grid; gap: 10px; }
+/* Search setup > Commute: the starting points, one row each, wrapping on a phone. */
+.starts-list { list-style: none; margin: 8px 0 12px; padding: 0; display: grid; gap: 8px; }
+.start-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.start-name { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.start-use select { max-width: 100%; }
+.starts-form fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 0; min-width: 0; }
+.starts-form legend { font-weight: 600; padding: 0 4px; }
 .modal-box .preview-text { flex: 1; }
 /* Wide tables on narrow screens: each row becomes a block of "column: value" lines, so nothing scrolls
    sideways (WCAG 1.4.10). The tables carry explicit ARIA roles, so they stay tables for screen readers. */
@@ -615,19 +622,15 @@ input[type="time"] {
   padding: 8px 10px; font-size: 13.5px; margin: 6px 0;
 }
 .job-page .company-body { padding: 0; overflow: visible; }
-.commute-map { height: 380px; margin: 10px 0; }
 .job-ad .ad-text { white-space: pre-wrap; font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
 .office-form { margin: 8px 0; }
 .verdict-row { align-items: center; gap: 8px; }
-.office-cands { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; font-size: 13px; }
-.commute-from h3 { margin: 14px 0 4px; font-size: 14px; }
-.trip { font-size: 13.5px; margin: 6px 0; line-height: 1.5; }
-.trip summary { cursor: pointer; }
-.legs { margin: 6px 0 0; padding-left: 22px; font-size: 13px; }
-.legs li { margin-bottom: 4px; }
-.leg-mode { display: inline-block; border-left: 4px solid var(--c); padding-left: 6px; font-weight: 600; }
-.commute-links { font-size: 13px; margin-top: 12px; }
-.commute-links a { color: var(--accent-text); }
+.office-cands { margin: 6px 0; font-size: 13px; }
+.office-cands p { margin: 0 0 6px; }
+.office-cands-ul .btn[aria-pressed="true"] { border-color: var(--accent); }
+.commute-links { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.commute-links a { color: var(--accent-text); overflow-wrap: anywhere; }
+.commute-title { margin: 14px 0 4px; font-size: 14px; overflow-wrap: anywhere; }
 .gaps-title { font-size: 14px; margin: 14px 0 4px; color: var(--danger); }
 .job-head .job-actions select { flex: 0 1 260px; }
 a.btn { text-decoration: none; display: inline-block; }
@@ -747,7 +750,7 @@ a.btn { text-decoration: none; display: inline-block; }
   display: inline-block; margin-left: 6px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 999px;
   color: var(--muted); font-size: 12px; font-weight: 400; vertical-align: middle; max-width: 100%; overflow-wrap: anywhere;
 }
-.llm-actions, .key-test { margin-top: 10px; }
+.llm-actions { margin-top: 10px; }
 .llm-form { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 10px; }
 .llm-form h4 { margin: 0; font-size: 14px; }
 .llm-form p { margin: 0; }
@@ -784,7 +787,8 @@ summary { cursor: pointer; min-height: 24px; }
 /* Lists on the Map tab and the job page */
 .map-jobs-ul { display: flex; flex-direction: column; gap: 6px; }
 .map-jobs-title { margin: 0; font-size: 14px; }
-.office-cands-ul { display: contents; }
+.office-cands-ul { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.office-cands-ul .btn { text-align: left; white-space: normal; max-width: 100%; overflow-wrap: anywhere; }
 .dupe-desc:focus-visible, .chat-messages:focus-visible, .preview-text:focus-visible { outline-offset: -2px; }
 
 /* Phones and tablets (WCAG 1.4.10 reflow, 2.5.8 target size): from 320 px wide, nothing scrolls sideways;

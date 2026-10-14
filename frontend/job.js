@@ -8,17 +8,6 @@ const WS = Number(params.get('ws')) || (() => { try { return Number(localStorage
 function currentWorkspace() { return WS || SESSION.me?.workspaces?.[0] || 0; }
 
 let job = null;
-const view = { map: null, layer: null };
-// Theme slot per mode of transport (the label is always shown too).
-const MODE_HUE = { Train: 'warn', Metro: 'info', 'Light rail': 'special', Bus: 'accent', Coach: 'accent', 'School bus': 'accent',
-  Ferry: 'ok', Cycle: 'ok', Walk: 'quiet' };
-const modeHue = (mode) => MODE_HUE[mode] || 'quiet';
-let lastCommute = null; // redrawn in the new colours when the theme changes
-
-function minutes(n) {
-  if (n === null || n === undefined) return '';
-  return n >= 60 ? `${Math.floor(n / 60)} h ${n % 60} min` : `${n} min`;
-}
 
 function showPageError(msg) {
   $('#job-head').innerHTML = '<h1 id="job-title" class="job-page-title">Job not available</h1><p><a href="./#jobs">Back to the dashboard</a></p>';
@@ -143,21 +132,36 @@ function renderAd() {
 }
 
 /* ---------- office ---------- */
+const sameAddress = (a, b) => (a || '').replace(/\s+/g, ' ').trim().toLowerCase() === (b || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+// Every office company research knows for the employer (spec §1.9): the one picked is stored as the job's office,
+// and the commute links go to it.
+function officeListHtml(offices) {
+  if (!offices.length) return '';
+  const ordered = offices.some((o) => o.near === true);
+  const items = offices.map((o, i) => {
+    const picked = !!job.office_text && sameAddress(o.address, job.office_text);
+    return `<li><button class="btn btn-sm${picked ? ' btn-primary' : ''}" type="button" data-cand="${i}" aria-pressed="${picked}" aria-describedby="office-cands-intro"><span>${picked ? '<span aria-hidden="true">✓ </span>' : ''}${o.name ? `<strong>${esc(o.name)}</strong>: ` : ''}${esc(o.address)}${o.near === false ? ' <span class="muted">(not near the ad\'s place)</span>' : ''}</span></button></li>`;
+  }).join('');
+  return `<div class="office-cands"><p class="muted" id="office-cands-intro">The employer's offices that company research found${ordered ? ' (those near the ad\'s place first, closest to your pins first)' : ''}. Pick the one this job is at: the commute links go there.</p>
+    <ul class="office-cands-ul">${items}</ul></div>`;
+}
+
 function renderOffice() {
   const known = officeHtml(job);
   let status;
   if (known) status = `<p>${known}</p>`;
   else if (job.office_unknown) {
     status = `<p class="notice">The ad only says <strong>${esc(job.location_text)}</strong>, so the office could be anywhere in it.
-      ${job.recruiter ? "It's a recruiter's ad, so the client's office usually isn't named: set it if you know it, or make the call yourself." : 'Set it if you know it (Fill missing info on the dashboard looks it up), or make the call yourself.'}
-      Until then the commute is to the city centre.</p>`;
+      ${job.recruiter ? "It's a recruiter's ad, so the client's office usually isn't named: set it if you know it, or make the call yourself." : 'Pick or set it if you know it (Fill missing info on the dashboard looks it up), or make the call yourself.'}
+      Until then the commute links go to the city.</p>`;
   } else status = `<p class="muted">Office: ${esc(job.location_text || 'not stated')} (from the ad's location).</p>`;
-  const cands = (job.office_candidates || []).map((o, i) => `<li><button class="btn btn-sm" type="button" data-cand="${i}" title="${esc(o.address)}" aria-describedby="office-cands-intro">${esc(o.name || o.address)}${o.name ? `<span class="visually-hidden">, ${esc(o.address)}</span>` : ''}</button></li>`).join('');
+  const offices = job.office_candidates || [];
   $('#job-office').innerHTML = `
     ${status}
-    ${job.office_source === 'company' && (job.office_candidates || []).length > 1
-    ? `<p class="muted">The employer has ${job.office_candidates.length} offices here; this is the closest to your commute. Pick another if you know which one it is.</p>` : ''}
-    ${cands ? `<div class="office-cands"><span class="muted" id="office-cands-intro">The employer's offices in this city (closest to your commute first):</span> <ul class="office-cands-ul">${cands}</ul></div>` : ''}
+    ${job.office_source === 'company' && offices.filter((o) => o.near).length > 1
+    ? '<p class="muted">The employer has several offices near the ad\'s place; this is the closest to your pins. Pick another if you know which one it is.</p>' : ''}
+    ${officeListHtml(offices)}
     <form id="office-form" class="toolbar-row office-form">
       <label class="field search-field"><span class="field-label">Office address or suburb</span>
         <input id="office-input" type="text" autocomplete="off" placeholder="e.g. 1 Denison St, North Sydney" value="${esc(job.office_source === 'user' ? job.office_text || '' : '')}" /></label>
@@ -191,98 +195,48 @@ async function saveOffice(body) {
   } catch (e) { toast(e.message, 'err', 8000); }
 }
 
-/* ---------- commute ---------- */
-function journeyHtml(j, label) {
-  if (!j) return `<div class="trip"><strong>${label}</strong> <span class="muted">no journey found</span></div>`;
-  const to = '<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>';
-  const legs = j.legs.map((l) => `<li><span class="leg-mode hue-${modeHue(l.mode)}">${esc(l.mode)}${l.line ? ` ${esc(l.line)}` : ''}</span>
-    ${esc(l.depart)} ${esc(l.from)}${to}${esc(l.arrive)} ${esc(l.to)} <span class="muted">(${minutes(l.minutes)}${l.towards && l.mode !== 'Walk' ? `, towards ${esc(l.towards)}` : ''})</span></li>`).join('');
-  return `<details class="trip"><summary><strong>${label}</strong> ${esc(j.depart)}${to}${esc(j.arrive)} · <strong>${minutes(j.minutes)}</strong>
-      · ${esc(j.summary)}${j.changes ? ` · ${j.changes} change${j.changes > 1 ? 's' : ''}` : ''}</summary><ol class="legs" aria-label="Steps">${legs}</ol></details>`;
+/* ---------- commute links ---------- */
+// Google Maps directions from each starting point (spec §1.8). The server only says which places; the links are built
+// here, and nothing is sent anywhere until the person opens one (in a new tab, with no referrer).
+const TRAVEL_TEXT = { driving: 'Drive', transit: 'Public transport' };
+
+function mapsDirectionsUrl(origin, destination, mode) {
+  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&travelmode=${mode === 'transit' ? 'transit' : 'driving'}`;
 }
 
-function carHtml(c, label) {
-  if (!c) return '';
-  const when = c.depart && c.arrive ? `${esc(c.depart)}<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>${esc(c.arrive)} · ` : '';
-  const traffic = c.traffic ? (c.traffic_minutes ? ` (incl. ${minutes(c.traffic_minutes)} of traffic)` : ' (with traffic)') : ' <span class="muted">(no traffic)</span>';
-  return `<div class="trip"><strong>${label}</strong> ${when}<strong>${minutes(c.minutes)}</strong>${traffic} · ${c.km} km</div>`;
+function commuteLink(start, mode, destination) {
+  const li = document.createElement('li');
+  const a = document.createElement('a');
+  a.href = mapsDirectionsUrl(start.origin, destination, mode);
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.textContent = `${TRAVEL_TEXT[mode] || 'Directions'} from ${start.label}`;
+  a.insertAdjacentHTML('beforeend', NEW_TAB);
+  li.appendChild(a);
+  return li;
 }
-
-// A commute note may point to the Settings tab (API keys): make that a link.
-const noteHtml = (n) => esc(n).replace('Settings (Commute data)', `<a href="./#settings" target="_blank" rel="noopener">Settings (Commute data)${NEW_TAB}</a>`);
 
 async function loadCommute() {
   const box = $('#job-commute');
-  box.innerHTML = '<p class="muted">Working out the commute…</p>';
+  box.innerHTML = '<p class="muted">Listing the commute links…</p>';
   let c;
   try { c = await api(`/api/jobs/${job.id}/commute`); } catch (e) {
-    box.innerHTML = `<p class="err-text"><span aria-hidden="true">⚠ </span>Couldn't work out the commute: ${esc(e.message)}</p>`;
-    drawMap(null);
+    box.innerHTML = `<p class="err-text"><span aria-hidden="true">⚠ </span>No commute links: ${esc(e.message)}</p>`;
     return;
   }
-  const best = c.transit.filter((t) => t.there).sort((a, b) => a.there.minutes - b.there.minutes)[0];
-  const transit = c.transit.map((t) => `
-    <div class="commute-from"><h3>Public transport from ${esc(t.from)}${t === best && c.transit.length > 1 ? ' <span class="badge fit-strong">quickest</span>' : ''}</h3>
-      ${t.error ? `<p class="err-text">${esc(t.error)}</p>` : journeyHtml(t.there, `There (arrive by ${esc(c.arrive_by)}):`) + journeyHtml(t.back, `Back (leave ${esc(c.leave_at)}):`)}</div>`).join('');
-  const car = c.car.error ? `<p class="err-text">${esc(c.car.error)}</p>`
-    : carHtml(c.car.there, `There (arrive by ${esc(c.arrive_by)}):`) + carHtml(c.car.back, `Back (leave ${esc(c.leave_at)}):`);
-  box.innerHTML = `
-    <p class="muted">${esc(c.day)}: arriving by ${esc(c.arrive_by)}, leaving at ${esc(c.leave_at)}.
-      ${c.from_stations ? "Public transport times start at the station (getting there isn't included)."
-        : c.stations.length ? '' : 'Public transport starts at your home pin; set stations under Search setup > Commute.'}</p>
-    ${c.notes.map((n) => `<p class="notice">${noteHtml(n)}</p>`).join('')}
-    ${transit}
-    <div class="commute-from"><h3>By car from ${esc(c.home.name)}</h3>${car}</div>
-    <p class="commute-links"><a href="${esc(c.links.transit)}" target="_blank" rel="noopener">Public transport in Google Maps${NEW_TAB}</a> ·
-      <a href="${esc(c.links.car)}" target="_blank" rel="noopener">Driving in Google Maps${NEW_TAB}</a></p>`;
-  lastCommute = [c, best];
-  drawMap(c, best);
-}
-
-function drawMap(c, best) {
-  if (typeof L === 'undefined') return;
-  if (!view.map) {
-    const animate = !reducedMotion();
-    view.map = L.map('commute-map', { scrollWheelZoom: false, zoomAnimation: animate, fadeAnimation: animate, markerZoomAnimation: animate });
-    // OpenStreetMap's servers answer with an "Access blocked" picture unless a request says which site it is for,
-    // and the app's Referrer-Policy (same-origin) tells other sites nothing: the tiles alone send this site's
-    // address, never the page's (it holds a job id).
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, referrerPolicy: 'origin', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    }).addTo(view.map);
-    view.layer = L.layerGroup().addTo(view.map);
+  box.innerHTML = c.notes.map((n) => `<p class="notice">${esc(n)}</p>`).join('');
+  if (!c.starts.length) {
+    box.insertAdjacentHTML('beforeend', `<p class="muted">No starting points yet: drop a home pin on the <a href="./#map" target="_blank" rel="noopener">Map tab${NEW_TAB}</a>,
+      or add starting points under <a href="./#search" target="_blank" rel="noopener">Search setup &gt; Commute${NEW_TAB}</a>.</p>`);
+    return;
   }
-  view.layer.clearLayers();
-  const points = [];
-  const office = c ? c.office : (job.lat !== null ? { lat: job.lat, lng: job.lng, name: job.location_text, precise: false } : null);
-  if (!office) { view.map.setView([-33.87, 151.21], 9); return; }
-  if (office.precise) {
-    L.marker([office.lat, office.lng], { alt: `Office: ${office.name}`, title: `Office: ${office.name}` }).addTo(view.layer).bindPopup(`<b>Office</b><br>${esc(office.name)}`);
-  } else {
-    L.circle([office.lat, office.lng], { radius: 4000, color: themeColor('warn'), weight: 1, fillOpacity: 0.12 })
-      .addTo(view.layer).bindPopup(`<b>Office somewhere in ${esc(office.name)}</b><br>The ad names only the city.`);
-  }
-  points.push([office.lat, office.lng]);
-  if (c) {
-    L.circleMarker([c.home.lat, c.home.lng], { radius: 7, color: themeColor('ok'), fillOpacity: 0.9 }).addTo(view.layer).bindPopup(`<b>${esc(c.home.name)}</b>`);
-    points.push([c.home.lat, c.home.lng]);
-    c.transit.forEach((t) => {
-      L.circleMarker([t.start.lat, t.start.lng], { radius: 5, color: themeColor('warn'), fillOpacity: 0.9 }).addTo(view.layer).bindPopup(esc(t.from));
-      points.push([t.start.lat, t.start.lng]);
-    });
-    (best?.there?.legs || []).forEach((l) => {
-      if (l.coords.length < 2) return;
-      L.polyline(l.coords, { color: themeColor(modeHue(l.mode)), weight: l.mode === 'Walk' ? 3 : 5, dashArray: l.mode === 'Walk' ? '4 6' : null })
-        .addTo(view.layer).bindPopup(`${esc(l.mode)} ${esc(l.line)}: ${esc(l.from)} → ${esc(l.to)}`);
-      points.push(...l.coords);
-    });
-    if (c.car?.there?.coords?.length) {
-      L.polyline(c.car.there.coords, { color: themeColor('special'), weight: 3, opacity: 0.8, dashArray: '8 6' }).addTo(view.layer).bindPopup('By car');
-      points.push(...c.car.there.coords);
-    }
-  }
-  view.map.fitBounds(L.latLngBounds(points).pad(0.08), { animate: false });
-  setTimeout(() => view.map.invalidateSize(), 50);
+  box.insertAdjacentHTML('beforeend', `<h3 class="commute-title" id="commute-links-title">Directions in Google Maps to ${esc(c.destination)}</h3>`);
+  const list = document.createElement('ul');
+  list.className = 'commute-links';
+  list.setAttribute('aria-labelledby', 'commute-links-title');
+  c.starts.forEach((start) => start.modes.forEach((mode) => list.appendChild(commuteLink(start, mode, c.destination))));
+  box.appendChild(list);
+  box.insertAdjacentHTML('beforeend', '<p class="hint">Opening a link shows Google both places: the starting point and the office. JobHuntPA itself sends them nowhere. Times and routes are chosen in Google Maps; your starting points are under Search setup &gt; Commute.</p>');
 }
 
 /* ---------- company ---------- */
@@ -316,7 +270,6 @@ async function researchCompany() {
 /* ---------- boot ---------- */
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
-  document.addEventListener('themechange', () => { if (view.map) drawMap(...(lastCommute || [null])); });
   if (!JOB_ID) { showPageError('No job given. Open a job from the dashboard (Open ↗ on a job card).'); return; }
   try {
     const me = await loadSession(); // signed out: goes to the sign-in page, then back here

@@ -612,11 +612,11 @@ class InstallSettingsCardsTest(unittest.TestCase):
 
     def test_the_moved_settings_are_on_the_settings_tab(self):
         for ident in ("llm-card", "llm-form", "llm-provider", "llm-model", "llm-base-url", "llm-key", "detect-levels",
-                      "score-test", "usage-card", "usage-tiles", "commute-keys-card", "keys-test", "address-card",
+                      "score-test", "usage-card", "usage-tiles", "address-card",
                       "public-url", "allowed-hosts", "address-save", "rotate-key", "plain-card", "plain-delete"):
             self.assertIn(ident, self.ids, ident)
         settings = self.src[self.src.index('id="tab-settings"'):self.src.index("</main>")]
-        for ident in ("llm-card", "usage-card", "address-card", "commute-keys-card", "rotate-card"):
+        for ident in ("llm-card", "usage-card", "address-card", "rotate-card"):
             self.assertIn(f'id="{ident}"', settings, f"{ident} is on the Settings tab")
         self.assertNotIn("data-admin-only", self.src)
         self.assertNotIn("admin.html", self.src)
@@ -626,7 +626,7 @@ class InstallSettingsCardsTest(unittest.TestCase):
         self.assertLess(self.src.index("./app.js"), self.src.index("./server-settings.js"))
 
     def test_every_card_has_a_heading_that_says_it_is_for_the_whole_install(self):
-        for ident in ("llm-card", "usage-card", "commute-keys-card", "address-card", "rotate-card", "plain-card"):
+        for ident in ("llm-card", "usage-card", "address-card", "rotate-card", "plain-card"):
             start = self.src.index(f'id="{ident}"')
             card = self.src[start:start + 600]
             with self.subTest(card=ident):
@@ -1076,6 +1076,58 @@ class BrowserAuditRegressionsTest(unittest.TestCase):
         # the audit must reach the ghost-job pages (it fails a run that can't), and ignore a visually hidden clip
         self.assertIn("#job-ghost-section:not([hidden]) .ghost-check.found", source)
         self.assertIn("r.width <= 2 || r.height <= 2", source)
+
+
+class CommuteLinksMarkupTest(unittest.TestCase):
+    """Search setup > Commute (the starting points) and the job page's office list and Google Maps links (Phase C):
+    labelled controls, results said in the live region, nothing that only works with a mouse, and layouts that wrap
+    at 320 px."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.index, cls.app, cls.job, cls.css = read("index.html"), read("app.js"), read("job.js"), read("styles.css")
+        cls.card = cls.index[cls.index.index('<section id="starts-card"'):]
+        cls.card = cls.card[:cls.card.index("</section>")]
+
+    def test_the_add_form_is_a_labelled_group(self):
+        self.assertIn('aria-labelledby="starts-title"', self.card)
+        self.assertIn("<legend>Add a starting point</legend>", self.card)
+        for ident in ("start-from", "start-place", "start-label", "start-use"):
+            self.assertIn(f'<label for="{ident}">', self.card, ident)
+        self.assertIn('aria-describedby="start-place-hint"', self.card)
+        self.assertIn('<option value="transit">Public transport</option>', self.card)  # words, not icons
+
+    def test_each_row_names_its_controls_and_changes_are_announced(self):
+        block = self.app[self.app.index("function renderStarts()"):self.app.index("function showStartPlace()")]
+        self.assertIn('<span class="visually-hidden">Used for, ${esc(name)}</span>', block)
+        self.assertIn('Remove<span class="visually-hidden"> ${esc(name)}</span>', block)
+        self.assertIn("announce(`Removed the starting point", block)
+        self.assertIn("$('#start-from').focus(); // the row with the button is gone", block)
+        adding = self.app[self.app.index("function initStarts()"):]
+        self.assertIn("setFieldError($('#start-place'), 'Type an address, a station or a stop, or choose a pin under From.')",
+                      adding)
+        self.assertIn("announce(`Added the starting point", adding)
+
+    def test_rows_and_offices_wrap_on_a_phone(self):
+        self.assertRegex(self.css, r"\.start-row \{[^}]*flex-wrap: wrap")
+        self.assertRegex(self.css, r"\.start-name \{[^}]*overflow-wrap: anywhere")
+        self.assertRegex(self.css, r"\.office-cands-ul \.btn \{[^}]*white-space: normal")
+        self.assertRegex(self.css, r"\.commute-links a \{[^}]*overflow-wrap: anywhere")
+
+    def test_the_office_list_says_which_is_picked_in_words_and_state(self):
+        block = self.job[self.job.index("function officeListHtml"):self.job.index("function renderOffice")]
+        self.assertIn('aria-pressed="${picked}"', block)
+        self.assertIn('aria-describedby="office-cands-intro"', block)
+        self.assertIn("${esc(o.address)}", block)  # the address is shown, not only a hover text
+
+    def test_the_links_say_where_they_go_and_that_they_open_a_new_tab(self):
+        block = self.job[self.job.index("function commuteLink"):self.job.index("async function loadCommute")]
+        self.assertIn("a.insertAdjacentHTML('beforeend', NEW_TAB);", block)
+        self.assertIn("`${TRAVEL_TEXT[mode] || 'Directions'} from ${start.label}`", block)
+        load = self.job[self.job.index("async function loadCommute"):]
+        self.assertIn("list.setAttribute('aria-labelledby', 'commute-links-title');", load)
+        self.assertIn('id="commute-links-title"', load)
 
 
 if __name__ == "__main__":
