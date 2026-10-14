@@ -155,7 +155,7 @@ class PrefsTest(unittest.TestCase):
 
 
 class FirstAdminShortPathTest(unittest.TestCase):
-    """The first account's existing search settings moved into it: theme, then keep or review."""
+    """The first account's existing search settings moved into it: AI provider, theme, then keep or review."""
 
     def make(self, created_via: str, titles: list[str]):
         email = f"{created_via}-{len(titles)}-{os.urandom(3).hex()}@example.invalid"
@@ -177,8 +177,8 @@ class FirstAdminShortPathTest(unittest.TestCase):
 
     def test_reviewing_moves_to_the_full_path_and_it_stays_full(self):
         c = self.make("first_run", ["Product Manager"])
-        self.assertEqual(c.put("/api/account/onboarding", json={"step": 2}).json()["path"], "short")
-        self.assertEqual(c.put("/api/account/onboarding", json={"step": 3}).json()["path"], "full")
+        self.assertEqual(c.put("/api/account/onboarding", json={"step": 3}).json()["path"], "short")
+        self.assertEqual(c.put("/api/account/onboarding", json={"step": 4}).json()["path"], "full")
 
     def test_no_existing_settings_or_another_kind_of_account_gets_the_full_path(self):
         self.assertEqual(self.make("first_run", []).get("/api/account/onboarding").json()["path"], "full")
@@ -334,11 +334,11 @@ Object.assign(page.wiz, scenario.wiz || {});
 
     def test_the_step_appears_just_before_the_resume_step_only_when_the_server_offers_it(self):
         on = self.run_page({"wiz": {"features": {"scheduled_searches": True}}})
-        self.assertEqual(on["steps"], ["theme", "titles", "where", "extras", "auto", "resume"])
+        self.assertEqual(on["steps"], ["ai", "theme", "titles", "where", "extras", "auto", "resume"])
         off = self.run_page({"wiz": {"features": {"scheduled_searches": False}}})
-        self.assertEqual(off["steps"], ["theme", "titles", "where", "extras", "resume"])
+        self.assertEqual(off["steps"], ["ai", "theme", "titles", "where", "extras", "resume"])
         short = self.run_page({"wiz": {"short": True, "features": {"scheduled_searches": True}}})
-        self.assertEqual(short["steps"], ["theme", "keep"])
+        self.assertEqual(short["steps"], ["ai", "theme", "keep"])
 
     def test_the_server_offers_what_the_page_asks_for(self):
         bob = helpers.make_user()
@@ -412,6 +412,90 @@ Object.assign(page.wiz, scenario.wiz || {});
             self.assertTrue(put.json()["enabled"])
             self.assertTrue(put.json()["background"])
             self.assertIsNone(put.json()["skipped"])
+
+
+@unittest.skipUnless(shutil.which("node"), "needs node to run the page's script")
+class AiProviderStepTest(unittest.TestCase):
+    """The walkthrough's first step is the first run's step 3 (spec §1.5): the AI provider, model and key, saved with
+    PUT /api/settings/llm, or skipped (the step says which features wait for it)."""
+
+    HARNESS = r"""
+const vm = require('vm'), fs = require('fs');
+const [welcome, scenario] = [process.argv[1], JSON.parse(process.argv[2])];
+const calls = [], errors = [];
+const field = (value) => ({ value, hidden: false, innerHTML: '', addEventListener() {} });
+const els = {
+  '#wz-ai-provider': field(scenario.provider), '#wz-ai-url': field(scenario.url || ''),
+  '#wz-ai-model': field(scenario.model || ''), '#wz-ai-key': field(scenario.key || ''),
+};
+const ctx = {
+  document: { addEventListener() {} }, $: (sel) => els[sel] || field(''), $$: () => [],
+  esc: (s) => String(s ?? ''), announce() {}, setText() {}, NEW_TAB: '',
+  api: async (url, opts = {}) => { calls.push([opts.method || 'GET', url, opts.body ? JSON.parse(opts.body) : null]); return { saved: true }; },
+};
+vm.createContext(ctx);
+const page = vm.runInContext(fs.readFileSync(welcome, 'utf8') + '\n;({ wiz, STEPS })', ctx);
+ctx.showErrors = (list) => errors.push(...list);
+page.wiz.llm = scenario.llm;
+(async () => {
+  const out = { html: page.STEPS.ai.html(), intro: page.STEPS.ai.intro, skippable: page.STEPS.ai.skippable };
+  out.saved = await page.STEPS.ai.save();
+  out.calls = calls;
+  out.errors = errors;
+  console.log(JSON.stringify(out));
+})();
+"""
+
+    @classmethod
+    def setUpClass(cls):
+        from backend.llm_providers import PRESETS
+        cls.presets = PRESETS
+
+    def run_step(self, **scenario) -> dict:
+        scenario.setdefault("llm", {"provider": "openai", "base_url": "", "model": "", "key": {"set": False, "hint": None},
+                                    "presets": self.presets})
+        done = subprocess.run(["node", "-e", self.HARNESS, "--", str(FRONTEND / "welcome.js"), json.dumps(scenario)],
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_it_can_be_skipped_and_says_what_waits(self):
+        out = self.run_step(provider="openai")
+        self.assertTrue(out["skippable"])
+        for waits in ("fit scores", "cover letters", "company research"):
+            self.assertIn(waits, out["intro"])
+            self.assertIn(waits, out["html"])
+        self.assertIn("Settings > AI provider", out["intro"])
+
+    def test_completed_it_saves_through_the_settings_endpoint(self):
+        out = self.run_step(provider="openai", url="https://api.openai.com/v1", model="gpt-6-luna", key=" sk-abc12345 ")
+        self.assertTrue(out["saved"])
+        self.assertEqual(out["calls"], [["PUT", "/api/settings/llm", {"base_url": "https://api.openai.com/v1",
+                                                                       "model": "gpt-6-luna", "api_key": "sk-abc12345"}]])
+
+    def test_a_missing_key_is_asked_for_and_nothing_is_saved(self):
+        out = self.run_step(provider="openai", url="https://api.openai.com/v1", model="gpt-6-luna")
+        self.assertFalse(out["saved"])
+        self.assertEqual(out["calls"], [])
+        self.assertEqual([e["field"] for e in out["errors"]], ["wz-ai-key"])
+
+    def test_a_saved_key_is_kept_and_a_keyless_provider_needs_none(self):
+        saved = {"provider": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-6-luna",
+                 "key": {"set": True, "hint": "…abcd"}, "presets": self.presets}
+        out = self.run_step(provider="openai", url="https://api.openai.com/v1", model="gpt-6-astra", llm=saved)
+        self.assertEqual(out["calls"][0][2], {"base_url": "https://api.openai.com/v1", "model": "gpt-6-astra"})
+        out = self.run_step(provider="ollama", url="http://localhost:11434/v1", model="llama3.2:3b")
+        self.assertTrue(out["saved"])
+        self.assertNotIn("api_key", out["calls"][0][2])
+
+    def test_the_server_takes_what_the_step_sends(self):
+        bob = helpers.make_user()
+        with helpers.client(bob.email) as c, mock.patch.dict(os.environ, {}), \
+                mock.patch("backend.app_settings.update_env_file"):
+            r = c.put("/api/settings/llm", json={"base_url": "https://api.openai.com/v1", "model": "gpt-6-luna",
+                                                 "api_key": "sk-abc12345"})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()["model"], "gpt-6-luna")
 
 
 if __name__ == "__main__":

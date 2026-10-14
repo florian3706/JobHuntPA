@@ -1,4 +1,4 @@
-"""The server's own keys, in ``data/server-keys.json`` (``JOBHUNT_KEY_FILE`` points elsewhere, mainly for tests).
+"""The server's own keys, in ``server-keys.json`` in the data folder (``JOBHUNT_KEY_FILE`` points elsewhere, mainly for tests).
 Design: docs/design/accounts.md, section 1.3.
 
     {"version": 1,
@@ -73,7 +73,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Optional, Union
 
-from backend import config, crypto
+from backend import config, crypto, paths
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ KEY_FILE_ENV = "JOBHUNT_KEY_FILE"
 FILE_VERSION = 1
 SIGNING_GRACE_S = 30 * 24 * 3600  # a retired signing key still verifies for 30 days (links in old emails)
 MAC_CHARS = 22                     # 132 bits of HMAC-SHA256, base64url
-RESTORE_MESSAGE = "Restore data/server-keys.json from your backup (it belongs with this database)."
+RESTORE_MESSAGE = "Restore server-keys.json (in the data folder) from your backup (it belongs with this database)."
 
 _SECTIONS = {"kek": "k", "pepper": "p", "signing": "s"}  # section -> key id prefix
 _PURPOSE_RE = re.compile(r"[a-z0-9_]{1,32}")
@@ -90,11 +90,14 @@ _EXPIRY_RE = re.compile(r"[0-9]{1,12}")
 
 
 def key_file_path() -> Path:
-    """Where the key file is: JOBHUNT_KEY_FILE (relative to the app folder unless absolute), else
-    data/server-keys.json in the app folder."""
+    """Where the key file is: JOBHUNT_KEY_FILE (relative to the app folder unless absolute), else server-keys.json in
+    the data folder (an older install's in the app's data/ folder while the data folder has none: backend/paths.py
+    key_file)."""
     override = os.environ.get(KEY_FILE_ENV, "").strip()
     if not override:
-        return config.PROJECT_ROOT / "data" / "server-keys.json"
+        from backend.db import DATA_DIR
+
+        return paths.key_file(DATA_DIR)
     path = Path(override).expanduser()
     return path if path.is_absolute() else config.PROJECT_ROOT / path
 

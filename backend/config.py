@@ -1,14 +1,18 @@
-"""Environment config (.env in the project root, no extra dependency)."""
+"""Environment config (.env in the data folder, no extra dependency)."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 from typing import Optional
 
+from backend import paths
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-# The .env file the app reads, and the Settings tab writes (backend/app_settings.py). JOBHUNT_ENV_PATH
-# points tests and tools at a throwaway file, so they never read or change the real one.
-ENV_PATH = Path(os.environ.get("JOBHUNT_ENV_PATH") or PROJECT_ROOT / ".env")
+# The .env file the app reads, and the Settings tab writes (backend/app_settings.py): in the data folder, or an older
+# install's next to the app (backend/paths.py env_file). Before the first run has chosen the data folder there is none
+# to read (an older install's file next to the app is still read) and nothing writes one. JOBHUNT_ENV_PATH points
+# tests and tools at a throwaway file, so they never read or change the real one.
+ENV_PATH = Path(os.environ.get("JOBHUNT_ENV_PATH") or paths.env_file(paths.current().folder or paths.default_folder()))
 
 
 # The names load_dotenv took from a .env file rather than from the process environment.

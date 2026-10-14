@@ -181,7 +181,7 @@ def new_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, auth
 @router.post("/recovery-codes/show")
 def show_recovery_codes(request: Request, body: Optional[NewCodesIn] = None, auth: AuthUser = Depends(current_user),
                         db: Session = Depends(get_db)):
-    """The recovery codes not yet confirmed as saved (after sign-up, first run, a reset or new codes), for a page that no
+    """The recovery codes not yet confirmed as saved (after the first run, a reset with a recovery code or new codes), for a page that no
     longer has them. Each code opens the data key and can set a new password, and a new session counts as recent for
     15 minutes, so a session alone must not read them (a cookie taken from a browser just after sign-in): the request
     carries the password."""

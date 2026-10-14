@@ -185,7 +185,7 @@ class ResetTest(unittest.TestCase):
 
     def test_the_next_start_is_a_first_run(self):
         got = self.next_start
-        self.assertEqual(got["state"], {"setup_required": True, "signed_in": False})
+        self.assertEqual(got["state"], {"setup_required": True, "folder_required": False, "signed_in": False})
         self.assertEqual(got["workspaces_signed_out"], 401)
         self.assertIn(got["old_login"], (401, 403))
         self.assertEqual((got["first_run"], got["codes"]), (201, 8))

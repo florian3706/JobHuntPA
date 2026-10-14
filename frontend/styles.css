@@ -965,7 +965,8 @@ summary { cursor: pointer; min-height: 24px; }
 .wiz-fieldset > legend + * { clear: both; }
 .wiz-fieldset > legend h2 { margin: 0; font-size: 20px; }
 .wiz-intro { margin: 0; }
-.wiz-form input[type="text"], .wiz-form input[type="number"], .wiz-form select { width: 100%; font-size: 16px; min-height: 44px; }
+.wiz-form input[type="text"], .wiz-form input[type="number"], .wiz-form input[type="password"], .wiz-form select { width: 100%; font-size: 16px; min-height: 44px; }
+.wiz-form .form-group[hidden] { display: none; }
 .wiz-form .tag-input input { min-height: 36px; }
 .wiz-form .form-group > label, .wiz-group > legend { font-size: 15px; }
 .wiz-group { gap: 4px 18px; }

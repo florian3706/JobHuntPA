@@ -1,11 +1,11 @@
 /* JobHuntPA sign-up walkthrough: welcome.html (accounts design 6.1, Phase K).
 
-   A new account chooses a theme, then sets up a search one small step at a time. Each step saves through the
+   A new account chooses its AI provider (or skips it), a theme, then sets up a search one small step at a time. Each step saves through the
    same endpoints as the dashboard's Search setup tab (/api/profile, /api/dealbreakers, /api/pins) and then tells the
    server which step is next (/api/account/onboarding), so leaving and coming back resumes where it was left.
 
-   The first account, whose existing search settings moved into it, gets a short path: theme, then keep the
-   settings or review them step by step.
+   The first account, whose existing search settings moved into it, gets a short path: AI provider, theme, then keep
+   the settings or review them step by step.
 
    WCAG 2.2 notes:
    - Each step is a fieldset whose legend holds the step's heading (an h2 that takes focus when the step appears, so
@@ -33,6 +33,7 @@ const wiz = {
   schedule: null, // this workspace's schedule, for the same step
   dealbreakers: { industries: [], keywords: [] },
   pins: [],
+  llm: null, // the AI provider settings (/api/settings/llm), with the provider presets
   homeText: '', // the home place as last saved (its text and radius are kept on the pin)
   gotoDocs: false,
   changed: false, // a search setting was saved, so existing jobs are filtered again at the end
@@ -158,7 +159,78 @@ const WORK_MODES = [
   ['wz-onsite', 'allow_onsite', 'Onsite'],
 ];
 
+/* What waits for an AI provider: said on the AI step, so skipping it is an informed choice. */
+const AI_FEATURES = 'fit scores, cover letters, job-title suggestions, company research and offices, questions about a job, and document summaries';
+
 const STEPS = {
+  /* Step 3 of the first run (open-source spec §1.5): the AI provider, model and key, saved through the Settings tab's
+     own endpoint (/api/settings/llm). It may be skipped: the app works without it, and says what waits. */
+  ai: {
+    title: 'Your AI provider',
+    intro: `JobHuntPA uses an AI model you choose, with your own API key, for ${AI_FEATURES}. Searching, filtering and the map work without one. You can skip this and add it later in Settings > AI provider.`,
+    skippable: true,
+    html() {
+      const st = wiz.llm;
+      return `<div class="form-group">
+          <label for="wz-ai-provider">Provider</label>
+          <select id="wz-ai-provider" aria-describedby="wz-ai-note">${st.presets.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join('')}</select>
+          <small id="wz-ai-note" class="hint"></small>
+        </div>
+        <div class="form-group" id="wz-ai-url-group">
+          <label for="wz-ai-url">API address</label>
+          <input id="wz-ai-url" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="wz-ai-url-hint" />
+          <small id="wz-ai-url-hint" class="hint">The provider's OpenAI-compatible address, starting with https:// (http:// only for a server on this computer).</small>
+        </div>
+        <div class="form-group">
+          <label for="wz-ai-model">Model</label>
+          <input id="wz-ai-model" type="text" list="wz-ai-models" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="wz-ai-model-hint" />
+          <datalist id="wz-ai-models"></datalist>
+          <small id="wz-ai-model-hint" class="hint">The provider's name for the model. The suggestion is a good start.</small>
+        </div>
+        <div class="form-group" id="wz-ai-key-group">
+          <label for="wz-ai-key">API key</label>
+          <input id="wz-ai-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="wz-ai-key-hint" />
+          <small id="wz-ai-key-hint" class="hint"></small>
+        </div>
+        <p class="hint">Until a provider is set, these wait: ${esc(AI_FEATURES)}.</p>`;
+    },
+    mount() {
+      const st = wiz.llm;
+      $('#wz-ai-provider').value = st.provider;
+      $('#wz-ai-url').value = st.base_url;
+      $('#wz-ai-model').value = st.model;
+      $('#wz-ai-provider').addEventListener('change', () => {
+        const preset = aiPreset();
+        const saved = preset.id === st.provider;
+        $('#wz-ai-url').value = saved ? st.base_url : preset.base_url;
+        $('#wz-ai-model').value = saved ? st.model : (preset.models[0] || '');
+        $('#wz-ai-key').value = '';
+        showAiPreset();
+      });
+      showAiPreset();
+    },
+    async save() {
+      const preset = aiPreset();
+      const body = { base_url: $('#wz-ai-url').value.trim(), model: $('#wz-ai-model').value.trim() };
+      const key = $('#wz-ai-key').value.trim();
+      const problems = [];
+      if (!body.base_url) problems.push({ field: 'wz-ai-url', message: 'Type the API address, starting with https://, or choose "Skip for now".' });
+      if (!body.model) problems.push({ field: 'wz-ai-model', message: 'Type the model name, or choose "Skip for now".' });
+      const keySaved = wiz.llm.key.set && preset.id === wiz.llm.provider;
+      if (preset.key_required && !key && !keySaved) problems.push({ field: 'wz-ai-key', message: 'Paste your API key, or choose "Skip for now".' });
+      if (problems.length) { showErrors(problems); return false; }
+      if (key) body.api_key = key;
+      try {
+        wiz.llm = await api('/api/settings/llm', { method: 'PUT', body: JSON.stringify(body) });
+      } catch (e) {
+        showErrors([{ field: null, message: e.message }]);
+        return false;
+      }
+      announce('AI provider saved.');
+      return true;
+    },
+  },
+
   theme: {
     title: 'Choose a theme',
     intro: 'Pick how JobHuntPA looks. The page changes as soon as you choose, and you can change it later on the Settings tab. The themes labelled for dyslexia or colour vision are there if you want them.',
@@ -362,9 +434,26 @@ const STEPS = {
   },
 };
 
+const aiPreset = () => wiz.llm.presets.find((p) => p.id === $('#wz-ai-provider').value) || wiz.llm.presets[wiz.llm.presets.length - 1];
+
+/* The address field only for a provider without a fixed one (Custom); the key field only for one that needs a key. */
+function showAiPreset() {
+  const preset = aiPreset();
+  $('#wz-ai-url-group').hidden = Boolean(preset.base_url);
+  $('#wz-ai-models').innerHTML = preset.models.map((m) => `<option value="${esc(m)}"></option>`).join('');
+  $('#wz-ai-key-group').hidden = !preset.key_required;
+  const link = preset.key_url
+    ? ` <a href="${esc(preset.key_url)}" target="_blank" rel="noopener noreferrer">${preset.key_required ? 'Get a key' : 'Get Ollama'}${NEW_TAB}</a>` : '';
+  $('#wz-ai-note').innerHTML = `${esc(preset.note || '')}${link}`;
+  const saved = wiz.llm.key.set && preset.id === wiz.llm.provider;
+  setText($('#wz-ai-key-hint'), saved
+    ? `A key is saved (ending ${wiz.llm.key.hint || '…'}). Leave this empty to keep it.`
+    : 'It is kept only on this computer, in the settings file in your data folder, and sent only to this provider.');
+}
+
 function buildSteps() {
-  if (wiz.short) return ['theme', 'keep'];
-  const steps = ['theme', 'titles', 'where', 'extras'];
+  if (wiz.short) return ['ai', 'theme', 'keep'];
+  const steps = ['ai', 'theme', 'titles', 'where', 'extras'];
   if (wiz.features.scheduled_searches) steps.push('auto'); // Phase G
   steps.push('resume');
   return steps;
@@ -468,9 +557,11 @@ async function start() {
   if (me.recovery_codes_pending) { location.replace('first-run.html'); return; } // save the codes first
   wiz.me = me;
   try {
-    const [info, profile, dealbreakers, pins] = await Promise.all([
+    const [info, profile, dealbreakers, pins, llm] = await Promise.all([
       api('/api/account/onboarding'), api('/api/profile'), api('/api/dealbreakers'), api('/api/pins'),
+      api('/api/settings/llm'),
     ]);
+    wiz.llm = llm;
     wiz.features = info.features || {};
     wiz.short = info.path === 'short';
     wiz.profile = profile;

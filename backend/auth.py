@@ -1,6 +1,7 @@
 """Signing in and out, and the first run (accounts design, sections 3, 5 and 6; open-source spec §1.2).
 
-    GET  /api/auth/state                  {setup_required, signed_in} (open)
+    GET  /api/auth/state                  {setup_required, folder_required, signed_in} (open)
+    POST /api/auth/data-folder[/check]    the first run's step 1, where the data lives: backend/data_folder.py
     POST /api/auth/first-run              {token, name, password, remember?, background?} (open, and only while no
                                           account exists: 409 already_set_up after that)
                                           -> 201 {csrf, recovery_codes: [8 codes, shown once]} + session cookie
@@ -45,6 +46,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from backend import account, crypto, lockout, migrate_encryption, sessions, users
+from backend import db as database
 from backend.db import AuthSession, SessionLocal, User, UserKeys, get_db, scrub_wal, utcnow
 from backend.sessions import REAUTH_REQUIRED, AuthProblem, AuthUser, current_user, require_recent_auth  # noqa: F401
 
@@ -97,8 +99,12 @@ def _signed_in(request: Request, secret: bytes, remember: bool, body: dict, stat
 
 @router.get("/state")
 def auth_state(request: Request):
-    """Open: whether the first run is still to do, and whether this browser is signed in."""
-    return {"setup_required": not users.users_exist(), "signed_in": sessions.signed_in_user(request) is not None}
+    """Open: whether the first run is still to do (``folder_required``: its step 1, where the data lives, comes first;
+    backend/data_folder.py), and whether this browser is signed in."""
+    if not database.FOLDER_CHOSEN:
+        return {"setup_required": True, "folder_required": True, "signed_in": False}
+    return {"setup_required": not users.users_exist(), "folder_required": False,
+            "signed_in": sessions.signed_in_user(request) is not None}
 
 
 @router.post("/first-run", status_code=201)

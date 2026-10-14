@@ -1,7 +1,8 @@
 """SQLite storage via SQLAlchemy: every table the app uses lives here.
 
-DB file: <project_root>/data/jobhunt.db (override with JOBHUNT_DB_PATH, or the whole data folder with
-JOBHUNT_DATA_DIR).
+DB file: jobhunt.db in the data folder (backend/paths.py: JOBHUNT_DATA_DIR, the pointer the first run writes, or an
+older install's data/ next to the app); JOBHUNT_DB_PATH moves just the database. Until the first run has chosen the
+folder (``FOLDER_CHOSEN`` false) the engine points at an in-memory database, so nothing is written anywhere.
 ``init_db()`` creates missing tables and adds missing columns to existing
 ones (SQLite ``ALTER TABLE ADD COLUMN``), so older databases keep working.
 """
@@ -38,7 +39,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, validates
 from sqlalchemy.schema import CreateTable
 
-from backend import crypto
+from backend import crypto, paths
 from backend.crypto import (
     ProcessSealedText,
     SealedAlways,
@@ -54,12 +55,16 @@ from backend.crypto import (
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-# The data folder: data/ in the app folder. JOBHUNT_DATA_DIR moves it (tests and tools point it at a throwaway
-# folder, so they never touch the real uploads); JOBHUNT_DB_PATH moves just the database.
-DATA_DIR = Path(os.getenv("JOBHUNT_DATA_DIR") or PROJECT_ROOT / "data")
+# The data folder (backend/paths.py). JOBHUNT_DATA_DIR sets it (service installs; tests and tools point it at a
+# throwaway folder, so they never touch the real uploads); JOBHUNT_DB_PATH or DATABASE_URL (developers) count as a
+# choice too. While nothing is chosen, the app only answers the first run's step 1 (backend/data_folder.py), DATA_DIR is
+# the folder that step will offer (never created here) and the database is in memory.
+PLACE = paths.current()
+FOLDER_CHOSEN = PLACE.folder is not None or bool(os.getenv("JOBHUNT_DB_PATH") or os.getenv("DATABASE_URL"))
+DATA_DIR = PLACE.folder or (paths.APP_ROOT / "data" if FOLDER_CHOSEN else paths.default_folder())
 UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = Path(os.getenv("JOBHUNT_DB_PATH") or DATA_DIR / "jobhunt.db")
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
+DATABASE_URL = os.getenv("DATABASE_URL") or (f"sqlite:///{DB_PATH}" if FOLDER_CHOSEN else "sqlite://")
 
 engine = create_engine(
     DATABASE_URL,

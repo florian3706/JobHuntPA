@@ -16,9 +16,9 @@ walkthrough is finished or skipped. The page (frontend/welcome.html) builds its 
 of the next one after each step, so a person who leaves comes back to the same place.
 
 Two paths: the first account, whose existing search settings moved into it (``created_via`` first_run or
-bootstrap, with titles already saved), gets the short one (choose a theme, then keep or review the settings); every
-other new account gets the full one. A short-path person who asks to review moves past step 2, which makes the path
-"full" from then on.
+bootstrap, with titles already saved), gets the short one (the AI provider, a theme, then keep or review the
+settings); every other new account gets the full one. Both start with the AI provider (the first run's step 3, spec
+§1.5). A short-path person who asks to review moves past step 3, which makes the path "full" from then on.
 
 The theme is health-related information for some people (a dyslexia or colour-vision theme), so it is never kept as
 plaintext; localStorage in the browser stays the fast path for the first paint (design 2.2).
@@ -51,7 +51,7 @@ THEME_IDS = frozenset({
     "dichromacy-dark", "monochromacy", "monochromacy-dark",
 })
 MAX_STEP = 20
-SHORT_PATH_LAST_STEP = 2  # on the short path: 1 theme, 2 "keep your current settings or review them"
+SHORT_PATH_LAST_STEP = 3  # on the short path: 1 AI provider, 2 theme, 3 "keep your current settings or review them"
 
 
 def features() -> dict[str, bool]:

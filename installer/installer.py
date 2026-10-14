@@ -7,19 +7,24 @@ to run again (it updates dependencies and keeps your settings and data).
 Steps:
   1. create a private Python environment in .venv
   2. install the Python packages from requirements.txt
-  3. download the Chromium browser used for JavaScript-only careers pages
-  4. ask for the LLM settings and write .env
-     (kept if already filled in)
-  5. add a menu shortcut (Linux)
-  6. check the app imports
+  3. add a menu shortcut (Linux)
+  4. check the app imports
+
+It asks nothing: where the data lives, the account and the AI provider are
+the app's first run, in the browser (docs/design/open-source.md §1.5). The
+browser for JavaScript-only careers pages is downloaded by the app, into the
+data folder, when a careers page first needs it and you agree.
 
 Standard library only: this runs before any dependency is installed.
 
 Options:
-  --non-interactive   never prompt (settings from the LLM_* environment variables, else left
-                      blank)
-  --reconfigure       ask for the LLM settings again even if .env has them
-  --skip-browser      don't download Chromium
+  --non-interactive   for CI and scripted installs: the LLM_* environment variables are
+                      written to the data folder's .env when the data folder is already
+                      known (JOBHUNT_DATA_DIR, or an existing install); the app also reads
+                      them from its environment
+  --reconfigure       (kept for old scripts; does nothing: change the AI provider in the
+                      app, Settings > AI provider)
+  --skip-browser      (kept for old scripts; does nothing: setup no longer downloads it)
 """
 from __future__ import annotations
 
@@ -29,6 +34,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -41,6 +47,7 @@ IS_WINDOWS = os.name == "nt"
 # Windows setup program (a frozen build of this file that runs against the downloaded source) needs no package
 # import. If that file can't be read, this short list is used instead.
 PRESETS_FILE = ROOT / "backend" / "llm_providers.py"
+PATHS_FILE = ROOT / "backend" / "paths.py"
 FALLBACK_PRESETS = [
     {"id": "openai", "label": "OpenAI", "base_url": "https://api.openai.com/v1", "models": ["gpt-6-luna"],
      "key_url": "https://platform.openai.com/api-keys", "key_required": True},
@@ -107,16 +114,6 @@ def install_requirements() -> None:
         fail("installing packages failed. Check your internet connection and run setup again.")
 
 
-def install_browser() -> None:
-    try:
-        run([venv_python(), "-m", "playwright", "install", "chromium"], cwd=ROOT)
-    except subprocess.CalledProcessError:
-        say("  Warning: the browser for JavaScript-only careers pages could not be installed.")
-        say("  Everything else works; a few company sites may return no jobs.")
-        if platform.system() == "Linux":
-            say("  To fix it later:  .venv/bin/python -m playwright install --with-deps chromium")
-
-
 def read_env(path: Path) -> tuple[list[str], dict[str, str]]:
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     values = {}
@@ -143,15 +140,6 @@ def write_env(path: Path, lines: list[str], updates: dict[str, str]) -> None:
         if key not in done:
             out.append(f"{key}={val}")
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
-
-
-def ask(prompt: str, default: str = "") -> str:
-    suffix = f" [{default}]" if default else ""
-    try:
-        answer = input(f"  {prompt}{suffix}: ").strip()
-    except EOFError:
-        answer = ""
-    return answer or default
 
 
 def load_presets() -> list[dict]:
@@ -191,62 +179,56 @@ def key_needed(base_url: str, presets: list[dict]) -> bool:
     return True
 
 
-def configure_llm(interactive: bool, reconfigure: bool) -> None:
-    env_path = ROOT / ".env"
-    lines, values = read_env(env_path)
-    required = ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")
-    presets = load_presets()
-    needed = [k for k in required if k != "LLM_API_KEY" or key_needed(values.get("LLM_BASE_URL", ""), presets)]
-    if all(values.get(k) for k in needed) and not reconfigure:
-        say("  LLM settings already in .env; keeping them (run setup with --reconfigure to change).")
-        return
-    if not interactive:
-        updates = {k: os.environ.get(k, values.get(k, "")) for k in required}
-        write_env(env_path, lines, updates)
-        missing = [k for k in required if not updates[k] and (k != "LLM_API_KEY" or key_needed(updates["LLM_BASE_URL"], presets))]
-        say("  Wrote .env" + (f"; still to fill in: {', '.join(missing)}" if missing else "."))
-        return
-
-    say("  JobHuntPA uses an AI model (LLM) to score jobs, draft cover letters, suggest job titles and research companies.")
-    say("  Which provider do you have an API key for? (Ollama runs on this computer and needs no key.)")
-    for i, preset in enumerate(presets, 1):
-        say(f"    {i:>2}) {preset['label']}")
-    say("     s) Skip for now (you can re-run setup later)")
-    choice = ask("Choose", "1").lower()
-    if choice == "s":
-        write_env(env_path, lines, {k: values.get(k, "") for k in required})
-        say("  Skipped. Scoring and research stay off until the LLM is configured.")
-        return
+def load_paths():
+    """backend/paths.py (where the data folder is), loaded by file path like the presets; None if it can't be read."""
+    name = "_jobhunt_paths"
     try:
-        preset = presets[int(choice) - 1]
-    except (ValueError, IndexError):
-        preset = next((p for p in presets if p.get("id") == "custom"), presets[-1])
-    if preset["base_url"]:
-        base = preset["base_url"]
-        say(f"  API address: {base}")
-    else:
-        base = ask("API address (base URL, e.g. https://api.example.com/v1)", values.get("LLM_BASE_URL", ""))
-    base = base.strip().rstrip("/")
-    same_server = base == values.get("LLM_BASE_URL", "").rstrip("/")  # reconfiguring the same provider keeps its model and key
-    if preset["models"]:
-        say(f"  Suggested models: {', '.join(preset['models'])}")
-    model = ask("Model name", (values.get("LLM_MODEL", "") if same_server else "") or (preset["models"][0] if preset["models"] else ""))
-    if preset["key_required"]:
-        if preset["key_url"]:
-            say(f"  Get a key at {preset['key_url']}")
-        saved_key = values.get("LLM_API_KEY", "") if same_server else ""
-        key = ask("API key (paste it; it is stored only in the .env file on this computer"
-                  + ("; Enter keeps the saved one)" if saved_key else ")")) or saved_key
-    else:
-        key = ""
-        say("  No API key is needed for this provider.")
-    write_env(env_path, lines, {"LLM_API_KEY": key, "LLM_BASE_URL": base, "LLM_MODEL": model})
-    say("  Saved to .env. Provider, model, key and reasoning levels can be changed in the app (Settings > AI provider).")
+        spec = importlib.util.spec_from_file_location(name, PATHS_FILE)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(name, None)
+        return module
+    except Exception:  # noqa: BLE001  (a missing or half-copied file: nothing is written then)
+        return None
 
 
-def ensure_dirs() -> None:
-    for sub in ("data", "data/uploads", "data/cache"):
-        (ROOT / sub).mkdir(parents=True, exist_ok=True)
+def settings_file() -> Path | None:
+    """The .env the app will read, when the data folder is already known (JOBHUNT_DATA_DIR, the pointer, or an existing
+    install's data folder; an existing install's .env next to the app); None before the first run has chosen the
+    folder: nothing may be written before that."""
+    paths = load_paths()
+    folder = paths.locate(ROOT).folder if paths else None
+    if folder is not None:
+        return paths.env_file(folder, ROOT)
+    return ROOT / ".env" if (ROOT / ".env").is_file() else None
+
+
+def configure_llm(non_interactive: bool) -> None:
+    """No questions: the AI provider is the first run's step 3, in the browser. With --non-interactive (CI), the LLM_*
+    environment variables are written to the data folder's .env when it is known."""
+    required = ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")
+    given = {k: os.environ.get(k, "").strip() for k in required}
+    if not (non_interactive and any(given.values())):
+        say("  The AI provider, model and key are asked for in the browser when JobHuntPA first starts (you can skip")
+        say("  that and add them later in Settings > AI provider).")
+        return
+    env_path = settings_file()
+    if env_path is None:
+        say("  The data folder isn't chosen yet, so nothing is written: JobHuntPA reads the LLM_* variables from its")
+        say("  environment when it starts, and its first run asks for them.")
+        return
+    lines, values = read_env(env_path)
+    updates = {k: given[k] or values.get(k, "") for k in required}
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    write_env(env_path, lines, updates)
+    if not IS_WINDOWS:
+        os.chmod(env_path, 0o600)  # it holds the API key
+    presets = load_presets()
+    missing = [k for k in required if not updates[k] and (k != "LLM_API_KEY" or key_needed(updates["LLM_BASE_URL"], presets))]
+    say(f"  Wrote the LLM settings to {env_path}" + (f"; still to fill in: {', '.join(missing)}" if missing else "."))
 
 
 def create_shortcut() -> None:
@@ -266,48 +248,48 @@ def create_shortcut() -> None:
 
 
 def check_app() -> None:
-    try:
-        run([venv_python(), "-c", "import backend.app"], cwd=ROOT,
-            env={**os.environ, "JOBHUNT_DB_PATH": str(ROOT / "data" / "jobhunt.db")})
-    except subprocess.CalledProcessError:
-        fail("the app failed to load after installing. Please report this with the output above.")
+    """Imports the app, which writes nothing (the database, key file and .env are made when it starts). A throwaway data
+    folder and settings file are given all the same, so the check can never touch real ones."""
+    with tempfile.TemporaryDirectory(prefix="jobhuntpa-check-") as tmp:
+        env = {**os.environ, "JOBHUNT_DATA_DIR": tmp, "JOBHUNT_ENV_PATH": str(Path(tmp) / ".env")}
+        env.pop("JOBHUNT_DB_PATH", None)
+        env.pop("DATABASE_URL", None)
+        try:
+            run([venv_python(), "-c", "import backend.app"], cwd=ROOT, env=env)
+        except subprocess.CalledProcessError:
+            fail("the app failed to load after installing. Please report this with the output above.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Set up JobHuntPA on this computer.")
     parser.add_argument("--non-interactive", action="store_true")
-    parser.add_argument("--reconfigure", action="store_true")
-    parser.add_argument("--skip-browser", action="store_true")
+    parser.add_argument("--reconfigure", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--skip-browser", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if sys.version_info < MIN_PYTHON:
         fail(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer is needed (this is {platform.python_version()}).")
-    interactive = not args.non_interactive and sys.stdin.isatty()
     version = (ROOT / "VERSION").read_text().strip() if (ROOT / "VERSION").exists() else "dev"
     say(f"JobHuntPA setup (version {version}) in {ROOT}")
+    if args.reconfigure:
+        say("(--reconfigure isn't needed any more: change the AI provider in the app, Settings > AI provider.)")
 
-    total = 6
+    total = 4
     step(1, total, "Creating a private Python environment...")
     create_venv()
     step(2, total, "Installing packages (this can take a few minutes)...")
     install_requirements()
-    step(3, total, "Downloading the browser used for JavaScript careers pages...")
-    if args.skip_browser:
-        say("  Skipped.")
-    else:
-        install_browser()
-    step(4, total, "LLM settings")
-    ensure_dirs()
-    configure_llm(interactive, args.reconfigure)
-    step(5, total, "Shortcut")
+    configure_llm(args.non_interactive)
+    step(3, total, "Shortcut")
     create_shortcut()
-    step(6, total, "Checking the app...")
+    step(4, total, "Checking the app...")
     check_app()
 
     say("\nSetup complete.")
-    say("The first time JobHuntPA starts, your browser asks you to create your account (a name and a password);")
-    say("the jobs, documents and settings already in JobHuntPA move into it. Lost the password and every recovery")
-    say("code? The reset tool (reset.sh, or Reset JobHuntPA in the Start menu) starts over and keeps the settings.")
+    say("The first time JobHuntPA starts, your browser asks where to keep your data, then for your account (a name and")
+    say("a password) and your AI provider. An existing install keeps its data folder and signs in as before. Lost the")
+    say("password and every recovery code? The reset tool (reset.sh, or Reset JobHuntPA in the Start menu) starts over")
+    say("and keeps the settings.")
     if IS_WINDOWS:
         say("Start JobHuntPA from the Desktop or Start-menu shortcut.")
     elif platform.system() == "Darwin":
