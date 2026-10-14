@@ -1,12 +1,8 @@
-> [!WARNING]
-> This was vibe-coded in its entirety, as a way to get experience with LLM-based
-> development (and save my sanity while job hunting).
-> 
-> I'm making this public so I can more easily share this with friends who are also job hunting.
-> This is provided as is with no warranty. Do whatever you want with this, but don't come crying to
-> me if it doesn't work. It's a vibe-coded throwaway tool --- nothing more.
-
 # JobHuntPA
+
+> [!NOTE]
+> JobHuntPA is a personal project, written almost entirely with AI coding assistants. It is free software under
+> the [GNU GPL, version 3](#licence), and comes **with no warranty**: use it at your own risk.
 
 A personal job search dashboard that runs on your own computer. It collects jobs from SEEK and
 company careers pages, filters them against your search settings and map pins, scores the rest
@@ -16,6 +12,11 @@ flags ads that may be ghost jobs, and lets you chat with the AI about any job. Y
 documents are stored encrypted under a key of your own (what that does and doesn't cover is
 under [How your data is protected](#how-your-data-is-protected)). It has one account, yours, with a
 name and a password.
+
+There is no JobHuntPA service: you run it yourself on Windows, macOS or Linux (or on a small server at home, for
+your phone too), and you **bring your own AI key** from the provider you choose. A companion
+[browser extension](#browser-extension) for Chrome and Firefox adds the job you are looking at. It searches
+Australian job sites (SEEK, APSJobs) and any company's careers page.
 
 ![The Jobs tab: job cards with fit scores, statuses and salaries, under the result of the last scheduled search](docs/screenshots/jobs.png)
 
@@ -29,10 +30,8 @@ found about the employer, and the whole ad.
 
 <img src="docs/screenshots/job-page.png" alt="A job's full page: the office and the commute, fit requirements and gaps, company profile and the ad" width="760">
 
-**Map**: the jobs your filters show, your pins with their radii, and the jobs in view listed
-underneath.
-
-![The Map tab in Jobs mode: job dots, a home pin, a hybrid pin and an onsite pin with their radii, and the list of jobs in view](docs/screenshots/map.png)
+**Map**: the jobs your filters show on an OpenStreetMap map, your pins with their radii, and the jobs in view
+listed underneath.
 
 **Chat about a job**: ask how well you fit, what to prepare for an interview, or compare jobs.
 
@@ -47,7 +46,7 @@ holidays), the AI provider with the Rescore buttons and the AI usage, and the pu
 address ([settings for this JobHuntPA](#settings-for-this-jobhuntpa)), and [your account](#your-account)
 (name, password, recovery codes, background access, download your data, import from an export).
 
-![The Settings tab: scheduled searches, the AI status and the Rescore buttons](docs/screenshots/settings.png)
+![The Settings tab: scheduled searches, the AI provider with its reasoning levels, and the Rescore buttons](docs/screenshots/settings.png)
 
 **Themes**: Dark (above), Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and Everforest
 families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from live
@@ -195,7 +194,7 @@ recovery codes and signed-in devices, background access, then download your data
 
 <img src="docs/screenshots/settings-account.png" alt="The Settings tab's account cards: password, recovery codes, signed-in devices and background access" width="760">
 
-<img src="docs/screenshots/settings-data.png" alt="The Settings tab's last cards: download your data and delete account" width="760">
+<img src="docs/screenshots/settings-data.png" alt="The Settings tab's last cards: download your data, import from an export, and delete account" width="760">
 
 - **The first start** opens a page that creates the account: a name to sign in with (any name; it is
   not an email address, and JobHuntPA never sends mail) and a password of at least 10 characters (a few
@@ -449,6 +448,8 @@ your data.
   page needed it. Until then (and if you choose **Not now**) those pages say in their test result what they need.
 - **Server key** and **Unencrypted copies of data** (below).
 
+<img src="docs/screenshots/settings-install.png" alt="The Settings tab's AI provider card (provider, model, API address and key, reasoning levels, Test connection), the Fit scores card and the AI usage card" width="760">
+
 Changes take effect at once and are saved in `.env` in the [data folder](#where-your-data-lives) (an older
 install's `.env` next to the app keeps being used); the log names the settings that changed, never their values. Keys are never shown again in full, only their last few characters.
 
@@ -460,18 +461,18 @@ browser talk to it under a name of its own (a "DNS rebinding" attack). It answer
 - **any IP address**: `http://127.0.0.1:8000`, a home-network address such as `http://192.168.1.20:8000`,
   or a Tailscale address (`100.x.y.z`);
 - **`localhost`** and names ending in `.localhost`;
-- **this computer's own names**: its host name, with or without `.local` (`http://raspberrypi:8000`);
+- **this computer's own names**: its host name, with or without `.local` (`http://homeserver:8000`);
 - **the public address** (Settings > Public address and host names > *Public address*; `PUBLIC_BASE_URL` in `.env`);
 - **any other names you list** there under *More host names* (`JOBHUNT_ALLOWED_HOSTS` in `.env`, separated by
-  commas: `jobs.example.com,pi.tail1234.ts.net`). Use names only (no `http://`, port or path).
+  commas: `jobs.example.com,homeserver.tail1234.ts.net`). Use names only (no `http://`, port or path).
 
 The port never matters. Anything else gets "This address isn't allowed" (HTTP 400) and nothing else runs.
 **With `tailscale serve`** (or any proxy that passes the name people typed on), set the public address to
-the address it gives you: in **Settings > Public address and host names**, type `https://pi.tail1234.ts.net`
+the address it gives you: in **Settings > Public address and host names**, type `https://homeserver.tail1234.ts.net`
 (no `/` at the end; `http` is accepted only for `localhost`) and click **Save**. That is enough, and it also
 makes the sign-in cookie secure; it takes effect at once (this browser may be signed out, because the cookie's
 name changes with https). Without a public address, list the name under *More host names* instead. You can
-also put `PUBLIC_BASE_URL=https://pi.tail1234.ts.net` or `JOBHUNT_ALLOWED_HOSTS=...` in `.env` and restart
+also put `PUBLIC_BASE_URL=https://homeserver.tail1234.ts.net` or `JOBHUNT_ALLOWED_HOSTS=...` in `.env` and restart
 JobHuntPA. Start JobHuntPA through `start.sh` or the launcher, which already trust the proxy on the same
 computer (`--proxy-headers --forwarded-allow-ips 127.0.0.1`). The proxy must **append** the real visitor's
 address to `X-Forwarded-For` (`tailscale serve` and the usual proxies do); one that passed a visitor's own
@@ -564,7 +565,7 @@ On Windows or macOS, keep JobHuntPA running with its shortcut or `start.sh` inst
 2. In the Tailscale admin console, open **DNS**: keep **MagicDNS** on and, under **HTTPS Certificates**, click
    **Enable HTTPS**.
 3. On the JobHuntPA computer, run `sudo tailscale serve --bg 8000` (the port JobHuntPA uses). It prints the
-   address, such as `https://pi.tail1234.ts.net`; `tailscale serve status` shows it again.
+   address, such as `https://homeserver.tail1234.ts.net`; `tailscale serve status` shows it again.
 4. In JobHuntPA (on that computer, or at that address), open **Settings > Public address and host names**,
    type the address under **Public address** (no `/` at the end) and click **Save**.
 5. Open the address on your phone and sign in. Only devices signed in to your Tailscale account can reach it.
@@ -1219,8 +1220,8 @@ the pages' basics (language, viewport, skip link, headings, labels) checked on e
   them, have a Dismiss button, and screen readers announce them.
 - In Chrome on Windows, the arrow keys change a closed drop-down at once, so arrowing through the
   Workspace menu switches workspace at each step: open it first (Alt+Down).
-- The colour-vision themes' colours were simulated for colour vision deficiencies in ProjectTimeline;
-  the small lightness changes made here for contrast keep their hues but weren't simulated again.
+- The colour-vision themes' palettes come from another project, where they were simulated for colour vision
+  deficiencies; the small lightness changes made here for contrast keep their hues but weren't simulated again.
 
 ## For developers
 
@@ -1331,15 +1332,17 @@ rules:
 `JOBHUNT_DATA_DIR` sets the whole data folder (uploads included); tests and tools point it at a
 throwaway folder, so they never touch a real one, and `tests/__init__.py` points the configuration folder
 (`JOBHUNT_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`) at throwaway folders too. `python3 tools/bench_jobs_list.py` times the job list
-on 5,000 made-up encrypted jobs in such a folder (target: under 1.5 s on a Raspberry Pi 4; run it on
-the Pi to check there).
+on 5,000 made-up encrypted jobs in such a folder (target: under 1.5 s on a Raspberry Pi 4, the slowest computer
+JobHuntPA is meant for; run it there to check).
 
 **README screenshots:** `python3 tools/readme_screenshots.py` (needs `pip install pillow`) builds a
 throwaway database of made-up data with `tools/demo_data.py`, runs the app on it with fake AI
 settings and no scheduler, and saves `docs/screenshots/*.png`. It never touches `data/` or `.env`.
 Re-run it after changing the UI; `--only jobs,map` retakes just those. It signs in once as the demo account
 (`--only ghost-job,settings-account,settings-data,settings-install,sign-in` are the account and settings
-shots). The map needs OpenStreetMap's tiles, so take that one on a machine that reaches them.
+shots). The map needs OpenStreetMap's tiles, so take that one on a machine that reaches them (`map.png` isn't in
+the README until then). Where unpkg.com can't be reached, `--leaflet DIR` serves Leaflet from a local
+`npm install leaflet@1.9.4` (its `node_modules/leaflet/dist`).
 
 **Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme, the colour
 pairs the app uses together and fails on any below WCAG AA (`--all` shows the passing ones too).
@@ -1363,10 +1366,11 @@ it is. Options: `--widths 320,640,1280`, `--themes light,dark,monochromacy` (or 
 index,keyboard` (`--list` names the groups), `--review` (axe's "needs review" results), `--json FILE`.
 A full run takes about 45 minutes. The exit status is 1 when anything is reported.
 
-**Releasing the Windows programs:** bump `VERSION`, commit, then `git tag v$(cat VERSION) && git
-push --tags`. `.github/workflows/release.yml` builds JobHuntPA-Setup.exe and JobHuntPA.exe on
-Windows and attaches them to a GitHub Release. The setup program downloads the source of its own
-tag, so the tag must exist on GitHub.
+**Releasing:** bump `VERSION`, commit, then `git tag v$(cat VERSION) && git push --tags`.
+`.github/workflows/release.yml` builds JobHuntPA-Setup.exe, JobHuntPA.exe, the uninstaller, the reset tool and the
+AppImage and attaches them to a GitHub Release. The setup program downloads the source of its own tag, so the tag
+must exist on GitHub. The AppImage carries `LICENSE` and `THIRD-PARTY.md`; a new dependency gets a line in
+`THIRD-PARTY.md` (its licence from the package's own metadata, and one GPLv3 can be combined with).
 
 ## How a search run works
 
@@ -1430,3 +1434,26 @@ the owner hasn't turned on background access or the account is turned off.
   [browser extension](#browser-extension)'s **Jobs on this page**: it reads the page you are looking at, and you
   turn the pages.
 - Geocoding uses OpenStreetMap Nominatim under its usage policy (≤1 request/s, cached forever).
+
+## Reporting a security problem
+
+Please report a security problem privately, not in a public issue: use GitHub's **private vulnerability
+reporting** on this repository (the **Security** tab, then **Report a vulnerability**), or email
+**SECURITY-CONTACT@REPLACE-ME.invalid**. Say what you found, how to reproduce it and which version or commit you
+ran. You should get an answer within two weeks. There is no bug bounty.
+
+Useful to know first: JobHuntPA runs on its own computer and listens only on `127.0.0.1`; other devices reach it
+through a proxy you set up ([Hosting on your own network](#hosting-on-your-own-network)). The design notes on
+sign-in, sessions and encryption are in `docs/design/accounts.md`, and what the encryption does and doesn't
+cover is under [How your data is protected](#how-your-data-is-protected).
+
+## Licence
+
+JobHuntPA is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public
+License, version 3** (`GPL-3.0-only`), as published by the Free Software Foundation. It is distributed in the hope
+that it will be useful, but **without any warranty**; without even the implied warranty of merchantability or
+fitness for a particular purpose. See [`LICENSE`](LICENSE) for the full text.
+
+The browser extensions are licensed the same way, in their own repositories. JobHuntPA uses other people's code
+and services under their own licences, all of which may be combined with GPLv3; they are listed in
+[`THIRD-PARTY.md`](THIRD-PARTY.md). Job ads, company research and map data belong to their owners.

@@ -808,7 +808,7 @@ def build(db_path: Path) -> None:
 def _build() -> None:
     from backend.db import (AppSetting, ChatMessage, ChatThread, CompanyProfile, CompanySource, CoverLetter,
                             DealbreakerSet, Document, FitResult, GeocodeCache, Job, JobDuplicate, Pin, Posting,
-                            SearchRun, SessionLocal, UserProfile, Workspace, company_key, init_db)
+                            SearchRun, SearchSchedule, SessionLocal, UserProfile, Workspace, company_key, init_db)
     from backend.duplicates import scan
     from backend.ghost import stamp as stamp_ghost_signs
     from backend.filters import commute_pins, exclusion_reason, load_criteria, parse_salary
@@ -841,6 +841,12 @@ def _build() -> None:
         ws = db.get(Workspace, 1)
         ws.name = WORKSPACE_NAME
         ws_id = ws.id
+        # Scheduled searches on (a new workspace starts with them off), so the pages show the next search.
+        sched_row = db.get(SearchSchedule, ws_id)
+        if sched_row is None:
+            db.add(SearchSchedule(id=ws_id, enabled=True, times=list(sched.times), days=list(sched.days)))
+        else:
+            sched_row.enabled = True
 
         # --- search profile, dealbreakers, pins --------------------------------
         db.add(UserProfile(id=ws_id, **SEARCH_PROFILE))

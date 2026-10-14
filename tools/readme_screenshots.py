@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Take the README screenshots (docs/screenshots/*.png) from a fictional demo database.
 
-    python3 tools/readme_screenshots.py [--out DIR] [--only jobs,map,...] [--keep]
+    python3 tools/readme_screenshots.py [--out DIR] [--only jobs,map,...] [--leaflet DIR] [--keep]
 
 What it does:
 1. Builds a NEW temporary database with tools/demo_data.py (a "Dummy workspace" full of made-up
@@ -18,7 +18,9 @@ What it does:
 Needs the app's requirements plus Playwright's Chromium (setup installs both) and Pillow
 (``pip install pillow``; a developer tool only, so it is not in requirements.txt). The browser
 fetches Leaflet (unpkg.com), map tiles (openstreetmap.org) and, for the Dyslexia theme, a font
-(Google Fonts).
+(Google Fonts). Where unpkg.com can't be reached, ``--leaflet DIR`` serves Leaflet from a local copy
+(``npm install leaflet@1.9.4`` in an empty folder, then ``--leaflet that-folder/node_modules/leaflet/dist``); the map
+image still needs OpenStreetMap's tiles, so leave it out there (``--only`` without ``map``).
 
 Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide):
     jobs, run-report, job-page, map (light theme), search-setup, company-sources, settings, search-schedule
@@ -35,7 +37,9 @@ import argparse
 import base64
 import io
 import json
+import mimetypes
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -166,8 +170,9 @@ def save_png(img, path: Path) -> int:
 # --------------------------------------------------------------------------
 
 class Shooter:
-    def __init__(self, browser, base: str, ws_id: int, out: Path):
+    def __init__(self, browser, base: str, ws_id: int, out: Path, leaflet: Path | None = None):
         self.browser, self.base, self.ws_id, self.out = browser, base, ws_id, out
+        self.leaflet = leaflet  # a local leaflet/dist, served instead of unpkg.com's
         self.hosts: set[str] = set()
         self.problems: list[str] = []
         self.sizes: dict[str, int] = {}
@@ -182,6 +187,8 @@ class Shooter:
             "try { localStorage.setItem('jobhunt.theme', %s); localStorage.setItem('jobhunt.ws', %s);"
             " localStorage.setItem('jobhunt.mapMode', 'jobs'); } catch (e) {}" % (json.dumps(theme), json.dumps(str(self.ws_id))))
         ctx.on("request", lambda r: self.hosts.add(urlsplit(r.url).netloc))
+        if self.leaflet is not None:
+            ctx.route(re.compile(r"https://unpkg\.com/leaflet@[\d.]+/dist/.*"), self.local_leaflet)
         if not signed_in or self.session:
             return ctx
         # Signed in as the demo account, once: the session cookie lands in this browser profile and is reused.
@@ -190,11 +197,15 @@ class Shooter:
             sys.exit(f"Signing in to the demo server failed: {r.status} {r.text()[:200]}")
         self.session = ctx.storage_state()
         return ctx
-        # Signed in as the demo account: the session cookie lands in this browser profile.
-        r = ctx.request.post(f"{self.base}/api/auth/login", data={"name": DEMO_EMAIL, "password": DEMO_PASSWORD})
-        if not r.ok:
-            sys.exit(f"Signing in to the demo server failed: {r.status} {r.text()[:200]}")
-        return ctx
+
+    def local_leaflet(self, route) -> None:
+        """Leaflet's files from the local copy (--leaflet), for a machine that can't reach unpkg.com."""
+        name = re.sub(r"^https://unpkg\.com/leaflet@[\d.]+/dist/", "", route.request.url).split("?")[0]
+        f = (self.leaflet / name).resolve()
+        if self.leaflet.resolve() in f.parents and f.is_file():
+            route.fulfill(status=200, body=f.read_bytes(), content_type=mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+        else:
+            route.abort()
 
     def page(self, ctx):
         page = ctx.new_page()
@@ -534,7 +545,10 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="folder for the PNGs (default docs/screenshots)")
     parser.add_argument("--only", default="", help=f"comma-separated subset of: {', '.join(ALL_SHOTS)}")
     parser.add_argument("--keep", action="store_true", help="keep the temporary database and server log")
+    parser.add_argument("--leaflet", type=Path, help="a local leaflet/dist folder, served instead of unpkg.com's")
     args = parser.parse_args()
+    if args.leaflet is not None and not (args.leaflet / "leaflet.js").is_file():
+        sys.exit(f"{args.leaflet} has no leaflet.js (give the dist folder of leaflet@1.9.4)")
     sys.stdout.reconfigure(line_buffering=True)
 
     wanted = [x.strip() for x in args.only.split(",") if x.strip()] or ALL_SHOTS
@@ -582,7 +596,7 @@ def main() -> None:
 
         with sync_playwright() as p:
             browser = launch_browser(p)
-            shooter = Shooter(browser, base, ws["id"], args.out)
+            shooter = Shooter(browser, base, ws["id"], args.out, args.leaflet)
             done = set()
             for name in wanted:
                 key = GROUP.get(name, name)
