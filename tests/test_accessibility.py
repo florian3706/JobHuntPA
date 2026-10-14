@@ -693,6 +693,9 @@ class ExportCardTest(unittest.TestCase):
         self.assertIn('<span id="export-status" class="muted" role="status"></span>', self.js)
         self.assertIn("setBusy(btn, true)", self.js, "a working button uses aria-disabled, so focus stays on it")
         self.assertIn("not encrypted", self.js)
+        self.assertIn("It is your safety net.", self.js, "the Settings tab says the export is the safety net (spec §1.2)")
+        self.assertIn("it is your safety net", (FRONTEND / "first-run.html").read_text(encoding="utf-8"),
+                      "and so does the first run")
 
     def test_a_post_through_withRecentAuth_and_a_blob(self):
         self.assertIn("method: 'POST'", self.js)

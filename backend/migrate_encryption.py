@@ -33,7 +33,7 @@ sealed under its data key. That key exists only while it is signed in, so the ru
 Afterwards the plaintext copies outside the database (the backup above, older ``*.bak-*`` backups, the unused
 ``data/cache/*.html`` pages and any upload left unsealed) are listed by ``leftover_files``. They are never deleted
 silently: the Settings tab lists them and offers "Delete them" (``POST /api/settings/leftovers/delete``,
-backend/app_settings.py: recent sign-in), and a notice on the dashboard points there. The reset tool
+backend/maintenance.py: recent sign-in), and a notice on the dashboard points there. The reset tool
 (backend/reset.py) deletes them too.
 
     GET  /api/encryption/status              {state, done, total, error?, report, finished_at, leftovers} (signed in)

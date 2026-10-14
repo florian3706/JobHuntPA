@@ -40,6 +40,8 @@ function initExportCard() {
       in any text editor: your account details, each workspace's search setup, sources, documents (and the original
       files you uploaded), jobs sorted by your status with their fit scores and cover letters, your chats, search
       history and the company research behind your jobs.</p>
+    <p><strong>It is your safety net.</strong> If you lose your password and every recovery code, the reset tool on the
+      computer JobHuntPA runs on starts over and deletes your data: a recent copy from here is what you keep.</p>
     <p class="hint">The file is <strong>not encrypted</strong>, unlike your data in JobHuntPA. Keep it somewhere safe and
       delete it when you no longer need it. You may be asked for your password first.</p>
     <div class="toolbar-row">
