@@ -293,6 +293,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     remindRecoveryCodes(me);
     showSignInNotice();
     const workspaces = await api('/api/workspaces');
+    taskNames.workspace = (id) => workspaces.find((w) => w.id === id)?.name || null;
     const ws = workspaces.find((w) => w.id === currentWorkspace());
     if (ws) $('#ws-name').textContent = ws.name;
     job = await api(`/api/jobs/${JOB_ID}`);
@@ -305,3 +306,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadCompany();
   loadCommute();
 });
+
+/* The tasks tray (tasks-tray.js) names this page's job. */
+taskNames.job = (ws, id) => (job && id === job.id && ws === currentWorkspace() ? { title: job.title, company: job.company } : null);

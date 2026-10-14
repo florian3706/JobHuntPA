@@ -2675,3 +2675,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(pollForScheduledRun, IDLE_POLL_MS);
   document.addEventListener('visibilitychange', pollForScheduledRun);
 });
+
+/* The tasks tray (tasks-tray.js) names jobs, documents and workspaces from what this page has loaded. */
+taskNames.job = (ws, id) => {
+  if (ws !== state.ws) return null;
+  const job = state.details.get(id) || state.jobs.find((j) => j.id === id);
+  return job ? { title: job.title, company: job.company } : null;
+};
+taskNames.document = (ws, id) => (ws === state.docs.ws ? state.docs.list.find((d) => d.id === id)?.filename || null : null);
+taskNames.workspace = (ws) => state.workspaces.find((w) => w.id === ws)?.name || null;
