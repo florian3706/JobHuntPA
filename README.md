@@ -23,11 +23,11 @@ name and a password.
 
 ## A quick look
 
-**A job's full page** (*Open ↗* on any job): the office on a map with the commute there and back,
-how well the job fits your CV and where the gaps are, what company research found about the
-employer, and the whole ad.
+**A job's full page** (*Open ↗* on any job): the office with links to Google Maps directions from
+your starting points, how well the job fits your CV and where the gaps are, what company research
+found about the employer, and the whole ad.
 
-<img src="docs/screenshots/job-page.png" alt="A job's full page: office map and commute, fit requirements and gaps, company profile and the ad" width="760">
+<img src="docs/screenshots/job-page.png" alt="A job's full page: the office and the commute, fit requirements and gaps, company profile and the ad" width="760">
 
 **Map**: the jobs your filters show, your pins with their radii, and the jobs in view listed
 underneath.
@@ -43,7 +43,7 @@ underneath.
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
 **Settings**: the theme, scheduled searches (by themselves at set times on workdays, skipping public
-holidays), the AI provider with the Rescore buttons and the AI usage, the commute keys and the public
+holidays), the AI provider with the Rescore buttons and the AI usage, and the public
 address ([settings for this JobHuntPA](#settings-for-this-jobhuntpa)), and [your account](#your-account)
 (name, password, recovery codes, background access, download your data).
 
@@ -83,8 +83,9 @@ previews on the Settings tab.
 
 Setup takes about 5-10 minutes and needs no technical knowledge. JobHuntPA runs on your computer and
 keeps your jobs, documents and API key there; there is no JobHuntPA service. What leaves it is the
-requests the app makes to your chosen AI provider and to the job sites and the map and commute services it
-searches. JobHuntPA sends no email and takes no payments. [How your data is protected](#how-your-data-is-protected)
+requests the app makes to your chosen AI provider, to the job sites it searches, and to the map service
+that places addresses and draws the map. Commute directions are links to Google Maps that you open yourself.
+JobHuntPA sends no email and takes no payments. [How your data is protected](#how-your-data-is-protected)
 says what is encrypted and what isn't.
 
 ## Install on Windows
@@ -255,15 +256,15 @@ JobHuntPA, such as your AI provider.
 **Encrypted** (under your key):
 - your sign-in name (JobHuntPA finds your account by a keyed hash of it, so the name itself isn't stored in
   the clear);
-- each workspace's name, search setup (titles, keywords, salary, places, commute stations and
-  times), dealbreakers and map pins (their places and radii);
+- each workspace's name, search setup (titles, keywords, salary, places, the commute's starting
+  points), dealbreakers and map pins (their places and radii);
 - your jobs: their status, whether you hid them, why the filters excluded them, distance and
   place, the office you set or that was found, your call on the location, and anything that is only
   yours, such as a full ad you uploaded or a job imported from a saved page (its address too);
 - fit scores and their evidence, cover letters, chats, and what each search run found;
 - your documents and notes (title, text and concise version), and **uploaded files**: they are
   stored encrypted (`data/uploads/*.sealed`), and their text is read in memory, never written out;
-- company careers pages you added, your commute lookups (cached per account) and your theme.
+- company careers pages you added and your theme.
 
 Even whether a job is hidden or excluded doesn't show: those fields are always stored encrypted,
 and an excluded job looks the same as one you kept.
@@ -351,7 +352,6 @@ your data.
 - **AI usage:** the requests and tokens sent to your provider, in all, in the last 7 and 30 days and by task
   (scoring, research, cover letters, chat ...), with how much the provider served from its cache: handy to
   compare with your provider's bill.
-- **Commute data:** the two optional commute keys (see [Commute times](#commute-times-optional)).
 - **Public address and host names:** for using JobHuntPA from your phone or other computers (below).
 - **Server key** and **Unencrypted copies of data** (below).
 
@@ -418,7 +418,7 @@ It says what will be lost and asks you to type **RESET**; anything else stops it
 refuses while JobHuntPA is running. Then it deletes the account (every account, on an older install with
 several), its encrypted data (workspaces, jobs, documents and uploaded files, chats, search setup, schedules),
 its keys, recovery codes and sessions, and the server key file. **It keeps** your settings (`.env`: the AI
-provider, model and key, the commute keys and the public address), the reasoning levels, the shared job ads,
+provider, model and key, and the public address), the reasoning levels, the shared job ads,
 the company research and the AI usage counts (no longer tied to anyone). The next start is a first run, where
 you create a new account. Nothing can bring the deleted data back: if you can still sign in, **Download your
 data** first. For scripts, `./reset.sh --confirm RESET` answers the question (`JobHuntPA-Reset.exe --confirm
@@ -532,12 +532,9 @@ limits on searches. The AI features use the provider and key set on the Settings
   (*Same job: merge* / *Different jobs*). Your status, cover letter and score carry over to the
   merged card. *split* (under *Also on*, or beside the employer's site) undoes a merge; **Merge as
   one job** (tick two or more jobs) merges ads the app missed.
-- **Job page**: *Open ↗* on a job opens it in a new tab: the whole ad, the fit and gaps, a map of
-  the office, the company profile, and the commute there and back at peak times (arriving by 9:00,
-  leaving at 17:00 on a Tuesday; change these under Search setup > Commute). Public transport is
-  planned from the stations you list there (e.g. Hornsby Station, Asquith Station), including
-  changes, metro, buses and walking at the other end; driving starts at your home pin. See
-  [Commute times](#commute-times-optional) for the two free keys this needs.
+- **Job page**: *Open ↗* on a job opens it in a new tab: the whole ad, the fit and gaps, the office
+  (with every office company research found for the employer, to pick from), the company profile,
+  and [commute links](#commute-links) to Google Maps.
 - **Map**: two modes. **Jobs** shows the jobs your Jobs tab filters show, with your pins and their
   radii, and lists the jobs in view under the map (click a dot, or **Show** in the list, to see a
   place's jobs; **Open ↗** for a job's full page in a new tab); nothing can be changed by accident.
@@ -770,6 +767,16 @@ two-step sign-in. On the first start after updating:
   key and the mail account's app password where you made them. `PUBLIC_BASE_URL` stays: it is the address other
   devices use (see [Reaching JobHuntPA from other devices and addresses](#reaching-jobhuntpa-from-other-devices-and-addresses)).
 
+**Commute links instead of commute times.** The job page now links to Google Maps directions instead of working
+out times itself, so this version takes out the Transport for NSW, TomTom and OSRM look-ups. On the first start
+after updating:
+
+- The **"Commute from" stations** of each search become public-transport [starting points](#commute-links); the
+  arrive-by and leave-at times are gone (pick them in Google Maps). Home pins count as starting points by themselves.
+- The cache of earlier commute answers is deleted, and the database's log file is emptied after it.
+- The `TFNSW_API_KEY` and `TOMTOM_API_KEY` lines are **removed from `.env`**; you can also delete those keys on the
+  Transport for NSW and TomTom websites.
+
 **One account, no admin panel.** This version also takes out the admin panel, the admin role, the admin key
 (which let admins read everyone's name and email address), sign-up and invitations. On the first start after
 updating:
@@ -777,7 +784,7 @@ updating:
 - **Every account keeps working**: it signs in with the email address it was made with (now its *name*, which
   it can change in Settings > Your name) and its password, and keeps its workspaces and data. No account can be
   added. An account an admin had turned off stays off: with no admin, nothing turns it on again.
-- **Whoever is signed in may change every setting**: the AI provider, the commute keys, the public address,
+- **Whoever is signed in may change every setting**: the AI provider, the public address,
   the server key (they move from the admin panel to the [Settings tab](#settings-for-this-jobhuntpa)), and AI
   usage is shown there too.
 - The admin key, every copy of people's details sealed to it, the admin audit log and unused invitations are
@@ -797,16 +804,22 @@ so a saved key can't be sent anywhere new.
 You can also run setup again with `--reconfigure` (macOS/Linux: `./setup.sh --reconfigure`), or
 edit `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` in `.env` and restart the app.
 
-## Commute times (optional)
+## Commute links
 
-The commute on each job's page uses two free services. Add their keys under **Settings > Commute data** (they work straight away; **Test saved keys** checks them), or when setup
-asks, or in `.env` followed by a restart:
+Each job's page lists links to Google Maps directions to the office, one for each starting point and way of
+getting there ("Drive from Home", "Public transport from Gosford Station"). A link opens Google Maps in a new tab,
+where you choose when to leave or arrive and which route to take.
 
-- `TFNSW_API_KEY`: public transport in NSW. Sign up at https://opendata.transport.nsw.gov.au,
-  create an application, and copy its API key. Without it the page shows driving only.
-- `TOMTOM_API_KEY`: driving times with peak-hour traffic. Sign up at
-  https://developer.tomtom.com and copy the default key. Without it, driving times come from
-  OSRM's public server and ignore traffic (the page says so).
+- **Starting points** are set under **Search setup > Commute**: as many as you like, each with a label, a place
+  (one of your pins, or an address, station or bus stop typed as you would in Google Maps) and what it is for:
+  driving, public transport, or both.
+- **Every home pin** on the Map tab is a starting point for driving and public transport without being added.
+  Make a starting point from a home pin to use it for one of them only.
+- **The office:** once the employer is researched, the job page lists every office research found; pick the one
+  the job is at and the links go there (it also places the job for the location filter). Without an office the
+  links go to the place the ad names.
+- **JobHuntPA sends nothing anywhere** for this: it needs no keys and looks nothing up. Opening a link shows
+  Google both places, the starting point and the office.
 
 ## Uninstalling
 
@@ -954,7 +967,7 @@ app makes only the first) and the first account's key scope (`helpers.as_admin()
 design notes: `backend/users.py` (the account, first run, the sign-in name, deleting an older install's extra
 account), `backend/sessions.py` (sessions, CSRF, the checks on every request), `backend/auth.py` (signing in,
 first run, resetting with a recovery code), `backend/security.py` (password, name, recovery codes, other
-sessions), `backend/app_settings.py` (the settings kept in `.env`: AI provider, commute keys, public address
+sessions), `backend/app_settings.py` (the settings kept in `.env`: AI provider, public address
 and host names), `backend/maintenance.py` (AI usage, leftover plaintext files, replacing the server key),
 `backend/reset.py` (the reset tool), `backend/key_rotation.py` (the server key),
 `backend/background.py` (background access), `backend/key_recovery.py` (the `recover-lost` command),
@@ -1026,8 +1039,7 @@ throwaway database of made-up data with `tools/demo_data.py`, runs the app on it
 settings and no scheduler, and saves `docs/screenshots/*.png`. It never touches `data/` or `.env`.
 Re-run it after changing the UI; `--only jobs,map` retakes just those. It signs in once as the demo account
 (`--only ghost-job,settings-account,settings-data,settings-install,sign-in` are the account and settings
-shots). The map and the job page need OpenStreetMap's tiles and OSRM's route, so take those two on a
-machine that reaches them.
+shots). The map needs OpenStreetMap's tiles, so take that one on a machine that reaches them.
 
 **Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme, the colour
 pairs the app uses together and fails on any below WCAG AA (`--all` shows the passing ones too).

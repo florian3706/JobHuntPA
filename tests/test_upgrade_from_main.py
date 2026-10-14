@@ -17,10 +17,19 @@ the old SMTP_* and STRIPE_* lines leave .env.
 
 Phase D: the jobs get the new applied date column empty, so none shows a date, and the workspaces keep their
 scheduled searches on (new workspaces start with them off).
+
+Phase C: the commute services are gone. The test writes what they left into its copy of the fixture, in the old
+shape: a row of the commute cache (sealed, per account) and the TFNSW_API_KEY / TOMTOM_API_KEY lines in .env, before
+the first start; and, between the two starts, a search setup with "Commute from" stations and arrive-by / leave-at
+times, written into the columns the old code wrote them to (sealed under the owner's key, as the old code sealed
+them). The cache's table is dropped at the first start with no copy of its row left in the database or its log, the
+keys leave .env, and the stations come back as public-transport starting points.
 """
 from __future__ import annotations
 
+import os
 import shutil
+import sqlite3
 import unittest
 from pathlib import Path
 
@@ -58,6 +67,8 @@ if first:
     secrets += [bytes(b) for (b,) in raw("SELECT sealed_priv FROM admin_key_grants")]
     secrets += [bytes(b) for (b,) in raw("SELECT pii_admin FROM users WHERE pii_admin IS NOT NULL")]
     secrets += [bytes(b) for (b,) in raw("SELECT detail_admin FROM admin_audit WHERE detail_admin IS NOT NULL")]
+    # The commute services' cache (Phase C)
+    secrets += [bytes(b) for (b,) in raw("SELECT result_json FROM commute_cache")]
     out["before"] = {"two_step": raw("SELECT COUNT(*) FROM users WHERE mfa_enabled = 1")[0][0],
                      "secrets": len(secrets),
                      "pending": raw("SELECT COUNT(*) FROM sessions WHERE state = 'pending_mfa'")[0][0],
@@ -68,7 +79,8 @@ if first:
                      "grants_of_admin_key": raw("SELECT COUNT(*) FROM admin_key_grants")[0][0],
                      "pii_admin": raw("SELECT COUNT(*) FROM users WHERE pii_admin IS NOT NULL")[0][0],
                      "admins": raw("SELECT COUNT(*) FROM users WHERE role = 'admin'")[0][0],
-                     "apk": sorted(k for (k,) in raw("SELECT key FROM app_settings WHERE key LIKE 'apk_%%'"))}
+                     "apk": sorted(k for (k,) in raw("SELECT key FROM app_settings WHERE key LIKE 'apk_%%'")),
+                     "commute_cache": raw("SELECT COUNT(*) FROM commute_cache")[0][0]}
     out["env_before"] = sorted(line.split("=")[0] for line in (Path(FOLDER) / ".env").read_text().splitlines()
                                if "=" in line and not line.startswith("#"))
 
@@ -95,6 +107,7 @@ with TestClient(app, base_url="https://jobs.example.invalid") as c:
             got["documents"] = [c.get(f"/api/documents/{d['id']}/text").json().get("text") for d in docs]
             got["pins"] = [p["label"] for p in c.get("/api/pins").json()]
             got["dealbreakers"] = c.get("/api/dealbreakers").json()
+            got["starting_points"] = c.get("/api/profile").json().get("starting_points")
             got["security"] = c.get("/api/auth/security").json()
             got["background"] = c.get("/api/account/background").json()["enabled"]
             got["me"] = c.get("/api/auth/me").json()["user"]
@@ -120,6 +133,9 @@ with TestClient(app, base_url="https://jobs.example.invalid") as c:
                          "/api/admin/invites"):  # the admin panel (Phase B)
                 got["gone"][path] = c.get(path).status_code
             got["gone"]["/api/auth/signup"] = c.post("/api/auth/signup", json={}).status_code
+            for path in ("/api/commute/status", "/api/settings/keys"):  # the commute services (Phase C)
+                got["gone"][path] = c.get(path).status_code
+            got["gone"]["/api/settings/keys/test"] = c.post("/api/settings/keys/test").status_code
             c.post("/api/auth/logout")
             c.headers.pop("X-Workspace", None)
             c.headers.pop("X-CSRF-Token", None)
@@ -142,6 +158,48 @@ out["secrets_left"] = sum(1 for p in files for s in secrets if s in p.read_bytes
 '''
 
 
+# The search setup of the owner's first workspace as the code before starting points stored it: the stations in
+# user_profile.commute_from and the times in commute_arrive_by / commute_leave_at, sealed under the owner's key (the
+# columns, their types and so their sealing labels are the old code's), and no starting points.
+OLD_COMMUTE_SETUP = """
+from backend import crypto, users
+from backend.db import SessionLocal, UserProfile, Workspace, init_db
+
+init_db()
+users.startup()
+db = SessionLocal()
+user = users.find_by_name(db, %r)
+dek = users.unlock_with_password(db, user, %r)
+ws = db.query(Workspace.id).filter(Workspace.owner_id == user.id).order_by(Workspace.id).first()[0]
+db.close()
+with crypto.as_user(user.id, dek):
+    db = SessionLocal()
+    row = db.get(UserProfile, ws) or UserProfile(id=ws, titles=["Fixture Delivery Lead"])
+    row.commute_from = ["Central Station", "Gosford Station, NSW"]
+    row.commute_arrive_by, row.commute_leave_at = "08:30", "17:30"
+    row.starting_points = None
+    db.add(row)
+    db.commit()
+    db.close()
+out["ws"] = ws
+"""
+
+
+def plant_commute_cache(folder: str) -> bytes:
+    """A row of the old commute cache, as the old code left it: the key a blind index (hex), the owner's id, the
+    answer sealed (here random bytes behind the envelope's version byte: nothing reads it). Returns the answer."""
+    sealed = b"\x01" + os.urandom(60)
+    con = sqlite3.connect(Path(folder) / "jobhunt.db")
+    try:
+        owner = con.execute("SELECT MIN(id) FROM users").fetchone()[0]
+        con.execute("INSERT INTO commute_cache (key, owner_id, result_json, fetched_at) VALUES (?, ?, ?, ?)",
+                    (os.urandom(16).hex(), owner, sealed, "2026-09-01 10:00:00.000000"))
+        con.commit()
+    finally:
+        con.close()
+    return sealed
+
+
 class UpgradeFromMainTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -149,8 +207,12 @@ class UpgradeFromMainTest(unittest.TestCase):
         for name in ("jobhunt.db", "server-keys.json"):
             shutil.copy(FIXTURE / name, Path(cls.folder) / name)
         shutil.copy(FIXTURE / "env.txt", Path(cls.folder) / ".env")
+        with open(Path(cls.folder) / ".env", "a", encoding="utf-8") as env:  # the commute keys setup used to ask for
+            env.write("TFNSW_API_KEY=eyJfixture.tfnsw-key-1234\nTOMTOM_API_KEY=fixtureTomTomKey99\n")
         shutil.copytree(FIXTURE / "uploads", Path(cls.folder) / "uploads")
+        cls.commute_answer = plant_commute_cache(cls.folder)
         cls.out = scenario(UPGRADE % ([OWNER, MEMBER],), cls.folder)
+        cls.planted = scenario(OLD_COMMUTE_SETUP % OWNER, cls.folder)
         cls.again = scenario(UPGRADE % ([OWNER, MEMBER],), cls.folder)  # a second start: nothing left to do, all kept
 
     @classmethod
@@ -253,8 +315,32 @@ class UpgradeFromMainTest(unittest.TestCase):
         self.assertNotIn("free_searches", after["settings"])
         self.assertEqual(self.out["secrets_left"], 0, "a removed secret is still in the database or its log")
 
+    def test_the_commute_cache_is_dropped_at_the_first_start_with_nothing_left(self):
+        self.assertEqual(self.out["before"]["commute_cache"], 1)
+        for run in (self.out, self.again):
+            self.assertNotIn("commute_cache", run["tables"])
+        folder = Path(self.folder)
+        for name in ("jobhunt.db", "jobhunt.db-wal"):
+            if (folder / name).exists():
+                self.assertNotIn(self.commute_answer, (folder / name).read_bytes(), name)
+
+    def test_the_commute_keys_leave_env(self):
+        self.assertIn("TFNSW_API_KEY", self.out["env_before"])
+        for run in (self.out, self.again):
+            for gone in ("TFNSW_API_KEY", "TOMTOM_API_KEY", "tfnsw-key-1234", "fixtureTomTomKey99"):
+                self.assertNotIn(gone, run["env_after"])
+            self.assertIn("LLM_MODEL=", run["env_after"])
+
+    def test_old_stations_become_public_transport_starting_points(self):
+        self.assertEqual(self.out[OWNER[0]]["starting_points"], [], "no search setup before it is planted")
+        self.assertEqual(self.again[OWNER[0]]["starting_points"], [
+            {"label": "Central Station", "pin_id": None, "place": "Central Station", "use": "transit"},
+            {"label": "Gosford Station, NSW", "pin_id": None, "place": "Gosford Station, NSW", "use": "transit"}])
+        self.assertEqual(self.again[MEMBER[0]]["starting_points"], [])
+
     def test_the_retired_tables_are_dropped_and_the_rest_kept(self):
-        for gone in ("memberships", "membership_grants", "email_prefs", "admin_key_grants", "admin_audit", "auth_tokens"):
+        for gone in ("memberships", "membership_grants", "email_prefs", "admin_key_grants", "admin_audit", "auth_tokens",
+                     "commute_cache"):
             self.assertNotIn(gone, self.out["tables"])
         for kept in ("users", "user_keys", "recovery_codes", "sessions", "jobs", "postings", "documents", "workspaces",
                      "app_settings", "company_profiles", "llm_usage"):

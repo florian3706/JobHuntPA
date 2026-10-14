@@ -11,7 +11,12 @@ office is looked up, best source first:
 - company: the employer's office in that city from company research (or,
   if research found none there, a web-search agent looking just for that
   city). With several offices there, the one closest to the user's commute
-  pins (stations, home) is used; the user can pick another.
+  pins (home, hybrid and onsite pins) is used; the user can pick another.
+
+Once the employer is researched, the job page lists every office research
+knows (``known_offices``, spec §1.9); the one picked is stored as the user's
+office, and the page's Google Maps links (backend/commute.py) go to it. An
+office research found may be picked even when it is far from the ad's city.
 
 The office's coordinates replace the ad's city for the location filter and
 distance. Ads that stay unplaced are flagged "office unknown"; recruitment
@@ -19,6 +24,7 @@ agencies rarely name the client, so those are left to the user, who can set
 the office or mark the location OK or too far (``location_verdict``).
 
     PUT /api/jobs/{id}/office   {office?: str | null, verdict?: "ok" | "too_far" | null}
+                                signed in; the job must be in the request's workspace (else 404)
 """
 from __future__ import annotations
 
@@ -103,9 +109,10 @@ def office_queries(text: str, job: Job) -> list[str]:
     return list(dict.fromkeys(queries))
 
 
-def place_office(text: str, job: Job) -> Optional[dict]:
-    """{lat, lng} for an office address or suburb, near the ad's city."""
-    city = _city_point(job)
+def place_office(text: str, job: Job, near_city: bool = True) -> Optional[dict]:
+    """{lat, lng} for an office address or suburb, near the ad's city (anywhere, with ``near_city`` False: for an
+    office research found, which the user picked)."""
+    city = _city_point(job) if near_city else None
     for query in office_queries(text, job):
         hit = geocode(query)
         if hit is None:
@@ -130,15 +137,15 @@ def _refresh(db: Session, job: Job) -> None:
         job.excluded_reason = exclusion_reason(job, crit, stage=stage)
 
 
-def apply_office(job: Job, text: str, source: str) -> bool:
+def apply_office(job: Job, text: str, source: str, near_city: bool = True) -> bool:
     """Record an office on the job (no re-filtering: the caller's). Returns whether it could be placed."""
-    point = place_office(text, job)
+    point = place_office(text, job, near_city)
     job.office_text, job.office_source = " ".join(text.split())[:200], source
     job.office_lat, job.office_lng = (point["lat"], point["lng"]) if point else (None, None)
     return point is not None
 
 
-def set_office(db: Session, job: Job, text: Optional[str], source: str) -> bool:
+def set_office(db: Session, job: Job, text: Optional[str], source: str, near_city: bool = True) -> bool:
     """Record an office for a job (or clear it with text=None). A source
     never overwrites a better one (user > ad > company). Returns whether the
     office could be placed on the map."""
@@ -149,7 +156,7 @@ def set_office(db: Session, job: Job, text: Optional[str], source: str) -> bool:
         job.office_text = job.office_lat = job.office_lng = job.office_source = None
         _refresh(db, job)
         return False
-    placed = apply_office(job, text, source)
+    placed = apply_office(job, text, source, near_city)
     _refresh(db, job)
     return placed
 
@@ -267,6 +274,39 @@ def candidates(db: Session, job: Job) -> list[dict]:
     if pins:
         out.sort(key=lambda o: min(distance_km(o["lat"], o["lng"], p["lat"], p["lng"]) for p in pins))
     return out
+
+
+def _stored_offices(db: Session, job: Job) -> list[dict]:
+    """The offices research stored for the job's employer: [{name, address, url}]."""
+    profile = db.get(CompanyProfile, company_key(job.company or ""))
+    if profile is None or not profile.offices_json:
+        return []
+    try:
+        stored = json.loads(profile.offices_json)
+    except ValueError:
+        return []
+    return [{"name": str(o.get("name") or ""), "address": str(o["address"]).strip(), "url": str(o.get("url") or "")}
+            for o in stored if isinstance(o, dict) and str(o.get("address") or "").strip()]
+
+
+def known_offices(db: Session, job: Job) -> list[dict]:
+    """Every office research knows for the job's employer, for the job page to pick from (spec §1.9):
+    [{name, address, url, near}]. While the office is unknown or came from research, the ones near the ad's city are
+    placed (as ``candidates`` does) and listed first, closest to the user's commute pins first, with near True; the
+    rest follow with near False. Otherwise nothing is looked up: they are listed as research stored them (near None)."""
+    stored = _stored_offices(db, job)
+    if not stored or not (office_unknown(job) or job.office_source == "company"):
+        return [{**o, "near": None} for o in stored]
+    near = [{"name": str(o.get("name") or ""), "address": o["address"], "url": str(o.get("url") or ""), "near": True}
+            for o in candidates(db, job)]
+    placed = {o["address"].lower() for o in near}
+    return near + [{**o, "near": False} for o in stored if o["address"].lower() not in placed]
+
+
+def is_known_office(db: Session, job: Job, text: str) -> bool:
+    """Whether ``text`` is the address of one of the employer's offices research found."""
+    wanted = " ".join(text.split()).lower()
+    return any(" ".join(o["address"].split()).lower() == wanted for o in _stored_offices(db, job))
 
 
 def assign_offices(db: Session, jobs: list[Job]) -> int:
@@ -419,10 +459,13 @@ def update_office(job_id: int, payload: OfficeUpdate, db: Session = Depends(get_
     sent = payload.model_fields_set
     if "office" in sent:
         if payload.office and payload.office.strip():
-            if not set_office(db, job, payload.office, "user"):
+            # One of the employer's own offices may be far from the ad's city; anything typed must be near it.
+            near_city = not is_known_office(db, job, payload.office)
+            if not set_office(db, job, payload.office, "user", near_city):
                 db.rollback()
+                where = f" near {job.location_text or 'the job'}" if near_city else ""
                 raise HTTPException(status_code=422, detail=(
-                    f"Couldn't find \"{payload.office.strip()}\" on the map near {job.location_text or 'the job'}. "
+                    f"Couldn't find \"{payload.office.strip()}\" on the map{where}. "
                     "Try a street address with suburb, or just the suburb."))
         else:
             set_office(db, job, None, "user")

@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Job · JobHuntPA</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script>
     // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
     (function () {
@@ -59,9 +58,7 @@
         <section class="card job-section" aria-labelledby="office-title">
           <h2 id="office-title">Office and commute</h2>
           <div id="job-office"></div>
-          <div id="commute-map" class="map commute-map" role="region" aria-label="Map of the office and commute" aria-describedby="commute-map-note"></div>
-          <p id="commute-map-note" class="hint">The office, your home pin and stations, and the quickest route; the times and steps are written out below.</p>
-          <div id="job-commute"><p class="muted">Working out the commute…</p></div>
+          <div id="job-commute"><p class="muted">Listing the commute links…</p></div>
         </section>
         <section class="card job-section" aria-labelledby="company-title">
           <h2 id="company-title" tabindex="-1">Company</h2>
@@ -84,7 +81,6 @@
 
   <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="./common.js"></script>
   <script src="./job.js"></script>
 </body>

@@ -19,8 +19,8 @@ sealed under its data key. That key exists only while it is signed in, so the ru
    value through the ORM issues no UPDATE, accounts design §15). A row is taken while any of its sealed columns
    still holds plaintext (or an always-sealed one SQL NULL), so a run that stops anywhere carries on where it was,
    and running it again changes nothing. ``jobs.url_index`` and ``company_sources.careers_url_index`` are computed on
-   the way; a pool link's URL is cleared (its posting has it). Old ``commute_cache`` and ``http_cache`` rows are
-   deleted.
+   the way; a pool link's URL is cleared (its posting has it). Old ``http_cache`` rows are deleted (the commute
+   cache of that time is dropped at start-up, ``db._retire_removed_features``).
 4. Check: no plaintext left in any sealed column (``plaintext_audit``), and a sample of each table opens.
 5. ``PRAGMA secure_delete=ON``, ``wal_checkpoint(TRUNCATE)``, ``VACUUM`` (if the disk has room), checkpoint again,
    so the old plaintext pages are gone from the database and its WAL.
@@ -86,8 +86,8 @@ OWNED = {
     "chat_messages": f"thread_id IN (SELECT id FROM chat_threads WHERE workspace_id IN ({_WS}))",
     "search_profile": "1 = 1",  # legacy, unowned: the first account's
 }
-# Caches: their old rows are deleted, not sealed (commute_cache becomes per user; http_cache is process-keyed).
-CACHES = ("commute_cache", "http_cache")
+# Caches: their old rows are deleted, not sealed (http_cache is process-keyed).
+CACHES = ("http_cache",)
 # company_sources columns from an earlier schema: emptied rather than sealed (they're unused).
 LEGACY_SOURCE_COLUMNS = ("company", "board", "host", "tenant", "site", "base_url")
 
@@ -521,9 +521,8 @@ def seal_tables(owner: int, report: dict) -> None:
 
 
 def clear_old_caches() -> None:
-    """commute_cache rows from before (shared, plaintext) and every http_cache row (plaintext URLs and pages)."""
+    """Every http_cache row (plaintext URLs and pages)."""
     with engine.begin() as conn:
-        conn.execute(text("DELETE FROM commute_cache WHERE owner_id IS NULL OR typeof(result_json) != 'blob'"))
         conn.execute(text("DELETE FROM http_cache"))
 
 
@@ -545,9 +544,7 @@ def plaintext_audit() -> dict:
                 if n:
                     found[f"{table.name}.{column.name}"] = n
         for name in CACHES:
-            n = conn.execute(text(f"SELECT COUNT(*) FROM {name} WHERE "
-                                  + ("typeof(body) != 'blob'" if name == "http_cache"
-                                     else "owner_id IS NULL OR typeof(result_json) != 'blob'"))).scalar()
+            n = conn.execute(text(f"SELECT COUNT(*) FROM {name} WHERE typeof(body) != 'blob'")).scalar()
             if n:
                 found[f"{name}"] = n
         stored = {s for (s,) in conn.execute(text("SELECT stored_name FROM documents WHERE stored_name IS NOT NULL "

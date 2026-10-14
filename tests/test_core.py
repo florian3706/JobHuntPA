@@ -1602,78 +1602,6 @@ class OfficeTest(unittest.TestCase):
         db.close()
 
 
-TFNSW_TRIP = {"journeys": [
-    {"legs": [
-        {"origin": {"disassembledName": "Gosford Station", "departureTimePlanned": "2026-10-05T20:10:00Z"},
-         "destination": {"disassembledName": "Central Station", "arrivalTimePlanned": "2026-10-05T21:35:00Z"},
-         "transportation": {"disassembledName": "CCN", "name": "Central Coast & Newcastle Line",
-                            "product": {"class": 1}, "destination": {"name": "Central"}},
-         "duration": 5100, "coords": [[-33.4253, 151.3417], [-33.8833, 151.2061]]},
-        {"origin": {"name": "Central Station", "departureTimePlanned": "2026-10-05T21:38:00Z"},
-         "destination": {"name": "Office", "arrivalTimePlanned": "2026-10-05T21:50:00Z"},
-         "transportation": {"product": {"class": 100}}, "duration": 720, "coords": [[-33.8833, 151.2061], [-33.87, 151.21]]}]},
-    {"legs": [
-        {"origin": {"disassembledName": "Gosford Station", "departureTimePlanned": "2026-10-05T20:40:00Z"},
-         "destination": {"disassembledName": "Office", "arrivalTimePlanned": "2026-10-05T22:20:00Z"},
-         "transportation": {"disassembledName": "CCN", "product": {"class": 1}}, "duration": 6000, "coords": []}]},
-]}
-
-
-class CommuteTest(unittest.TestCase):
-    def test_peak_day_and_journeys(self):
-        from datetime import date, datetime
-        from backend.commute import TZ, best_journey, peak_day
-        self.assertEqual(peak_day(date(2026, 10, 1)), date(2026, 10, 6))  # Thursday -> next Tuesday
-        self.assertEqual(peak_day(date(2026, 10, 6)), date(2026, 10, 13))
-        best = best_journey(TFNSW_TRIP, datetime(2026, 10, 6, 9, 0, tzinfo=TZ))
-        self.assertEqual((best["depart"], best["arrive"], best["minutes"], best["changes"]), ("07:10", "08:50", 100, 0))
-        self.assertEqual(best["summary"], "Train CCN")
-        self.assertEqual([l["mode"] for l in best["legs"]], ["Train", "Walk"])
-        later = best_journey(TFNSW_TRIP)  # leaving after a time: the first to arrive
-        self.assertEqual(later["arrive"], "08:50")
-
-    def test_commute_endpoint(self):
-        from unittest import mock
-        from backend.db import Job, SessionLocal
-        import backend.commute as cm
-
-        def fake_get(url, params, headers=None, what=""):
-            if "stop_finder" in url:
-                return {"locations": [{"type": "stop", "isBest": True, "id": "2250", "disassembledName": "Gosford Station",
-                                       "coord": [-33.4253, 151.3417]}]}
-            if url.endswith("trip"):
-                self.assertEqual(headers["Authorization"], "apikey t-key")
-                return TFNSW_TRIP
-            return {"routes": [{"duration": 3960, "distance": 73200,
-                                "geometry": {"coordinates": [[151.34, -33.42], [151.21, -33.87]]}}]}
-        with helpers.client() as c, mock.patch.object(cm, "_get", side_effect=fake_get), \
-                mock.patch.dict(os.environ, {"TFNSW_API_KEY": "t-key", "TOMTOM_API_KEY": ""}):
-            ws = c.post("/api/workspaces", json={"name": "Commute"}).json()["id"]
-            h = {"X-Workspace": str(ws)}
-            prof = c.get("/api/profile", headers=h).json()
-            self.assertEqual(c.put("/api/profile", headers=h, json={**prof, "commute_arrive_by": "9am"}).status_code, 422)
-            c.put("/api/profile", headers=h, json={**prof, "commute_from": ["Gosford Station"], "commute_arrive_by": "08:30"})
-            db = SessionLocal()
-            job = Job(workspace_id=ws, url="https://commute.example/1", title="PM", company="Acme", location_text="Sydney NSW",
-                      work_mode="hybrid", status="to_review", detail_status="full", lat=-33.87, lng=151.21)
-            db.add(job); db.commit()
-            job_id = job.id
-            db.close()
-            self.assertEqual(c.get(f"/api/jobs/{job_id}/commute", headers=h).status_code, 409)  # no home pin yet
-            c.post("/api/pins", headers=h, json={"label": "Home", "kind": "onsite", "lat": -33.39, "lng": 151.34, "radius_km": 10})
-            r = c.get(f"/api/jobs/{job_id}/commute", headers=h)
-            self.assertEqual(r.status_code, 200, r.text)
-            out = r.json()
-            self.assertEqual((out["arrive_by"], out["from_stations"], out["office"]["precise"]), ("08:30", True, False))
-            self.assertEqual(out["transit"][0]["from"], "Gosford Station")
-            self.assertEqual(out["car"]["there"]["minutes"], 66)
-            self.assertFalse(out["car"]["there"]["traffic"])
-            self.assertTrue(any("only a city" in n for n in out["notes"]))
-            self.assertTrue(any("TomTom" in n and "Settings (Commute data)" in n for n in out["notes"]))  # where to add the key
-            self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": False})
-            c.delete(f"/api/workspaces/{ws}")
-
-
 class EnvFileTest(unittest.TestCase):
     """backend.app_settings.update_env_file: the only way the app writes .env."""
 
@@ -1686,43 +1614,44 @@ class EnvFileTest(unittest.TestCase):
 
     def test_updates_in_place_and_keeps_everything_else(self):
         from backend.app_settings import update_env_file
-        self.env.write_text("# my note\nLLM_API_KEY=secret-llm\n\nTFNSW_API_KEY=old-key-1234\n"
-                            "# TOMTOM_API_KEY=commented-out\nTOMTOM_API_KEY=\nJOBHUNT_USER_AGENT=custom agent\n")
-        update_env_file(self.env, {"TFNSW_API_KEY": "new.key-5678", "TOMTOM_API_KEY": "tomtom1234"})
-        self.assertEqual(self.env.read_text(), "# my note\nLLM_API_KEY=secret-llm\n\nTFNSW_API_KEY=new.key-5678\n"
-                                               "# TOMTOM_API_KEY=commented-out\nTOMTOM_API_KEY=tomtom1234\n"
+        self.env.write_text("# my note\nLLM_BASE_URL=https://llm.example/v1\n\nLLM_API_KEY=old-key-1234\n"
+                            "# LLM_MODEL=commented-out\nLLM_MODEL=\nJOBHUNT_USER_AGENT=custom agent\n")
+        update_env_file(self.env, {"LLM_API_KEY": "new.key-5678", "LLM_MODEL": "model-1234"})
+        self.assertEqual(self.env.read_text(), "# my note\nLLM_BASE_URL=https://llm.example/v1\n\nLLM_API_KEY=new.key-5678\n"
+                                               "# LLM_MODEL=commented-out\nLLM_MODEL=model-1234\n"
                                                "JOBHUNT_USER_AGENT=custom agent\n")
         self.assertEqual([f.name for f in Path(self.dir).iterdir()], [".env"])  # no temp file left behind
 
     def test_appends_when_missing_and_creates_the_file(self):
         from backend.app_settings import update_env_file
-        update_env_file(self.env, {"TOMTOM_API_KEY": "tomtom1234"})
-        self.assertEqual(self.env.read_text(), "TOMTOM_API_KEY=tomtom1234\n")
-        self.env.write_text("LLM_API_KEY=k\n# note")  # no newline at the end, and only a comment about the key
-        update_env_file(self.env, {"TFNSW_API_KEY": "abc.def.ghi-1"})
-        self.assertEqual(self.env.read_text(), "LLM_API_KEY=k\n# note\nTFNSW_API_KEY=abc.def.ghi-1\n")
+        update_env_file(self.env, {"LLM_MODEL": "model-1234"})
+        self.assertEqual(self.env.read_text(), "LLM_MODEL=model-1234\n")
+        self.env.write_text("LLM_MODEL=m\n# note")  # no newline at the end, and only a comment about the key
+        update_env_file(self.env, {"LLM_API_KEY": "abc.def.ghi-1"})
+        self.assertEqual(self.env.read_text(), "LLM_MODEL=m\n# note\nLLM_API_KEY=abc.def.ghi-1\n")
 
     def test_clearing_keeps_an_empty_line(self):
         from backend.app_settings import update_env_file
-        self.env.write_text("A=1\nTFNSW_API_KEY=old-key-1234\nB=2\n")
-        update_env_file(self.env, {"TFNSW_API_KEY": ""})
-        self.assertEqual(self.env.read_text(), "A=1\nTFNSW_API_KEY=\nB=2\n")  # the installer reads this as "asked, left blank"
+        self.env.write_text("A=1\nLLM_API_KEY=old-key-1234\nB=2\n")
+        update_env_file(self.env, {"LLM_API_KEY": ""})
+        self.assertEqual(self.env.read_text(), "A=1\nLLM_API_KEY=\nB=2\n")  # the installer reads this as "asked, left blank"
 
     def test_only_known_names_and_plain_values(self):
         from backend.app_settings import update_env_file
         start = "LLM_API_KEY=secret\nLLM_BASE_URL=https://llm.example/v1\nLLM_REASONING_EFFORT=low\n"
         self.env.write_text(start)
-        for bad in ({"LLM_REASONING_EFFORT": "high"}, {"JOBHUNT_USER_AGENT": "x"}, {"PATH": "x"}, {"TFNSW_API_KEY ": "abcdefgh"},
+        for bad in ({"LLM_REASONING_EFFORT": "high"}, {"JOBHUNT_USER_AGENT": "x"}, {"PATH": "x"}, {"LLM_API_KEY ": "abcdefgh"},
+                    {"TFNSW_API_KEY": "abcdefgh"}, {"TOMTOM_API_KEY": "abcdefgh"},  # the commute keys are retired
                     {"llm_base_url": "https://evil.example"}, {"": "abcdefgh"},
-                    {"TFNSW_API_KEY": "abcdefgh\nLLM_BASE_URL=https://evil.example"}, {"TFNSW_API_KEY": "abcdefgh\n"},
-                    {"TOMTOM_API_KEY": "abc def gh"}, {"TOMTOM_API_KEY": "abcdefgh=1"}, {"TOMTOM_API_KEY": "abcdefg"},
+                    {"LLM_API_KEY": "abcdefgh\nLLM_BASE_URL=https://evil.example"}, {"LLM_API_KEY": "abcdefgh\n"},
+                    {"LLM_API_KEY": "abc def gh"}, {"LLM_API_KEY": "abcdefgh=1"}, {"LLM_API_KEY": "abcdefg"},
                     {"LLM_API_KEY": "sk-abc def-1234"}, {"LLM_API_KEY": "sk-abc#def-1234"}, {"LLM_API_KEY": "sk-abcdef-1234\r\nX=1"},
                     {"LLM_BASE_URL": "http://evil.example/v1"}, {"LLM_BASE_URL": "https://x.example/v1/"},  # http off-host; not normalised
                     {"LLM_BASE_URL": "https://x.example/v1\nLLM_API_KEY=x"}, {"LLM_BASE_URL": "https://u:p@x.example"},
                     {"LLM_BASE_URL": "https://x.example/v1#a"}, {"LLM_BASE_URL": 'https://x.example/"v1"'},
                     {"LLM_MODEL": "m\nLLM_BASE_URL=https://evil.example"}, {"LLM_MODEL": "gpt 5"}, {"LLM_MODEL": "m=1"},
-                    {"LLM_MODEL": "x" * 201}, {"TFNSW_API_KEY": 12345678},
-                    {"TFNSW_API_KEY": "abcdefgh", "LLM_MODEL": "ok", "LLM_REASONING_EFFORT": "x"}):  # one bad entry stops the whole write
+                    {"LLM_MODEL": "x" * 201}, {"LLM_API_KEY": 12345678},
+                    {"LLM_API_KEY": "abcdefgh", "LLM_MODEL": "ok", "LLM_REASONING_EFFORT": "x"}):  # one bad entry stops the whole write
             with self.assertRaises(ValueError, msg=bad):
                 update_env_file(self.env, bad)
         self.assertEqual(self.env.read_text(), start)
@@ -1738,10 +1667,10 @@ class EnvFileTest(unittest.TestCase):
             self.skipTest("POSIX permissions")
         self.env.write_text("A=1\n")
         self.env.chmod(0o640)
-        update_env_file(self.env, {"TOMTOM_API_KEY": "tomtom1234"})
+        update_env_file(self.env, {"LLM_MODEL": "model-1234"})
         self.assertEqual(self.env.stat().st_mode & 0o777, 0o640)
         fresh = Path(self.dir) / "fresh.env"
-        update_env_file(fresh, {"TOMTOM_API_KEY": "tomtom1234"})
+        update_env_file(fresh, {"LLM_MODEL": "model-1234"})
         self.assertEqual(fresh.stat().st_mode & 0o777, 0o600)
 
     def test_a_symlinked_env_is_updated_where_it_lives(self):
@@ -1751,102 +1680,9 @@ class EnvFileTest(unittest.TestCase):
         real = Path(self.dir) / "real.env"
         real.write_text("A=1\n")
         self.env.symlink_to(real)
-        update_env_file(self.env, {"TOMTOM_API_KEY": "tomtom1234"})
+        update_env_file(self.env, {"LLM_MODEL": "model-1234"})
         self.assertTrue(self.env.is_symlink())
-        self.assertEqual(real.read_text(), "A=1\nTOMTOM_API_KEY=tomtom1234\n")
-
-
-class SettingsKeysTest(unittest.TestCase):
-    JWT = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJhYmMxMjMifQ.c2lnbmF0dXJlLXBhcnQ_xyz9"
-
-    def test_keys_endpoints(self):
-        from unittest import mock
-        from backend import commute, config
-
-        env = Path(tempfile.mkdtemp()) / ".env"
-        env.write_text("# keys\nLLM_API_KEY=secret-llm\nLLM_BASE_URL=https://llm.example/v1\nTFNSW_API_KEY=\nTOMTOM_API_KEY=\n")
-        before = env.read_text()
-        try:
-            with helpers.client() as c, mock.patch.object(config, "ENV_PATH", env), \
-                    mock.patch.dict(os.environ, {"TFNSW_API_KEY": "", "TOMTOM_API_KEY": ""}):
-                none = {"set": False, "hint": None}
-                self.assertEqual(c.get("/api/settings/keys").json(), {"tfnsw": none, "tomtom": none})
-
-                # Saving takes effect at once, with no restart; the answer never holds the key.
-                r = c.put("/api/settings/keys", json={"tfnsw": self.JWT})
-                self.assertEqual(r.status_code, 200, r.text)
-                self.assertEqual(r.json(), {"tfnsw": {"set": True, "hint": "…xyz9"}, "tomtom": none})
-                self.assertNotIn(self.JWT, r.text)
-                self.assertNotIn(self.JWT, c.get("/api/settings/keys").text)
-                self.assertEqual(commute.keys()["tfnsw"], self.JWT)
-                self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": False})
-                self.assertEqual(env.read_text(), before.replace("TFNSW_API_KEY=\n", f"TFNSW_API_KEY={self.JWT}\n"))
-
-                # A short key shows at most a quarter of itself.
-                r = c.put("/api/settings/keys", json={"tomtom": "abcd1234"})
-                self.assertEqual(r.json()["tomtom"], {"set": True, "hint": "…34"})
-                self.assertEqual(c.get("/api/commute/status").json(), {"transit": True, "traffic": True})
-
-                # Nothing but a plain key gets in, and a refused request changes nothing.
-                saved = env.read_text()
-                evil = ["good-key-1234\nLLM_BASE_URL=https://evil.example", "good-key-1234\r\nLLM_API_KEY=x", "good key 1234",
-                        "good-key=1234", "good-key#1234", "'good-key-1234'", '"good-key-1234"', "good-key-1234\n", " good-key-1234",
-                        "short", "x" * 4001, "ключ-ключ-1234", "good;key-1234"]
-                for bad in evil:
-                    for field in ("tfnsw", "tomtom"):
-                        r = c.put("/api/settings/keys", json={field: bad})
-                        self.assertEqual(r.status_code, 422, (field, bad))
-                for body in ({"tfnsw": 12345678}, {"tfnsw": ["abcdefgh1"]}, {"LLM_BASE_URL": "https://evil.example"},
-                             {"llm_base_url": "https://evil.example"}, {"tfnsw": "abcdefgh1", "llm_api_key": "x"},
-                             {"tfnsw": "abcdefgh1", "tomtom": "bad key"}):
-                    self.assertEqual(c.put("/api/settings/keys", json=body).status_code, 422, body)
-                self.assertEqual(env.read_text(), saved)
-                self.assertEqual(commute.keys(), {"tfnsw": self.JWT, "tomtom": "abcd1234"})
-
-                # Omitted fields stay as they are; "" clears (the .env line stays, empty).
-                self.assertEqual(c.put("/api/settings/keys", json={}).json()["tfnsw"]["set"], True)
-                r = c.put("/api/settings/keys", json={"tfnsw": ""})
-                self.assertEqual(r.json(), {"tfnsw": none, "tomtom": {"set": True, "hint": "…34"}})
-                self.assertEqual(commute.keys(), {"tfnsw": "", "tomtom": "abcd1234"})
-                self.assertEqual(c.get("/api/commute/status").json(), {"transit": False, "traffic": True})
-                self.assertEqual(env.read_text(), before.replace("TOMTOM_API_KEY=\n", "TOMTOM_API_KEY=abcd1234\n"))
-                c.put("/api/settings/keys", json={"tomtom": ""})
-                self.assertEqual(env.read_text(), before)
-
-                # If .env can't be written the key isn't taken either, so what runs matches what a restart would.
-                with mock.patch.object(config, "ENV_PATH", env.parent / "missing-folder" / ".env"):
-                    self.assertEqual(c.put("/api/settings/keys", json={"tomtom": "abcd1234"}).status_code, 500)
-                self.assertEqual(commute.keys()["tomtom"], "")
-        finally:
-            shutil.rmtree(env.parent, ignore_errors=True)
-
-    def test_keys_test_endpoint(self):
-        from unittest import mock
-        from backend import commute, config
-
-        calls = []
-
-        def fake_get(url, params, headers=None, what=""):
-            calls.append(what or url)
-            if "stop_finder" in url:
-                self.assertEqual(headers["Authorization"], "apikey tfnsw-key-1")
-                return {"locations": [{"type": "stop", "id": "10101100", "name": "Central Station"}]}
-            raise commute.CommuteError(f"TomTom: the API key was rejected (HTTP 403, key {params['key']})")
-        env = Path(tempfile.mkdtemp()) / ".env"
-        try:
-            with helpers.client() as c, mock.patch.object(config, "ENV_PATH", env), mock.patch.object(commute, "_get", side_effect=fake_get), \
-                    mock.patch.dict(os.environ, {"TFNSW_API_KEY": "", "TOMTOM_API_KEY": ""}):
-                self.assertEqual(c.post("/api/settings/keys/test").json(), {})  # nothing saved: nothing is requested
-                self.assertEqual(calls, [])
-                c.put("/api/settings/keys", json={"tfnsw": "tfnsw-key-1", "tomtom": "tomtom-key-2"})
-                out = c.post("/api/settings/keys/test").json()
-                self.assertEqual(out["tfnsw"], {"ok": True})
-                self.assertFalse(out["tomtom"]["ok"])
-                self.assertIn("rejected", out["tomtom"]["error"])
-                self.assertNotIn("tomtom-key-2", out["tomtom"]["error"])  # an error message never carries the key
-                self.assertEqual(len(calls), 2)
-        finally:
-            shutil.rmtree(env.parent, ignore_errors=True)
+        self.assertEqual(real.read_text(), "A=1\nLLM_MODEL=model-1234\n")
 
 
 class SettingsLlmTest(unittest.TestCase):

@@ -238,25 +238,43 @@
         </form>
       </div>
 
-      <div class="card form-card">
-        <h3>Commute</h3>
-        <p class="hint">Used on each job's full page (Open ↗): public transport and driving times to the office at peak times, there and back.</p>
-        <div class="form-grid">
-          <div class="form-group">
-            <label for="tags-commute_from">Public transport from</label>
-            <div class="tag-input" data-field="commute_from"><ul class="tags" aria-label="Public transport from"></ul><input id="tags-commute_from" type="text" placeholder="e.g. Gosford Station + Enter" aria-describedby="tags-commute_from-hint" enterkeyhint="done" /></div>
-            <small id="tags-commute_from-hint" class="hint">Stations you'd walk or drive to; each gets its own journey. Empty = from your home pin. Driving always starts at the home pin.</small>
-          </div>
-          <div class="form-group">
-            <label for="commute-arrive">Arrive at work by</label>
-            <input id="commute-arrive" type="time" value="09:00" aria-describedby="commute-times-hint" />
-            <label for="commute-leave">Leave work at</label>
-            <input id="commute-leave" type="time" value="17:00" aria-describedby="commute-times-hint" />
-            <small id="commute-times-hint" class="hint">Times are for the next Tuesday, a typical office day.</small>
-          </div>
-        </div>
-        <p id="commute-keys" class="hint"></p>
-      </div>
+      <section id="starts-card" class="card form-card" aria-labelledby="starts-title">
+        <h3 id="starts-title">Commute</h3>
+        <p class="hint">Each job's full page (Open ↗) links to Google Maps directions from these starting points to the office, one
+          link for each way of getting there. Departure and arrival times, and the route, are chosen in Google Maps.</p>
+        <p id="starts-home" class="hint"></p>
+        <ul id="starts-list" class="starts-list" aria-labelledby="starts-title"></ul>
+        <form id="starts-form" class="starts-form" autocomplete="off" novalidate>
+          <fieldset>
+            <legend>Add a starting point</legend>
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="start-from">From</label>
+                <select id="start-from" aria-describedby="start-from-hint"><option value="">A place I type</option></select>
+                <small id="start-from-hint" class="hint">A pin from the Map tab, or a place you type.</small>
+              </div>
+              <div class="form-group" id="start-place-group">
+                <label for="start-place">Address, station or stop</label>
+                <input id="start-place" type="text" maxlength="200" placeholder="e.g. Gosford Station NSW" aria-describedby="start-place-hint" />
+                <small id="start-place-hint" class="hint">Write it as you would in Google Maps.</small>
+              </div>
+              <div class="form-group">
+                <label for="start-label">Label (optional)</label>
+                <input id="start-label" type="text" maxlength="80" placeholder="e.g. Gosford" />
+              </div>
+              <div class="form-group">
+                <label for="start-use">Used for</label>
+                <select id="start-use">
+                  <option value="transit">Public transport</option>
+                  <option value="driving">Driving</option>
+                  <option value="both">Driving and public transport</option>
+                </select>
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm" type="submit">Add starting point</button>
+          </fieldset>
+        </form>
+      </section>
 
       <div class="card form-card">
         <h3>Company sources</h3>
@@ -517,43 +535,6 @@
         <div id="usage-tables"></div>
         <p id="usage-status" class="muted" role="status"></p>
       </section>
-
-      <div id="commute-keys-card" class="card form-card install-card">
-        <h3>Commute data <span class="scope-tag">This JobHuntPA</span></h3>
-        <p class="hint">Both keys are optional and free. They are saved in the <code>.env</code> file on this computer and work straight away,
-          with no restart. A saved key is never shown again in full, only its last few characters. Where the commute starts and when it
-          arrives is set under Search setup &gt; Commute.</p>
-        <div class="form-grid">
-          <form class="form-group key-field" data-key="tfnsw" autocomplete="off" novalidate>
-            <label for="key-tfnsw">Transport for NSW key (public transport times)</label>
-            <div class="key-state"></div>
-            <div class="key-row">
-              <input id="key-tfnsw" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
-                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
-              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> Transport for NSW key</span></button>
-              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> Transport for NSW key</span></button>
-            </div>
-            <small class="hint">Free: sign up at <a href="https://opendata.transport.nsw.gov.au" target="_blank" rel="noopener">opendata.transport.nsw.gov.au<span class="visually-hidden"> (opens in a new tab)</span></a>,
-              create an application, and copy its API key. Without it the job page shows driving only.</small>
-          </form>
-          <form class="form-group key-field" data-key="tomtom" autocomplete="off" novalidate>
-            <label for="key-tomtom">TomTom key (driving with peak traffic)</label>
-            <div class="key-state"></div>
-            <div class="key-row">
-              <input id="key-tomtom" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
-                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
-              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> TomTom key</span></button>
-              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> TomTom key</span></button>
-            </div>
-            <small class="hint">Free: sign up at <a href="https://developer.tomtom.com" target="_blank" rel="noopener">developer.tomtom.com<span class="visually-hidden"> (opens in a new tab)</span></a>
-              and copy the default key. Without it, driving times come from OSRM's public server and ignore traffic (the job page says so).</small>
-          </form>
-        </div>
-        <div class="toolbar-row key-test">
-          <button id="keys-test" class="btn btn-sm" type="button" title="Makes one small real request to each service with the saved key">Test saved keys</button>
-          <span id="keys-test-status" class="muted" role="status"></span>
-        </div>
-      </div>
 
       <form id="address-card" class="card form-card install-card" autocomplete="off" novalidate aria-labelledby="address-title">
         <h3 id="address-title">Public address and host names <span class="scope-tag">This JobHuntPA</span></h3>

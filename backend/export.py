@@ -47,7 +47,7 @@ from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 
-from backend import account, crypto, docs, ghost, schedule, users
+from backend import account, commute, crypto, docs, ghost, schedule, users
 from backend.db import (
     UPLOAD_DIR,
     ChatMessage,
@@ -299,7 +299,7 @@ safe and delete them when you no longer need them.
 
 - `Account.md`: your sign-in name, sign-in settings and theme.
 - `Workspaces/`: one folder for each of your {counts['workspaces']} workspace(s):
-  - `Search setup.md`: job titles, keywords, dealbreakers, salary, work modes, locations, commute and the search schedule.
+  - `Search setup.md`: job titles, keywords, dealbreakers, salary, work modes, places, the starting points of the commute links and the search schedule.
   - `Sources.md`: the company career pages and feeds you added.
   - `Documents/`: your resume, notes and other documents as text, and `Original files/` with each upload exactly as you uploaded it.
   - `Jobs/`: `Jobs.md` lists every job with a file of its own ({counts['jobs']}); the jobs are sorted into folders by your status, with `Hidden` for the ones you hid. `Filtered out.md` lists the jobs the search filters left out.
@@ -337,6 +337,29 @@ def _account_md(db: Session, user: User, workspaces: list[Workspace]) -> str:
     return "".join(out)
 
 
+USE_NAMES = {"driving": "driving", "transit": "public transport", "both": "driving and public transport"}
+
+
+def _starting_points_md(profile: Optional[UserProfile], pins: list[Pin]) -> str:
+    """Where the job page's Google Maps links start: every home pin, then the saved starting points."""
+    by_id = {p.id: p for p in pins}
+    saved = commute.saved_starting_points(profile)
+    chosen = {s["pin_id"] for s in saved if s["pin_id"] is not None}
+    rows = [(p.label, f"home pin ({p.lat}, {p.lng})", USE_NAMES["both"]) for p in pins
+            if p.kind == "home" and p.id not in chosen]
+    for s in saved:
+        pin = by_id.get(s["pin_id"]) if s["pin_id"] is not None else None
+        if s["pin_id"] is not None:
+            place = f"pin {pin.label} ({pin.lat}, {pin.lng})" if pin is not None else "a pin that was deleted"
+        else:
+            place = s["place"]
+        rows.append((s["label"] or (pin.label if pin is not None else s["place"]) or "", place, USE_NAMES[s["use"]]))
+    if not rows:
+        return "None.\n"
+    return ("| Label | Place | Used for |\n|---|---|---|\n"
+            + "".join(f"| {cell(label)} | {cell(place)} | {use} |\n" for label, place, use in rows))
+
+
 def _setup_md(db: Session, ws: Workspace) -> str:
     profile = db.get(UserProfile, ws.id)
     dealbreakers = db.get(DealbreakerSet, ws.id)
@@ -366,10 +389,8 @@ def _setup_md(db: Session, ws: Workspace) -> str:
         out.append("".join(f"| {cell(p.label)} | {cell(p.kind)} | {p.lat} | {p.lng} | {p.radius_km} |\n" for p in pins))
     else:
         out.append("None.\n")
-    if profile is not None:
-        out.append("\n## Commute\n\n")
-        out.append(facts([("Public transport from", ", ".join(line(t) for t in profile.commute_from or []) or "your home pin"),
-                          ("Arrive at work by", line(profile.commute_arrive_by)), ("Leave work at", line(profile.commute_leave_at))]))
+    out.append("\n## Starting points\n\n")
+    out.append(_starting_points_md(profile, pins))
     sched = schedule.get_schedule(db, ws.id)
     names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     out.append("\n## Search schedule\n\n")

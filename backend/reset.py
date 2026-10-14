@@ -11,14 +11,13 @@ without a terminal and without it, nothing is done), and refuses while the app i
 file's lock for as long as it runs, and ``data/running.json`` names the launcher's process: backend/key_rotation.py
 ``refuse_while_running``). Then, in **one transaction**, it deletes every account and everything only an account
 could read: the users with their keys, recovery codes, sessions and browser-extension keys, every workspace and what
-is in it (jobs, scores, cover letters, documents, chats, search setup, pins, schedules, runs), the commute cache and
-the page cache (both sealed); usage counts are kept without saying whose they were. After the commit the
+is in it (jobs, scores, cover letters, documents, chats, search setup, pins, schedules, runs) and the page cache
+(sealed); usage counts are kept without saying whose they were. After the commit the
 write-ahead log is scrubbed (``db.scrub_wal``), then the files go: the uploads (sealed), the plaintext copies left
 from before encryption (overwritten first), the server key file (its KEK, pepper and signing key) and the first-run
 token. The next start is a first run, with a new key file.
 
-**Kept:** the settings (``.env``: the AI provider, model and key, the commute keys, the public address and host
-names), the reasoning levels, the shared pool of public job ads with their ghost-job signs, the company research, the
+**Kept:** the settings (``.env``: the AI provider, model and key, the public address and host names), the reasoning levels, the shared pool of public job ads with their ghost-job signs, the company research, the
 map lookups and ``data/sources.json``.
 
 **No endpoint does any of this**: it is a command run on the computer itself, and nothing the web server serves can
@@ -46,9 +45,9 @@ WORD = "RESET"
 WIPED_TABLES = (  # children before parents (foreign keys are on)
     "chat_messages", "chat_threads", "cover_letters", "fit_results", "job_duplicates", "jobs", "documents", "pins",
     "company_sources", "search_runs", "search_schedules", "user_profile", "dealbreakers", "search_profile",
-    "commute_cache", "http_cache", "workspaces", "sessions", "recovery_codes", "user_keys",
+    "http_cache", "workspaces", "sessions", "recovery_codes", "user_keys",
     # an install that wasn't started since the update may still have these (backend/db.py RETIRED_TABLES)
-    "auth_tokens", "admin_key_grants", "admin_audit", "membership_grants", "memberships", "email_prefs",
+    "auth_tokens", "admin_key_grants", "admin_audit", "membership_grants", "memberships", "email_prefs", "commute_cache",
     "users",
 )
 KEPT_TABLES = ("postings", "company_profiles", "geocode_cache", "app_settings", "llm_usage")
@@ -87,7 +86,7 @@ def summary(out) -> dict[str, int]:
           f"scores, notes and cover letters, {found['documents']} document(s) ({files} uploaded file(s)), chats, "
           "search setup, pins and scheduled searches;", file=out)
     print("  * the server key file, and any unencrypted backups left from before encryption.", file=out)
-    print("It keeps your settings (.env: the AI provider, model and key, the commute keys, the public address), the "
+    print("It keeps your settings (.env: the AI provider, model and key, the public address), the "
           "shared job ads and the company research.", file=out)
     print("Nothing can bring the deleted data back. If you can still sign in, use Settings > Download your data first.",
           file=out)

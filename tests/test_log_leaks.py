@@ -245,7 +245,7 @@ class FullRun(unittest.TestCase):
         return c
 
     def the_install_settings_and_a_new_name(self, c):
-        """The name changed in Settings, and the AI key, the commute key and the public address saved there: none of
+        """The name changed in Settings, and the AI key and the public address saved there: none of
         these values may reach the log (only the names of the settings that changed)."""
         from backend import config
         env_file = config.ENV_PATH
@@ -261,16 +261,14 @@ class FullRun(unittest.TestCase):
         r = c.put("/api/settings/llm", json={"base_url": "https://zqx-llm.example/v1", "model": "zqx-model",
                                               "api_key": key})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(c.put("/api/settings/keys", json={"tomtom": "zqxtomtomkey123"}).status_code, 200)
         self.assertEqual(c.put("/api/settings/address", json={"public_base_url": "https://zqx-host.example",
                                                                "allowed_hosts": ["zqx-alias.example"]}).status_code, 200)
         self.assertEqual(c.put("/api/settings/address", json={"public_base_url": "", "allowed_hosts": []}).status_code,
                          200)
-        self.assertEqual(c.put("/api/settings/keys", json={"tomtom": ""}).status_code, 200)
         r = c.put("/api/settings/llm", json={"base_url": llm["LLM_BASE_URL"] or "", "model": llm["LLM_MODEL"] or "",
                                               "api_key": llm["LLM_API_KEY"] or ""})
         self.assertEqual(r.status_code, 200, r.text)
-        self.secrets.update(ai_key=key, tomtom_key="zqxtomtomkey123", host="zqx-host", alias="zqx-alias")
+        self.secrets.update(ai_key=key, host="zqx-host", alias="zqx-alias")
 
     def run_to_end(self, c, run: dict) -> dict:
         for _ in range(600):
@@ -289,6 +287,7 @@ class FullRun(unittest.TestCase):
             self.sign_up_and_set_up(c)
             ads = self.search_and_score(c)
             self.talk_to_the_ai(c, ads)
+            self.commute_links(c)
             self.browser_extension(c)
             self.when_things_fail(c)
             self.with_claude(c)
@@ -374,6 +373,26 @@ class FullRun(unittest.TestCase):
         r = c.post("/api/companies/research", json={"name": "ZQX Corp"})
         self.assertEqual(self.run_to_end(c, r.json())["state"], "done")
         self.assertIn("zqx corp", c.get("/api/companies").json())
+
+    def commute_links(self, c):
+        """Starting points (Search setup > Commute, labels and typed places), a refused one, and the job page's places
+        for its Google Maps links, after an office is picked from the employer's offices."""
+        profile = c.get("/api/profile").json()
+        pin = c.get("/api/pins").json()[0]["id"]
+        profile["starting_points"] = [{"label": "ZQX station", "place": "ZQX Station, Zqxtown NSW", "use": "transit"},
+                                      {"label": "ZQX parents", "pin_id": pin, "use": "driving"}]
+        self.assertEqual(c.put("/api/profile", json=profile).status_code, 200)
+        stale = {**profile, "starting_points": [*profile["starting_points"],
+                                                {"label": "ZQX nowhere", "pin_id": 987654, "use": "both"}]}
+        r = c.put("/api/profile", json=stale)  # a pin that isn't in this search: dropped, the rest saved
+        self.assertEqual((r.status_code, len(r.json()["starting_points"])), (200, 2))
+        bad = {**profile, "starting_points": [{"label": "ZQX both", "pin_id": pin, "place": "ZQX Place", "use": "both"}]}
+        self.assertEqual(c.put("/api/profile", json=bad).status_code, 422)
+        self.assertEqual(c.put(f"/api/jobs/{self.job_id}/office", json={"office": "1 Zqx Street, Zqxtown NSW"}).status_code,
+                         200)
+        r = c.get(f"/api/jobs/{self.job_id}/commute")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("ZQX Station, Zqxtown NSW", [s["origin"] for s in r.json()["starts"]])
 
     def browser_extension(self, c):
         """The browser extension: a key named by the person, then jobs it read from pages in their browser (the

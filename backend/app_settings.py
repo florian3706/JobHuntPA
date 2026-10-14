@@ -1,9 +1,5 @@
-"""The install's settings kept in .env, made in the Settings tab: the AI provider (address, model, API key), the API
-keys for commute times, and the address other devices use with the extra host names allowed (open-source spec §1.4).
-
-    GET  /api/settings/keys        {"tfnsw": {"set": bool, "hint": "…abcd" | null}, "tomtom": {...}}  (never a key)
-    PUT  /api/settings/keys        {"tfnsw"?: "<key>", "tomtom"?: "<key>"}: "" clears a key, an omitted one is unchanged
-    POST /api/settings/keys/test   one cheap real request per saved key: {"tfnsw": {"ok": true}, "tomtom": {"ok": false, "error": "…"}}
+"""The install's settings kept in .env, made in the Settings tab: the AI provider (address, model, API key) and the
+address other devices use with the extra host names allowed (open-source spec §1.4).
 
     GET  /api/settings/llm         {provider, base_url, model, key: {set, hint}, presets, capabilities}  (never the key)
     PUT  /api/settings/llm         {"base_url"?, "model"?, "api_key"?}: same omitted / "" semantics; see put_llm for the
@@ -15,7 +11,7 @@ keys for commute times, and the address other devices use with the extra host na
 **Who may call:** signed in, for reading and writing (there are no roles: whoever is signed in may change every
 setting, spec §1.2). Each change is logged by the names of the settings it changed, never a value.
 
-A saved value takes effect at once (os.environ is updated; backend.commute.keys(), backend.scorer.get_config(),
+A saved value takes effect at once (os.environ is updated; backend.scorer.get_config(),
 backend.public_url and backend.hosts read it on every call) and is written to .env (backend.config.ENV_PATH) so it
 survives a restart. That file holds the LLM key, which costs the owner money, and the app can be reachable by other
 devices, so writing it is locked down:
@@ -28,9 +24,9 @@ devices, so writing it is locked down:
   * the file is replaced atomically (temp file in the same folder, then os.replace), keeping every other line
     and comment, and its permissions (a new file is owner-only).
 
-**Retired names** (``RETIRED_ENV_NAMES``: the mail server and Stripe settings of the removed features) can only ever
-be removed, never set: ``retire_env_names`` deletes their lines from an upgraded install's .env at start-up, so no old
-payment key or mail password stays on disk.
+**Retired names** (``RETIRED_ENV_NAMES``: the mail server, Stripe and commute-service settings of the removed
+features) can only ever be removed, never set: ``retire_env_names`` deletes their lines from an upgraded install's .env
+at start-up, so no old payment key, mail password or API key stays on disk.
 """
 from __future__ import annotations
 
@@ -49,17 +45,15 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend import commute, config, hosts, llm_providers, public_url, scorer
+from backend import config, hosts, llm_providers, public_url, scorer
 from backend.sessions import current_user
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(current_user)])
 
-KEY_VARS = {"tfnsw": "TFNSW_API_KEY", "tomtom": "TOMTOM_API_KEY"}
-LABELS = {"tfnsw": "Transport for NSW", "tomtom": "TomTom"}
-# API keys: TfNSW's are long JWT-like strings (dots), TomTom's short and alphanumeric, OpenAI's "sk-proj-…" and
-# Anthropic's "sk-ant-api03-…" long with - and _, Gemini's "AIza…" letters, digits, - and _.
+# API keys: OpenAI's "sk-proj-…" and Anthropic's "sk-ant-api03-…" long with - and _, Gemini's "AIza…" letters,
+# digits, - and _, some providers' JWT-like strings with dots.
 KEY_RE = re.compile(r"[A-Za-z0-9._~+/-]{8,4000}")
 # Model ids: OpenRouter's contain "/" (anthropic/claude-sonnet-5.5), Ollama's ":" (llama3.2:3b).
 MODEL_RE = re.compile(r"[A-Za-z0-9._:/@+-]{1,200}")
@@ -136,8 +130,6 @@ def valid_host_list(value: str) -> bool:
 
 # The only variables this module may write, each with the rule its (non-empty) value must meet in full.
 ENV_RULES: dict[str, Callable[[str], bool]] = {
-    "TFNSW_API_KEY": lambda v: KEY_RE.fullmatch(v) is not None,
-    "TOMTOM_API_KEY": lambda v: KEY_RE.fullmatch(v) is not None,
     "LLM_API_KEY": lambda v: KEY_RE.fullmatch(v) is not None,
     "LLM_BASE_URL": _plain_url,
     "LLM_MODEL": lambda v: MODEL_RE.fullmatch(v) is not None,
@@ -147,10 +139,12 @@ ENV_RULES: dict[str, Callable[[str], bool]] = {
     "JOBHUNT_ALLOWED_HOSTS": valid_host_list,
 }
 
-# Settings of removed features (the mail server, Stripe): never written, only deleted from .env (``retire_env_names``).
+# Settings of removed features (the mail server, Stripe, the commute services' keys): never written, only deleted
+# from .env (``retire_env_names``).
 RETIRED_ENV_NAMES = frozenset({
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_PASSWORD_B64", "SMTP_FROM", "SMTP_SECURITY",
     "STRIPE_SECRET_KEY", "STRIPE_PRICE_LOOKUP_KEY", "STRIPE_WEBHOOK_SECRET",
+    "TFNSW_API_KEY", "TOMTOM_API_KEY",
 })
 
 _write_lock = threading.Lock()
@@ -229,11 +223,12 @@ def retire_env_names() -> None:
     try:
         removed = remove_retired_env(config.ENV_PATH)
     except (OSError, UnicodeError) as exc:
-        log.warning("Could not remove the retired mail and payment settings from .env: %s", exc.__class__.__name__)
+        log.warning("Could not remove the retired mail, payment and commute settings from .env: %s",
+                    exc.__class__.__name__)
         return
     if removed:
-        log.info("Removed %d retired setting(s) of the mail server and payments from .env: %s", len(removed),
-                 ", ".join(removed))
+        log.info("Removed %d retired setting(s) of the mail server, payments and commute services from .env: %s",
+                 len(removed), ", ".join(removed))
 
 
 def _replace_file(path: Path, text: str) -> None:
@@ -253,29 +248,13 @@ def _replace_file(path: Path, text: str) -> None:
 
 
 # --------------------------------------------------------------------------
-# Keys
+# Saving
 # --------------------------------------------------------------------------
 
 def _hint(key: str) -> Optional[str]:
     """The end of a key ("…abcd"): at most 4 characters and a quarter of it, never the whole key."""
     n = min(4, len(key) // 4)
     return f"…{key[-n:]}" if n else None
-
-
-def key_status() -> dict:
-    keys = commute.keys()
-    return {name: {"set": bool(keys[name]), "hint": _hint(keys[name])} for name in KEY_VARS}
-
-
-class KeysIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")  # an unknown field is a 422, not silently dropped
-    tfnsw: Optional[str] = None
-    tomtom: Optional[str] = None
-
-
-@router.get("/keys")
-def get_keys():
-    return key_status()
 
 
 def _save(updates: dict[str, str]) -> None:
@@ -294,49 +273,6 @@ def _save(updates: dict[str, str]) -> None:
             os.environ.pop(var, None)
     log.info("Settings changed: %s", ", ".join(f"{var} {'set' if value else 'cleared'}" for var, value in
                                                 sorted(updates.items())))
-
-
-@router.put("/keys")
-def put_keys(body: KeysIn):
-    updates: dict[str, str] = {}
-    for name, var in KEY_VARS.items():
-        value = getattr(body, name)
-        if value is None:
-            continue
-        if value and not KEY_RE.fullmatch(value):  # no echo of the value in the message
-            raise HTTPException(status_code=422, detail=f"The {LABELS[name]} key must be 8 to 4000 letters, digits "
-                                                        "or . _ ~ + / - characters, with no spaces or line breaks.")
-        updates[var] = value
-    if updates:
-        _save(updates)
-    return key_status()
-
-
-def _probe_tfnsw(key: str) -> None:
-    data = commute._tfnsw("stop_finder", {"type_sf": "any", "name_sf": "Central Station", "TfNSWSF": "true"}, key)
-    if not data.get("locations"):
-        raise commute.CommuteError("Transport for NSW: no answer to a stop lookup")
-
-
-def _probe_tomtom(key: str) -> None:
-    url = f"{commute.TOMTOM}-33.87320,151.20690:-33.88300,151.20630/json"  # Town Hall to Central, Sydney
-    if not commute._get(url, {"key": key, "traffic": "false"}, what="TomTom").get("routes"):
-        raise commute.CommuteError("TomTom: no route found")
-
-
-@router.post("/keys/test")
-def test_keys():
-    """One cheap real request per saved key. Keys that aren't set are left out of the answer."""
-    keys, out = commute.keys(), {}
-    for name, probe in (("tfnsw", _probe_tfnsw), ("tomtom", _probe_tomtom)):
-        if not keys[name]:
-            continue
-        try:
-            probe(keys[name])
-            out[name] = {"ok": True}
-        except commute.CommuteError as exc:
-            out[name] = {"ok": False, "error": str(exc).replace(keys[name], "…")}
-    return out
 
 
 # --------------------------------------------------------------------------

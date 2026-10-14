@@ -1,5 +1,5 @@
 """The install's settings and upkeep in the Settings tab (open-source spec §1.4; they were in the admin panel): the AI
-provider and reasoning levels, the commute keys, the public address and extra host names, AI usage, the unencrypted
+provider and reasoning levels, the public address and extra host names, AI usage, the unencrypted
 copies left from before encryption and replacing the server key. There are no roles: any signed-in account may use
 them, signed out nobody may, and the two that change keys or delete files need a recent password.
 
@@ -43,8 +43,6 @@ LLM_ENV = {"LLM_API_KEY": "sk-secret-key-1234", "LLM_BASE_URL": "https://llm.exa
 ENDPOINTS = (
     ("get", "/api/settings/llm", None, False),
     ("put", "/api/settings/llm", {}, False),
-    ("get", "/api/settings/keys", None, False),
-    ("put", "/api/settings/keys", {}, False),
     ("get", "/api/settings/address", None, False),
     ("put", "/api/settings/address", {}, False),
     ("get", "/api/settings/usage", None, False),
@@ -53,7 +51,6 @@ ENDPOINTS = (
     ("put", "/api/llm/reasoning", {}, False),
     ("post", "/api/llm/detect-levels", None, False),
     ("post", "/api/score/test", None, False),
-    ("post", "/api/settings/keys/test", None, False),
     ("post", "/api/settings/leftovers/delete", None, True),
     ("post", "/api/settings/server-key/rotate", None, True),
 )
@@ -98,7 +95,7 @@ class Base(unittest.TestCase):
     def env_file(self) -> None:
         """A throwaway .env for this test (the settings endpoints write it), and os.environ put back afterwards."""
         saved = {k: os.environ.get(k) for k in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "PUBLIC_BASE_URL",
-                                                "JOBHUNT_ALLOWED_HOSTS", "TFNSW_API_KEY", "TOMTOM_API_KEY")}
+                                                "JOBHUNT_ALLOWED_HOSTS")}
 
         def restore():
             for k, v in saved.items():
@@ -210,29 +207,28 @@ class SettingsLogTest(Base):
                 self.assertLogs("backend.app_settings", level=logging.INFO) as logs:
             self.assertEqual(c.put("/api/settings/llm", json={"model": "new-model", "api_key": self.SECRET})
                              .status_code, 200)
-            self.assertEqual(c.put("/api/settings/keys", json={"tomtom": "tomtom-key-123456"}).status_code, 200)
             self.assertEqual(c.put("/api/settings/address", json={"public_base_url": "https://jobs.example.invalid"})
                              .status_code, 200)
         said = "\n".join(logs.output)
-        for name in ("LLM_API_KEY set", "LLM_MODEL set", "TOMTOM_API_KEY set", "PUBLIC_BASE_URL set"):
+        for name in ("LLM_API_KEY set", "LLM_MODEL set", "PUBLIC_BASE_URL set"):
             self.assertIn(name, said)
-        for value in (self.SECRET, "tomtom-key-123456", "new-model", "jobs.example.invalid"):
+        for value in (self.SECRET, "new-model", "jobs.example.invalid"):
             self.assertNotIn(value, said)
 
 
 class RetiredEnvTest(unittest.TestCase):
-    def test_the_old_mail_and_payment_lines_are_removed_and_nothing_else(self):
+    def test_the_old_mail_payment_and_commute_lines_are_removed_and_nothing_else(self):
         folder = helpers.scratch_folder()
         self.addCleanup(helpers.remove_scratch_folders)
         path = os.path.join(folder, ".env")
         with open(path, "w", encoding="utf-8") as f:
             f.write("# my settings\nLLM_MODEL=keep-me\nSMTP_PASSWORD_B64=c2VjcmV0\nexport STRIPE_SECRET_KEY=sk_live_x\n"
-                    "SMTP_HOST = smtp.example\n# SMTP_USER=commented out, kept\nTFNSW_API_KEY=k\n")
+                    "SMTP_HOST = smtp.example\n# SMTP_USER=commented out, kept\nTFNSW_API_KEY=k\nPUBLIC_BASE_URL=\n")
         from pathlib import Path
         removed = app_settings.remove_retired_env(Path(path))
-        self.assertEqual(removed, ["SMTP_HOST", "SMTP_PASSWORD_B64", "STRIPE_SECRET_KEY"])
+        self.assertEqual(removed, ["SMTP_HOST", "SMTP_PASSWORD_B64", "STRIPE_SECRET_KEY", "TFNSW_API_KEY"])
         self.assertEqual(Path(path).read_text(), "# my settings\nLLM_MODEL=keep-me\n# SMTP_USER=commented out, kept\n"
-                                                 "TFNSW_API_KEY=k\n")
+                                                 "PUBLIC_BASE_URL=\n")
         self.assertEqual(app_settings.remove_retired_env(Path(path)), [])
         self.assertFalse(app_settings.RETIRED_ENV_NAMES & set(app_settings.ENV_RULES), "retired names are never set")
 

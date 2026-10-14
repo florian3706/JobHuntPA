@@ -1,8 +1,8 @@
 /* JobHuntPA Settings tab, the cards for the whole of this JobHuntPA (open-source spec §1.4): the AI provider, model,
-   key and reasoning levels with the connection test, the AI usage figures, the commute API keys, the public address
-   and extra host names, the server key and the unencrypted copies left from before encryption. They serve every
-   workspace, and whoever is signed in may change them (there are no roles). Loaded by index.html after common.js and
-   app.js; the markup it fills is in index.html's Settings tab.
+   key and reasoning levels with the connection test, the AI usage figures, the public address and extra host names,
+   the server key and the unencrypted copies left from before encryption. They serve every workspace, and whoever is
+   signed in may change them (there are no roles). Loaded by index.html after common.js and app.js; the markup it
+   fills is in index.html's Settings tab.
 
    WCAG 2.2 notes: every field has a label and its hint is tied to it (aria-describedby); results are said in the
    card's status line (role="status") and in toasts; errors go under the field (setFieldError) or in a role="alert"
@@ -169,83 +169,6 @@ function initLlmProvider() {
   $('#llm-form').addEventListener('submit', saveLlmProvider);
 }
 
-/* ================= API KEYS (Settings > Commute data) ================= */
-// The server never sends a saved key back, only whether one is set and its last characters.
-const KEY_LABEL = { tfnsw: 'Transport for NSW', tomtom: 'TomTom' };
-const keyField = (name) => document.querySelector(`.key-field[data-key="${name}"]`);
-
-function renderCommuteKeys(st) {
-  Object.keys(KEY_LABEL).forEach((name) => {
-    const info = st[name] || { set: false, hint: null };
-    const box = keyField(name);
-    box.querySelector('.key-state').innerHTML = info.set
-      ? `<span class="ok-text">Saved</span>${info.hint ? ` <span class="muted">(ends in ${esc(info.hint)})</span>` : ''}`
-      : '<span class="muted">Not set</span>';
-    box.querySelector('.key-clear').disabled = !info.set;
-  });
-}
-
-async function loadCommuteKeys() {
-  try { renderCommuteKeys(await api('/api/settings/keys')); }
-  catch (e) { $('#keys-test-status').textContent = `Could not load the key settings: ${e.message}`; }
-}
-
-async function putCommuteKey(name, value) {
-  const box = keyField(name);
-  const save = box.querySelector('.key-save');
-  const clear = box.querySelector('.key-clear');
-  const couldClear = !clear.disabled;
-  setBusy(save, true);
-  setBusy(clear, true);
-  try {
-    renderCommuteKeys(await api('/api/settings/keys', { method: 'PUT', body: JSON.stringify({ [name]: value }) })); // also sets Clear
-    box.querySelector('.key-input').value = '';
-    $('#keys-test-status').textContent = '';
-    toast(value ? `${KEY_LABEL[name]} key saved` : `${KEY_LABEL[name]} key removed`, 'ok', 2500);
-  } catch (e) {
-    clear.disabled = !couldClear;
-    setBusy(clear, false);
-    toast(`Saving the ${KEY_LABEL[name]} key failed: ${e.message}`, 'err', 8000);
-  }
-  setBusy(save, false);
-  setBusy(clear, false);
-  if (document.activeElement === document.body || document.activeElement?.disabled) box.querySelector('.key-input').focus();
-}
-
-async function testCommuteKeys() {
-  const btn = $('#keys-test');
-  const out = $('#keys-test-status');
-  setBusy(btn, true);
-  out.textContent = 'Testing…';
-  try {
-    const r = await api('/api/settings/keys/test', { method: 'POST' });
-    const lines = Object.keys(KEY_LABEL).map((name) => (r[name]
-      ? (r[name].ok ? `<span class="ok-text">${KEY_LABEL[name]}: works<span aria-hidden="true"> ✓</span></span>` : `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(r[name].error || `${KEY_LABEL[name]}: failed`)}</span>`)
-      : `${KEY_LABEL[name]}: not set`));
-    out.innerHTML = lines.join(' · ');
-  } catch (e) { out.innerHTML = `<span class="err-text">Test failed: ${esc(e.message)}</span>`; }
-  setBusy(btn, false);
-}
-
-function initCommuteKeys() {
-  Object.keys(KEY_LABEL).forEach((name) => {
-    const box = keyField(name);
-    const input = box.querySelector('.key-input');
-    box.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const value = input.value.trim(); // pasted keys often carry a space or line break; the server accepts none inside
-      if (!value) { setFieldError(input, `Paste the ${KEY_LABEL[name]} key first: copy it from the website named below.`); return; }
-      setFieldError(input, '');
-      putCommuteKey(name, value);
-    });
-    box.querySelector('.key-clear').addEventListener('click', () => {
-      if (confirm(`Remove the ${KEY_LABEL[name]} key? Commute times stop working until you save a key again.`)) putCommuteKey(name, '');
-    });
-  });
-  $('#keys-test').addEventListener('click', testCommuteKeys);
-}
-
-
 async function testScorer() {
   const out = $('#score-test-status');
   out.textContent = 'Testing…';
@@ -380,7 +303,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (!$('#llm-card')) return;
   initLlmSettings();
   initLlmProvider();
-  initCommuteKeys();
   $('#score-test').addEventListener('click', testScorer);
   $('#address-card').addEventListener('submit', saveAddress);
   $('#rotate-key').addEventListener('click', rotateKey);
@@ -388,7 +310,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   try { if (!(await loadSession())) return; } catch { return; } // (app.js shows why; signed out goes to sign-in)
   loadLlmProvider();
   loadLlmSettings();
-  loadCommuteKeys();
   loadUsage();
   loadAddress();
   loadPlaintext();

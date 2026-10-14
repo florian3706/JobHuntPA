@@ -116,9 +116,23 @@ def create_workspace(payload: WorkspaceCreate, user: AuthUser = Depends(current_
 
 
 def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
+    from backend import commute  # imports this module
+
+    # Pins first, so the copied starting points can name the copies of their pins (new ids).
+    pin_ids: dict[int, int] = {}
+    for pin in db.query(Pin).filter(Pin.workspace_id == src).order_by(Pin.id):
+        copy = Pin(workspace_id=dst, label=pin.label, kind=pin.kind, lat=pin.lat, lng=pin.lng, radius_km=pin.radius_km)
+        db.add(copy)
+        db.flush()
+        pin_ids[pin.id] = copy.id
     prof = db.get(UserProfile, src)
     if prof is not None:
         cols = {c.name: getattr(prof, c.name) for c in UserProfile.__table__.columns if c.name != "id"}
+        if prof.starting_points is not None:  # a pin start follows its pin's copy; one whose pin is gone is dropped
+            cols["starting_points"] = [
+                {**p, "pin_id": pin_ids[p["pin_id"]]} if p["pin_id"] is not None else p
+                for p in commute.clean_starting_points(prof.starting_points)
+                if p["pin_id"] is None or p["pin_id"] in pin_ids]
         db.add(UserProfile(id=dst, **cols))
     dbk = db.get(DealbreakerSet, src)
     if dbk is not None:
@@ -128,8 +142,6 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
     sched = get_schedule(db, src)  # what the source has, the preset schedule included: copied as it is
     db.add(SearchSchedule(id=dst, enabled=sched.enabled, times=sched.times, days=sched.days,
                           skip_holidays=sched.skip_holidays, state=sched.state))
-    for pin in db.query(Pin).filter(Pin.workspace_id == src):
-        db.add(Pin(workspace_id=dst, label=pin.label, kind=pin.kind, lat=pin.lat, lng=pin.lng, radius_km=pin.radius_km))
     for s in db.query(CompanySource).filter(CompanySource.workspace_id == src):
         db.add(CompanySource(workspace_id=dst, label=s.label, careers_url=s.careers_url, url=s.careers_url,
                              source_type=s.source_type, enabled=s.enabled))

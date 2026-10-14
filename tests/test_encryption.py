@@ -24,7 +24,7 @@ from tests import helpers  # noqa: E402  (sets the test environment first)
 from sqlalchemy import String, cast, func, select, text, type_coerce, union  # noqa: E402
 
 from backend import crypto, db as db_module, migrate_encryption  # noqa: E402
-from backend.db import (CommuteCache, Document, FitResult, HttpCache, Job, Pin, SessionLocal, Workspace,  # noqa: E402
+from backend.db import (Document, FitResult, HttpCache, Job, Pin, SessionLocal, Workspace,  # noqa: E402
                         engine)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -115,6 +115,9 @@ with engine.begin() as c:
     x("INSERT INTO search_profile (id, cv_text, wishes_text, home_location, lat, lng, radius_km, work_modes, "
       "updated_at) VALUES (1, :cv, :w, :h, -33.9, 151.1, 20, 'hybrid', :ts)", cv=f"{M}-OLD-CV", w=f"{M}-WISHES",
       h=f"{M}-HOME", ts=ts)
+    # The commute cache of that time (gone since the job page links to Google Maps): dropped at the next start.
+    x('CREATE TABLE commute_cache ("key" VARCHAR NOT NULL, owner_id INTEGER, result_json BLOB NOT NULL, '
+      'fetched_at DATETIME NOT NULL, PRIMARY KEY ("key"))')
     x("INSERT INTO commute_cache (key, result_json, fetched_at) VALUES (:k, :r, :ts)", k="stop|qzxmark-station",
       r=json.dumps({"name": f"{M}-COMMUTE"}), ts=ts)
     x("INSERT INTO http_cache (url, status_code, body, fetched_at) VALUES (:u, 200, :b, :ts)",
@@ -235,7 +238,7 @@ with engine.connect() as conn:
         "SELECT url, typeof(url_index) FROM jobs WHERE posting_id IS NOT NULL"))]
     out["source_index"] = [list(r) for r in conn.execute(text(
         "SELECT typeof(careers_url_index), typeof(company) FROM company_sources"))]
-    out["caches"] = [conn.execute(text("SELECT COUNT(*) FROM commute_cache")).scalar(),
+    out["caches"] = [conn.execute(text("SELECT COUNT(*) FROM sqlite_master WHERE name = 'commute_cache'")).scalar(),
                      conn.execute(text("SELECT COUNT(*) FROM http_cache")).scalar()]
 ''', folder)
         cls.marked_before_delete = marked_files(folder)
@@ -272,7 +275,7 @@ with engine.connect() as conn:
     def test_links_indexes_and_caches(self):
         self.assertEqual(self.final["pool_link_url"], [[None, "blob"]])  # the posting has the URL
         self.assertEqual(self.final["source_index"], [["blob", "blob"]])
-        self.assertEqual(self.final["caches"], [0, 0])  # the old shared caches are gone
+        self.assertEqual(self.final["caches"], [0, 0])  # the old commute cache's table and the page cache's rows are gone
 
     def test_no_planted_marker_is_left_in_the_database_its_wal_or_the_uploads(self):
         # Before the leftovers are deleted, only they hold markers: the backups and the old page cache.
@@ -303,7 +306,9 @@ with engine.connect() as conn:
         self.assertEqual((private["title"], private["company"], private["hidden"], private["excluded_reason"]),
                          ("QZXMARK-PRIVATE-TITLE", "QZXMARK-PRIVATE-CO", False, None))
         self.assertEqual(api["profile"]["titles"], ["QZXMARK-TITLE"])
-        self.assertEqual((api["profile"]["salary_floor"], api["profile"]["commute_arrive_by"]), (120000, "08:30"))
+        self.assertEqual(api["profile"]["salary_floor"], 120000)
+        self.assertEqual(api["profile"]["starting_points"],  # the old "Commute from" station (its times are gone)
+                         [{"label": "QZXMARK-STATION", "pin_id": None, "place": "QZXMARK-STATION", "use": "transit"}])
         self.assertEqual(api["dealbreakers"]["industries"], ["QZXMARK-INDUSTRY"])
         self.assertEqual(api["pins"][0]["label"], "QZXMARK-PIN")
         self.assertEqual((api["sources"][0]["label"], api["sources"][0]["url"]),
@@ -446,25 +451,6 @@ class SealedAtRestTest(unittest.TestCase):
                                                   "JOIN jobs j ON j.id = f.job_id WHERE j.workspace_id = :w", w=self.ws):
             self.assertTrue(crypto.is_sealed(score) and crypto.is_sealed(status) and crypto.is_sealed(evidence))
         self.assertEqual(self.client.get("/api/profile", headers=self.h).json()["titles"], ["QZXMARK Analyst"])
-
-    def test_the_commute_cache_is_per_user_and_sealed(self):
-        from backend import commute
-
-        uid, dek = helpers.key_of()
-        with crypto.as_user(uid, dek):
-            self.assertEqual(commute._cached("stop|QZXMARK station", commute.CACHE_FOR, lambda: {"id": 7}), {"id": 7})
-            self.assertEqual(commute._cached("stop|QZXMARK station", commute.CACHE_FOR, lambda: {"id": 8}), {"id": 7})
-            mine = crypto.blind_index("commute", "stop|QZXMARK station").hex()
-        bob = helpers.make_user()
-        with helpers.as_account(bob):  # another user's index for the same origin is another row
-            self.assertEqual(commute._cached("stop|QZXMARK station", commute.CACHE_FOR, lambda: {"id": 9}), {"id": 9})
-            theirs = crypto.blind_index("commute", "stop|QZXMARK station").hex()
-        rows = self.raw("SELECT key, owner_id, result_json FROM commute_cache WHERE key IN (:a, :b) ORDER BY owner_id",
-                        a=mine, b=theirs)
-        self.assertEqual([owner for _key, owner, _result in rows], [uid, bob.id])
-        for key, _owner, result in self.raw("SELECT key, owner_id, result_json FROM commute_cache"):
-            self.assertNotIn("qzxmark", key.lower())
-            self.assertTrue(crypto.is_sealed(result))
 
     def test_the_http_cache_is_keyed_and_sealed_with_a_process_key(self):
         from backend.scraping import http
@@ -645,7 +631,6 @@ class SqlGuardTest(unittest.TestCase):
         names = {t.name for t, _cols in migrate_encryption.sealed_tables()}
         self.assertEqual(names - set(migrate_encryption.OWNED), set())
         self.assertIn("search_profile", names)
-        self.assertEqual({c.name for c in crypto.sealed_columns(CommuteCache.__table__)}, {"result_json"})
         self.assertIsInstance(HttpCache.__table__.c.body.type, crypto.ProcessSealedText)
 
 

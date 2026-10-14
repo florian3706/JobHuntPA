@@ -687,6 +687,9 @@ def sc_more_states(a, w, theme):
         page.click("#source-add")
         settle(page, 500)
         a.check(page, "index: Search setup, empty source added")
+        page.click("#starts-form button[type=submit]")  # a starting point with no place typed and no pin chosen
+        page.wait_for_selector("#start-place[aria-invalid=true]")
+        a.check(page, "index: Search setup, starting point with no place")
     with a.step("index: a document opened"):
         open_tab(page, "docs")
         page.click('#docs-list [data-act="toggle"] >> nth=0')
@@ -935,7 +938,7 @@ def sc_job(a, w, theme):
     with a.step("job.html"):
         page.goto(f"{app.base}/job.html?id=1&ws={a.fixtures['ws']}")
         page.wait_for_selector("#job-company dl.profile")
-        page.wait_for_function("() => !document.querySelector('#job-commute').textContent.includes('Working out')", timeout=60000)
+        page.wait_for_function("() => !document.querySelector('#job-commute').textContent.includes('Listing the commute links')", timeout=60000)
         # the "Is this a real vacancy?" section (planted signs), its reasons collapsed until asked for
         page.wait_for_selector("#job-ghost-section:not([hidden]) .ghost-check.found", state="attached")
         settle(page, 600)
@@ -956,7 +959,7 @@ def sc_job(a, w, theme):
 
 @scenario("settings")
 def sc_install_settings(a, w, theme):
-    """The AI provider, AI usage, commute keys, public address, server key and name cards, then every form submitted
+    """The AI provider, AI usage, public address, server key and name cards, then every form submitted
     with a problem (the error under the field)."""
     app = a.apps["demo"]
     ctx = owner_ctx(a, w, theme)
@@ -974,8 +977,6 @@ def sc_install_settings(a, w, theme):
         page._expect.append((422, "/api/settings/address"))  # (refused, which the error under the field shows)
         page.fill("#public-url", "http://not-https.example")
         page.click("#address-save")
-        for btn in page.query_selector_all("form.key-field .key-save"):  # the key forms: nothing pasted
-            btn.click()
         page.fill("#acct-name-input", "")
         page.click("#acct-name-submit")
         settle(page, 600)

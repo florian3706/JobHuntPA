@@ -1,7 +1,7 @@
 /* JobHuntPA dashboard — vanilla JS, no build step. Talks to backend/app.py. */
 'use strict';
 
-const TAG_FIELDS = ['titles', 'keywords_include', 'keywords_exclude', 'dealbreaker_industries', 'dealbreaker_keywords', 'seek_locations', 'commute_from'];
+const TAG_FIELDS = ['titles', 'keywords_include', 'keywords_exclude', 'dealbreaker_industries', 'dealbreaker_keywords', 'seek_locations'];
 
 const state = {
   jobs: [],
@@ -15,6 +15,8 @@ const state = {
   selected: new Set(),
   profile: null,
   pins: [],
+  startingPoints: [], // Search setup > Commute: where the job page's Google Maps links start (besides home pins)
+  setupPins: [], // the pins a starting point can be made from
   map: null,
   pinLayers: new Map(),
   pinLayer: null,
@@ -128,7 +130,7 @@ function initTabs() {
     history.replaceState(null, '', `#${name}`);
     updateTitle();
     if (focus === 'tab') $(`#tab-btn-${name}`).focus();
-    // A link inside the old panel (e.g. "Settings" under Commute) switched tabs: focus would be lost in a hidden panel.
+    // A link inside the old panel (e.g. one to the Settings tab) switched tabs: focus would be lost in a hidden panel.
     else if (focus === 'panel' || hadFocus) $(`#tab-${name}`).focus();
   };
   tabs.forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
@@ -372,7 +374,7 @@ function renderJobCard(job) {
       <button class="btn btn-ghost btn-sm" type="button" data-act="hide" aria-describedby="${titleId}">${job.hidden ? 'Unhide' : 'Hide'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="letter" aria-describedby="${titleId}">${job.has_cover_letter ? 'Cover letter<span aria-hidden="true"> ✓</span><span class="visually-hidden"> (drafted)</span>' : 'Draft cover letter'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="chat" aria-describedby="${titleId}" title="Ask questions about this job in a chat on the right">Chat</button>
-      <a class="btn btn-ghost btn-sm" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" aria-describedby="${titleId}" title="Full page in a new tab: the whole ad, office map, commute and company details">Open${NEW_TAB}</a>
+      <a class="btn btn-ghost btn-sm" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" aria-describedby="${titleId}" title="Full page in a new tab: the whole ad, the office with commute links, and company details">Open${NEW_TAB}</a>
     </div>
     <details class="reqs" data-section="fit"><summary data-act="fit">Fit: requirements <span aria-hidden="true">→</span><span class="visually-hidden">and</span> evidence</summary><div class="fit-body"></div></details>
     ${gapsSection(job)}`;
@@ -1230,17 +1232,106 @@ function initTitleSuggestions() {
   });
 }
 
-/* ================= COMMUTE DATA (Search setup > Commute) ================= */
-/* Which commute times the job pages can show. The keys are set in the Settings tab (Commute data). */
-async function loadCommuteAvailability() {
-  let st;
-  try { st = await api('/api/commute/status'); } catch { return; }
-  const who = 'add a free Transport for NSW key in <a href="#settings">Settings, Commute data</a>';
-  const who2 = 'a free TomTom key, added in <a href="#settings">Settings, Commute data</a>, adds peak-hour traffic';
-  $('#commute-keys').innerHTML = `Public transport: ${st.transit ? '<span class="ok-text">available<span aria-hidden="true"> ✓</span></span>'
-    : `not set up (${who})`}.
-    Driving: ${st.traffic ? '<span class="ok-text">with peak traffic<span aria-hidden="true"> ✓</span></span>'
-    : `without traffic (${who2})`}.`;
+/* ================= STARTING POINTS (Search setup > Commute) ================= */
+/* Where the Google Maps links on each job's page start: any number, each a pin or a typed place, for driving, public
+   transport or both. Every home pin counts for both without being added (a starting point made from it replaces it).
+   They are saved with the rest of the search setup. */
+const START_USES = { transit: 'Public transport', driving: 'Driving', both: 'Driving and public transport' };
+
+function startPin(sp) { return sp.pin_id ? state.setupPins.find((p) => p.id === sp.pin_id) : null; }
+function startName(sp) {
+  const pin = startPin(sp);
+  return sp.label || (sp.pin_id ? pin?.label || 'Deleted pin' : sp.place);
+}
+function startPlace(sp) {
+  if (!sp.pin_id) return sp.place;
+  const pin = startPin(sp);
+  return pin ? `${pin.kind} pin ${pin.label}` : 'a pin that has been deleted';
+}
+
+function renderStarts() {
+  const list = $('#starts-list');
+  if (!list) return;
+  const chosen = new Set(state.startingPoints.map((sp) => sp.pin_id).filter(Boolean));
+  const homes = state.setupPins.filter((p) => p.kind === 'home' && !chosen.has(p.id));
+  $('#starts-home').textContent = homes.length
+    ? `Also starting points, for driving and public transport, without being added: your home pin${homes.length > 1 ? 's' : ''} ${homes.map((p) => p.label).join(', ')}.`
+    : (state.setupPins.some((p) => p.kind === 'home') ? '' : 'A home pin (Map tab) is a starting point for driving and public transport without being added here.');
+  // Redrawn (a pin changed): keep keyboard focus on the same row's control.
+  const active = list.contains(document.activeElement) ? document.activeElement : null;
+  const back = active ? (active.dataset.startUse !== undefined ? `[data-start-use="${active.dataset.startUse}"]` : `[data-start-remove="${active.dataset.startRemove}"]`) : null;
+  list.innerHTML = state.startingPoints.length ? '' : '<li class="muted">No starting points of your own yet.</li>';
+  state.startingPoints.forEach((sp, i) => {
+    const li = document.createElement('li');
+    li.className = 'start-row';
+    const name = startName(sp);
+    const missing = sp.pin_id && !startPin(sp);
+    li.innerHTML = `<span class="start-name"><strong>${esc(name)}</strong>
+        <span class="muted">${name === startPlace(sp) ? '' : `from ${esc(startPlace(sp))}`}</span>
+        ${missing ? '<span class="err-text">This pin was deleted: remove this starting point or add the place again.</span>' : ''}</span>
+      <label class="start-use"><span class="visually-hidden">Used for, ${esc(name)}</span>
+        <select data-start-use="${i}">${Object.entries(START_USES).map(([v, t]) => `<option value="${v}"${sp.use === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+      <button class="btn btn-ghost btn-sm" type="button" data-start-remove="${i}">Remove<span class="visually-hidden"> ${esc(name)}</span></button>`;
+    list.appendChild(li);
+  });
+  list.querySelectorAll('[data-start-use]').forEach((sel) => sel.addEventListener('change', () => {
+    const sp = state.startingPoints[Number(sel.dataset.startUse)];
+    sp.use = sel.value;
+    announce(`${startName(sp)}: ${START_USES[sp.use]}.`);
+    saveSetup();
+  }));
+  list.querySelectorAll('[data-start-remove]').forEach((b) => b.addEventListener('click', () => {
+    const [sp] = state.startingPoints.splice(Number(b.dataset.startRemove), 1);
+    renderStarts();
+    $('#start-from').focus(); // the row with the button is gone
+    announce(`Removed the starting point ${startName(sp)}.`);
+    saveSetup();
+  }));
+  if (back) (list.querySelector(back) || $('#start-from')).focus();
+  const from = $('#start-from');
+  const picked = from.value;
+  from.innerHTML = '<option value="">A place I type</option>'
+    + state.setupPins.map((p) => `<option value="${p.id}">Pin: ${esc(p.label)} (${esc(p.kind)})</option>`).join('');
+  from.value = state.setupPins.some((p) => String(p.id) === picked) ? picked : '';
+  showStartPlace();
+}
+
+function showStartPlace() {
+  const typed = !$('#start-from').value;
+  $('#start-place-group').hidden = !typed;
+  if (!typed) setFieldError($('#start-place'), '');
+}
+
+function initStarts() {
+  $('#start-from').addEventListener('change', () => { setFieldError($('#start-from'), ''); showStartPlace(); });
+  $('#start-place').addEventListener('input', () => setFieldError($('#start-place'), ''));
+  $('#starts-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const pinId = Number($('#start-from').value) || null;
+    const place = $('#start-place').value.trim();
+    if (!state.profile) { // saveSetup leaves starting points out until the search setup has loaded
+      setFieldError(pinId ? $('#start-from') : $('#start-place'), 'The search setup has not loaded yet. Wait a moment, or reload the page, then add it again.');
+      return;
+    }
+    if (!pinId && !place) {
+      setFieldError($('#start-place'), 'Type an address, a station or a stop, or choose a pin under From.');
+      return;
+    }
+    const same = state.startingPoints.find((s) => (pinId ? s.pin_id === pinId : !s.pin_id && s.place.toLowerCase() === place.toLowerCase()));
+    if (same) {
+      setFieldError(pinId ? $('#start-from') : $('#start-place'), `That is already the starting point ${startName(same)}: change what it is used for in its row.`);
+      return;
+    }
+    setFieldError($('#start-from'), '');
+    const sp = { label: $('#start-label').value.trim(), pin_id: pinId, place: pinId ? null : place, use: $('#start-use').value };
+    state.startingPoints.push(sp);
+    $('#start-place').value = '';
+    $('#start-label').value = '';
+    $('#start-from').value = '';
+    renderStarts();
+    announce(`Added the starting point ${startName(sp)}, for ${START_USES[sp.use].toLowerCase()}.`);
+    saveSetup();
+  });
 }
 
 /* ================= SEARCH SETUP ================= */
@@ -1275,9 +1366,10 @@ async function loadSetup() {
   try {
     const [profile, dealbreakers] = await Promise.all([api('/api/profile'), api('/api/dealbreakers')]);
     state.profile = profile;
-    ['titles', 'keywords_include', 'keywords_exclude', 'seek_locations', 'commute_from'].forEach((f) => setTags(f, profile[f]));
-    $('#commute-arrive').value = profile.commute_arrive_by || '09:00';
-    $('#commute-leave').value = profile.commute_leave_at || '17:00';
+    ['titles', 'keywords_include', 'keywords_exclude', 'seek_locations'].forEach((f) => setTags(f, profile[f]));
+    state.startingPoints = profile.starting_points || [];
+    try { state.setupPins = await api('/api/pins'); } catch { state.setupPins = state.pins; }
+    renderStarts();
     setTags('dealbreaker_industries', dealbreakers.industries);
     setTags('dealbreaker_keywords', dealbreakers.keywords);
     $('#salary-floor').value = profile.salary_floor ?? '';
@@ -1316,9 +1408,8 @@ const saveSetup = debounce(async () => {
     allow_onsite: $('#allow-onsite').checked,
     seek_enabled: $('#seek-enabled').checked,
     seek_locations: getTags('seek_locations'),
-    commute_from: getTags('commute_from'),
-    commute_arrive_by: $('#commute-arrive').value || '09:00',
-    commute_leave_at: $('#commute-leave').value || '17:00',
+    // (left out until the search setup has loaded: the saved ones are then kept as they are)
+    ...(state.profile ? { starting_points: state.startingPoints } : {}),
   };
   const dealbreakers = { industries: getTags('dealbreaker_industries'), keywords: getTags('dealbreaker_keywords') };
   try {
@@ -1361,7 +1452,8 @@ function initSetup() {
     input.addEventListener('blur', () => { if (input.value.trim()) { addTag(field, input.value); input.value = ''; } });
   });
   ['#salary-floor'].forEach((s) => $(s).addEventListener('input', saveSetup));
-  ['#remote-aus', '#remote-global', '#allow-hybrid', '#allow-onsite', '#seek-enabled', '#max-office-days', '#commute-arrive', '#commute-leave'].forEach((s) => $(s).addEventListener('change', saveSetup));
+  ['#remote-aus', '#remote-global', '#allow-hybrid', '#allow-onsite', '#seek-enabled', '#max-office-days'].forEach((s) => $(s).addEventListener('change', saveSetup));
+  initStarts();
   $('#search-form').addEventListener('submit', (e) => e.preventDefault());
   $('#import-form').addEventListener('submit', importPages);
   $('#import-input').addEventListener('change', () => setFieldError($('#import-input'), ''));
@@ -2315,6 +2407,8 @@ function drawPins() {
 async function loadPins() {
   try {
     state.pins = await api('/api/pins');
+    state.setupPins = state.pins;
+    renderStarts();
     drawPins();
     const sane = state.pins.filter((p) => p.radius_km < 1000);
     if (sane.length) state.map.fitBounds(L.latLngBounds(sane.map((p) => [p.lat, p.lng])).pad(0.3), { animate: false });
@@ -2353,6 +2447,8 @@ async function savePin(p, patch) {
 async function deletePin(p) {
   try {
     await api(`/api/pins/${p.id}`, { method: 'DELETE' });
+    // The server dropped the starting points made from this pin along with it.
+    state.startingPoints = state.startingPoints.filter((sp) => sp.pin_id !== p.id);
     await loadPins();
     $('#pin-add-centre').focus(); // the row with the button is gone
     announce(`Deleted the ${p.kind} pin ${p.label}.`);
@@ -2485,7 +2581,6 @@ function applyAccount(me) {
 }
 
 function loadAll() {
-  loadCommuteAvailability();
   loadCompanies();
   loadJobs();
   loadSetup();

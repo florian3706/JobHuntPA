@@ -9,7 +9,7 @@ What it does:
    the database, and is sealed under that account's key like a real install, with its server key
    file (server-keys.json) beside it.
 2. Starts the app on a free local port against that database and key file, with the temporary
-   folder as its data folder (JOBHUNT_DATA_DIR), fake LLM settings, no commute API keys, a throwaway
+   folder as its data folder (JOBHUNT_DATA_DIR), fake LLM settings, a throwaway
    .env path (JOBHUNT_ENV_PATH, so the real .env is neither read nor written, even by the Settings
    tab) and the scheduler off, so nothing can reach an LLM or scrape a site.
 3. Opens it in headless Chromium (Playwright), signed in as the demo account, and saves the screenshots.
@@ -18,7 +18,7 @@ What it does:
 Needs the app's requirements plus Playwright's Chromium (setup installs both) and Pillow
 (``pip install pillow``; a developer tool only, so it is not in requirements.txt). The browser
 fetches Leaflet (unpkg.com), map tiles (openstreetmap.org) and, for the Dyslexia theme, a font
-(Google Fonts); the server asks OSRM's public server for the driving route on the job page.
+(Google Fonts).
 
 Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide):
     jobs, run-report, job-page, map (light theme), search-setup, company-sources, settings, search-schedule
@@ -82,7 +82,7 @@ def free_port() -> int:
 
 
 def server_env(db: Path, env_file: Path) -> dict:
-    """The app's environment: the demo database, fake LLM settings, no commute keys, no scheduler.
+    """The app's environment: the demo database, fake LLM settings, no scheduler.
     JOBHUNT_ENV_PATH makes backend/config.py read (and the Settings tab write) ``env_file``, a
     throwaway path, instead of the real .env. Every key the shots can show is also set here, so
     nothing real gets in even if that path were wrong."""
@@ -94,7 +94,6 @@ def server_env(db: Path, env_file: Path) -> dict:
         "JOBHUNT_ADMIN_EMAIL": DEMO_EMAIL, "JOBHUNT_ADMIN_PASSWORD": DEMO_PASSWORD, "JOBHUNT_KDF_PROFILE": "low",
         "LLM_API_KEY": "demo-key-not-real-1234", "LLM_BASE_URL": "https://llm.example.com/v1", "LLM_MODEL": "example-model",
         "LLM_REASONING_EFFORT": "", "LLM_TIMEOUT_S": "30", "LLM_CONCURRENCY": "1",
-        "TFNSW_API_KEY": "", "TOMTOM_API_KEY": "",
     })
     return env
 
@@ -312,9 +311,8 @@ def shot_job_page(s: Shooter) -> None:
     page = s.page(ctx)
     page.goto(f"{s.base}/job.html?id=1&ws={s.ws_id}")
     page.wait_for_selector("#job-company dl.profile")
-    page.wait_for_function("() => !document.querySelector('#job-commute').textContent.includes('Working out')", timeout=45000)
+    page.wait_for_selector("#job-commute .commute-links a")
     s.settle(page)
-    s.wait_tiles(page)
     height = page.evaluate("document.documentElement.scrollHeight")
     s.save("job-page", s.grab(page, (0, 0, JOB_PAGE_VIEWPORT["width"], height)))
     ctx.close()
@@ -345,7 +343,7 @@ def shot_search(s: Shooter) -> None:
     page = s.page(ctx)
     page.goto(f"{s.base}/#search")
     page.wait_for_selector("#sources-list .source-row")
-    page.wait_for_function("() => document.querySelector('#commute-keys').textContent.includes('Public transport')")
+    page.wait_for_selector("#starts-list .start-row")
     s.settle(page)
     form = s.rect(page, "#search-form")
     s.save("search-setup", s.grab(page, (CONTENT_X, 0, CONTENT_W, int(form["y"] + form["h"]) + 14)))
@@ -580,10 +578,7 @@ def main() -> None:
         ws = next((w for w in workspaces if w["name"] == "Dummy workspace"), None)
         if ws is None or len(workspaces) != 1:
             sys.exit(f"Expected only a 'Dummy workspace', got {[w['name'] for w in workspaces]}")
-        keys = json.load(opener.open(f"{base}/api/settings/keys"))
-        if any(k["set"] for k in keys.values()):
-            sys.exit("The demo server has commute API keys set: something from the real environment got in.")
-        print(f"Server on {base}, workspace {ws['id']} ({ws['jobs']} jobs, no commute keys). Taking screenshots ...")
+        print(f"Server on {base}, workspace {ws['id']} ({ws['jobs']} jobs). Taking screenshots ...")
 
         with sync_playwright() as p:
             browser = launch_browser(p)
