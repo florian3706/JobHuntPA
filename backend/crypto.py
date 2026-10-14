@@ -15,7 +15,8 @@ Nothing here invents a primitive. AES-256-GCM, X25519 and HKDF-SHA256 come from 
 * The AES-GCM associated data is the 5-byte header followed by a label. The header binds the version and kid to the
   ciphertext; the label binds the value to where it belongs, so a value copied somewhere else fails to open.
 
-**Sealed box** (X25519, for the admin personal-details key), 85 bytes longer than the plaintext::
+**Sealed box** (X25519; it sealed the admin panel's copies of personal details, removed with the panel, and nothing in
+the app seals to a public key now), 85 bytes longer than the plaintext::
 
     0x02 | recipient kid (4) | ephemeral X25519 public key (32) | nonce (12) | ciphertext + tag (16)
 
@@ -35,7 +36,7 @@ Sealed* column types      ``jh/<table>.<column>``     a value moved to another c
                                                       ``pending-codes|{uid}``
 ``seal_file``/``open_*``  ``jh-file|<label>``         an upload, labelled ``file|{stored_name}``: a file
                                                       renamed onto another document's name won't open
-``seal_to``/``open_*``    ``jh-box|<label>``          admin-readable details, labelled by table and column
+``seal_to``/``open_*``    ``jh-box|<label>``          (unused since the admin panel went) by table and column
 ========================  ==========================  ======================================================
 
 What the labels can't do: a column label doesn't name the row (the id doesn't exist yet when a row is inserted), so
@@ -46,8 +47,8 @@ same column. The threat model is someone who can *read* the database (design, "T
 ``with as_user(user_id, dek): ...``. Sealing or opening outside one raises ``Locked``. Thread pools must start work
 through ``submit`` (re-exported from backend/threads.py), which copies the context into the worker.
 
-**The identity key (IK).** A second 32-byte key per user protects only the X25519 private key, which opens the admin
-details key. It is wrapped under the password key, each recovery code's key and each session's cookie-derived key,
+**The identity key (IK).** A second 32-byte key per user protects the recovery codes not yet confirmed as saved (and
+the X25519 private key, which checks that a key is the account's IK). It is wrapped under the password key, each recovery code's key and each session's cookie-derived key,
 never under the server KEK, so background access (the DEK under the server KEK) can't reach it. A request's scope
 carries no IK; a signed-in request's scope carries a way to open its session's wrap of it (``as_user(..., ik_opener)``).
 ``open_ik()`` opens it afresh on each call, so the key is held nowhere: ``NoIdentityKey`` when the scope has none (a
@@ -430,9 +431,9 @@ def open_file(path: Union[str, Path], label: Label) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Sealed boxes (X25519): anyone with the public key can seal; only the private key opens. Used for the admin
-# personal-details key (design 1.4), so sign-ups can write admin-readable details with no admin
-# signed in.
+# Sealed boxes (X25519): anyone with the public key can seal; only the private key opens. Once used for the admin
+# personal-details key (removed with the admin panel); the key pair of each account is still made with
+# ``new_keypair``.
 # ---------------------------------------------------------------------------
 
 def new_keypair() -> tuple[bytes, bytes]:
@@ -457,7 +458,7 @@ def _box_key(shared: bytes, ephemeral_public: bytes, public: bytes) -> bytes:
 
 def seal_to(public: bytes, plain: bytes, label: Label) -> bytes:
     """``plain`` sealed to the X25519 ``public`` key: a fresh ephemeral key pair per value, so each value has its own
-    AES key. Label it with where it's stored (for example ``users.pii_admin|{uid}``)."""
+    AES key. Label it with where it's stored."""
     public = _key(public, "public key")
     recipient = X25519PublicKey.from_public_bytes(public)
     ephemeral = X25519PrivateKey.generate()

@@ -1,32 +1,41 @@
-"""Accounts: creating them with their keys and recovery codes, unlocking them with a password, the server key file at
-start-up, and the first run. Design: docs/design/accounts.md, sections 1, 4 and 5.
+"""The account: creating it with its keys and recovery codes, unlocking it with a password, the server key file at
+start-up, and the first run. Design: docs/design/accounts.md, sections 1, 4 and 5; docs/design/open-source.md §1.2.
+
+**One account per install.** The first run creates it (``create_account``); once an account exists, nothing creates
+another: the first-run page, the start-up path from the environment and every other caller get ``AlreadySetUp``. An
+install from before the open-source version may hold several accounts: each keeps signing in and using its own
+workspaces, and none can be added.
+
+**A name and a password.** The account is found by ``email_hash``, HMAC(pepper, normalised name) (backend.keys), and
+its own copy of the name is sealed under its data key (``pii_self``). On an older install the email address an account
+was made with is its sign-in name; ``change_name`` replaces it.
 
 **Keys of an account** (all made here, at creation):
   * a random data key (DEK) for all of the user's data, wrapped under the password (``pw|{uid}``) and under each of
     8 recovery codes (``rc|{uid}|{code_id}``); a session wraps it again under its cookie (backend.sessions);
-  * an X25519 key pair, so an admin details key can be shared with this user, and its private half under a second
-    random key, the identity key (IK: ``ik-priv|{uid}``). The IK is wrapped like the DEK, under the password
-    (``pw-ik|{uid}``), each recovery code (``rc-ik|{uid}|{code_id}``) and each session's cookie (backend.sessions),
-    but **never under the server KEK**: background access opens the DEK, not the way to the admin details key;
-  * ``pii_self`` ({email, name}) under the DEK, and ``pii_admin`` (the same) sealed to the admin details key (APK),
-    which needs only its public half, so no admin has to be signed in;
-  * with background access, the DEK under the server KEK as well (``srv|{uid}|{kek_id}``; used from Phase G).
+  * a second random key, the identity key (IK), which keeps the recovery codes not yet confirmed as saved
+    (``pending-codes|{uid}``). It is wrapped like the DEK, under the password (``pw-ik|{uid}``), each recovery code
+    (``rc-ik|{uid}|{code_id}``) and each session's cookie (backend.sessions), but **never under the server KEK**: a
+    code opens the account, so background access (the DEK under the KEK) must not reach the codes. An X25519 key pair,
+    its private half under the IK (``ik-priv|{uid}``), checks that a key is this account's IK;
+  * ``pii_self`` ({name}) under the DEK;
+  * with background access, the DEK under the server KEK as well (``srv|{uid}|{kek_id}``).
 
 **First run** (no account yet). Every API except /api/health, /api/auth/state and /api/auth/first-run answers 401
 ``setup_required``. At start-up:
-  * if the process environment (not .env) has JOBHUNT_ADMIN_EMAIL and JOBHUNT_ADMIN_PASSWORD, that admin is created
-    at once (CI and headless servers);
+  * if the process environment (not .env) has JOBHUNT_ADMIN_EMAIL (the account's name, despite the old variable
+    name) and JOBHUNT_ADMIN_PASSWORD, the account is created at once (CI and headless servers);
   * otherwise a one-time token is written to ``first-run.txt`` beside the database (owner-only) and logged as
     ``/first-run.html#token=…``; installer/launch.py opens that address. The token is in the fragment, so it never
     reaches a server log.
-``create_first_admin`` then makes the account, the APK and the admin's grant of it, and claims every workspace
-that has no owner (all the data of an install from before accounts), in one transaction, and records in
-``app_settings["encryption_migration"]`` that this admin's key encrypts that data (backend.migrate_encryption: at
-once for the first run and the environment admin, otherwise at their next sign-in).
+``create_account`` then makes the account and claims every workspace that has no owner (all the data of an install
+from before accounts), in one transaction, and records in ``app_settings["encryption_migration"]`` that this account's
+key encrypts that data (backend.migrate_encryption: at once for the first run and the environment account, otherwise
+at its next sign-in). The reset tool (backend/reset.py, run on the computer itself) is the only way back to the first
+run.
 """
 from __future__ import annotations
 
-import base64
 import contextlib
 import hmac
 import json
@@ -48,11 +57,8 @@ from backend import config, crypto, keys, ratelimit
 from backend.db import (
     DB_PATH,
     UPLOAD_DIR,
-    AdminAudit,
-    AdminKeyGrant,
     AppSetting,
     AuthSession,
-    AuthToken,
     ChatMessage,
     ChatThread,
     CommuteCache,
@@ -82,21 +88,20 @@ log = logging.getLogger(__name__)
 
 PASSWORD_MIN = 10
 PASSWORD_MAX = 1024
-EMAIL_MAX = 254
-NAME_MAX = 100
+NAME_MAX = 254  # (an older install's sign-in names are email addresses, up to 254 characters)
 RECOVERY_CODES = 8
 # Crockford's base32: no I, L, O or U, so a code read aloud or copied by hand can't be mistaken (O is read as 0,
 # I and L as 1). 16 characters carry 80 random bits.
 CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 CODE_CHARS = 16
+# The account made at start-up when there is none (CI, headless servers): its name and password, from the process
+# environment only. The names are older than the name/password account; they make an ordinary account.
 ADMIN_EMAIL_ENV = "JOBHUNT_ADMIN_EMAIL"
 ADMIN_PASSWORD_ENV = "JOBHUNT_ADMIN_PASSWORD"
 FIRST_RUN_FILE = "first-run.txt"
 DEFAULT_WORKSPACE = "My job search"
 
-# One address, nothing a mail header or an SMTP envelope would read as a list or a name: no , ; < > ( ) [ ] \ " or :
-_EMAIL_RE = re.compile(r"[^@\s,;<>()\[\]\\\":]{1,64}@[^@\s.,;<>()\[\]\\\":]+(\.[^@\s.,;<>()\[\]\\\":]+)+")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 class AccountError(ValueError):
@@ -108,8 +113,12 @@ class AccountError(ValueError):
         self.message = message
 
 
+class NameTaken(AccountError):
+    """Another account of this install already signs in with that name."""
+
+
 class AlreadySetUp(RuntimeError):
-    """create_first_admin was called when an account already exists."""
+    """An account already exists: this install has its one account, and no other can be made."""
 
 
 @dataclass(frozen=True, repr=False)
@@ -127,13 +136,16 @@ class NewAccount:
 # Checking what people type
 # ---------------------------------------------------------------------------
 
-def clean_email(email: Any) -> str:
-    """The email address as it is stored in the personal details (trimmed), or AccountError."""
-    value = unicodedata.normalize("NFKC", email if isinstance(email, str) else "").strip()
+def clean_name(name: Any) -> str:
+    """The sign-in name as it is kept (NFKC, trimmed), or AccountError: 1 to 254 characters, no control characters or
+    line breaks. Capitals and spaces around it don't matter when signing in (``keys.normalise_email``)."""
+    value = unicodedata.normalize("NFKC", name if isinstance(name, str) else "").strip()
     if not value:
-        raise AccountError("email", "Enter your email address.")
-    if len(value) > EMAIL_MAX or not _EMAIL_RE.fullmatch(value):
-        raise AccountError("email", "Enter an email address like name@example.com.")
+        raise AccountError("name", "Enter a name to sign in with.")
+    if len(value) > NAME_MAX:
+        raise AccountError("name", f"Use at most {NAME_MAX} characters for your name.")
+    if _CONTROL.search(value):
+        raise AccountError("name", "Use letters, digits, spaces and punctuation only (no line breaks or tabs).")
     return value
 
 
@@ -145,13 +157,6 @@ def check_password(password: Any) -> str:
     if len(password) > PASSWORD_MAX:
         raise AccountError("password", f"Use at most {PASSWORD_MAX} characters.")
     return password
-
-
-def clean_name(name: Any) -> str:
-    value = _CONTROL.sub("", unicodedata.normalize("NFKC", name if isinstance(name, str) else "")).strip()
-    if len(value) > NAME_MAX:
-        raise AccountError("name", f"Use at most {NAME_MAX} characters for your name.")
-    return value
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +257,8 @@ def _put_setting(db: Session, key: str, value: Any) -> None:
 
 
 def users_exist() -> bool:
-    """Whether any account exists. Cached once true: the last admin can't be deleted."""
+    """Whether any account exists. Cached once true: the last account can't be deleted (only the reset tool, with the
+    app stopped, removes it)."""
     global _users_exist
     if not _users_exist:
         db = SessionLocal()
@@ -294,8 +300,8 @@ def _write_first_run_token() -> None:
         crypto.write_private(path, (token + "\n").encode("ascii"))
     _first_run_token = token
     # The operator needs this to create the first account; it is only ever written to this server's own log.
-    log.warning("First run: no account exists yet. Open /first-run.html#token=%s on this server to create the "
-                "admin account (the token is also in %s).", token, path)
+    log.warning("First run: no account exists yet. Open /first-run.html#token=%s on this server to create your "
+                "account (the token is also in %s).", token, path)
 
 
 def _remove_first_run_token() -> None:
@@ -327,8 +333,9 @@ def _finish_key_rotation(loaded: keys.ServerKeys) -> None:
 
 def startup() -> None:
     """At every start, after init_db: load (or, with no accounts, create) the server key file and check it belongs
-    to this database, clear expired sessions, then either create the admin from the process environment, or write
-    the first-run token. Raises keys.KeyFileError (start-up stops) for a missing or wrong key file."""
+    to this database, clear expired sessions, then, with no account yet, either create it from the process environment
+    or write the first-run token. Once an account exists nothing here creates another. Raises keys.KeyFileError
+    (start-up stops) for a missing or wrong key file."""
     global _server_keys, _users_exist
     keys.hold_key_file()  # for as long as this process runs: a key command can't replace the file under it
     db = SessionLocal()
@@ -348,10 +355,10 @@ def startup() -> None:
         _remove_first_run_token()
         _finish_key_rotation(loaded)
         return
-    email, password = config.process_env(ADMIN_EMAIL_ENV).strip(), config.process_env(ADMIN_PASSWORD_ENV)
-    if email and password:
+    name, password = config.process_env(ADMIN_EMAIL_ENV).strip(), config.process_env(ADMIN_PASSWORD_ENV)
+    if name and password:
         try:
-            account = create_first_admin(email, password, created_via="bootstrap", background=True)
+            account = create_account(name, password, created_via="bootstrap", background=True)
         except AccountError as exc:
             log.error("%s/%s can't be used (%s); open the first-run page instead.", ADMIN_EMAIL_ENV,
                       ADMIN_PASSWORD_ENV, exc.message)
@@ -360,34 +367,22 @@ def startup() -> None:
         else:
             from backend import migrate_encryption
 
-            # The admin's key is at hand now (and not again until they sign in): encrypt the existing data during
+            # The account's key is at hand now (and not again until it signs in): encrypt the existing data during
             # start-up. On a new install there is next to nothing to do.
             migrate_encryption.run(account.user_id, account.dek)
             return
-    elif email or password:
-        log.error("Set both %s and %s (in the process environment, not .env) to create the admin at start-up.",
-                  ADMIN_EMAIL_ENV, ADMIN_PASSWORD_ENV)
+    elif name or password:
+        log.error("Set both %s (the name) and %s (in the process environment, not .env) to create the account at "
+                  "start-up.", ADMIN_EMAIL_ENV, ADMIN_PASSWORD_ENV)
     _write_first_run_token()
 
 
 # ---------------------------------------------------------------------------
-# Creating accounts
+# Creating the account
 # ---------------------------------------------------------------------------
 
-def _b64(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
-
-
-def admin_public_key(db: Session) -> Optional[tuple[bytes, int]]:
-    """The admin details key's public half and its version, or None before the first admin exists."""
-    pub, version = _setting(db, "apk_public"), _setting(db, "apk_version")
-    if not pub or not version:
-        return None
-    return base64.b64decode(pub), int(version)
-
-
-def _details(email: str, name: str) -> bytes:
-    return json.dumps({"email": email, "name": name}, ensure_ascii=False).encode("utf-8")
+def _details(name: str) -> bytes:
+    return json.dumps({"name": name}, ensure_ascii=False).encode("utf-8")
 
 
 def _wrap_for_server(row: UserKeys, user_id: int, dek: bytes) -> None:
@@ -401,30 +396,30 @@ def _wrapping_if(wanted: bool):
     return server_keys().wrapping() if wanted else contextlib.nullcontext()
 
 
-def _create_user(db: Session, *, email: str, password: str, name: str, role: str, created_via: str,
-                 background: bool) -> NewAccount:
-    """The user row with every key of section 1.2, and 8 recovery codes, in ``db``'s
-    transaction (not committed). ``email``, ``password`` and ``name`` must already be checked."""
+def _insert_account(db: Session, *, name: str, password: str, created_via: str, background: bool) -> NewAccount:
+    """The user row with every key of section 1.2, and 8 recovery codes, in ``db``'s transaction (not committed).
+    ``name`` and ``password`` must already be checked. Only ``create_account`` calls this (it holds the write lock and
+    has checked that no account exists); the test suite also uses it to stand in for the extra accounts an older
+    install may already hold."""
     server = server_keys()
-    email_hash = server.email_hash(email)
-    if db.query(User.id).filter(User.email_hash.in_(server.email_hash_candidates(email))).first():
-        raise AccountError("email", "An account with this email already exists. Sign in or reset your password.")
+    if db.query(User.id).filter(User.email_hash.in_(server.email_hash_candidates(name))).first():
+        raise AccountError("name", "An account with this name already exists.")
     params = crypto.kdf_profile()
     salt = crypto.new_salt()
     derived = crypto.derive_password(password, salt, params)
     dek = crypto.new_key()
     # onboarding_step 1: the sign-up walkthrough (frontend/welcome.html) is next; NULL (older accounts) means done.
-    user = User(email_hash=email_hash, role=role, status="active", created_via=created_via, kdf_salt=salt,
+    user = User(email_hash=server.email_hash(name), status="active", created_via=created_via, kdf_salt=salt,
                 kdf_params=params.to_json(), pw_verifier=derived.auth, onboarding_step=1)
     db.add(user)
     db.flush()
     uid = user.id
-    ik = crypto.new_key()  # the identity key: opens only the X25519 private key, and is never under the server KEK
+    ik = crypto.new_key()  # the identity key: keeps the unconfirmed codes, and is never under the server KEK
     priv, pub = crypto.new_keypair()
     codes = [new_recovery_code() for _ in range(RECOVERY_CODES)]
     recovery_salt = crypto.new_salt()
     with crypto.as_user(uid, dek):
-        user.pii_self = crypto.seal(_details(email, name), f"users.pii_self|{uid}")
+        user.pii_self = crypto.seal(_details(name), f"users.pii_self|{uid}")
     user_keys = UserKeys(user_id=uid, dek_kid=crypto.key_id(dek), pw_wrapped_dek=crypto.wrap(derived.kek, dek, f"pw|{uid}"),
                          x25519_pub=pub, x25519_priv_enc=crypto.wrap(ik, priv, _ik_priv_label(uid)),
                          pw_wrapped_ik=crypto.wrap(derived.kek, ik, _pw_ik_label(uid)),
@@ -441,69 +436,32 @@ def _create_user(db: Session, *, email: str, password: str, name: str, role: str
         code_kek = crypto.recovery_kek(normalise_recovery_code(code), recovery_salt)
         row.wrapped_dek = crypto.wrap(code_kek, dek, f"rc|{uid}|{row.id}")
         row.wrapped_ik = crypto.wrap(code_kek, ik, _rc_ik_label(uid, row.id))
-    apk = admin_public_key(db)
-    if apk is not None:
-        user.pii_admin = crypto.seal_to(apk[0], _details(email, name), f"users.pii_admin|{uid}")
-        user.pii_admin_version = apk[1]
     return NewAccount(uid, dek, ik, codes)
 
 
-def create_user(email: str, password: str, *, name: str = "", role: str = "user", created_via: str = "open",
-                background: bool = False) -> NewAccount:
-    """A new account with its own "My job search" workspace (what sign-up does, Phase K; tests use it now).
-    Making someone an admin also needs the admin details key shared with them (Phase F)."""
-    from backend import migrate_encryption
-
-    email, password, name = clean_email(email), check_password(password), clean_name(name)
-    if role not in ("user", "admin"):
-        raise ValueError("role must be user or admin")
-    if not migrate_encryption.is_done():  # sign-ups wait for the one-time encryption (accounts design §5.4)
-        raise AccountError("email", "JobHuntPA is encrypting its data. Try again in a few minutes.")
-    db = SessionLocal()
-    try:
-        with _wrapping_if(background):  # the server-key wrap is committed with the account
-            account = _create_user(db, email=email, password=password, name=name, role=role, created_via=created_via,
-                                   background=background)
-            with crypto.as_user(account.user_id, account.dek):  # the workspace's name is sealed under the new key
-                db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=account.user_id))
-                db.commit()
-        log.info("Account created: user %s (%s)", account.user_id, created_via)
-        return account
-    finally:
-        db.close()
-
-
-def create_first_admin(email: str, password: str, *, name: str = "", created_via: str = "first_run",
-                       background: bool = True) -> NewAccount:
-    """The first account (section 5.3), in one transaction: the user and keys, a new admin details key and this
-    admin's grant of it and recovery codes; every workspace without an owner becomes
-    theirs (or a first workspace is made). AlreadySetUp if an account exists; AccountError for a bad value."""
+def create_account(name: str, password: str, *, created_via: str = "first_run", background: bool = True) -> NewAccount:
+    """This install's account (section 5.3), in one transaction: the user and keys and its recovery codes; every
+    workspace without an owner becomes its own (or a first workspace is made). **AlreadySetUp whenever an account
+    exists**, checked under SQLite's write lock, so two first runs at once can't both make one. AccountError for a bad
+    value."""
     global _users_exist
-    email, password, name = clean_email(email), check_password(password), clean_name(name)
+    name, password = clean_name(name), check_password(password)
     with _wrapping_if(background), _create_lock:  # (key lock first, as a rotation takes it)
         db = SessionLocal()
         try:
             db.execute(text("BEGIN IMMEDIATE"))  # no other connection can add a user meanwhile
             if db.query(User.id).first() is not None:
                 raise AlreadySetUp("An account already exists")
-            apk_priv, apk_pub = crypto.new_keypair()
-            apk_version = int(_setting(db, "apk_version") or 0) + 1
-            _put_setting(db, "apk_public", _b64(apk_pub))
-            _put_setting(db, "apk_version", apk_version)
-            db.flush()
-            account = _create_user(db, email=email, password=password, name=name, role="admin",
-                                   created_via=created_via, background=background)
+            account = _insert_account(db, name=name, password=password, created_via=created_via,
+                                      background=background)
             uid = account.user_id
-            own_pub = db.get(UserKeys, uid).x25519_pub
-            db.add(AdminKeyGrant(user_id=uid, apk_version=apk_version, granted_by=uid,
-                                 sealed_priv=crypto.seal_to(own_pub, apk_priv, f"grant|{uid}|{apk_version}")))
             claimed = db.execute(update(Workspace).where(Workspace.owner_id.is_(None)).values(owner_id=uid)).rowcount
             if not db.query(Workspace.id).filter(Workspace.owner_id == uid).first():
                 with crypto.as_user(uid, account.dek):
                     db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=uid))
                     db.flush()
-            # The existing data is encrypted with this admin's key (backend.migrate_encryption): right away at the
-            # first run, or at their next sign-in.
+            # The existing data is encrypted with this account's key (backend.migrate_encryption): right away at the
+            # first run, or at its next sign-in.
             _put_setting(db, "encryption_migration", {"state": "pending", "owner": uid})
             db.commit()
         except BaseException:
@@ -513,8 +471,7 @@ def create_first_admin(email: str, password: str, *, name: str = "", created_via
             db.close()
         _users_exist = True
     _remove_first_run_token()
-    log.info("First admin account created: user %s (%s); %d existing workspace(s) are now theirs", uid,
-             created_via, claimed)
+    log.info("Account created: user %s (%s); %d existing workspace(s) are now its own", uid, created_via, claimed)
     return account
 
 
@@ -525,13 +482,14 @@ def create_first_admin(email: str, password: str, *, name: str = "", created_via
 _DUMMY_SALT = os.urandom(crypto.SALT_LEN)
 
 
-def find_by_email(db: Session, email: Any) -> Optional[User]:
-    """The account for ``email`` (looked up by its hash; nothing is decrypted), or None. A match found under a
+def find_by_name(db: Session, name: Any) -> Optional[User]:
+    """The account whose sign-in name is ``name`` (looked up by its hash; nothing is decrypted), or None. On an older
+    install that is the email address the account was made with, until the name is changed. A match found under a
     previous pepper is rewritten under the current one."""
-    if not isinstance(email, str) or not email.strip() or len(email) > 4 * EMAIL_MAX:
+    if not isinstance(name, str) or not name.strip() or len(name) > 4 * NAME_MAX:
         return None
     server = server_keys()
-    candidates = server.email_hash_candidates(email)
+    candidates = server.email_hash_candidates(name)
     user = db.query(User).filter(User.email_hash.in_(candidates)).first()
     if user is not None and user.email_hash != candidates[0]:
         user.email_hash = candidates[0]
@@ -540,7 +498,7 @@ def find_by_email(db: Session, email: Any) -> Optional[User]:
 
 
 def dummy_derivation(password: Any) -> None:
-    """The same work as checking a real password, so an unknown email address takes as long to refuse."""
+    """The same work as checking a real password, so an unknown name takes as long to refuse."""
     crypto.derive_password(password if isinstance(password, str) else "", _DUMMY_SALT, crypto.kdf_profile())
 
 
@@ -607,8 +565,7 @@ def _give_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, passwor
         ik = migrate_identity(db, row, user_id, dek, password_kek)
     except (crypto.CryptoError, ValueError):
         db.rollback()
-        log.warning("user %s: the identity key could not be made; the admin key stays closed until the next sign-in",
-                    user_id)
+        log.warning("user %s: the identity key could not be made; it is tried again at the next sign-in", user_id)
         return None, False
     log.info("user %s: identity key made; the private key moved from the data key to it", user_id)
     return ik, True
@@ -619,16 +576,11 @@ def migrate_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, passw
     **new X25519 key pair** whose private key is wrapped under the IK (the old private key is not reused: copies of
     the DEK-sealed form, in a backup or an old file, would still open it), the IK wrapped under ``password_kek`` (the
     password key) and, unless the server key opens the data key (background access), under each unconfirmed recovery
-    code (their text is in hand here), and those codes moved from the DEK to the IK. An admin's grant of the admin key
-    is opened with the old private key and sealed to the new public key, and the admin key is replaced
-    (``admin_key.new_key``), so a grant in an old copy opens nothing current; a grant that doesn't open is deleted and
-    audited. The DEK-sealed copies are overwritten; the caller scrubs the write-ahead log after committing. Everything
-    is computed before the row changes, and the changes are one savepoint, so a failure leaves them as they were
-    (CryptoError)."""
-    from backend import admin_key
-
+    code (their text is in hand here), and those codes moved from the DEK to the IK. The DEK-sealed copies are
+    overwritten; the caller scrubs the write-ahead log after committing. Everything is computed before the row
+    changes, and the changes are one savepoint, so a failure leaves them as they were (CryptoError)."""
     with crypto.as_user(user_id, dek):
-        old_priv = crypto.unseal(row.x25519_priv_enc, f"user_keys.x25519_priv|{user_id}")
+        crypto.unseal(row.x25519_priv_enc, f"user_keys.x25519_priv|{user_id}")  # (it must be this account's)
         pending = crypto.unseal(row.pending_codes_enc, _codes_label(user_id)) if row.pending_codes_enc else None
     ik = crypto.new_key()
     priv, pub = crypto.new_keypair()
@@ -637,26 +589,12 @@ def migrate_identity(db: Session, row: UserKeys, user_id: int, dek: bytes, passw
     wrapped_pending = crypto.wrap(ik, pending, _pending_codes_label(user_id)) if pending is not None else None
     # (a code whose text the server key could read, through the data key, must not open the new IK: it stays without)
     code_iks = _code_iks(db, row, user_id, ik, pending) if row.server_wrapped_dek is None else {}
-    old_apk = admin_key.open_grant(db, user_id, old_priv)
-    grant = db.get(AdminKeyGrant, user_id)
     with db.begin_nested():
         row.x25519_pub, row.x25519_priv_enc, row.pw_wrapped_ik = pub, wrapped_priv, wrapped_ik
         if wrapped_pending is not None:
             row.pending_codes_enc = wrapped_pending
         for code_id, wrapped in code_iks.items():
             db.execute(update(RecoveryCode).where(RecoveryCode.id == code_id).values(wrapped_ik=wrapped))
-        if grant is not None and old_apk is None:  # it doesn't open (or is of an older key): nothing to carry over
-            db.delete(grant)
-            db.flush()
-            admin_key.audit(db, user_id, "admin_key_lost", user_id, {"reason": "identity key made"})
-        elif old_apk is not None:
-            # The new public key gets the grant, and the key is replaced: a grant sealed to the old public key (in a
-            # backup) then opens a key that protects nothing written from now on.
-            rotation = admin_key.new_key(db, old_apk, admin_key.active_admin_ids(db), user_id)
-            admin_key.audit(db, user_id, "admin_key_replaced", user_id,
-                            {"by": "identity key made", "apk_version": rotation.apk.version,
-                             "resealed": rotation.resealed, "stale": rotation.stale, "dropped": rotation.dropped},
-                            public=rotation.apk.public)
     return ik
 
 
@@ -696,16 +634,12 @@ def open_private_key(row: UserKeys, user_id: int, ik: bytes) -> bytes:
     return crypto.unwrap(ik, row.x25519_priv_enc, _ik_priv_label(user_id))
 
 
-def replace_identity(db: Session, user_id: int, row: UserKeys, password_kek: bytes, reason: str) -> tuple[bytes, bool]:
-    """A new X25519 key pair and a new IK for an account whose old IK can't be opened (a reset with a recovery
-    code made before the IK). In the caller's
-    transaction (not committed). The IK is wrapped under ``password_kek``; the caller wraps it under the recovery codes
-    and the session. Whatever was sealed to the old public key is lost to this account: an admin's grant of the admin
-    key is deleted (and audited with ``reason``) so another admin can share it again. The unconfirmed recovery codes
-    (kept under the old IK, which nothing opens now) are dropped: the caller makes new ones or leaves the account's
-    other codes as they are. Returns ``(ik, grant_lost)``."""
-    from backend import admin_key
-
+def replace_identity(db: Session, user_id: int, row: UserKeys, password_kek: bytes) -> bytes:
+    """A new X25519 key pair and a new IK for an account whose old IK can't be opened (a reset with a recovery code made
+    before the IK). In the caller's transaction (not committed). The IK is wrapped under ``password_kek``; the caller
+    wraps it under the recovery codes and the session. The unconfirmed recovery codes (kept under the old IK, which
+    nothing opens now) are dropped: the caller makes new ones or leaves the account's other codes as they are. Nothing
+    else is under the IK, so no data is lost."""
     ik = crypto.new_key()
     priv, pub = crypto.new_keypair()
     row.x25519_pub, row.x25519_priv_enc = pub, crypto.wrap(ik, priv, _ik_priv_label(user_id))
@@ -713,18 +647,51 @@ def replace_identity(db: Session, user_id: int, row: UserKeys, password_kek: byt
     row.pending_codes_enc = None  # (under the old IK: it can't be shown again, and would stay "unsaved" for good)
     # The codes that wrapped the old IK are of no use for it any more (and must not be taken for the new one).
     db.execute(update(RecoveryCode).where(RecoveryCode.user_id == user_id).values(wrapped_ik=None))
-    lost = db.execute(delete(AdminKeyGrant).where(AdminKeyGrant.user_id == user_id)).rowcount > 0
-    if lost:
-        admin_key.audit(db, user_id, "admin_key_lost", user_id, {"reason": reason})
-    return ik, lost
+    return ik
+
+
+def _sign_in_name(info: Any) -> str:
+    """The sign-in name from the details' JSON: ``name``, or ``email`` in an account made before the open-source
+    version (its email address is its sign-in name until it is changed)."""
+    if not isinstance(info, dict):
+        return ""
+    value = info.get("email") if "email" in info else info.get("name")
+    return value if isinstance(value, str) else ""
 
 
 def details(db: Session, user_id: int) -> dict:
-    """{email, name} from the user's own copy. Needs their key scope."""
+    """{name}: the sign-in name, from the user's own copy. Needs their key scope."""
     user = db.get(User, user_id)
     if user is None or user.pii_self is None:
-        return {"email": "", "name": ""}
-    return json.loads(crypto.unseal(user.pii_self, f"users.pii_self|{user_id}"))
+        return {"name": ""}
+    return {"name": _sign_in_name(json.loads(crypto.unseal(user.pii_self, f"users.pii_self|{user_id}")))}
+
+
+def change_name(db: Session, user_id: int, new_name: Any) -> str:
+    """Gives the account a new sign-in name: its look-up hash and its own sealed copy of the name, in one transaction
+    (committed here; the write-ahead log is scrubbed after, so the old name's copies don't linger). Needs the account's
+    key scope; the caller has checked recent sign-in. AccountError for a name that can't be used or that another
+    account has. Returns the name as kept."""
+    name = clean_name(new_name)
+    server = server_keys()
+    try:
+        _write_lock(db)
+        user = db.get(User, user_id, populate_existing=True)
+        if user is None:
+            raise LookupError("No such account")
+        taken = db.query(User.id).filter(User.email_hash.in_(server.email_hash_candidates(name)),
+                                         User.id != user_id).first()
+        if taken:
+            raise NameTaken("name", "Another account on this JobHuntPA has that name. Choose another.")
+        user.email_hash = server.email_hash(name)
+        user.pii_self = crypto.seal(_details(name), f"users.pii_self|{user_id}")
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    scrub_wal()
+    log.info("user %s: sign-in name changed", user_id)
+    return name
 
 
 def background_key(db: Session, user_id: int) -> Optional[bytes]:
@@ -884,8 +851,8 @@ def recovery_codes_left(db: Session, user_id: int) -> int:
 
 
 def recovery_codes_without_ik(db: Session, user_id: int) -> int:
-    """How many unused codes can't open the identity key: made before it existed. A reset with one keeps the data but
-    gives the account a new key pair, so an admin needs the admin key shared again (Settings suggests new codes)."""
+    """How many unused codes can't open the identity key: made before it existed. A reset with one keeps the data and
+    gives the account a new identity key (``replace_identity``)."""
     return db.query(RecoveryCode).filter(RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None),
                                          RecoveryCode.wrapped_dek.isnot(None),
                                          RecoveryCode.wrapped_ik.is_(None)).count()
@@ -961,7 +928,7 @@ def replace_recovery_codes(db: Session, user_id: int, dek: bytes, ik: Optional[b
 
 
 # ---------------------------------------------------------------------------
-# Deleting an account (one routine: Settings calls it for your own, the admin panel for anyone's)
+# Deleting an account (Settings, for an account of an older install that has others besides it)
 # ---------------------------------------------------------------------------
 
 class AccountBusy(Exception):
@@ -969,20 +936,19 @@ class AccountBusy(Exception):
 
 
 class AccountProtected(Exception):
-    """The account is the last active admin's: JobHuntPA needs one, and nobody could take the admin details key over."""
+    """The install's only (active) account: deleting it would return the app to its first run, which only the reset
+    tool may do, on the computer itself (backend/reset.py)."""
 
 
-def is_last_admin(db: Session, user_id: int) -> bool:
-    """Whether this is an active admin and no other active admin exists."""
-    user = db.get(User, user_id)
-    if user is None or user.role != "admin" or user.status != "active":
-        return False
-    return not db.query(User.id).filter(User.role == "admin", User.status == "active", User.id != user_id).first()
+def is_only_account(db: Session, user_id: int) -> bool:
+    """Whether no other active account exists besides this one (an install has one account; an older one may have
+    several, and each of those but the last can be deleted)."""
+    return not db.query(User.id).filter(User.status == "active", User.id != user_id).first()
 
 
 def _write_lock(db: Session) -> None:
     """Take SQLite's write lock now (it is kept until the commit), unless this session already holds it, so what is
-    read next (the admins, the key, the uploads) can't change before the commit."""
+    read next (the other accounts, the key, the uploads) can't change before the commit."""
     if not db.connection().connection.driver_connection.in_transaction:
         db.execute(text("BEGIN IMMEDIATE"))
 
@@ -1008,8 +974,8 @@ def _refuse_active_runs(db: Session, ws_ids: list[int]) -> None:
 def _check_deletable(db: Session, user_id: int) -> None:
     """The cheap refusals of ``delete_account`` (AccountProtected, AccountBusy), asked before it takes any lock. It asks
     again under the lock, which is what counts."""
-    if is_last_admin(db, user_id):
-        raise AccountProtected("This is the last admin")
+    if is_only_account(db, user_id):
+        raise AccountProtected("This is the only account")
     ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
     _refuse_active_runs(db, ws_ids)
 
@@ -1058,25 +1024,19 @@ def _remove_uploads(user_id: int, files: list[str]) -> int:
     return removed
 
 
-def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None) -> dict:
-    """The one way an account is removed (a person deleting their own, or an admin deleting someone's): the account
-    and everything of theirs, in one transaction (their sealed upload files after it): workspaces with every row in
-    them (jobs, scores, cover letters, documents, chats, profile, dealbreakers, pins, sources, schedules, runs, merge
-    decisions), sessions, recovery codes, tokens, keys (the data key's and the identity key's wraps with them) and
-    the admin grant.
+def delete_account(db: Session, user_id: int) -> dict:
+    """The one way an account is removed over the web (a person deleting their own, in Settings): the account and
+    everything of theirs, in one transaction (their sealed upload files after it): workspaces with every row in them
+    (jobs, scores, cover letters, documents, chats, profile, dealbreakers, pins, sources, schedules, runs, merge
+    decisions), sessions, recovery codes and keys (the data key's and the identity key's wraps with them).
     Shared postings, company profiles and the geocode cache stay; so do usage counts (``llm_usage``, no longer tied
-    to anyone) and the audit log (its user ids become NULL).
+    to anyone).
 
-    Deleting an admin replaces the admin details key for the remaining admins, in the same transaction, so what
-    they held opens nothing written afterwards. The key is opened through ``actor_id``'s grant (the admin doing the
-    deleting; their own request's key scope) or, with no ``actor_id``, through the deleted admin's own. An entry in
-    the audit log (no personal details) is written when an admin does the deleting or an admin is deleted.
-
-    Needs no key of the user's: it never opens a sealed value. Refuses (AccountBusy) while one of the account's runs
-    is active and (AccountProtected) for the last active admin; ApkUnavailable when the admin key can't be opened.
-    Explicit deletes, not cascades: a database from before accounts has workspace tables
-    without foreign keys."""
-    from backend import admin_key, sessions, tasks
+    **Never the only account** (AccountProtected): that would put the app back at its first run, which only the reset
+    tool may do, run on the computer itself. Needs no key of the user's: it never opens a sealed value. Refuses
+    (AccountBusy) while one of the account's runs is active. Explicit deletes, not cascades: a database from before
+    accounts has workspace tables without foreign keys."""
+    from backend import sessions, tasks
 
     if db.get(User, user_id) is None:
         raise LookupError("No such account")
@@ -1087,34 +1047,15 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
             user = db.get(User, user_id, populate_existing=True)
             if user is None:
                 raise LookupError("No such account")
-            was_admin = user.role == "admin"
-            if is_last_admin(db, user_id):
-                raise AccountProtected("This is the last admin")
+            if is_only_account(db, user_id):
+                raise AccountProtected("This is the only account")
             ws_ids = [i for (i,) in db.query(Workspace.id).filter(Workspace.owner_id == user_id)]
             _refuse_active_runs(db, ws_ids)
-            apk = admin_key.open_apk(db, user_id if actor_id is None else actor_id) if was_admin else None
             files = _remove_workspace_data(db, user_id, ws_ids)
             db.execute(update(LlmUsage).where(LlmUsage.user_id == user_id).values(user_id=None))
-            db.execute(update(AdminAudit).where(AdminAudit.admin_id == user_id).values(admin_id=None))
-            db.execute(update(AdminAudit).where(AdminAudit.target_user_id == user_id).values(target_user_id=None))
-            db.execute(update(AdminKeyGrant).where(AdminKeyGrant.granted_by == user_id).values(granted_by=None))
-            db.execute(update(AuthToken).where(AuthToken.created_by == user_id).values(created_by=None))
-            for model in (AuthSession, RecoveryCode, AuthToken, AdminKeyGrant, UserKeys):
+            for model in (AuthSession, RecoveryCode, UserKeys):
                 db.execute(delete(model).where(model.user_id == user_id))
             db.execute(delete(User).where(User.id == user_id))
-            detail: dict[str, Any] = {"role": "admin" if was_admin else "user", "workspaces": len(ws_ids),
-                                      "files": len(files)}
-            if actor_id is not None:
-                detail["user_id"] = user_id
-            public = None
-            if was_admin:
-                remaining = admin_key.active_admin_ids(db)
-                rotation = admin_key.new_key(db, apk, remaining, actor_id)
-                detail.update(apk_version=rotation.apk.version, resealed=rotation.resealed, stale=rotation.stale,
-                              dropped=rotation.dropped)
-                public = rotation.apk.public
-            if was_admin or actor_id is not None:
-                admin_key.audit(db, actor_id, "user_deleted", None, detail, public=public)
             db.commit()
         except BaseException:
             db.rollback()
@@ -1122,6 +1063,6 @@ def delete_account(db: Session, user_id: int, *, actor_id: Optional[int] = None)
     removed = _remove_uploads(user_id, files)  # after the commit
     scrub_wal()  # the deleted account's key copies and secrets must not linger in the write-ahead log
     sessions._active_on.pop(user_id, None)  # SQLite may give this id to the next account
-    ratelimit.forget_user(user_id)  # ... and must not inherit its wrong tries and email limits
+    ratelimit.forget_user(user_id)  # ... and must not inherit its wrong tries
     log.info("Account deleted: user %s (%d workspace(s), %d file(s))", user_id, len(ws_ids), removed)
-    return {"workspaces": len(ws_ids), "files": removed, "apk_rotated": was_admin}
+    return {"workspaces": len(ws_ids), "files": removed}

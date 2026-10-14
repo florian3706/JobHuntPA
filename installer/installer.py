@@ -37,7 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 IS_WINDOWS = os.name == "nt"
 
 # The providers offered in the LLM menu come from backend/llm_providers.py, the one list the app itself uses
-# (the admin panel, Server). It is loaded by file path so nothing of the app has to be installed yet, and so the
+# (the Settings tab, AI provider). It is loaded by file path so nothing of the app has to be installed yet, and so the
 # Windows setup program (a frozen build of this file that runs against the downloaded source) needs no package
 # import. If that file can't be read, this short list is used instead.
 PRESETS_FILE = ROOT / "backend" / "llm_providers.py"
@@ -241,7 +241,7 @@ def configure_llm(interactive: bool, reconfigure: bool) -> None:
         key = ""
         say("  No API key is needed for this provider.")
     write_env(env_path, lines, {"LLM_API_KEY": key, "LLM_BASE_URL": base, "LLM_MODEL": model})
-    say("  Saved to .env. Provider, model, key and reasoning levels can be changed in the app (admin panel > Server).")
+    say("  Saved to .env. Provider, model, key and reasoning levels can be changed in the app (Settings > AI provider).")
 
 
 COMMUTE_KEYS = (
@@ -263,7 +263,7 @@ def configure_commute(interactive: bool, reconfigure: bool) -> None:
     if not interactive:
         write_env(env_path, lines, {n: os.environ.get(n, values.get(n, "")) for n in names})
         return
-    say("  Optional: commute times on each job's page. Press Enter to skip; you can add them later in the app (admin panel > Server).")
+    say("  Optional: commute times on each job's page. Press Enter to skip; you can add them later in the app (Settings > Commute data).")
     updates = {}
     for name, what, where in COMMUTE_KEYS:
         say(f"  {what}")
@@ -335,8 +335,9 @@ def main() -> None:
     check_app()
 
     say("\nSetup complete.")
-    say("The first time JobHuntPA starts, your browser asks you to create your account. That account is the admin,")
-    say("and the jobs, documents and settings already in JobHuntPA move into it.")
+    say("The first time JobHuntPA starts, your browser asks you to create your account (a name and a password);")
+    say("the jobs, documents and settings already in JobHuntPA move into it. Lost the password and every recovery")
+    say("code? The reset tool (reset.sh, or Reset JobHuntPA in the Start menu) starts over and keeps the settings.")
     if IS_WINDOWS:
         say("Start JobHuntPA from the Desktop or Start-menu shortcut.")
     elif platform.system() == "Darwin":

@@ -224,8 +224,7 @@ class GuessGuard:
             pass
 
     def waiting(self, account: Hashable, now: Optional[float] = None) -> float:
-        """Seconds until some source of the account may try again, or the ceiling ends: 0 when nothing waits (the
-        admin panel's "waiting after wrong passwords")."""
+        """Seconds until some source of the account may try again, or the ceiling ends: 0 when nothing waits."""
         now = time.monotonic() if now is None else now
         with self._lock:
             acct = self._accounts.get(account)
@@ -245,7 +244,7 @@ class GuessGuard:
             return {source: state[0] for source, state in acct.sources.items()} if acct else {}
 
     def clear(self, account: Hashable) -> None:
-        """Forget every wrong try of the account (an admin unlocks it, or its password was reset)."""
+        """Forget every wrong try of the account (its password was changed or reset)."""
         with self._lock:
             self._accounts.pop(account, None)
 
@@ -262,7 +261,7 @@ unknown_guesses = GuessGuard()
 
 
 def forget_account(account: Hashable) -> None:
-    """The account starts again with no wrong passwords or codes (an admin unlocked it, or its password changed)."""
+    """The account starts again with no wrong passwords or codes (its password changed or was reset)."""
     guesses.clear(account)
 
 

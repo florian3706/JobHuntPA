@@ -1,7 +1,5 @@
-"""App-wide settings made in the admin panel's Server section and kept in .env: the LLM (provider address, model, API
-key) and the API keys for commute times, through the two endpoints below. ``PUBLIC_BASE_URL`` (the address other
-devices use, backend/public_url.py) has a rule here too, so it can only ever be written with a valid value; for now it
-is set by hand in .env.
+"""The install's settings kept in .env, made in the Settings tab: the AI provider (address, model, API key), the API
+keys for commute times, and the address other devices use with the extra host names allowed (open-source spec §1.4).
 
     GET  /api/settings/keys        {"tfnsw": {"set": bool, "hint": "…abcd" | null}, "tomtom": {...}}  (never a key)
     PUT  /api/settings/keys        {"tfnsw"?: "<key>", "tomtom"?: "<key>"}: "" clears a key, an omitted one is unchanged
@@ -11,21 +9,28 @@ is set by hand in .env.
     PUT  /api/settings/llm         {"base_url"?, "model"?, "api_key"?}: same omitted / "" semantics; see put_llm for the
                                    rule that moving to another server needs the key typed again
 
-Every change is written to the admin audit log (``server_settings_changed``: which settings, never a value).
-Admins only, for reading as well as writing (accounts design §14.8): these settings serve every account, and the
-keys cost the operator money. Everyone else is refused with 403.
+    GET  /api/settings/address     {public_base_url, allowed_hosts: [names]}
+    PUT  /api/settings/address     {"public_base_url"?, "allowed_hosts"?: [names]}: "" or [] clears
 
-A saved value takes effect at once (os.environ is updated; backend.commute.keys() and backend.scorer.get_config()
-read it on every call) and is written to .env (backend.config.ENV_PATH) so it survives a restart. That file holds the
-LLM key, which costs the owner money, and the app can be reachable by other devices, so writing it is locked down:
+**Who may call:** signed in, for reading and writing (there are no roles: whoever is signed in may change every
+setting, spec §1.2). Each change is logged by the names of the settings it changed, never a value.
+
+A saved value takes effect at once (os.environ is updated; backend.commute.keys(), backend.scorer.get_config(),
+backend.public_url and backend.hosts read it on every call) and is written to .env (backend.config.ENV_PATH) so it
+survives a restart. That file holds the LLM key, which costs the owner money, and the app can be reachable by other
+devices, so writing it is locked down:
   * only the names in ENV_RULES can be written, whatever a request says, and each has its own strict value rule
-    (keys: KEY_RE; model: MODEL_RE; address: normalise_base_url; the public address: its own): never a
-    newline or a quote, and the keys, model and address no whitespace, "=" or "#" either, so a value can't start a new
-    line or a second setting;
+    (keys: KEY_RE; model: MODEL_RE; address: normalise_base_url; the public address and the host names: their own):
+    never a newline or a quote, and no whitespace, "=" or "#" either, so a value can't start a new line or a second
+    setting;
   * the LLM address can't be pointed at another server without the API key typed again in the same request, so a
     saved key can't be redirected to a server someone else controls;
   * the file is replaced atomically (temp file in the same folder, then os.replace), keeping every other line
     and comment, and its permissions (a new file is owner-only).
+
+**Retired names** (``RETIRED_ENV_NAMES``: the mail server and Stripe settings of the removed features) can only ever
+be removed, never set: ``retire_env_names`` deletes their lines from an upgraded install's .env at start-up, so no old
+payment key or mail password stays on disk.
 """
 from __future__ import annotations
 
@@ -42,16 +47,14 @@ from typing import Callable, Optional, Union
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from pydantic import BaseModel, ConfigDict, Field
 
-from backend import admin_key, commute, config, llm_providers, public_url, scorer
-from backend.db import get_db
-from backend.sessions import AuthUser, require_admin
+from backend import commute, config, hosts, llm_providers, public_url, scorer
+from backend.sessions import current_user
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(current_user)])
 
 KEY_VARS = {"tfnsw": "TFNSW_API_KEY", "tomtom": "TOMTOM_API_KEY"}
 LABELS = {"tfnsw": "Transport for NSW", "tomtom": "TomTom"}
@@ -117,6 +120,20 @@ def _plain_url(value: str) -> bool:
         return False
 
 
+MAX_HOSTS = 20
+
+
+def valid_host_list(value: str) -> bool:
+    """JOBHUNT_ALLOWED_HOSTS as it is written: up to 20 host names (lowercase letters, digits, hyphens and dots, as
+    ``backend.hosts`` reads them; no IP address, which is always allowed, no port, scheme or wildcard), separated by
+    commas without spaces."""
+    if not isinstance(value, str) or len(value) > 2000:
+        return False
+    names = value.split(",")
+    return len(names) <= MAX_HOSTS and all(
+        name and len(name) <= 253 and hosts.NAME_RE.fullmatch(name) and not hosts.is_ip(name) for name in names)
+
+
 # The only variables this module may write, each with the rule its (non-empty) value must meet in full.
 ENV_RULES: dict[str, Callable[[str], bool]] = {
     "TFNSW_API_KEY": lambda v: KEY_RE.fullmatch(v) is not None,
@@ -126,7 +143,15 @@ ENV_RULES: dict[str, Callable[[str], bool]] = {
     "LLM_MODEL": lambda v: MODEL_RE.fullmatch(v) is not None,
     # The address other devices use (backend/public_url.py): https, or http only for this computer.
     "PUBLIC_BASE_URL": public_url.valid_public_base_url,
+    # More host names the Host allowlist lets through (backend/hosts.py).
+    "JOBHUNT_ALLOWED_HOSTS": valid_host_list,
 }
+
+# Settings of removed features (the mail server, Stripe): never written, only deleted from .env (``retire_env_names``).
+RETIRED_ENV_NAMES = frozenset({
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_PASSWORD_B64", "SMTP_FROM", "SMTP_SECURITY",
+    "STRIPE_SECRET_KEY", "STRIPE_PRICE_LOOKUP_KEY", "STRIPE_WEBHOOK_SECRET",
+})
 
 _write_lock = threading.Lock()
 
@@ -172,6 +197,43 @@ def update_env_file(path: Path, updates: dict[str, str]) -> None:
         _replace_file(real, "\n".join(out) + "\n")
 
 
+def remove_retired_env(path: Path) -> list[str]:
+    """Deletes every line of the .env file at ``path`` that sets one of RETIRED_ENV_NAMES (only those: nothing else is
+    changed, and nothing is ever set). Returns the names removed (empty, and the file untouched, when there were
+    none). The file is replaced atomically, as by ``update_env_file``."""
+    with _write_lock:
+        real = Path(os.path.realpath(path))
+        try:
+            lines = real.read_text(encoding="utf-8-sig").splitlines()
+        except FileNotFoundError:
+            return []
+        kept, removed = [], []
+        for line in lines:
+            name = _assigned_name(line)
+            if name in RETIRED_ENV_NAMES:
+                removed.append(name)
+            else:
+                kept.append(line)
+        if removed:
+            _replace_file(real, "\n".join(kept) + "\n")
+    return sorted(set(removed))
+
+
+def retire_env_names() -> None:
+    """At start-up: the retired settings leave .env and the process environment. A failure to write is logged (by
+    kind) and start-up goes on: nothing reads them."""
+    for name in RETIRED_ENV_NAMES:
+        os.environ.pop(name, None)
+    try:
+        removed = remove_retired_env(config.ENV_PATH)
+    except (OSError, UnicodeError) as exc:
+        log.warning("Could not remove the retired mail and payment settings from .env: %s", exc.__class__.__name__)
+        return
+    if removed:
+        log.info("Removed %d retired setting(s) of the mail server and payments from .env: %s", len(removed),
+                 ", ".join(removed))
+
+
 def _replace_file(path: Path, text: str) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".env-", suffix=".tmp")  # owner-only (0600)
     try:
@@ -215,7 +277,8 @@ def get_keys():
 
 
 def _save(updates: dict[str, str]) -> None:
-    """Write ``updates`` to .env, and only then to os.environ, so what runs matches what a restart would run."""
+    """Write ``updates`` to .env, and only then to os.environ, so what runs matches what a restart would run. Logs the
+    names changed (never a value)."""
     try:
         update_env_file(config.ENV_PATH, updates)
     except (OSError, UnicodeError) as exc:
@@ -227,10 +290,12 @@ def _save(updates: dict[str, str]) -> None:
             os.environ[var] = value
         else:
             os.environ.pop(var, None)
+    log.info("Settings changed: %s", ", ".join(f"{var} {'set' if value else 'cleared'}" for var, value in
+                                                sorted(updates.items())))
 
 
 @router.put("/keys")
-def put_keys(body: KeysIn, admin: AuthUser = Depends(require_admin), db: Session = Depends(get_db)):
+def put_keys(body: KeysIn):
     updates: dict[str, str] = {}
     for name, var in KEY_VARS.items():
         value = getattr(body, name)
@@ -242,8 +307,6 @@ def put_keys(body: KeysIn, admin: AuthUser = Depends(require_admin), db: Session
         updates[var] = value
     if updates:
         _save(updates)
-        admin_key.audit_settings(db, admin.id, {f"{name}_key": bool(updates[var])
-                                                for name, var in KEY_VARS.items() if var in updates})
     return key_status()
 
 
@@ -303,7 +366,7 @@ def get_llm():
 
 
 @router.put("/llm")
-def put_llm(body: LlmIn, admin: AuthUser = Depends(require_admin), db: Session = Depends(get_db)):
+def put_llm(body: LlmIn):
     """Save the LLM address, model and/or key. ``""`` clears a value, an omitted (or null) one is unchanged.
 
     Moving to a different server (another scheme, host or port than the saved address) needs ``api_key`` in the same
@@ -338,6 +401,55 @@ def put_llm(body: LlmIn, admin: AuthUser = Depends(require_admin), db: Session =
         updates["LLM_API_KEY"] = key
     if updates:
         _save(updates)
-        names = {"LLM_BASE_URL": "ai_address", "LLM_MODEL": "ai_model", "LLM_API_KEY": "ai_key"}
-        admin_key.audit_settings(db, admin.id, {names[var]: bool(value) for var, value in updates.items()})
     return llm_state()
+
+
+# --------------------------------------------------------------------------
+# The address other devices use, and extra host names (hosting on a network, spec §1.6)
+# --------------------------------------------------------------------------
+
+def address_state() -> dict:
+    raw = (os.getenv("JOBHUNT_ALLOWED_HOSTS") or "").split(",")
+    return {"public_base_url": public_url.public_base_url() or "",
+            "allowed_hosts": [n for n in (item.strip().lower().rstrip(".") for item in raw)
+                              if n and hosts.NAME_RE.fullmatch(n) and not hosts.is_ip(n)]}
+
+
+class AddressIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    public_base_url: Optional[str] = Field(None, max_length=1000)
+    allowed_hosts: Optional[list[str]] = Field(None, max_length=100)
+
+
+ADDRESS_HELP = ("The public address must look like https://jobs.example.com (with an optional port or path, up to "
+                "300 characters, no spaces, login details, ? or #). http:// is only for this computer (localhost).")
+HOSTS_HELP = (f"Give up to {MAX_HOSTS} host names, like jobs.example.com or pi.tail1234.ts.net: letters, digits, "
+              "hyphens and dots only, with no http://, port or path. IP addresses are always allowed, so leave them out.")
+
+
+@router.get("/address")
+def get_address():
+    return address_state()
+
+
+@router.put("/address")
+def put_address(body: AddressIn):
+    """Save the public address (PUBLIC_BASE_URL) and/or the extra host names (JOBHUNT_ALLOWED_HOSTS). ``""`` or
+    ``[]`` clears; an omitted (or null) one is unchanged. The address marks the sign-in cookie Secure when it is https,
+    is accepted as an Origin and lets its host through the Host allowlist; the names are let through as well. Changing
+    the address may sign this browser out (the cookie's name follows https)."""
+    updates: dict[str, str] = {}
+    if body.public_base_url is not None:
+        value = body.public_base_url.strip().rstrip("/")
+        if value and not public_url.valid_public_base_url(value):
+            raise HTTPException(status_code=422, detail=ADDRESS_HELP)
+        updates["PUBLIC_BASE_URL"] = value
+    if body.allowed_hosts is not None:
+        names = list(dict.fromkeys(n.strip().lower().rstrip(".") for n in body.allowed_hosts if n and n.strip()))
+        value = ",".join(names)
+        if value and not valid_host_list(value):
+            raise HTTPException(status_code=422, detail=HOSTS_HELP)
+        updates["JOBHUNT_ALLOWED_HOSTS"] = value
+    if updates:
+        _save(updates)
+    return address_state()

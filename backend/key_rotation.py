@@ -1,4 +1,4 @@
-"""Rotating the server key (KEK), the same code for the admin panel's button and ``python -m backend.keys
+"""Rotating the server key (KEK), the same code for the Settings tab's button and ``python -m backend.keys
 rotate-kek`` (accounts design §1.3).
 
 The KEK wraps what the server must open with nobody signed in: the data keys of people who allowed background access

@@ -33,7 +33,7 @@ def load_dotenv(path: Optional[Path] = None) -> None:
 
 def process_env(name: str) -> str:
     """``name`` from the environment the process was started with, never from .env (for settings that must not
-    be stored in a file, such as the first admin's password for CI and headless installs)."""
+    be stored in a file, such as the account's password for CI and headless installs)."""
     return "" if name in FROM_DOTENV else os.environ.get(name, "")
 
 

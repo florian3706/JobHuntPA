@@ -76,9 +76,7 @@ def config_problem(cfg: Optional[dict] = None) -> Optional[str]:
     missing = [name for name, key in REQUIRED if not cfg[key] and not (key == "api_key" and keyless)]
     if not missing:
         return None
-    if not llm_providers.viewer_is_admin():  # what to set, and where, is for the admin (accounts design §14.8)
-        return llm_providers.USER_NOT_SET_UP
-    return f"Set {', '.join(missing)} in the admin panel (Server > AI provider)."
+    return f"Set {', '.join(missing)} in Settings (AI provider)."
 
 
 def public_config() -> dict[str, Any]:

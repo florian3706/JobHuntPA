@@ -1,5 +1,5 @@
 # Push a tag like v1.2.0 (matching the VERSION file) to publish
-# JobHuntPA-Setup.exe and JobHuntPA.exe on the GitHub Releases page.
+# JobHuntPA-Setup.exe, JobHuntPA.exe, JobHuntPA-Uninstall.exe and JobHuntPA-Reset.exe on the GitHub Releases page.
 name: Release
 
 on:
@@ -25,7 +25,8 @@ jobs:
           pip install pyinstaller
           pyinstaller --onefile --console --name JobHuntPA installer/windows_launch.py
           pyinstaller --onefile --console --name JobHuntPA-Uninstall installer/uninstaller.py
-          pyinstaller --onefile --console --name JobHuntPA-Setup --add-data "dist/JobHuntPA.exe;." --add-data "dist/JobHuntPA-Uninstall.exe;." --add-data "VERSION;." installer/windows_setup.py
+          pyinstaller --onefile --console --name JobHuntPA-Reset installer/windows_reset.py
+          pyinstaller --onefile --console --name JobHuntPA-Setup --add-data "dist/JobHuntPA.exe;." --add-data "dist/JobHuntPA-Uninstall.exe;." --add-data "dist/JobHuntPA-Reset.exe;." --add-data "VERSION;." installer/windows_setup.py
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -33,6 +34,7 @@ jobs:
             dist/JobHuntPA-Setup.exe
             dist/JobHuntPA.exe
             dist/JobHuntPA-Uninstall.exe
+            dist/JobHuntPA-Reset.exe
           body: |
-            **Windows:** download **JobHuntPA-Setup.exe** and run it (Windows may warn about an unknown publisher: click *More info*, then *Run anyway*). It installs everything and adds a JobHuntPA shortcut. `JobHuntPA.exe` (app launcher) and `JobHuntPA-Uninstall.exe` are installed by setup; to remove JobHuntPA use Settings > Apps or the Start-menu *Uninstall JobHuntPA* shortcut.
+            **Windows:** download **JobHuntPA-Setup.exe** and run it (Windows may warn about an unknown publisher: click *More info*, then *Run anyway*). It installs everything and adds a JobHuntPA shortcut. `JobHuntPA.exe` (app launcher), `JobHuntPA-Uninstall.exe` and `JobHuntPA-Reset.exe` (starts over when the password and every recovery code are lost) are installed by setup; to remove JobHuntPA use Settings > Apps or the Start-menu *Uninstall JobHuntPA* shortcut.
             **Linux / macOS:** download the source code zip below and follow the README.

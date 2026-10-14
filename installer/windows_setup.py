@@ -1,14 +1,17 @@
 """JobHuntPA-Setup.exe: install or update JobHuntPA on Windows.
 
 Built with PyInstaller by .github/workflows/release.yml; the matching
-JobHuntPA.exe is bundled inside. Steps:
+JobHuntPA.exe, JobHuntPA-Uninstall.exe and JobHuntPA-Reset.exe are bundled
+inside. Steps:
   1. choose a folder (default %LOCALAPPDATA%\\JobHuntPA)
   2. download this version of the app from GitHub and unpack it there,
      keeping an existing .env and data folder
   3. find Python 3.10+ or install Python 3.12 for the current user
   4. run the shared setup (installer/installer.py) with that Python
-  5. put JobHuntPA.exe and JobHuntPA-Uninstall.exe in the folder, create
-     Desktop + Start-menu shortcuts and list the app in Settings > Apps
+  5. put JobHuntPA.exe, JobHuntPA-Uninstall.exe and JobHuntPA-Reset.exe in the
+     folder, create Desktop + Start-menu shortcuts (Start menu: JobHuntPA,
+     Uninstall JobHuntPA, Reset JobHuntPA) and list the app in Settings > Apps.
+     installer/uninstaller.py removes all three Start-menu entries.
 """
 from __future__ import annotations
 
@@ -98,9 +101,9 @@ def install_python() -> list[str]:
     return found
 
 
-def make_shortcut(link: Path, target: Path, workdir: Path) -> None:
+def make_shortcut(link: Path, target: Path, workdir: Path, description: str = "JobHuntPA") -> None:
     ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{link}');"
-          f"$s.TargetPath='{target}';$s.WorkingDirectory='{workdir}';$s.Description='JobHuntPA';$s.Save()")
+          f"$s.TargetPath='{target}';$s.WorkingDirectory='{workdir}';$s.Description='{description}';$s.Save()")
     subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], check=True)
 
 
@@ -150,10 +153,15 @@ def main() -> None:
             make_shortcut(folder / "JobHuntPA.lnk", launcher, target)
     uninstaller = target / "JobHuntPA-Uninstall.exe"
     shutil.copy2(bundled("JobHuntPA-Uninstall.exe"), uninstaller)
+    resetter = target / "JobHuntPA-Reset.exe"
+    shutil.copy2(bundled("JobHuntPA-Reset.exe"), resetter)
     if programs.exists():
         make_shortcut(programs / "Uninstall JobHuntPA.lnk", uninstaller, target)
+        # Starts over when the password and every recovery code are lost: it asks before deleting anything.
+        make_shortcut(programs / "Reset JobHuntPA.lnk", resetter, target,
+                      "Delete the JobHuntPA account and its data, keeping the settings")
     register_uninstaller(target, uninstaller, version())
-    print("  Added JobHuntPA to your Desktop and Start menu (with an uninstaller),")
+    print("  Added JobHuntPA to your Desktop and Start menu (with an uninstaller and the reset tool),")
     print("  and to Settings > Apps so it can be removed like any other app.")
 
     print("\nDone.")

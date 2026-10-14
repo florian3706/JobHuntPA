@@ -14,7 +14,7 @@ are stored per base URL + model. The candidates depend on the provider
     POST /api/llm/detect-levels   probe the configured model
     PUT  /api/llm/reasoning       {scoring?, research?, cover_letter?, chat?}
 
-Admins only, for reading too (accounts design §14.8): the levels apply to every account.
+Who may call: signed in (there are no roles, open-source spec §1.2). The levels apply to every account of the install.
 """
 from __future__ import annotations
 
@@ -26,15 +26,14 @@ from typing import Any, Optional
 import httpx  # noqa: F401  (tests patch llm_settings.httpx; the probes are sent by backend/llm_providers.py)
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
-from backend import admin_key, llm_providers
-from backend.db import AppSetting, SessionLocal, get_db
-from backend.sessions import AuthUser, require_admin
+from backend import llm_providers
+from backend.db import AppSetting, SessionLocal
+from backend.sessions import current_user
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/llm", tags=["llm"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/llm", tags=["llm"], dependencies=[Depends(current_user)])
 
 TASKS = ("scoring", "research", "cover_letter", "chat")
 CANDIDATE_LEVELS = llm_providers.LEVELS_OPENAI
@@ -156,8 +155,7 @@ class ReasoningUpdate(BaseModel):
 
 
 @router.put("/reasoning")
-def update_reasoning(payload: ReasoningUpdate, admin: AuthUser = Depends(require_admin),
-                     db: Session = Depends(get_db)):
+def update_reasoning(payload: ReasoningUpdate):
     current = task_levels()
     changed = {}
     for task in TASKS:
@@ -169,5 +167,7 @@ def update_reasoning(payload: ReasoningUpdate, admin: AuthUser = Depends(require
         current[task] = value
         changed[f"reasoning_{task}"] = bool(value)
     _set("reasoning", current)
-    admin_key.audit_settings(db, admin.id, changed)
+    if changed:
+        log.info("Settings changed: %s", ", ".join(f"{name} {'set' if on else 'cleared'}"
+                                                    for name, on in sorted(changed.items())))
     return _state()

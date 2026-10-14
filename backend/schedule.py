@@ -192,12 +192,12 @@ def tick(start_search: Callable[[int], dict], now: Optional[datetime] = None) ->
 
     now = now or datetime.now(timezone.utc)
     if not migrate_encryption.is_done():
-        return None  # the data is being encrypted (or waits for its admin to sign in)
+        return None  # the data is being encrypted (or waits for its account to sign in)
     if tasks.active_run() is not None:
         return None  # due slots wait (up to GRACE) for the worker
     db = SessionLocal()
     try:
-        # A workspace with no owner (an install from before accounts, until its first admin is created) waits.
+        # A workspace with no owner (an install from before accounts, until its first account is created) waits.
         for ws, owner in (db.query(Workspace.id, Workspace.owner_id).filter(Workspace.owner_id.isnot(None))
                           .order_by(Workspace.id).all()):
             row = db.get(SearchSchedule, ws)

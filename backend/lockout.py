@@ -97,10 +97,10 @@ def begin(scope, user: Optional[User], email_key: bytes = b"", *, ceiling: bool 
 
 
 def forget(user_id: int) -> None:
-    """The account starts again with no wrong tries: an admin unlocked it, or its password was changed or reset."""
+    """The account starts again with no wrong tries: its password was changed or reset."""
     ratelimit.forget_account(user_id)
 
 
 def waiting(user_id: int) -> float:
-    """Seconds some source of the account still waits (the admin panel's "waiting after wrong passwords")."""
+    """Seconds some source of the account still waits after wrong passwords."""
     return ratelimit.guesses.waiting(user_id)

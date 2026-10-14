@@ -7,8 +7,8 @@ compiled into JobHuntPA-Uninstall.exe (Windows). Standard library only.
 Steps:
   1. make sure JobHuntPA isn't running
   2. optionally save a backup zip of your data and settings (data/ + .env)
-  3. remove shortcuts (Linux menu entry; Windows Desktop/Start menu and
-     the "Apps & features" entry)
+  3. remove shortcuts (Linux menu entry; Windows Desktop/Start menu, with
+     the Uninstall and Reset entries, and the "Apps & features" entry)
   4. optionally remove the Chromium browser setup downloaded (shared by
      any other app that uses Playwright, so kept by default)
   5. delete the app folder
@@ -134,7 +134,8 @@ def remove_shortcuts(folder: Path) -> None:
     elif IS_WINDOWS:
         desktop = Path(os.environ.get("USERPROFILE", Path.home())) / "Desktop"
         programs = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-        for link in (desktop / f"{APP_NAME}.lnk", programs / f"{APP_NAME}.lnk", programs / f"Uninstall {APP_NAME}.lnk"):
+        for link in (desktop / f"{APP_NAME}.lnk", programs / f"{APP_NAME}.lnk", programs / f"Uninstall {APP_NAME}.lnk",
+                     programs / f"Reset {APP_NAME}.lnk"):
             if link.exists():
                 link.unlink()
         try:

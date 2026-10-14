@@ -1,10 +1,10 @@
 """The signed-in user's sign-in security (accounts design §6.3, §6.4 and §6.6; Phase E). Signing in and resetting
 with a recovery code are in backend/auth.py. Every route here needs a signed-in session.
 
-    GET  /api/auth/security              {recovery_codes_left, recovery_codes_pending, recovery_codes_old,
-                                          other_sessions, recent_auth}
+    GET  /api/auth/security              {recovery_codes_left, recovery_codes_pending, other_sessions, recent_auth}
     POST /api/auth/reauth                {password}: "confirm your password": sensitive actions need it within 15 min
     POST /api/auth/password              {current_password, new_password, sign_out_others = true}
+    PUT  /api/auth/name                  {name} (recent sign-in): the name this account signs in with
     POST /api/auth/recovery-codes        {password} (recent sign-in): eight new codes in place of all the old ones,
                                          returned once as ``recovery_codes``
     POST /api/auth/recovery-codes/show   {password}: the codes not yet confirmed as saved, again
@@ -71,7 +71,6 @@ class PasswordIn(BaseModel):
 
 @router.get("/security")
 def security_status(auth: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
-    user = db.get(User, auth.id)
     now = utcnow()
     others = db.query(AuthSession).filter(AuthSession.user_id == auth.id, AuthSession.state == "active",
                                           AuthSession.id != auth.session_id, AuthSession.idle_expires_at > now,
@@ -79,9 +78,6 @@ def security_status(auth: AuthUser = Depends(current_user), db: Session = Depend
     return {
         "recovery_codes_left": users.recovery_codes_left(db, auth.id),
         "recovery_codes_pending": users.has_pending_recovery_codes(db, auth.id),
-        # An admin whose unused codes were made before the identity key: a reset with one keeps their data but loses
-        # their share of the admin key, so Settings suggests making new codes.
-        "recovery_codes_old": user.role == "admin" and users.recovery_codes_without_ik(db, auth.id) > 0,
         "other_sessions": others,
         "recent_auth": sessions.has_recent_auth(auth),
     }
@@ -125,6 +121,26 @@ def change_password(body: ChangePasswordIn, request: Request, auth: AuthUser = D
     scrub_wal()  # the old password's copies of the keys must not linger in the write-ahead log
     log.info("Password changed: user %s (%d other session(s) ended)", auth.id, ended)
     return {"ok": True, "signed_out_others": ended}
+
+
+class NameIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field("", max_length=1000)
+
+
+@router.put("/name")
+def change_name(body: NameIn, auth: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
+    """Recent sign-in: the name this account signs in with (open-source spec §1.2). The look-up hash and the sealed
+    copy change together; the password, the keys and the sessions don't. An older install's accounts sign in with
+    their email address until they change it here."""
+    require_recent_auth(auth)
+    try:
+        name = users.change_name(db, auth.id, body.name)
+    except users.NameTaken as exc:
+        raise AuthProblem(409, "name_taken", exc.message, field="name") from None
+    except users.AccountError as exc:
+        raise AuthProblem(422, "invalid", exc.message, field="name") from None
+    return {"ok": True, "name": name}
 
 
 # ---------------------------------------------------------------------------

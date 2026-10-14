@@ -7,8 +7,8 @@ Stop it with Ctrl+C or by closing the window.
 
 Until the first account exists, the app writes a one-time setup token to
 data/first-run.txt; this opens (or, with --no-browser, prints) the page that
-creates the admin account, with the token in the address's #fragment so it
-never reaches a server log.
+creates the account, with the token in the address's #fragment so it never
+reaches a server log.
 
 Options: --port N (default 8000; the next free port is used if taken),
          --no-browser
@@ -63,7 +63,7 @@ def open_app(url: str, no_browser: bool) -> None:
     """Open JobHuntPA, or its first-run page when no account exists yet."""
     setup = first_run_url(url)
     if setup:
-        print("First run: create your account (you will be its admin) at")
+        print("First run: create your account at")
         print(f"  {setup}")
     if not no_browser:
         webbrowser.open(setup or url)

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -62,42 +63,39 @@ COUNTRY = "AU"  # where web searches are located (the app targets Australian job
 class ScorerError(Exception):
     """An LLM call failed. ``auth`` marks failures that retrying other requests cannot fix (key rejected,
     nothing configured): batch runs stop at the first one. ``str(exc)`` is the full detail (the provider's address,
-    its answer): it is for admins and logs only; whatever reaches a person goes through ``user_message``."""
+    its answer); whatever reaches a person or is stored goes through ``user_message``, which takes keys out."""
 
     def __init__(self, message: str, *, auth: bool = False):
         super().__init__(message)
         self.auth = auth
 
 
-# What an ordinary user is told about an AI problem: never the provider's address, its answer or how it is set up
-# (accounts design §14.8). Admins keep the detail.
-USER_PROBLEM = "The AI service had a problem; your admin can see details."
-USER_NOT_SET_UP = "AI features aren't set up yet. Ask your admin."
+# What a company profile keeps after a failed research run: it is shared by every workspace of the install, so it
+# never holds the provider's address or answer.
+USER_PROBLEM = "The AI service had a problem. Try again later, or check the AI provider in Settings."
+
+# Anything in an error's text that could be a credential: an API key (OpenAI-style sk-..., Google's AIza...), a bearer
+# token, or a key= / api_key= parameter in an address. The saved key itself is replaced first, whatever it looks like.
+_SECRET_RE = re.compile(r"sk-[A-Za-z0-9_\-]{6,}|AIza[0-9A-Za-z_\-]{10,}|(?i:bearer)\s+[A-Za-z0-9._~+/=\-]{6,}"
+                        r"|(?i:(?:api[_-]?key|x-api-key|key|token|access_token)\s*[=:]\s*)[^\s&\"',;)]+")
+MESSAGE_MAX = 600
 
 
-def viewer_is_admin() -> bool:
-    """Whether the person this request or run acts for (the key scope's user) is an admin. Fails closed: no key
-    scope, an unknown user or any trouble reading the account means no."""
-    try:
-        from backend import crypto
-        from backend.db import SessionLocal, User  # here, so the installer can import this module
-
-        if not crypto.has_scope():
-            return False
-        db = SessionLocal()
-        try:
-            row = db.query(User.role).filter(User.id == crypto.current().user_id).first()
-        finally:
-            db.close()
-        return bool(row and row[0] == "admin")
-    except Exception:  # noqa: BLE001
-        return False
+def redact(text: str) -> str:
+    """``text`` with the saved AI key and anything that looks like a credential replaced by ``[key]``, and cut to
+    600 characters. Used for every AI error a person sees or the app stores."""
+    key = (os.environ.get("LLM_API_KEY") or "").strip()
+    if len(key) >= 4:
+        text = text.replace(key, "[key]")
+    text = _SECRET_RE.sub("[key]", text)
+    return text if len(text) <= MESSAGE_MAX else text[:MESSAGE_MAX - 1] + "…"
 
 
 def user_message(detail: Any) -> str:
-    """``detail`` (an exception or text from an LLM call) as the person who will read it may see it: an admin gets
-    it as it is, anyone else a plain sentence with none of the provider's address or setup."""
-    return str(detail) if viewer_is_admin() else USER_PROBLEM
+    """``detail`` (an exception or text from an LLM call) as a person may see it: what went wrong (the provider's
+    status, its message) but never a key (``redact``). There are no roles: whoever is signed in manages the AI
+    provider, so they get the detail they need to fix it."""
+    return redact(str(detail))
 
 
 # --------------------------------------------------------------------------
@@ -253,11 +251,9 @@ def web_search_problem(cfg: dict, feature: str = "Web search") -> Optional[str]:
     provider = provider_for(cfg.get("base_url", ""))
     if _SEARCH[provider] is not None:
         return None
-    if not viewer_is_admin():  # who offers search, and where it is chosen, is the admin's business
-        return f"{feature} needs web search, which this app's AI service doesn't offer. Your admin can see details."
     ok = ", ".join(p["label"] for p in PRESETS if p["web_search"] and p["id"] != "custom")
     return (f"{feature} needs web search, which {_BY_ID[provider]['label']} doesn't offer through this app. "
-            f"Choose one of {ok} in the admin panel (Server, AI provider) to use it; everything else works with "
+            f"Choose one of {ok} in Settings (AI provider) to use it; everything else works with "
             f"{_BY_ID[provider]['label']}.")
 
 

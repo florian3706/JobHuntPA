@@ -1,10 +1,10 @@
 """One-time encryption of the data an install had before accounts (docs/design/accounts.md §5.4).
 
-The first admin owns every workspace from before accounts (backend.users.create_first_admin), so everything is
-sealed under their data key. That key exists only while they are signed in, so the run starts when they are:
+The first account owns every workspace from before accounts (backend.users.create_account), so everything is
+sealed under its data key. That key exists only while it is signed in, so the run starts when it is:
 
 * at the first run (``POST /api/auth/first-run``), with the key the new account was made with;
-* at start-up for an admin made from the environment (CI, headless servers), in the start-up itself;
+* at start-up for an account made from the environment (CI, headless servers), in the start-up itself;
 * otherwise at their next sign-in, or their next request with a session from before a restart
   (``backend.sessions``). A small database is done within that request; a larger one runs in its own thread while
   every data API answers 423 ``{"code": "encrypting", "done", "total"}`` and the page shows the progress.
@@ -32,11 +32,11 @@ sealed under their data key. That key exists only while they are signed in, so t
 
 Afterwards the plaintext copies outside the database (the backup above, older ``*.bak-*`` backups, the unused
 ``data/cache/*.html`` pages and any upload left unsealed) are listed by ``leftover_files``. They are never deleted
-silently: the admin panel's Server section lists them and offers "Delete them" (``POST
-/api/admin/plaintext-files/delete``, backend/admin.py: recent password, audited), and a notice on the dashboard
-points admins there.
+silently: the Settings tab lists them and offers "Delete them" (``POST /api/settings/leftovers/delete``,
+backend/app_settings.py: recent sign-in), and a notice on the dashboard points there. The reset tool
+(backend/reset.py) deletes them too.
 
-    GET  /api/encryption/status              {state, done, total, error?} (+ report, leftovers for an admin)
+    GET  /api/encryption/status              {state, done, total, error?, report, finished_at, leftovers} (signed in)
 """
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ OWNED = {
     "fit_results": f"job_id IN (SELECT id FROM jobs WHERE workspace_id IN ({_WS}))",
     "cover_letters": f"job_id IN (SELECT id FROM jobs WHERE workspace_id IN ({_WS}))",
     "chat_messages": f"thread_id IN (SELECT id FROM chat_threads WHERE workspace_id IN ({_WS}))",
-    "search_profile": "1 = 1",  # legacy, unowned: the first admin's
+    "search_profile": "1 = 1",  # legacy, unowned: the first account's
 }
 # Caches: their old rows are deleted, not sealed (commute_cache becomes per user; http_cache is process-keyed).
 CACHES = ("commute_cache", "http_cache")
@@ -156,11 +156,11 @@ def state() -> dict:
 
 
 def owner_of(value: dict) -> Optional[int]:
-    """Whose key the run uses: the first admin, recorded when they were made (or the lowest admin's id)."""
+    """Whose key the run uses: the first account, recorded when it was made (or the lowest account id)."""
     if isinstance(value.get("owner"), int):
         return value["owner"]
     with engine.connect() as conn:
-        return conn.execute(text("SELECT MIN(id) FROM users WHERE role = 'admin'")).scalar()
+        return conn.execute(text("SELECT MIN(id) FROM users")).scalar()
 
 
 def _marked() -> bool:
@@ -224,7 +224,7 @@ def at_startup() -> None:
                       "plaintext found in it is refused, not sealed.", value.get("state") or "nothing")
     elif value.get("state") == "running":
         _update_state(state="pending", interrupted_at=datetime.utcnow().isoformat(timespec="seconds"))
-        log.warning("Encrypting the data was interrupted; it carries on when the admin who started it signs in.")
+        log.warning("Encrypting the data was interrupted; it carries on when the account that started it signs in.")
     is_done()
 
 
@@ -274,7 +274,7 @@ def run(user_id: int, dek: bytes) -> dict:
             _last_failure = time.monotonic()
             reason = str(exc) if isinstance(exc, MigrationError) else exc.__class__.__name__
             _update_state(state="failed", error=reason, failed_at=datetime.utcnow().isoformat(timespec="seconds"))
-            log.error("Encrypting the data failed: %s. It is tried again at the admin's next sign-in.", reason)
+            log.error("Encrypting the data failed: %s. It is tried again at the account's next sign-in.", reason)
             raise
 
 
@@ -286,7 +286,7 @@ def _run(owner: int) -> dict:
     if _marked():  # (the database was set back: the key file wins, and nothing found now is sealed as if real)
         raise MigrationError("The key file says the data is already encrypted, so nothing is sealed again")
     if owner_of(value) != owner:
-        raise MigrationError("Only the first admin's key can encrypt the data from before accounts")
+        raise MigrationError("Only the first account's key can encrypt the data from before accounts")
     _update_state(state="running", owner=owner, error=None, started_at=value.get("started_at")
                   or datetime.utcnow().isoformat(timespec="seconds"))
     from backend import pool_migration
@@ -668,11 +668,11 @@ def _public(item: dict) -> dict:
 
 
 @router.get("/status")
-def encryption_status(user: AuthUser = Depends(current_user)):
+def encryption_status(_user: AuthUser = Depends(current_user)):
+    """Signed in: the run's progress, its report (counts only) and the leftover plaintext files (paths and sizes)."""
     out = progress()
-    if user.is_admin:
-        value = state()
-        out["report"] = value.get("report")
-        out["finished_at"] = value.get("finished_at")
-        out["leftovers"] = [_public(i) for i in leftover_files()] if out["state"] == "done" else []
+    value = state()
+    out["report"] = value.get("report")
+    out["finished_at"] = value.get("finished_at")
+    out["leftovers"] = [_public(i) for i in leftover_files()] if out["state"] == "done" else []
     return out

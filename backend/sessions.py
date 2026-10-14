@@ -2,10 +2,16 @@
 
 **A session** is a row in ``sessions``. The browser's cookie holds a random 32-byte secret; the row's id is its
 SHA-256 and the row keeps the user's data key (DEK) wrapped under a key derived from the secret, and beside it the
-identity key (IK, ``wrapped_ik``), which only the admin panel's details chain needs (backend/admin_key.py). So no key
-stays in memory between requests, restarting the server signs nobody out, and the database alone can't unwrap
+identity key (IK, ``wrapped_ik``), which keeps the recovery codes not yet confirmed as saved (backend/users.py). So no
+key stays in memory between requests, restarting the server signs nobody out, and the database alone can't unwrap
 anything. A request opens the IK only when it asks (``crypto.open_ik``); a session made before the IK existed has
-none, and the admin panel says to sign in again.
+none until a password check gives it one (``give_ik``).
+
+**Who may call what.** Every route says which of these it needs: *open* (no session: health, the sign-in state, the
+first run, sign-in, recovery with a code, sign-out), *signed in* (``current_user``: everything else, the settings that
+serve the whole install included) or *recent sign-in* (``require_recent_auth``: the password entered in the last 15
+minutes, for what could lock the person out or hand their data to someone else). There are no roles: whoever is signed
+in may change every setting (docs/design/open-source.md §1.2).
 
 **The cookie** is ``__Host-jh_session`` (Secure) over HTTPS, and ``jh_session`` on plain http://127.0.0.1 (local
 installs; Safari refuses Secure cookies there). When the address has a port, the port is part of the name
@@ -20,8 +26,8 @@ signed in". Lifetimes: 24 hours idle and 7 days in all, or 30 days idle and 90 i
   1. POST, PUT, PATCH and DELETE must come from this site: an Origin (or Referer) that names another site is
      refused (403 ``bad_origin``). A request with neither isn't from a browser page, so no other site can have
      sent it; the CSRF token below still guards a session.
-  2. Before the first account exists, everything but /api/health, /api/auth/state and /api/auth/first-run answers
-     401 ``setup_required``.
+  2. Before the account exists, everything but /api/health, /api/auth/state and /api/auth/first-run answers 401
+     ``setup_required``.
   3. The sign-in endpoints (PRE_SESSION) take JSON only (415), which a form on another site can't send, and are
      rate-limited per client address (429 with Retry-After).
   4. The cookie's session is loaded, checked (state, expiry, account active) and its DEK unwrapped. Without one,
@@ -32,7 +38,7 @@ signed in". Lifetimes: 24 hours idle and 7 days in all, or 30 days idle and 90 i
      endpoints run in a copy of this context, and so does a background run started from one).
   7. Until the one-time encryption of the data from before accounts has run (backend.migrate_encryption), every
      API but health, /api/auth/* and /api/encryption/* answers 423 ``encrypting`` with its progress; a request
-     from the admin whose key it needs starts or resumes it.
+     from the account whose key it needs starts or resumes it.
 
 **Browser-extension keys** (backend/extension.py). A request with ``Authorization: Bearer jhpa_...`` is checked by the
 key alone, never the cookie (a key that doesn't work answers 401 ``token_invalid``, even with a good cookie). Any other
@@ -46,8 +52,8 @@ everything that ends all of an account's sessions ends its keys too.
 
 **Sign-in** takes the name and password and makes an ``active`` session; there is no second step. ``load`` never
 unwraps a row that isn't ``active`` (or an extension key's, through ``load_key``), so a leftover row of another state
-reaches nothing. Sign-up and resetting a password with a recovery code are PRE_SESSION too: what is in the body (an
-invitation, a recovery code) proves what a session would.
+reaches nothing. Resetting a password with a recovery code is PRE_SESSION too: the code in the body proves what a
+session would. There is no sign-up: an install has one account, made at the first run.
 
 The DB work runs in the thread pool, so a slow write elsewhere never stalls the event loop.
 """
@@ -61,7 +67,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 from urllib.parse import urlsplit
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import HTTPException, Request
 from sqlalchemy import null
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -70,7 +76,7 @@ from starlette.datastructures import Headers
 from starlette.requests import cookie_parser
 from starlette.responses import JSONResponse, Response
 
-from backend import admin_key, crypto, public_url, ratelimit, users
+from backend import crypto, public_url, ratelimit, users
 from backend.db import AuthSession, SessionLocal, User, utcnow
 
 log = logging.getLogger(__name__)
@@ -87,13 +93,12 @@ FIRST_RUN = "/api/auth/first-run"
 LOGIN = "/api/auth/login"
 LOGOUT = "/api/auth/logout"
 RECOVER = "/api/auth/recover"       # a forgotten password, reset with a recovery code (the data is kept)
-SIGNUP = "/api/auth/signup"
 # Answered without a session.
-OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, RECOVER, LOGOUT, SIGNUP})
-# Answered before the first account exists.
+OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, RECOVER, LOGOUT})
+# Answered before the account exists.
 SETUP_PATHS = frozenset({HEALTH, STATE, FIRST_RUN})
 # Sign-in endpoints: JSON only and rate-limited per client address; no CSRF token (there may be no session yet).
-PRE_SESSION = frozenset({FIRST_RUN, LOGIN, RECOVER, SIGNUP})
+PRE_SESSION = frozenset({FIRST_RUN, LOGIN, RECOVER})
 UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
@@ -101,19 +106,14 @@ UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 class AuthUser:
     """Who a request acts for (``current_user``)."""
     id: int
-    role: str
     session_id: str
     persistent: bool
     reauth_at: Optional[datetime]
     csrf: str
     key: bool = False  # a browser-extension key, not a browser session: no recent sign-in, KEY_ENDPOINTS only
 
-    @property
-    def is_admin(self) -> bool:
-        return self.role == "admin"
-
     def __repr__(self) -> str:  # never the CSRF token
-        return f"<AuthUser id={self.id} role={self.role}{' key' if self.key else ''}>"
+        return f"<AuthUser id={self.id}{' key' if self.key else ''}>"
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +184,7 @@ def clear_cookie(response: Response, scope) -> None:
 
 def create(db: Session, user: User, dek: bytes, ik: Optional[bytes], *, persistent: bool) -> bytes:
     """A new session for ``user`` (added to ``db``, not committed). Returns the cookie secret. ``ik`` is the identity
-    key (None: the account has none yet, so the session has none). Signing in also re-seals the person's details for
-    admins when they aren't sealed to the current admin key (backend.admin_key)."""
-    admin_key.heal_details(db, user, dek)
+    key (None: the account has none yet, so the session has none)."""
     secret = crypto.new_key()
     sid = crypto.session_id(secret)
     now = utcnow()
@@ -267,7 +265,7 @@ def load(secret: bytes) -> Optional[tuple[AuthUser, bytes, Optional[Callable[[],
             dek = crypto.unwrap_session_dek(secret, row.wrapped_dek)
         except crypto.CryptoError:
             return None
-        auth = AuthUser(id=user.id, role=user.role, session_id=sid, persistent=bool(row.persistent),
+        auth = AuthUser(id=user.id, session_id=sid, persistent=bool(row.persistent),
                         reauth_at=row.reauth_at, csrf=crypto.csrf_token(secret))
         ik_opener = crypto.session_ik_opener(secret, row.wrapped_ik) if row.wrapped_ik is not None else None
         today = datetime.now(timezone.utc).date()
@@ -381,7 +379,7 @@ def load_key(secret: bytes) -> Optional[tuple[AuthUser, bytes, None]]:
             dek = crypto.unwrap_extension_dek(secret, row.wrapped_dek)
         except crypto.CryptoError:
             return None
-        auth = AuthUser(id=user.id, role=user.role, session_id=sid, persistent=False, reauth_at=None, csrf="",
+        auth = AuthUser(id=user.id, session_id=sid, persistent=False, reauth_at=None, csrf="",
                         key=True)
         today = datetime.now(timezone.utc).date()
         try:
@@ -499,7 +497,7 @@ class AuthMiddleware:
         if unsafe and not same_site(scope):
             return _deny(403, "bad_origin", "This request came from another website, so it was refused.")
         if not (users.known_to_exist() or await run_in_threadpool(users.users_exist)) and path not in SETUP_PATHS:
-            return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create the admin account first.")
+            return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create your account first.")
         if path in PRE_SESSION and unsafe:
             if headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
                 return _deny(415, "json_required", "Send this as JSON.")
@@ -533,7 +531,7 @@ class AuthMiddleware:
         one answers 429, but a key that works is let in all the same (one address can be many people's: a shared
         network, a proxy), and guessing a key is hopeless (32 random bytes)."""
         if not (users.known_to_exist() or await run_in_threadpool(users.users_exist)):
-            return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create the admin account first.")
+            return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create your account first.")
         secret = key_secret(token)
         found = await run_in_threadpool(load_key, secret) if secret else None
         if found is None:
@@ -559,7 +557,7 @@ def encryption_open(path: str) -> bool:
 
 async def _while_encrypting(auth: AuthUser, dek: bytes) -> Optional[JSONResponse]:
     """Step 7: until the encryption migration has run (backend.migrate_encryption), data APIs answer 423 with its
-    progress. A request from the admin whose key it needs starts (or resumes) it; a small database is done within
+    progress. A request from the account whose key it needs starts (or resumes) it; a small database is done within
     that request, which then goes ahead."""
     from backend import migrate_encryption
 
@@ -570,11 +568,12 @@ async def _while_encrypting(auth: AuthUser, dek: bytes) -> Optional[JSONResponse
     info = await run_in_threadpool(migrate_encryption.progress)
     if info.get("state") == "failed":
         detail = (f"Encrypting your data stopped ({info.get('error')}). JobHuntPA tries again in a minute, or when "
-                  "its admin signs in again.")
+                  "you sign in again.")
     elif await run_in_threadpool(migrate_encryption.is_owner, auth.id):
         detail = "JobHuntPA is encrypting your data. This page reloads by itself when it has finished."
     else:
-        detail = "JobHuntPA is waiting for its admin to sign in, to finish encrypting the data. Try again later."
+        detail = ("JobHuntPA is waiting for the account that owns the earlier data to sign in, to finish encrypting it. "
+                  "Try again later.")
     return JSONResponse({"detail": detail, "code": "encrypting", "state": info.get("state"), "done": info["done"],
                          "total": info["total"]}, status_code=423)
 
@@ -592,12 +591,4 @@ def current_user(request: Request) -> AuthUser:
     user = request.scope.get("jh_auth")
     if user is None:
         raise HTTPException(status_code=401, detail="You're signed out. Sign in to continue.")
-    return user
-
-
-def require_admin(user: AuthUser = Depends(current_user)) -> AuthUser:
-    """App-wide settings (the LLM, the commute keys) are the admins': ordinary users can neither see nor change
-    them (accounts design §14.8)."""
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Only an admin can see or change this.")
     return user

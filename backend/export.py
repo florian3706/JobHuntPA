@@ -4,8 +4,7 @@
 
 A POST with the CSRF token (a link or a prefetch must never start an export), and the password entered in the last
 15 minutes. The zip is built in memory inside the request's key scope: no plaintext touches the disk (no temporary
-files). Only the signed-in account's own workspaces are read (``Workspace.owner_id``); an admin exports their own
-data like anyone else. One export per account at a time (429), and at most ``MAX_AT_ONCE`` in the whole app (503), and
+files). Only the signed-in account's own workspaces are read (``Workspace.owner_id``). One export per account at a time (429), and at most ``MAX_AT_ONCE`` in the whole app (503), and
 no more than ``MAX_EXPORT_BYTES`` of files in one zip (413): the zip is held in memory, so the account's place and
 the slot are kept until the download has ended (or ``stream_seconds``: ``MAX_STREAM_SECONDS`` plus the time the zip
 takes at ``MIN_RATE``; a timer gives the place back then even when the client holds the connection open and reads
@@ -327,9 +326,8 @@ def _account_md(db: Session, user: User, workspaces: list[Workspace]) -> str:
     keys = db.get(UserKeys, user.id)
     out = ["# Account\n\n"]
     out.append(facts([
-        ("Email", line(who.get("email"))), ("Name", line(who.get("name"))),
+        ("Sign-in name", line(who.get("name"))),
         ("Account created", when(user.created_at)), ("Last active", day(user.last_active_on)),
-        ("Role", "admin" if user.role == "admin" else "user"),
         ("Scheduled searches while signed out (background access)", "on" if keys is not None and keys.server_wrapped_dek is not None else "off"),
         ("Background access allowed since", when(keys.background_since) if keys is not None and keys.server_wrapped_dek is not None else ""),
         ("Theme", line(prefs.get("theme")) or "not chosen"),

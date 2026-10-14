@@ -1,16 +1,21 @@
 """The signed-in user's own account settings (accounts design, section 6.1 and Phase K).
 
+Every route needs a signed-in session; deleting also needs recent sign-in.
+
     GET /api/account/prefs         {theme: <id> | null}: the theme chosen for this account, null when none yet
     PUT /api/account/prefs         {theme}: saves it, sealed under the user's key (``users.prefs_enc``)
     GET /api/account/onboarding    {step, path, features}: where the sign-up walkthrough stands
     PUT /api/account/onboarding    {step: n} remembers the step to show next; {done: true} ends the walkthrough
-    POST /api/account/delete       {password} (recent sign-in): deletes the account and all its data (Phase E)
+    GET /api/account/delete        {allowed}: false for the install's only account
+    POST /api/account/delete       {password} (recent sign-in): deletes the account and all its data, except the
+                                   install's only account (409 only_account: the reset tool, run on the computer
+                                   itself, is the way to start over; nothing over the web wipes the install)
 
 ``users.onboarding_step`` is the number (counting from 1) of the walkthrough step to show next, NULL once the
 walkthrough is finished or skipped. The page (frontend/welcome.html) builds its list of steps and saves the number
 of the next one after each step, so a person who leaves comes back to the same place.
 
-Two paths: the first admin, whose existing search settings moved into the account (``created_via`` first_run or
+Two paths: the first account, whose existing search settings moved into it (``created_via`` first_run or
 bootstrap, with titles already saved), gets the short one (choose a theme, then keep or review the settings); every
 other new account gets the full one. A short-path person who asks to review moves past step 2, which makes the path
 "full" from then on.
@@ -29,7 +34,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend import admin_key, crypto, sessions, users
+from backend import crypto, sessions, users
 from backend.db import User, UserProfile, Workspace, get_db
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
@@ -49,12 +54,10 @@ MAX_STEP = 20
 SHORT_PATH_LAST_STEP = 2  # on the short path: 1 theme, 2 "keep your current settings or review them"
 
 
-def features(admin: bool = False) -> dict[str, bool]:
-    """What this version offers the walkthrough and the account menu. The wizard shows the scheduled-search option
-    only when ``scheduled_searches`` is true (background access came in Phase G). ``admin_panel`` is true only for an
-    admin (``/api/auth/me`` passes the signed-in person's role): the account menu's "Admin" link needs it, and the
-    panel's endpoints check the role again on the server."""
-    return {"admin_panel": bool(admin), "scheduled_searches": True}
+def features() -> dict[str, bool]:
+    """What this version offers the walkthrough. The wizard shows the scheduled-search option only when
+    ``scheduled_searches`` is true (background access came in Phase G)."""
+    return {"scheduled_searches": True}
 
 
 def _label(uid: int) -> str:
@@ -145,36 +148,38 @@ class DeleteAccountIn(BaseModel):
     password: str = Field("", max_length=4096)
 
 
-def _last_admin() -> AuthProblem:
-    return AuthProblem(409, "admin_cannot_delete", "You're the only admin. Make someone else an admin first, or "
-                                                   "keep this account.")
+ONLY_ACCOUNT = ("This is the only account on this JobHuntPA, so it can't be deleted here. To start over, download "
+                "your data first, then run the reset tool on the computer JobHuntPA runs on (see the README).")
+
+
+def _only_account() -> AuthProblem:
+    return AuthProblem(409, "only_account", ONLY_ACCOUNT)
+
+
+@router.get("/delete")
+def can_delete(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
+    """Signed in: whether this account can be deleted here (not the install's only one)."""
+    return {"allowed": not users.is_only_account(db, user.id)}
 
 
 @router.post("/delete")
 def delete_my_account(body: DeleteAccountIn, request: Request, user: AuthUser = Depends(current_user),
                       db: Session = Depends(get_db)):
-    """Deletes the signed-in account and everything in it (design §6.8; the work is ``users.delete_account``). It needs
-    the password, entered within the last 15 minutes and once more here. An admin can delete their own account while
-    another active admin remains (the admin details key is replaced for the others); the last admin can't."""
+    """Recent sign-in, and the password once more here. Deletes the signed-in account and everything in it (design
+    §6.8; the work is ``users.delete_account``): only on an older install that holds other accounts besides it. The
+    install's only account is refused (409 ``only_account``)."""
     from backend.security import confirm_password  # (security imports auth, which imports this module)
 
     require_recent_auth(user)
-    if users.is_last_admin(db, user.id):
-        raise _last_admin()
+    if users.is_only_account(db, user.id):
+        raise _only_account()
     confirm_password(request, db, user, body.password)
     try:
         users.delete_account(db, user.id)
     except users.AccountBusy:
         raise AuthProblem(409, "run_active", "A search is still running. Wait for it to finish, then try again.") from None
     except users.AccountProtected:
-        raise _last_admin() from None
-    except admin_key.ApkUnavailable:
-        if not crypto.has_ik():  # a session from before the identity key
-            raise AuthProblem(409, "admin_key_missing", "Sign in again to open people's details, then delete your "
-                                                        "account.") from None
-        raise AuthProblem(409, "admin_key_missing", "You don't have the admin key, so you can't delete your account "
-                                                    "yourself. Ask another admin to delete it, or to share the key "
-                                                    "with you again.") from None
+        raise _only_account() from None
     response = JSONResponse({"ok": True})
     sessions.clear_cookie(response, request.scope)
     response.headers["Clear-Site-Data"] = '"cache"'

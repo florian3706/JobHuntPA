@@ -11,8 +11,9 @@ Design: docs/design/accounts.md, section 1.3.
 * **kek** wraps what the server must open with nobody signed in: the DEKs of users who turned on background access
   (``srv|{uid}``). The wrap's label always ends in ``|{kek_id}``, and the envelope's
   kid names the KEK, so the file can hold several KEKs while a rotation is under way.
-* **pepper** keys ``email_hash = HMAC-SHA256(pepper, normalised email)``, so an account is found by email without
-  decrypting anything. It isn't a decryption key: leaking it only lets someone confirm guessed addresses.
+* **pepper** keys ``email_hash = HMAC-SHA256(pepper, normalised sign-in name)``, so an account is found by its name
+  without decrypting anything (on an older install the name is the email address the account was made with; the
+  column keeps its old name). It isn't a decryption key: leaking it only lets someone confirm guessed names.
 * **signing** signs tokens such as the lockout's device cookie. A retired key keeps verifying for 30 days.
 * **encryption_done_at** is written once, when the one-time encryption of the data from before accounts has finished
   (backend/migrate_encryption.py), and never removed. It turns strict mode on at every start whatever the database
@@ -23,7 +24,8 @@ The file is owner-only (0600) and only ever replaced atomically (crypto.write_pr
 uninstaller's backup includes it and the Windows setup keeps it on update. It is created only while the database has
 no users: once there are users, a missing file or one whose fingerprint (``HMAC(pepper, "fp")[:8]``, kept in
 ``app_settings["server_keys_fingerprint"]``) doesn't match stops start-up, because a new file would silently break
-email lookup and orphan every background-access key.
+signing in and orphan every background-access key. (The reset tool, backend/reset.py, deletes the accounts and the
+file together, with the app stopped.)
 
 **Rotating the KEK** (crash-safe; the old KEK stays in the file until nothing uses it):
   1. ``start_kek_rotation``: write the file with a new KEK as current and the old ones kept. From here on, new wraps
@@ -45,9 +47,7 @@ Command line (run with the app stopped; the commands refuse while it is running)
 
     python -m backend.keys bench-kdf [--profile default|low|all] [--runs N]
     python -m backend.keys rotate-kek                 replace the server key (backend/key_rotation.py)
-    python -m backend.keys new-admin-key --email X    a new admin details key, after the last admin lost theirs
-                                                      (backend/admin_key.py)
-    python -m backend.keys recover-lost --admin-email X     (key file lost: backend/key_recovery.py)
+    python -m backend.keys recover-lost --name X      (key file lost: backend/key_recovery.py; --name once per account)
 """
 from __future__ import annotations
 
@@ -531,8 +531,8 @@ def hold_key_file(path: Optional[Union[str, Path]] = None) -> None:
     handle = os.fdopen(fd, "r+b")
     if not _try_lock(handle):
         handle.close()
-        raise KeyFileError("JobHuntPA, or one of its key commands (rotate-kek, new-admin-key, recover-lost), is using "
-                           "the key file. Stop it first, then try again.")
+        raise KeyFileError("JobHuntPA, or one of its commands (rotate-kek, recover-lost, the reset tool), is using the "
+                           "key file. Stop it first, then try again.")
     try:
         handle.seek(0)
         handle.write(f"{os.getpid()}\n".encode("ascii"))
@@ -667,11 +667,10 @@ def main(argv: Optional[list[str]] = None, *, ask_password: Optional[Callable[[s
     bench.add_argument("--runs", type=int, default=3)
     sub.add_parser("rotate-kek", help="replace the server key and re-wrap everything that uses it")
     recover = sub.add_parser("recover-lost", help="make a new key file after losing data/server-keys.json (asks for "
-                                                  "that admin's password)")
-    recover.add_argument("--admin-email", required=True)
-    admin_key = sub.add_parser("new-admin-key", help="make --email an admin with a new admin details key (after the "
-                                                     "last admin lost theirs)")
-    admin_key.add_argument("--email", required=True)
+                                                  "the account's password)")
+    # (--admin-email is the older spelling: an older install's sign-in names are email addresses)
+    recover.add_argument("--name", "--admin-email", dest="names", action="append", required=True,
+                         help="the account's sign-in name; give it once for each account to restore")
     args = parser.parse_args(argv)
     if args.command == "bench-kdf":
         if args.runs < 1:
@@ -682,14 +681,10 @@ def main(argv: Optional[list[str]] = None, *, ask_password: Optional[Callable[[s
         from backend import key_rotation
 
         return key_rotation.rotate_kek_command()
-    if args.command == "new-admin-key":
-        from backend import admin_key
-
-        return admin_key.new_admin_key_command(args.email)
     if args.command == "recover-lost":
         from backend import key_recovery
 
-        return key_recovery.run(args.admin_email, ask_password=ask_password)
+        return key_recovery.run(args.names, ask_password=ask_password)
     parser.error(f"unknown command {args.command}")
 
 

@@ -1,25 +1,25 @@
-"""``python -m backend.keys recover-lost --admin-email X``: carry on after ``data/server-keys.json`` was lost and
-there's no backup of it (accounts design 1.3, "Lost key file"). Run it with JobHuntPA stopped.
+"""``python -m backend.keys recover-lost --name X``: carry on after ``data/server-keys.json`` was lost and there's no
+backup of it (accounts design 1.3, "Lost key file"). Run it with JobHuntPA stopped.
 
-The key file holds the server KEK (it wraps the data keys of background-access accounts),
-the pepper (email addresses are found by ``HMAC(pepper, email)``) and the signing key. Without it nobody can sign in,
-because no email address finds its account. What it can't give back is the KEK's wraps, which are copies of keys
-people can also unlock with their passwords or recovery codes. So:
+The key file holds the server KEK (it wraps the data keys of background-access accounts), the pepper (accounts are
+found by ``HMAC(pepper, name)``) and the signing key. Without it nobody can sign in, because no name finds its account.
+What it can't give back is the KEK's wraps, which are copies of keys people can also unlock with their passwords or
+recovery codes. So:
 
-  1. An admin proves who they are: the password is checked against the admin accounts (the email can't be used to
-     look one up: that needs the lost pepper) and the account's own copy of its details must name ``--admin-email``. A turned-off admin is refused like any
-     other mismatch.
-  2. Their password opens their identity key, which opens their X25519 private key, which opens their copy of the
-     admin details key (APK), which opens every account's ``pii_admin``. (An admin who hasn't signed in since the
-     identity key was introduced still has the private key under the data key: that form is read too.)
-  3. A new key file is made. Every ``email_hash`` is computed again with the new pepper from the decrypted email
-     address and every ``server_wrapped_dek`` is deleted (background access is off until each person turns it on
-     again), in one transaction. The new file's fingerprint is stored.
-  4. The new file is put in place last. A crash before that leaves a database that matches no key file; running the
+  1. The account's owner proves who they are: the password is checked against every active account (the name can't
+     be used to look one up: that needs the lost pepper), and the account's own copy of its name (``pii_self``, under
+     the data key the password opens) must be the ``--name`` given. A turned-off account is refused like any other
+     mismatch. An install from before the open-source version may hold several accounts: give ``--name`` once for
+     each, and each password is asked in turn.
+  2. A new key file is made. The ``email_hash`` of each account proven in step 1 is computed again with the new
+     pepper, and every ``server_wrapped_dek`` is deleted (background access is off until each person turns it on
+     again), in one transaction, and the write-ahead log is scrubbed. The new file's fingerprint is stored.
+  3. The new file is put in place last. A crash before that leaves a database that matches no key file; running the
      command again starts over from step 1.
 
-Accounts whose ``pii_admin`` can't be opened (stale after a new admin key, see 1.4) keep their old hash, which no
-email address finds any more; the summary says how many. The summary never names anyone.
+An account not named (or whose password wasn't given) keeps its old hash, which no name finds any more; the summary
+says how many. Nobody else can sign them in, since their names are sealed under their own keys. The summary never
+names anyone.
 """
 from __future__ import annotations
 
@@ -29,101 +29,62 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from sqlalchemy import func, update
 
 from backend import crypto, key_rotation, keys, users
-from backend.db import (DB_PATH, AdminKeyGrant, AppSetting, SessionLocal, User, UserKeys, encryption_done,
-                        scrub_wal)
+from backend.db import DB_PATH, AppSetting, SessionLocal, User, UserKeys, encryption_done, scrub_wal
 
 log = logging.getLogger(__name__)
 
-NO_MATCH = "No admin account matches that email address and password. Nothing was changed."
+NO_MATCH = "No account matches that name and password. Nothing was changed."
 
 
 class RecoveryError(Exception):
     """The recovery can't go ahead; the message says why (and that nothing was changed)."""
 
 
-def _find_admin(db, admin_email: str, password: str) -> tuple[User, bytes, Optional[bytes]]:
-    """The admin row whose password this is and whose own copy of its details names ``admin_email``, with its data
-    key and identity key (None before the account had one). The password is checked against every admin row (there
-    are few), then the email against the match."""
-    wanted = keys.normalise_email(admin_email)
-    for user in db.query(User).filter(User.role == "admin", User.status == "active").order_by(User.id):
+def _find_account(db, name: str, password: str, skip: set[int]) -> User:
+    """The active account whose password this is and whose own copy of its name is ``name`` (names are compared as
+    sign-in compares them). The password is checked against every active account not in ``skip`` (there are few)."""
+    wanted = keys.normalise_email(name)
+    for user in db.query(User).filter(User.status == "active").order_by(User.id):
+        if user.id in skip:
+            continue
         derived = crypto.derive_password(password, user.kdf_salt, crypto.KdfParams.from_json(user.kdf_params))
         if not crypto.verify_password(user.pw_verifier, derived):
             continue
         row = db.get(UserKeys, user.id)
         try:
             dek = crypto.unwrap(derived.kek, row.pw_wrapped_dek, f"pw|{user.id}")
-            ik = crypto.unwrap(derived.kek, row.pw_wrapped_ik, f"pw-ik|{user.id}") if row.pw_wrapped_ik is not None \
-                else None
             with crypto.as_user(user.id, dek):
-                details = json.loads(crypto.unseal(user.pii_self, f"users.pii_self|{user.id}"))
+                found = users._sign_in_name(json.loads(crypto.unseal(user.pii_self, f"users.pii_self|{user.id}")))
         except (crypto.CryptoError, ValueError, TypeError):
             continue
-        email = details.get("email") if isinstance(details, dict) else None
-        if isinstance(email, str) and keys.normalise_email(email) == wanted:
-            return user, dek, ik
+        if found and keys.normalise_email(found) == wanted:
+            return user
     raise RecoveryError(NO_MATCH)
 
 
-def _admin_details_key(db, admin: User, dek: bytes, ik: Optional[bytes]) -> bytes:
-    """The admin details key's private half, opened through this admin's grant of it."""
-    grant = db.get(AdminKeyGrant, admin.id)
-    if grant is None:
-        raise RecoveryError("This admin doesn't hold the admin details key, so email addresses can't be worked out "
-                            "again. Try another admin. Nothing was changed.")
-    row = db.get(UserKeys, admin.id)
-    try:
-        if ik is not None:
-            private = users.open_private_key(row, admin.id, ik)
-        else:  # an account from before the identity key
-            with crypto.as_user(admin.id, dek):
-                private = crypto.unseal(row.x25519_priv_enc, f"user_keys.x25519_priv|{admin.id}")
-        return crypto.open_sealed(private, grant.sealed_priv, f"grant|{admin.id}|{grant.apk_version}")
-    except crypto.CryptoError:
-        raise RecoveryError("This admin's copy of the admin details key can't be opened. Try another admin. "
-                            "Nothing was changed.") from None
-
-
-def _new_hashes(db, apk_private: bytes, new: keys.ServerKeys, admin: User, admin_email: str) -> tuple[dict, int]:
-    """``({user id: new email_hash}, how many accounts couldn't be worked out)``."""
-    hashes: dict[int, bytes] = {}
-    missing = 0
-    for user in db.query(User).order_by(User.id):
-        email = None
-        if user.pii_admin is not None:
-            try:
-                details = json.loads(crypto.open_sealed(apk_private, user.pii_admin, f"users.pii_admin|{user.id}"))
-                email = details.get("email") if isinstance(details, dict) else None
-            except (crypto.CryptoError, ValueError, TypeError):
-                email = None
-        if user.id == admin.id and not isinstance(email, str):
-            email = admin_email  # this admin's own copy was opened (and named this address) to get here
-        if isinstance(email, str) and email.strip():
-            hashes[user.id] = new.email_hash(email)
-        else:
-            missing += 1
-    return hashes, missing
-
-
-def run(admin_email: str, *, ask_password: Optional[Callable[[str], str]] = None, out=None, err=None,
+def run(names: Iterable[str], *, ask_password: Optional[Callable[[str], str]] = None, out=None, err=None,
         path: Optional[Path] = None) -> int:
-    """Recover from a lost key file. Returns the exit status: 0 done, 1 refused or failed (nothing changed)."""
+    """Recover from a lost key file. ``names``: the sign-in name of each account to re-index (an older install's are
+    email addresses). Returns the exit status: 0 done, 1 refused or failed (nothing changed)."""
     out, err = out or sys.stdout, err or sys.stderr
     ask_password = ask_password or getpass.getpass
     path = Path(path) if path else keys.key_file_path()
+    names = [names] if isinstance(names, str) else [n for n in names if isinstance(n, str) and n.strip()]
     try:
-        return _recover(admin_email, ask_password, out, path)
+        if not names:
+            raise RecoveryError("Give the account's name with --name. Nothing was changed.")
+        return _recover(names, ask_password, out, path)
     except RecoveryError as exc:
         print(str(exc), file=err)
         return 1
 
 
-def _recover(admin_email: str, ask_password: Callable[[str], str], out, path: Path) -> int:
+def _recover(names: list[str], ask_password: Callable[[str], str], out, path: Path) -> int:
     try:
         key_rotation.refuse_while_running()  # a running app would go on wrapping under the keys thrown away here
     except keys.KeyFileError as exc:
@@ -135,14 +96,17 @@ def _recover(admin_email: str, ask_password: Callable[[str], str], out, path: Pa
         raise RecoveryError(f"There is no database at {DB_PATH}, so there is nothing to recover.")
     db = SessionLocal()
     try:
-        if db.query(User.id).first() is None:
+        total = db.query(func.count(User.id)).scalar()
+        if not total:
             raise RecoveryError("There are no accounts, so there is nothing to recover: start JobHuntPA normally, "
                                 "which makes a new key file.")
-        password = ask_password(f"Password of the admin account {admin_email}: ")
-        if not isinstance(password, str) or not password:
-            raise RecoveryError("No password was entered. Nothing was changed.")
-        admin, dek, ik = _find_admin(db, admin_email, password)
-        apk_private = _admin_details_key(db, admin, dek, ik)
+        proven: dict[int, str] = {}
+        for name in names:
+            password = ask_password(f"Password of the account {name}: ")
+            if not isinstance(password, str) or not password:
+                raise RecoveryError("No password was entered. Nothing was changed.")
+            user = _find_account(db, name, password, set(proven))
+            proven[user.id] = name
 
         # The new key file is written beside the final one and moved into place after the database has changed.
         staged = path.with_name(path.name + ".new")
@@ -151,12 +115,11 @@ def _recover(admin_email: str, ask_password: Callable[[str], str], out, path: Pa
         try:
             if encryption_done(db.connection()):  # the new file must keep saying so (strict mode stays on)
                 new.mark_encryption_done()
-            hashes, missing = _new_hashes(db, apk_private, new, admin, admin_email)
             background = db.query(func.count()).select_from(UserKeys).filter(
                 UserKeys.server_wrapped_dek.isnot(None)).scalar()
             try:
-                for uid, value in hashes.items():
-                    db.execute(update(User).where(User.id == uid).values(email_hash=value))
+                for uid, name in proven.items():
+                    db.execute(update(User).where(User.id == uid).values(email_hash=new.email_hash(name)))
                 db.execute(update(UserKeys).values(server_wrapped_dek=None, server_kek_id=None,
                                                    background_since=None))
                 db.merge(AppSetting(key="server_keys_fingerprint", value_json=json.dumps(new.fingerprint())))
@@ -171,11 +134,12 @@ def _recover(admin_email: str, ask_password: Callable[[str], str], out, path: Pa
             staged.unlink(missing_ok=True)
     finally:
         db.close()
-    log.info("recover-lost: new key file written; %d account(s) re-indexed, %d not", len(hashes), missing)
+    missing = total - len(proven)
+    log.info("recover-lost: new key file written; %d account(s) re-indexed, %d not", len(proven), missing)
     print(f"A new key file was written: {path}", file=out)
-    print(f"Email lookup was rebuilt for {len(hashes)} account(s)."
-          + (f" {missing} could not be worked out, so they can't sign in by email address (see the README)."
-             if missing else ""), file=out)
-    print(f"Background access was switched off for {background} account(s): each person turns it on again in "
-          "Settings. Back up the new file together with the database.", file=out)
+    print(f"Signing in was restored for {len(proven)} account(s)."
+          + (f" {missing} other account(s) were not named, so they can't sign in (see the README)." if missing else ""),
+          file=out)
+    print(f"Background access was switched off for {background} account(s): turn it on again in Settings. Back up "
+          "the new file together with the database.", file=out)
     return 0

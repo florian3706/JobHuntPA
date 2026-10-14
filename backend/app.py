@@ -21,8 +21,8 @@ from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
 from backend import crypto, ghost, hosts, llm_providers, migrate_encryption, schedule, tasks, users
+from backend import app_settings
 from backend.account import router as account_router
-from backend.admin import router as admin_router
 from backend.app_settings import router as app_settings_router
 from backend.geo_lookup import router as geo_router
 from backend.auth import AuthProblem
@@ -41,11 +41,12 @@ from backend.extension import router as extension_router
 from backend.job_chat import router as chat_router
 from backend.filters import softened_job_ids
 from backend.llm_settings import router as llm_router
+from backend.maintenance import router as maintenance_router
 from backend.offices import looks_like_recruiter, office_unknown
 from backend.offices import router as offices_router
 from backend.title_suggestions import router as titles_router
 from backend.profile import router as profile_router
-from backend.sessions import AuthMiddleware, AuthUser, current_user, require_admin
+from backend.sessions import AuthMiddleware, AuthUser, current_user
 from backend.sources import router as sources_router
 from backend.workspaces import current_workspace, owned
 from backend.workspaces import router as workspaces_router
@@ -136,13 +137,15 @@ Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejecte
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    app_settings.retire_env_names()  # an upgraded install's old mail and payment settings leave .env
     threading.Thread(target=hosts.machine_names, daemon=True).start()  # this computer's names (it may ask the network)
-    # The server key file, then the first admin from the environment or the first-run token (backend.users).
+    # The server key file, then (with no account yet) the account from the environment or the first-run token
+    # (backend.users). Once an account exists nothing here makes another.
     # A missing or wrong key file stops start-up here, with what to do.
     users.startup()
     scrub_wal()  # (a key copy deleted just before the last stop may still sit in the log)
     threading.Thread(target=users.derivation_floor, daemon=True).start()  # how long a refused sign-in takes at least
-    # An encryption run the last process left running waits for its admin's next sign-in; after it, strict mode.
+    # An encryption run the last process left running waits for its account's next sign-in; after it, strict mode.
     migrate_encryption.at_startup()
     tasks.mark_interrupted()
     schedule.start_scheduler(lambda ws: start_search_run(ws, scheduled=True))
@@ -165,7 +168,6 @@ app.include_router(auth_router)
 app.include_router(security_router)
 app.include_router(account_router)
 app.include_router(export_router)
-app.include_router(admin_router)
 app.include_router(background_router)
 app.include_router(geo_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
@@ -175,6 +177,7 @@ app.include_router(sources_router)
 app.include_router(workspaces_router)
 app.include_router(llm_router)
 app.include_router(app_settings_router)
+app.include_router(maintenance_router)
 app.include_router(cover_letters_router)
 app.include_router(duplicates_router)
 app.include_router(extension_router)
@@ -506,28 +509,21 @@ def get_run(run_id: int, db: Session = Depends(get_db), ws: int = Depends(curren
 # ---------------------------------------------------------------------------
 
 @app.post("/api/score/test")
-def test_scorer(_admin: AuthUser = Depends(require_admin)):
+def test_scorer(_user: AuthUser = Depends(current_user)):
+    """Signed in: one tiny request to the configured AI provider (the Settings tab's Test connection)."""
     from backend.scorer import test_connection
 
     return test_connection()
 
 
-# What /api/score/status tells someone who isn't an admin about the LLM: whether AI features work and what they
-# can do, never the provider, address, model or reasoning level (accounts design §14.8).
-NOT_SET_UP = "AI features aren't set up yet. Ask your admin."
-
-
-def llm_status_for_user(llm: dict) -> dict:
-    return {"configured": llm["configured"], "problem": None if llm["configured"] else NOT_SET_UP,
-            "capabilities": {"web_search": bool(llm["capabilities"].get("web_search"))}}
-
-
 @app.get("/api/score/status")
 def scorer_status(office_slack: int = OfficeSlack, db: Session = Depends(get_db),
-                  ws: int = Depends(current_workspace), user: AuthUser = Depends(current_user)):
+                  ws: int = Depends(current_workspace)):
+    """Signed in: the AI provider's setup (address, model, reasoning level, what it can do; never the key) and this
+    workspace's scoring counts."""
     from backend.scorer import build_profile, public_config, select_jobs
 
-    llm = public_config() if user.is_admin else llm_status_for_user(public_config())
+    llm = public_config()
     text, phash = build_profile(db, ws)
     pending = len(select_jobs(db, "pending", phash, ws))
     softened_pending = len(select_jobs(db, "pending", phash, ws, office_slack)) - pending if office_slack else 0

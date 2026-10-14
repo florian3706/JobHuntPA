@@ -90,8 +90,8 @@ def machine_names() -> frozenset[str]:
 
 
 def configured_names(env=None) -> set[str]:
-    """The names the admin allowed: PUBLIC_BASE_URL's host and JOBHUNT_ALLOWED_HOSTS. Read at each request, because
-    the public address can be changed in the app while it runs. A bad entry is ignored (and said once)."""
+    """The names allowed in the Settings tab (or .env): PUBLIC_BASE_URL's host and JOBHUNT_ALLOWED_HOSTS. Read at each
+    request, because both can be changed in the app while it runs. A bad entry is ignored (and said once)."""
     env = os.environ if env is None else env
     names: set[str] = set()
     base = (env.get("PUBLIC_BASE_URL") or "").strip()
@@ -147,6 +147,6 @@ class HostGuard:
         shown = f" ({name})" if name else ""
         response = PlainTextResponse(
             f"This address{shown} isn't allowed. Open JobHuntPA from the address it printed when it started, "
-            "or ask the person who runs it to add this name to JOBHUNT_ALLOWED_HOSTS or the public address.",
+            "or add this name in its Settings tab (Public address and host names), or to JOBHUNT_ALLOWED_HOSTS in .env.",
             status_code=400, headers={"Cache-Control": "no-store"})
         await response(scope, receive, send)

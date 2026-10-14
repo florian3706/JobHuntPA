@@ -15,8 +15,8 @@ sign-in: giving access away is always allowed. Scheduled searches then pass over
 An account that has no identity key yet (it hasn't entered its password since the update) is answered 409
 ``needs_sign_in``: its private key is still under the data key, which the server key would then open.
 
-Both work on the signed-in account only; there is no way to change another account's setting (an admin's
-included), because the key that's wrapped is the one the person's own session holds.
+Both work on the signed-in account only; there is no way to change another account's setting, because the key that's
+wrapped is the one the person's own session holds.
 """
 from __future__ import annotations
 

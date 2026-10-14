@@ -182,7 +182,7 @@ def utcnow() -> datetime:
 
 class Workspace(Base):
     """A separate job search: its own settings, sources, documents, pins and jobs. Each belongs to one account
-    (``owner_id``); a workspace from before accounts has none until the first admin claims it (backend.users)."""
+    (``owner_id``); a workspace from before accounts has none until the first account claims it (backend.users)."""
 
     __tablename__ = "workspaces"
     # An id is never given out twice: a request that resolved a workspace before it was deleted (a password reset that
@@ -202,7 +202,7 @@ class Workspace(Base):
 def _workspace_fk():
     """A row's workspace. No default: a row written without one is a bug, refused before it reaches the database
     (``_refuse_rows_without_workspace``). Databases made before accounts still carry DEFAULT '1' in their schema,
-    which SQLite can't drop, and would otherwise put such a row in the first admin's workspace."""
+    which SQLite can't drop, and would otherwise put such a row in the first account's workspace."""
     return Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
 
 
@@ -525,7 +525,7 @@ class Document(Base):
 
 class SearchProfile(Base):
     """Legacy table (unused by the UI, kept so old DBs stay valid). It may hold an old CV, so it is sealed under
-    the key of the first admin, who owns all data from before accounts."""
+    the key of the first account, which owns all data from before accounts."""
 
     __tablename__ = "search_profile"
 
@@ -758,7 +758,7 @@ class LlmUsage(Base):
     created_at = Column(DateTime, default=utcnow, index=True)
     # Kept when the workspace is deleted: usage happened all the same.
     workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
-    # Whose request it was (the admin panel's usage per user); NULL once the account is deleted. Older rows have
+    # Whose request it was; NULL once the account is deleted. Older rows have
     # none: the statistics fall back to the workspace's owner.
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     purpose = Column(String, nullable=True)         # scoring | chat | cover_letter | research | concise | summary ...
@@ -889,7 +889,7 @@ class GeocodeCache(Base):
 
 # ---------------------------------------------------------------------------
 # Accounts (docs/design/accounts.md, section 4). backend/users.py creates them, backend/sessions.py signs in.
-# Every *_enc / *_admin / *_self / wrapped column holds a blob made by backend/crypto.py; what opens it is noted
+# Every *_enc / *_self / wrapped column holds a blob made by backend/crypto.py; what opens it is noted
 # beside it. Nothing here is a sealed column type: these are opened explicitly, with labels that name the row.
 # ---------------------------------------------------------------------------
 
@@ -897,12 +897,12 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True)
-    # HMAC-SHA256(pepper, normalised email) (backend.keys): finds the account without decrypting anything.
+    # HMAC-SHA256(pepper, normalised sign-in name) (backend.keys): finds the account without decrypting anything. On an
+    # install from before the open-source version the sign-in name is the email address the account was made with.
     email_hash = Column(LargeBinary, nullable=False, unique=True)
-    role = Column(String, nullable=False, default="user", server_default="user")          # user | admin
     status = Column(String, nullable=False, default="active", server_default="active")    # active | disabled
     created_at = Column(DateTime, default=utcnow)
-    created_via = Column(String, nullable=False)    # first_run | bootstrap | invite | open
+    created_via = Column(String, nullable=False)    # first_run | bootstrap (older accounts: invite | open)
     last_active_on = Column(Date, nullable=True)    # by day only, on purpose (design 2.5)
     onboarding_step = Column(Integer, nullable=True)  # NULL: done (the sign-up wizard, Phase K)
     # Password: argon2id(salt, params) -> verifier (and the KEK that wraps the DEK, never stored).
@@ -913,18 +913,19 @@ class User(Base):
     # backend/lockout.py). The columns stay so older databases keep working.
     failed_logins = Column(Integer, nullable=False, default=0, server_default="0")
     locked_until = Column(DateTime, nullable=True)
-    # A database made before the open-source version also has email_verified, mfa_enabled, totp_secret_enc,
-    # totp_pending_enc and totp_last_step (email and two-step sign-in, removed). Nothing maps them; start-up empties
-    # the two-step ones (``_retire_removed_features``).
-    # {email, name}: sealed to the admin details key (pii_admin), and under the user's own DEK (pii_self).
-    pii_admin = Column(LargeBinary, nullable=True)
-    pii_admin_version = Column(Integer, nullable=True)
+    # A database made before the open-source version also has role (admin | user), pii_admin and pii_admin_version (the
+    # admin panel and its details key), email_verified, mfa_enabled, totp_secret_enc, totp_pending_enc and
+    # totp_last_step (email and two-step sign-in), all removed. Nothing maps them; start-up empties the ones that held
+    # secrets or set someone apart (``_retire_removed_features``).
+    # {name} (the sign-in name; older accounts {email, name}: the address is the sign-in name) under the user's own DEK.
     pii_self = Column(LargeBinary, nullable=True)
     prefs_enc = Column(LargeBinary, nullable=True)  # DEK: {theme} (Phase E)
 
 
 class UserKeys(Base):
-    """One row per user: the data key (DEK) under each thing that can open it, and the user's X25519 key pair."""
+    """One row per user: the data key (DEK) under each thing that can open it, and the identity key (IK) that keeps the
+    unconfirmed recovery codes. The X25519 key pair once received the admin details key (removed with the admin panel);
+    its private half, wrapped under the IK, is now only how a key is checked to be this account's IK."""
 
     __tablename__ = "user_keys"
 
@@ -941,7 +942,7 @@ class UserKeys(Base):
     # the next password sign-in replaces it (users.migrate_identity).
     x25519_priv_enc = Column(LargeBinary, nullable=False)
     # The IK under the password key, wrap(KEK_pw, IK, "pw-ik|{uid}"). NULL: the account has no IK yet. The IK is never
-    # wrapped under the server KEK, so background access can't open the admin details key (accounts design 1.2).
+    # wrapped under the server KEK, so background access can't read the unconfirmed recovery codes (accounts design 1.2).
     pw_wrapped_ik = Column(LargeBinary, nullable=True)
     recovery_salt = Column(LargeBinary, nullable=False)
     # Recovery codes not yet confirmed as saved: wrap(IK, codes, "pending-codes|{uid}") (a code opens the IK, so the DEK,
@@ -977,8 +978,8 @@ class AuthSession(Base):
     # active | extension
     state = Column(String, nullable=False, default="active", server_default="active")
     wrapped_dek = Column(LargeBinary, nullable=False)
-    # The IK under the same cookie-derived key: "sess-ik|{sid}". NULL for a session
-    # made before the IK existed (the admin panel then asks to sign in again).
+    # The IK under the same cookie-derived key: "sess-ik|{sid}". NULL for a session made before the IK existed (a
+    # password check in Settings gives it one: sessions.give_ik).
     wrapped_ik = Column(LargeBinary, nullable=True)
     persistent = Column(Boolean, nullable=False, default=False, server_default="0")  # "Keep me signed in"
     created_at = Column(DateTime, default=utcnow)
@@ -991,46 +992,6 @@ class AuthSession(Base):
     # ``sessions.label|{id}`` (bound to the row), so only they can read it.
     public_id = Column(String, nullable=True)
     label_enc = Column(LargeBinary, nullable=True)
-
-
-class AuthToken(Base):
-    """Single-use links: invitations (Phase F). (Kinds ``reset``, ``verify_email`` and ``email_change`` were the email
-    links, removed with email: ``_retire_removed_features`` deletes any left.)"""
-
-    __tablename__ = "auth_tokens"
-
-    id = Column(Integer, primary_key=True)
-    kind = Column(String, nullable=False)           # invite
-    token_hash = Column(LargeBinary, nullable=False, unique=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
-    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime, default=utcnow)
-    expires_at = Column(DateTime, nullable=False)
-    used_at = Column(DateTime, nullable=True)
-    payload_enc = Column(LargeBinary, nullable=True)  # sealed with a key derived from the token itself
-
-
-class AdminKeyGrant(Base):
-    """The admin details key's private half, sealed to one admin's X25519 public key (design 1.4)."""
-
-    __tablename__ = "admin_key_grants"
-
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    apk_version = Column(Integer, nullable=False)
-    sealed_priv = Column(LargeBinary, nullable=False)  # seal_to(admin's x25519_pub, APK private, "grant|{uid}|{ver}")
-    granted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    granted_at = Column(DateTime, default=utcnow)
-
-
-class AdminAudit(Base):
-    __tablename__ = "admin_audit"
-
-    id = Column(Integer, primary_key=True)
-    at = Column(DateTime, default=utcnow, index=True)
-    admin_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    action = Column(String, nullable=False)
-    target_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    detail_admin = Column(LargeBinary, nullable=True)  # sealed to the admin details key
 
 
 # ---------------------------------------------------------------------------
@@ -1247,27 +1208,33 @@ def _ensure_indexes() -> None:
 
 # What features taken out of the open-source version (docs/design/open-source.md §1.3) left in a database made
 # before it: the tables of memberships with their free periods (Stripe) and of job digest settings.
-RETIRED_TABLES = ("membership_grants", "memberships", "email_prefs")
-# Links that were sent by email (password reset, address check and change): nothing can use them any more.
-RETIRED_TOKEN_KINDS = ("reset", "verify_email", "email_change")
-# Two-step sign-in: the secrets (under the server key) and what they were checked against.
-_TOTP_CLEARED = {"mfa_enabled": "0", "totp_secret_enc": "NULL", "totp_pending_enc": "NULL", "totp_last_step": "NULL"}
+# Memberships and email (Phase A); the admin panel's key grants and audit log, and invitations (Phase B).
+RETIRED_TABLES = ("membership_grants", "memberships", "email_prefs", "admin_key_grants", "admin_audit", "auth_tokens")
+# Two-step sign-in: the secrets (under the server key) and what they were checked against. The admin panel: each
+# account's details sealed to the admin details key, and the role that set the admins apart.
+_USERS_CLEARED = {"mfa_enabled": "0", "totp_secret_enc": "NULL", "totp_pending_enc": "NULL", "totp_last_step": "NULL",
+                  "pii_admin": "NULL", "pii_admin_version": "NULL", "role": "'user'"}
+# The admin details key's public half and version, the sign-up mode, and Phase A's settings.
+RETIRED_SETTINGS = ("apk_public", "apk_version", "signup_mode", "free_searches", "mail_route_changed_at")
 
 
 def _retire_removed_features() -> bool:
-    """Removes, at start-up, what memberships, email, digests and two-step sign-in left in an older database: the
-    two-step secrets are emptied (every account then signs in with its name and password), sign-ins that were waiting
-    for a two-step code and unused emailed links are deleted, and the retired tables are dropped. These hold secrets
-    and personal details (sealed billing details, a free period's note, an address being confirmed), so it is all one
+    """Removes, at start-up, what memberships, email, digests, two-step sign-in and the admin panel left in an older
+    database: the two-step secrets are emptied (every account then signs in with its name and password), so are the
+    copies of everyone's details sealed to the admin details key and the admin role; sign-ins that were waiting for a
+    two-step code are deleted; the retired tables are dropped (with them the admin details key's private half, granted
+    to each admin, the admin audit log and the unused links and invitations); and the admin key's public half and the
+    sign-up mode are deleted from the settings. These hold keys, secrets and personal details, so it is all one
     transaction, and the write-ahead log is emptied after it (``scrub_wal``; ``secure_delete`` has zeroed the freed
-    pages of the main file). The emptied columns stay, unmapped (dropping a column needs a newer SQLite than some
-    installs have, or a table rebuild). Does nothing on a database without them. True when something was removed."""
+    pages of the main file). The server key file is not touched. The emptied columns stay, unmapped (dropping a column
+    needs a newer SQLite than some installs have, or a table rebuild). Every account keeps signing in: nothing here is
+    needed for that. Does nothing on a database without them. True when something was removed."""
     insp = inspect(engine)
     tables = set(insp.get_table_names())
     user_columns = {c["name"] for c in insp.get_columns("users")} if "users" in tables else set()
-    cleared = {name: value for name, value in _TOTP_CLEARED.items() if name in user_columns}
-    counts = {"two_step": 0, "pending": 0, "links": 0, "tables": 0}
-    kinds = ", ".join(f"'{kind}'" for kind in RETIRED_TOKEN_KINDS)
+    cleared = {name: value for name, value in _USERS_CLEARED.items() if name in user_columns}
+    counts = {"accounts": 0, "pending": 0, "links": 0, "tables": 0, "settings": 0}
+    names = ", ".join(f"'{name}'" for name in RETIRED_SETTINGS)
     with engine.begin() as conn:
         if not conn.connection.driver_connection.in_transaction:  # (pysqlite would run DROP TABLE on its own)
             conn.execute(text("BEGIN IMMEDIATE"))
@@ -1275,16 +1242,16 @@ def _retire_removed_features() -> bool:
             changed = " OR ".join(f"{name} IS NOT NULL" if value == "NULL" else f"{name} != {value}"
                                   for name, value in cleared.items())
             assignments = ", ".join(f"{name} = {value}" for name, value in cleared.items())
-            counts["two_step"] = conn.execute(text(f"UPDATE users SET {assignments} WHERE {changed}")).rowcount
+            counts["accounts"] = conn.execute(text(f"UPDATE users SET {assignments} WHERE {changed}")).rowcount
         if "sessions" in tables:
             counts["pending"] = conn.execute(text("DELETE FROM sessions WHERE state = 'pending_mfa'")).rowcount
-        if "auth_tokens" in tables:
-            counts["links"] = conn.execute(text(f"DELETE FROM auth_tokens WHERE kind IN ({kinds})")).rowcount
+        if "auth_tokens" in tables:  # emailed links and invitations (sealed payloads: an address)
+            counts["links"] = conn.execute(text("DELETE FROM auth_tokens")).rowcount
         if "search_schedules" in tables:  # "skipped: scheduled searches need a membership"
             conn.execute(text("UPDATE search_schedules SET skipped_reason = NULL, skipped_slot = NULL "
                               "WHERE skipped_reason = 'membership_required'"))
         if "app_settings" in tables:
-            conn.execute(text("DELETE FROM app_settings WHERE key IN ('free_searches', 'mail_route_changed_at')"))
+            counts["settings"] = conn.execute(text(f"DELETE FROM app_settings WHERE key IN ({names})")).rowcount
         for name in RETIRED_TABLES:
             if name in tables:
                 conn.execute(text(f"DROP TABLE {name}"))
@@ -1292,9 +1259,9 @@ def _retire_removed_features() -> bool:
     if not any(counts.values()):
         return False
     scrub_wal()
-    log.info("removed what memberships, email, digests and two-step sign-in left: two-step sign-in turned off for %d "
-             "account(s), %d waiting sign-in(s) and %d emailed link(s) deleted, %d table(s) dropped",
-             counts["two_step"], counts["pending"], counts["links"], counts["tables"])
+    log.info("removed what memberships, email, digests, two-step sign-in and the admin panel left: %d account(s) "
+             "cleaned, %d waiting sign-in(s) and %d link(s) or invitation(s) deleted, %d setting(s) and %d table(s) "
+             "dropped", counts["accounts"], counts["pending"], counts["links"], counts["settings"], counts["tables"])
     return True
 
 
@@ -1320,7 +1287,7 @@ def init_db() -> None:
         log.info("migrated: added workspaces.owner_id")
     _rebuild_workspaces_for_autoincrement()
     with engine.begin() as conn:
-        # The first workspace, only on a fresh database: the first admin claims it (backend.users). Once there
+        # The first workspace, only on a fresh database: the first account claims it (backend.users). Once there
         # are accounts, every workspace is made by and for one of them.
         conn.execute(text("INSERT OR IGNORE INTO workspaces (id, name, created_at) "
                           "SELECT 1, 'My job search', CURRENT_TIMESTAMP WHERE NOT EXISTS (SELECT 1 FROM users)"))
@@ -1333,5 +1300,5 @@ def init_db() -> None:
     _retire_removed_features()
     purge_http_cache()
     pool_migration.migrate()  # per-workspace job copies -> the shared posting pool (once; resumable)
-    # Then the encryption migration (backend.migrate_encryption), which needs the first admin's key: it runs when
+    # Then the encryption migration (backend.migrate_encryption), which needs the first account's key: it runs when
     # they sign in.
