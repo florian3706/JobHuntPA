@@ -131,9 +131,19 @@ async def work_out_body(request: Request) -> WorkOutIn:
     kind = data.get("kind")
     if kind not in mapping_format.KINDS:
         raise _invalid('Say what kind of page it is: "job" or "careers".', field="kind")
-    url = _http_url(data.get("url"))
-    if url is None:
+    raw = data.get("url")
+    if not isinstance(raw, str) or len(raw) > URL_MAX or not raw.strip().lower().startswith(("http://", "https://")):
         raise _invalid("Only pages with an http:// or https:// address can be worked out.", field="url")
+    if kind == "careers":  # (the app reads a careers page itself: never one on the local network or this computer)
+        from backend.sources import refused_address
+
+        why = refused_address(raw.strip())
+        if why:
+            raise AuthProblem(422, "refused_address", f"This address can't be a source: {why}", field="url")
+    url = _http_url(raw)
+    if url is None:
+        raise _invalid("This page's address has no site name JobHuntPA can use (a page at a bare IPv6 address, such "
+                       "as http://[2001:db8::1]/, can't be worked out).", field="url")
     try:
         outline = await run_in_threadpool(mapping_format.check_outline, data.get("outline"))
     except mapping_format.OutlineRefused as exc:
@@ -194,6 +204,8 @@ def _test(adapter, postings) -> dict:
 def _careers(body: WorkOutIn, ws: int, user_id: int) -> dict:
     """A careers page: the app reads it itself, through the scraping layer (robots.txt, crawl delay, honest
     User-Agent). The usual ways first; when they find no jobs, the AI's mapping, and the page read with it."""
+    from backend.adapters.apsjobs import is_apsjobs_url
+    from backend.adapters.ats import detect_ats
     from backend.adapters.base import SourceError
     from backend.adapters.generic import LISTING_TTL, GenericAdapter, source_adapter
     from backend.scraping.http import FetchError, PoliteClient
@@ -206,12 +218,19 @@ def _careers(body: WorkOutIn, ws: int, user_id: int) -> dict:
         except FetchError as exc:  # robots.txt, a bot check, an error page: a layout can't help
             return {**out, "test": {"ok": False, "error": str(exc), "notes": []}}
         usual = source_adapter(client, body.url)
+        error = "no job postings found on the careers page"
         try:
             postings = usual.list_postings()
-        except (SourceError, FetchError, ValueError):
-            postings = []
+        except (SourceError, FetchError, ValueError) as exc:
+            postings, error = [], str(exc) or error
         if postings:
             return {**out, "test": _test(usual, postings)}
+        if is_apsjobs_url(body.url) or detect_ats(body.url):
+            # A job board JobHuntPA reads its own way (APSJobs, an ATS board's address): a search never reads it
+            # with a layout, so none is worked out (the dry run must be the reading searches repeat).
+            notes = list(getattr(usual, "notes", []))
+            notes.append("this address is a job board JobHuntPA reads its own way, so a page layout can't help")
+            return {**out, "test": {"ok": False, "error": error, "notes": notes}}
         found = ask_ai(body, _ai_config(ws), user_id)
         adapter = GenericAdapter(client, body.url, mapping=found)
         try:
@@ -230,12 +249,7 @@ def work_out(body: WorkOutIn = Depends(work_out_body), user: AuthUser = Depends(
     """Works out a page's layout from its outline. Signed in (a key or a session), any workspace of the account. A
     job page: the mapping (not saved: the extension shows the job it finds, then saves it with PUT). A careers page:
     the jobs the app found reading it (``test``), with the mapping when one was needed (else null)."""
-    from backend.sources import refused_address
-
     cfg = _ai_config(ws) if body.kind == "job" else None
-    why = refused_address(body.url) if body.kind == "careers" else None
-    if why:  # (the app reads a careers page itself: never one on the local network or this computer)
-        raise AuthProblem(422, "refused_address", f"This address can't be a source: {why}", field="url")
     with one_at_a_time(user.id):
         with tasks.track(TASK_KINDS[body.kind], ws):
             if body.kind == "careers":

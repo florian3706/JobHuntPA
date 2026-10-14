@@ -11,8 +11,9 @@
     GET    /api/sources/export       the workspace's sources as CSV (company,url), the bulk format
 
 Who may call them: whoever is signed in, on a workspace of their own (``current_workspace`` answers 404 for another
-account's). An extension key may list, add and test sources one at a time (``sessions.KEY_ENDPOINTS``), but not use
-the bulk endpoints or the export, or change or delete a source.
+account's). An extension key may list, add and test sources one at a time (``sessions.KEY_ENDPOINTS``), and set the
+mapping of a source it adds again (POST with a mapping), but not use the bulk endpoints or the export, or otherwise
+change or delete a source.
 
 **Addresses.** Every way a source is stored (one at a time here, in bulk, and from an export's import file) refuses
 an address that is not a web link or is on the local network or this computer (``source_bulk.BLOCKING``), judged by
@@ -123,6 +124,13 @@ def refused_address(url: str) -> Optional[str]:
     return " ".join(f.reason for f in check.flags if f.code in source_bulk.BLOCKING)
 
 
+def refuse_address(url: str) -> None:
+    """422 ``refused_address`` for an address that can't be a source (``refused_address``)."""
+    why = refused_address(url)
+    if why:
+        raise AuthProblem(422, "refused_address", f"This address can't be a source: {why}", field="url")
+
+
 def checked_mapping(value: Any) -> dict:
     """A careers mapping sent with a source, checked for shape (422 ``invalid_mapping`` otherwise)."""
     try:
@@ -138,9 +146,7 @@ def add_source(db: Session, ws: int, url: str, label: Optional[str],
     link or is on the local network or this computer. Nothing is fetched: the scraping rules apply when a search or
     Test reads the page. ``mapping``: a checked careers mapping (``checked_mapping``)."""
     url = normalize_url(url)
-    why = refused_address(url)
-    if why:
-        raise AuthProblem(422, "refused_address", f"This address can't be a source: {why}", field="url")
+    refuse_address(url)
     # Found by its blind index: the URL itself is sealed (accounts design §2.3).
     if db.query(CompanySource.id).filter(CompanySource.workspace_id == ws, CompanySource.careers_url_index
                                          == crypto.blind_index("careers_url", url)).first():
@@ -163,7 +169,9 @@ def create_source(payload: SourceCreate, response: Response, db: Session = Depen
                   ws: int = Depends(current_workspace)):
     """Adds a source (201). Signed in (a session, or an extension key), own workspace. With a mapping (the jobs the
     app found with it were shown before), a source the workspace has with that URL gets the mapping instead
-    (200, ``"updated": true``); without one, that is 409."""
+    (200, ``"updated": true``); without one, that is 409. The address is checked first (422 ``refused_address``),
+    then the mapping (422 ``invalid_mapping``)."""
+    refuse_address(normalize_url(payload.url))
     mapping = checked_mapping(payload.mapping) if payload.mapping is not None else None
     src = add_source(db, ws, payload.url, payload.label, mapping)
     if src is None:

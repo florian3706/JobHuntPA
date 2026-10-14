@@ -151,6 +151,28 @@ class SelectorTest(unittest.TestCase):
             with self.subTest(selector=selector), self.assertRaises(mf.MappingRefused):
                 mf.check_selector(selector)
 
+    def test_selectors_that_cost_too_much_to_match_are_refused(self):
+        """Valid CSS that backtracks over every ancestor (or sibling) for each descendant combinator, nested
+        pseudo-classes, :has() that looks at a whole subtree in the middle of a selector, many alternatives."""
+        for selector in ("x * * * * *", "section div div div div span", ":not(:not(:not(:not(:not(a)))))",
+                         "x * *", "div *", "* ~ p", "a b c d", "a ~ b ~ c", "a b > c > d > e > f",
+                         ":has(a) b", ":has(> a > b) p", ":has(> a) :has(> b) p", "a:has(b:has(c))",
+                         "a:not(:has(b)) c", "a, b, c, d, e", ":is(a, b, c, d, e)", "li:has(a b c)",
+                         "tr:nth-child(2n of .x)", "tr:nth-child(1000000n)", "li:first-child(x)"):
+            with self.subTest(selector=selector), self.assertRaises(mf.MappingRefused) as caught:
+                mf.check_selector(selector)
+            self.assertIn(caught.exception.reason, ("selector_complexity", "selector_syntax"))
+        for selector in ("section div > span.x", "ul.list li + li ~ li", "section:has(> h2) p", "li:has(a.job)",
+                         "div:not(:has(+ p)) a", "a, b, c, d", "li:not(:is(.a, .b))", "div > *", "*",
+                         "[class~=\"x\"] [data-x=\"a b c d e\"]", "tr:nth-child( 2n + 1 )"):
+            with self.subTest(selector=selector):
+                self.assertEqual(mf.check_selector(selector), selector)
+
+    def test_comments_are_refused(self):
+        for selector in ("h1/*x*/", "h1 /* :hover */", "a*/", "a[href=\"/*\"]"):
+            with self.subTest(selector=selector), self.assertRaises(mf.MappingRefused):
+                mf.check_selector(selector)
+
     def test_attribute_names_are_plain_and_never_handlers(self):
         self.assertEqual(mf.check_attribute("DateTime"), "datetime")
         self.assertIsNone(mf.check_attribute(None))
@@ -201,6 +223,19 @@ class AnswerTest(unittest.TestCase):
                     json.dumps(JOB_ANSWER)):
             with self.subTest(raw=raw[:60]), self.assertRaises(mf.MappingRefused):
                 mf.parse_answer(raw, "careers")
+
+    def test_an_answer_or_a_mapping_with_a_costly_selector_is_refused_whole(self):
+        for selector in ("x * * * * *", "section div div div div span", ":not(:not(:not(:not(:not(a)))))"):
+            with self.subTest(selector=selector):
+                with self.assertRaises(mf.MappingRefused):
+                    mf.parse_answer(json.dumps({**CAREERS_ANSWER, "list": {"selector": selector}}), "careers")
+                with self.assertRaises(mf.MappingRefused):
+                    mf.parse_answer(json.dumps({**JOB_ANSWER, "title": {"selector": selector}}), "job")
+                with self.assertRaises(mf.MappingRefused):
+                    mf.check_mapping({**CAREERS_MAPPING, "fields": {**CAREERS_MAPPING["fields"],
+                                                                    "title": {"selector": selector}}}, "careers")
+                self.assertIsNone(mf.stored({**JOB_MAPPING, "fields": {**JOB_MAPPING["fields"],
+                                                                       "title": {"selector": selector}}}, "job"))
 
     def test_a_mapping_sent_back_is_checked_the_same_way(self):
         self.assertEqual(mf.check_mapping(JOB_MAPPING, "job"), JOB_MAPPING)
@@ -602,10 +637,30 @@ class CareersTest(Base):
         pages = Pages({})
         with pages.served():
             for url in ("http://localhost:8000/careers", "http://192.168.1.10/jobs", "http://127.0.0.1/",
-                        "http://router.lan/jobs", "http://[::1]/x"):
+                        "http://router.lan/jobs", "http://[::1]/x", "http://[fe80::1]/jobs", "http://[::ffff:10.0.0.1]/"):
                 r = self.work_out(url=url)
-                self.assertEqual(r.status_code, 422, url)
+                self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "refused_address", "url"),
+                                 url)
         self.assertEqual(pages.fetched, [])
+        self.assertEqual(self.ai.prompts, [])
+
+    def test_an_ipv6_address_that_has_no_site_says_so(self):
+        r = self.k.post("/api/extension/work-out", json=request("job", "https://[2001:db8::1]/jobs/1"))
+        self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (422, "invalid", "url"))
+        self.assertIn("IPv6", r.json()["detail"])
+
+    def test_a_job_board_the_app_reads_its_own_way_is_never_worked_out(self):
+        """An APSJobs search or an ATS board's own address: a search never reads it with a layout, so the dry run
+        wouldn't be the reading searches repeat. No AI is asked; the test says why."""
+        slug = self.host.split(".")[0].replace("-", "")
+        for url in (f"https://boards.greenhouse.io/{slug}",
+                    f"https://www.apsjobs.gov.au/s/job-search?searchString={slug}"):
+            with self.subTest(url=url), Pages({url: CAREERS_HTML}).served():
+                r = self.work_out(url=url)
+                self.assertEqual(r.status_code, 200, r.text)
+                body = r.json()
+                self.assertEqual((body["mapping"], body["worked_out"], body["test"]["ok"]), (None, False, False))
+                self.assertTrue(any("reads its own way" in n for n in body["test"]["notes"]), body)
         self.assertEqual(self.ai.prompts, [])
 
     def test_it_shows_in_the_tasks_tray_as_a_careers_page(self):
@@ -737,6 +792,50 @@ class AdapterTest(unittest.TestCase):
         mapped.assert_not_called()
         client.get.assert_not_called()
 
+    @staticmethod
+    def deep_page(depth: int, entries: int) -> str:
+        inner = "".join(f'<span><a href="https://x.example/j/{i}">Job {i}</a></span>' for i in range(entries))
+        return "<html><body>" + "<div>" * depth + inner + "</div>" * depth + "</body></html>"
+
+    @staticmethod
+    def careers(list_selector: str) -> dict:
+        return mf.check_mapping({"kind": "careers", "fields": {"list": {"selector": list_selector},
+                                 "title": {"selector": "a"}, "link": {"selector": "a"}}}, "careers")
+
+    def test_a_deep_page_with_a_costly_selector_stops_at_the_time_limit(self):
+        import time
+
+        mapping = self.careers("x div span")  # within the limits, but costly here: no x, 75 divs deep
+        html = self.deep_page(75, 3000)
+        with mock.patch.object(generic, "MAPPED_SECONDS", 0.5):
+            started = time.monotonic()
+            with self.assertRaises(generic.MappedPageRefused) as caught:
+                generic.parse_mapped(html, "https://x.example/", "X", mapping)
+            self.assertLess(time.monotonic() - started, 5, "matching stops near the limit")
+        self.assertIn("too long", str(caught.exception))
+        self.assertEqual(len(generic.parse_mapped(self.deep_page(75, 20), "https://x.example/", "X",
+                                                  self.careers("div > span"))), 20, "a cheap one reads it")
+
+    def test_a_page_too_big_or_too_deep_isnt_read_with_the_mapping_and_falls_back(self):
+        mapping = self.careers("div > span")
+        with self.assertRaises(generic.MappedPageRefused):
+            generic.parse_mapped(self.deep_page(generic.MAPPED_DEPTH_MAX, 1), "https://x.example/", "X", mapping)
+        with self.assertRaises(generic.MappedPageRefused):
+            generic.parse_mapped("<p>" + "x" * generic.MAPPED_HTML_MAX + "</p>", "https://x.example/", "X", mapping)
+        host = new_host()
+        url = f"https://{host}/careers"
+        deep = self.deep_page(generic.MAPPED_DEPTH_MAX, 2).replace("https://x.example/j/", f"/jobs/{host}-")
+        with Pages({url: deep}).served():
+            client = http.PoliteClient()
+            try:
+                adapter = generic.source_adapter(client, url, mapping=mapping)
+                postings = adapter.list_postings()
+            finally:
+                client.close()
+        self.assertTrue(any("nested too deep" in n for n in adapter.notes), adapter.notes)
+        self.assertNotIn("worked-out layout", adapter.method, "read the usual ways")
+        self.assertEqual(len(postings), 2)
+
     def test_a_damaged_stored_mapping_is_taken_as_none(self):
         adapter = generic.GenericAdapter(mock.Mock(), "https://x.example/careers",
                                          mapping={"kind": "careers", "fields": {"list": {"selector": "a:hover"}}})
@@ -754,6 +853,64 @@ class AddressRefusalTest(Base):
                 self.assertEqual(r.status_code, 422, f"{url}: {r.text}")
         self.assertEqual(self.c.get("/api/sources").json(), [])
         self.assertEqual(self.c.post("/api/sources", json={"url": "https://careers.example.org/x"}).status_code, 201)
+
+    def test_the_address_is_refused_before_the_mapping_is_looked_at(self):
+        r = self.k.post("/api/sources", json={"url": "http://localhost/c", "mapping": {"x": 1}})
+        self.assertEqual((r.status_code, r.json()["code"]), (422, "refused_address"), r.text)
+        r = self.k.post("/api/sources", json={"url": "https://careers.example.org/c", "mapping": {"x": 1}})
+        self.assertEqual((r.status_code, r.json()["code"]), (422, "invalid_mapping"), r.text)
+
+
+class RedirectTest(unittest.TestCase):
+    """The scraping layer never follows a public page's redirect to the local network or this computer, and a
+    rendered page's requests there are stopped."""
+
+    def test_a_redirect_to_a_local_address_is_not_followed(self):
+        host = new_host()
+        fetched = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            fetched.append(str(req.url))
+            if req.url.path == "/robots.txt":
+                return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+            if req.url.host == host and req.url.path == "/careers":
+                return httpx.Response(302, headers={"location": "http://127.0.0.1:9000/admin"})
+            if req.url.host == host and req.url.path == "/moved":
+                return httpx.Response(301, headers={"location": f"https://{host}/careers-new"})
+            return httpx.Response(200, text="<p>internal page</p>")
+
+        real = httpx.Client
+        with mock.patch("backend.scraping.http.httpx.Client",
+                        side_effect=lambda **kw: real(transport=httpx.MockTransport(handler), **kw)), \
+                mock.patch.object(http.PoliteClient, "_throttle"):
+            client = http.PoliteClient()
+            try:
+                with self.assertRaises(http.FetchError) as caught:
+                    client.get(f"https://{host}/careers")
+                self.assertEqual(client.get(f"https://{host}/moved").url, f"https://{host}/careers-new",
+                                 "a redirect on the web is followed")
+            finally:
+                client.close()
+        self.assertIn("local network", str(caught.exception))
+        self.assertFalse(any("127.0.0.1" in u for u in fetched), fetched)
+
+    def test_a_rendered_pages_requests_to_local_addresses_are_stopped(self):
+        def route(url):
+            r = mock.Mock()
+            r.request.url = url
+            return r
+
+        guard = http._guard_requests("https://careers.example.org/jobs")
+        for url, stopped in (("http://127.0.0.1:8000/api", True), ("http://192.168.0.1/", True),
+                             ("http://localhost/x", True), ("https://cdn.example.net/app.js", False),
+                             ("data:image/png;base64,AAAA", False), ("https://careers.example.org/o/1", False)):
+            r = route(url)
+            guard(r)
+            with self.subTest(url=url):
+                self.assertEqual((r.abort.called, r.continue_.called), (stopped, not stopped))
+        r = route("http://127.0.0.1:8000/api")
+        http._guard_requests("http://127.0.0.1:8000/")(r)  # (a page that is itself local isn't a source's)
+        r.continue_.assert_called_once()
 
 
 if __name__ == "__main__":

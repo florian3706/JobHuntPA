@@ -893,6 +893,10 @@ class PageLayoutsTest(unittest.TestCase):
         self.assertIn('data-act="forget" type="button">Forget layout<span class="visually-hidden"> of ${name}</span>',
                       self.app)
         self.assertIn("announce(`${src.label || src.url} is read the usual ways again.`)", self.app)
+        forget = self.app[self.app.index("async function forgetLayout("):]
+        forget = forget[:forget.index("\n}\n")]
+        self.assertIn("document.getElementById(`src-${src.id}-test`)?.focus()", forget,
+                      "focus stays on the source's row (its Test button) when the Forget layout button goes")
 
 
 class WelcomePageTest(unittest.TestCase):

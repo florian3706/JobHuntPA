@@ -1717,6 +1717,8 @@ async function forgetLayout(src) {
     await api(`/api/sources/${src.id}`, { method: 'PATCH', body: JSON.stringify({ mapping: null }) });
     announce(`${src.label || src.url} is read the usual ways again.`);
     await loadSources();
+    // The Forget layout button is gone with the layout: focus stays on the same source's row, at its Test button.
+    document.getElementById(`src-${src.id}-test`)?.focus();
   } catch (e) { toast(`Couldn't forget the layout: ${e.message}`, 'err'); }
 }
 
