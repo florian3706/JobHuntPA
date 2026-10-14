@@ -9,7 +9,8 @@ This file is the one place to build from. Part 1 is the spec: the user's final "
 gave in the conversation, with nothing from the earlier drafts that they later dropped. Parts 2 to 5 break it into
 phases, one cloud session each, with a ready-to-paste brief for every phase (the layout of
 `docs/design/remaining-phases.md`). Part 6 is what only the user or the local session can do. Part 7 describes the
-import file of a data export (Phase E).
+import file of a data export (Phase E). Part 8 is the browser extension's contract with the app, `"api": 3` (Phase
+I1), which Phase I2 builds the extensions against.
 
 It changes direction from `docs/design/accounts.md`: that design turned the app into a service for many people with
 memberships. This one makes it a free program each person runs for themselves. Encryption, sessions and the
@@ -595,6 +596,7 @@ A JSON object (UTF-8):
 | `exported_at` | when the export was made |
 | `workspaces` | a list of workspaces, below |
 | `companies` | the research on the companies of those workspaces' jobs, below |
+| `site_mappings` | the account's saved job-site layouts (Part 8): `[{site, mapping, updated_at}]`, by site; `mapping` is a Part 8 mapping of kind `job` |
 
 An export without this file was made by a JobHuntPA before the first version that writes one (2.0.0,
 `import_file.FIRST_APP_VERSION`); an import says so. Times are ISO 8601 in UTC with a `Z`
@@ -616,7 +618,7 @@ file (not a row id). Other fields point at them by that number.
 | `created_at` | when it was made |
 | `search_setup` | `null`, or the object below |
 | `pins` | `[{ref, label, kind, lat, lng, radius_km}]`; `kind` is `home`, `hybrid` or `onsite`; `ref` is the pin's number in this file |
-| `sources` | `[{ref, label, url, type, enabled}]`: careers pages and feeds; `url` is http(s) |
+| `sources` | `[{ref, label, url, type, enabled, mapping}]`: careers pages and feeds; `url` is http(s); `mapping` is the page's layout the AI worked out (a Part 8 mapping of kind `careers`), or null |
 | `schedule` | `{enabled, times: ["10:00", …], days: [0-6, Monday = 0], skip_holidays, state: "NSW" …}` |
 | `documents` | below |
 | `jobs` | below |
@@ -685,6 +687,11 @@ A `page` is `{title, url}` with an http(s) `url`. A `year` or `rating` written a
 ## What an import does with it
 
 - Each picked workspace becomes a new workspace of the signed-in account, with the naming rule of §1.7.
+- A source whose address is not a web link or is on the local network or this computer (Phase F's blocking flags,
+  `source_bulk.BLOCKING`) is left out, as a single add refuses it. A source's `mapping` and each `site_mappings`
+  item are checked as Part 8 checks a mapping sent to the app; one of another shape is taken as none (the source
+  still comes in) or left out, never repaired. A site mapping is taken only for a site the account has none for
+  (its own is kept), up to the account's limit (500); the answer's `site_mappings` says how many came in.
 - A job whose `ad.url` the importing install's pool already has is linked to that posting, and only its `own`
   fields are set on top; any other job is a private job with the whole `ad` and its `closed_at`. Nothing is written
   to the pool.
@@ -713,3 +720,287 @@ A `page` is `{title, url}` with an http(s) `url`. A `year` or `rating` written a
   characters. The whole file holds at most 200,000 jobs, documents, chats, chat messages, sources, pins and companies
   together (each becomes objects in memory before anything is written). An upload still arriving after ten minutes
   plus the time the largest zip needs at 100 KB/s is cut off. One import runs at a time.
+
+---
+
+# Part 8: the extension contract (api 3)
+
+Everything the Chrome and Firefox extensions may call on the person's own JobHuntPA, as of `"api": 3` (Phase I1,
+`backend/extension.py`, `backend/mappings.py`, `backend/mapping_format.py`, `backend/sources.py`). Phase I2 builds the
+extensions against this text alone. Earlier descriptions (docs/design/accounts.md §19, the extensions' README) are
+history; where they differ, this part holds.
+
+## 8.1 Connecting and every request
+
+- **The server address** is what the person pastes (Settings > Browser extension shows it: `location.origin` of the
+  app). Every path below is relative to it.
+- **The key:** `jhpa_` and 43 base64url characters (`^jhpa_[A-Za-z0-9_-]{43}$`), made in Settings, shown once.
+  Every request sends `Authorization: Bearer <key>` and `Accept: application/json`, no cookies
+  (`credentials: "omit"`), and `Content-Type: application/json` with a body. No CSRF token and no Origin check apply
+  to a key; the server sends no CORS headers (the extension's host permission for the server is what lets it call).
+- **The workspace:** `X-Workspace: <id>` (an integer from `status`) on every request that works on one (marked
+  *workspace* below). Without it, the account's first workspace is used. A workspace that isn't the account's
+  answers 404 `{"detail": "Workspace <id> not found"}` (no `code`): the extension asks the person to pick one again.
+- **A key reaches only these endpoints** (method and path, a trailing slash ignored); anything else answers 403
+  `token_scope`, whatever the key:
+
+  | Method | Path | Since |
+  |---|---|---|
+  | GET | `/api/extension/status` | 1 |
+  | POST | `/api/extension/preview` | 1 |
+  | POST | `/api/extension/jobs` | 1 |
+  | POST | `/api/extension/jobs/batch` | 2 |
+  | GET | `/api/sources` | 1 |
+  | POST | `/api/sources` | 1 (the `mapping` field: 3) |
+  | POST | `/api/sources/{id}/test` | 1 |
+  | POST | `/api/extension/work-out` | 3 |
+  | GET | `/api/extension/mappings` | 3 |
+  | GET, PUT, DELETE | `/api/extension/mappings/{site}`, `{site}` matching `[A-Za-z0-9.-]{1,253}` | 3 |
+
+  A signed-in browser session may call the same endpoints (with its CSRF token on POST, PUT and DELETE); the app's
+  own pages use the mapping ones in Settings.
+- **Before using an endpoint of a version**, the extension reads `status` and checks `api` (an integer) is at least
+  that version; a server with a lower one answers the newer paths 403 `token_scope` (with a key) and the extension
+  says to update JobHuntPA.
+
+## 8.2 Errors
+
+Every refusal the app makes itself is JSON `{"detail": <a sentence for the person>, "code": <a word>, "field"?: <the
+request's field it is about>}`. `detail` is shown as it is. Some answers carry no `code` (a plain `{"detail": ...}`):
+the 404 for a workspace, 409 and 422 from `POST /api/sources` (see 8.5). A body the web framework itself refuses
+before the app reads it (a missing required field of `POST /api/sources`) answers 422 with `detail` a list: treat a
+`detail` that isn't a string as none and show a general message.
+
+| Status | `code` | When |
+|---|---|---|
+| 400 | `ai_not_set_up` | work-out: the AI provider isn't set up in JobHuntPA (Settings) |
+| 401 | `token_invalid` | the key doesn't work: disconnected, expired, or copied wrong. Reconnect in the options |
+| 401 | `setup_required` | JobHuntPA isn't set up yet (no account) |
+| 401 | `signed_out` | no key and no session |
+| 403 | `token_scope` | an endpoint a key can't use (or a server older than the version that added it) |
+| 404 | `not_found` | `GET`/`DELETE /api/extension/mappings/{site}`: no mapping saved for that site |
+| 404 | (none) | another account's workspace, or a source id that isn't the workspace's (`{"detail": "Source <id> not found"}`) |
+| 409 | `too_many_mappings` | `PUT` of a new site past the account's 500 saved mappings |
+| 409 | (none) | `POST /api/sources` without a mapping, for a URL the workspace has (`"That URL is already a source"`) |
+| 413 | `too_large` | a body or a value over its limit (`field` names the value when one is) |
+| 413 | `outline_too_large` | work-out: the outline is over a cap of 8.6 (`field: "outline"`) |
+| 422 | `invalid` | a wrong type, an unknown field, a value outside its list, a missing value (`field`) |
+| 422 | `invalid_mapping` | a mapping sent to the app isn't in the shape of 8.7 (`field: "mapping"`) |
+| 422 | `not_worked_out` | work-out: the AI's answer wasn't a mapping in the shape of 8.7. Say the page couldn't be worked out; trying again may help |
+| 422 | `refused_address` | a careers page on the local network or this computer, or not a web link (`field: "url"`) |
+| 423 | `encrypting` | JobHuntPA is encrypting the data (after an update); also `state`, `done`, `total`. Try again later |
+| 429 | `rate_limited` | too many requests with keys that don't work from this address; `Retry-After` (seconds) |
+| 429 | `busy` | work-out: one is already running for this account; `Retry-After: 5` |
+| 502 | `ai_failed` | work-out: the AI provider failed; `detail` says what the person can do |
+
+## 8.3 Status
+
+`GET /api/extension/status`: `{"ok": true, "api": 3, "app_version": "1.13.0", "label": <the key's name>,
+"expires_at": "2027-10-09T12:00:00Z", "workspaces": [{"id": 1, "name": "My job search"}, ...],
+"default_workspace": 1}`. `label` and `expires_at` are null for a session. `expires_at` moves on with use (60 days
+without use, a year at most). Times are ISO 8601 UTC with `Z` and no fraction.
+
+## 8.4 Jobs (unchanged from api 2)
+
+**The job a request carries** (`POST /api/extension/preview` and `POST /api/extension/jobs`, *workspace*):
+
+```json
+{"url": "<the page's address>", "canonical_url": "<link rel=canonical, or empty>",
+ "job": {"title": "", "company": "", "location_text": "", "salary_text": "", "employment_type": "",
+         "work_mode": "", "posted_at": "", "url": "", "description": "", "description_from": "", "method": ""}}
+```
+
+- `url` (required) and `canonical_url`: http(s), at most 2,048 characters. `job` and each of its fields may be left
+  out; null counts as absent. Limits (characters): `title`, `company`, `location_text`, `salary_text` 500;
+  `employment_type` 100; `posted_at` 40, an ISO date or date-time (`2026-10-01`, `2026-10-01T09:30:00+10:00`); `url`
+  2,048; `description` 100,000, plain text. `work_mode`: `onsite`, `hybrid`, `remote`, `unknown` or `""`.
+  `description_from`: `selection`, `structured`, `site`, `main`, `body` or `""`. `method`: `jsonld`, `site`, `page`
+  or `""` (a page read with a mapping of 8.7 says `site`). Any other field is 422 `invalid`.
+- The body is at most 512 KB (524,288 bytes): past that 413 `too_large` before anything is read.
+- **Preview** stores nothing: `{"url": <the address a save would store>, "existing": {"id", "title", "status",
+  "link"} | null}`.
+- **Save** needs a title (422 `invalid`, `field: "title"`): 201 for a new job, 200 for the workspace's job with that
+  address brought up to date: `{"job_id", "created", "title", "company", "link", "excluded_reason"}`. `link` is
+  relative to the server (`/job.html?id=12&ws=1`); `excluded_reason` is why the person's filters leave the job out
+  of the Jobs list, or null.
+- **The address stored:** a SEEK job (`/job/<digits>` or `?jobId=<digits>` on `seek.com.au`, `seek.co.nz`,
+  `seek.com` or a subdomain) as `https://www.seek.com.au/job/<id>`; else `job.url`, then `canonical_url`, when on
+  exactly the same host and port as `url`; else `url`.
+
+**A page of results** (`POST /api/extension/jobs/batch`, *workspace*): `{"url": <the results page>, "jobs": [{"url",
+"title", "company", "location_text", "salary_text", "employment_type", "work_mode", "posted_at", "industry",
+"description"}, ...]}`; 1 to 50 jobs (413 `too_large`, `field: "jobs"` past 50); each job's `url` on the results
+page's own host and port (relative is fine) and a title, else the whole request is 422 `invalid` (`field` `url` or
+`title`); `industry` at most 200 characters, `description` (the card's summary, plain text) at most 5,000; the rest
+as for a job. It only adds; the answer: `{"added", "existing", "jobs": [{"url", "job_id", "created", "title",
+"company", "link", "excluded_reason"}, ...]}` in the order sent.
+
+## 8.5 Company sources
+
+- `GET /api/sources` (*workspace*): `[{"id", "label", "url", "enabled", "last_run", "last_count", "last_error",
+  "last_method", "mapping"}]`. `mapping` (api 3) is the source's careers mapping (8.7) or null.
+- `POST /api/sources` (*workspace*): `{"url", "label"?, "mapping"?}`. `url` without a scheme gets `https://`. 201
+  with the source as listed. A URL the workspace has: 409 (no `code`), unless `mapping` is given: then that source
+  gets the mapping and the answer is 200 with the source and `"updated": true`. `mapping` (api 3, optional) is a
+  careers mapping (8.7), checked again (422 `invalid_mapping`). A URL that isn't http(s): 422 `{"detail": "Not a
+  valid URL: ..."}` (no `code`); on the local network or this computer (a raw private or loopback IP, `localhost`,
+  a single-label name, `.local`, `.lan`, `.internal` and the like, judged by its shape): 422 `refused_address`
+  (`field: "url"`), since api 3 for every way of adding a source.
+- `POST /api/sources/{id}/test` (*workspace*): the app reads the page now, through its scraping rules (robots.txt,
+  crawl delay), and stores nothing: `{"ok": true, "method": <how it was read>, "count", "sample": [{"title",
+  "location", "url"}] (at most 8), "notes": [<text>]}` or `{"ok": false, "error": <why>, "notes": [...]}`. It can
+  take a minute.
+
+## 8.6 Working a page out
+
+`POST /api/extension/work-out` (*workspace*: the tasks tray of that workspace shows it while it runs, as "Working out
+a job site" or "Working out a careers page"). One at a time per account (429 `busy`). It can take as long as the AI
+takes (the AI provider's timeout is up to 180 s by default) and, for a careers page, the app's reading of the page
+(a crawl delay of at least 2 s a request, a rendered page up to 30 s): give it a timeout of at least 300 seconds and
+tell the person it may take a minute.
+
+**The request** (all three fields required; any other is 422 `invalid`):
+
+```json
+{"kind": "job", "url": "https://jobs.example.org/role/77", "outline": {"title": "...", "root": {...}}}
+```
+
+- `kind`: `job` (one job's page on a job site) or `careers` (a company's page that lists its jobs).
+- `url`: the page's address (`location.href`), http(s), at most 2,048 characters (422 `invalid`, `field: "url"`).
+  The AI is told only its scheme, host and path. The **site** is worked out from it (8.8).
+- `outline`: the trimmed outline of the page, below. The outline is the person's data: the app checks it, sends it
+  to the AI, and drops it with the request. It is never stored and never logged.
+
+**The outline.** An object `{"title", "root"}` (any other key: 422 `invalid`, `field: "outline"`):
+
+- `title` (optional): `document.title`, at most 300 characters.
+- `root`: an element, normally `document.body`. An **element** is an object with these keys, each optional but
+  `tag` (any other key is refused):
+  - `tag`: the element's name in lower case (`element.localName`): `^[a-z][a-z0-9-]{0,39}$`.
+  - `attrs`: an object of at most 12 attributes, each a string of at most 200 characters, from this list only:
+    `id`, `class`, `role`, `itemprop`, `itemtype`, `itemscope`, `aria-label`, `href`, `datetime`, `title`,
+    `data-testid`, `data-test`, `data-qa`, `data-automation`, `data-cy`. Send the value as `getAttribute` gives it
+    (a boolean attribute such as `itemscope` as `""`); leave out an attribute whose value is longer than 200
+    characters (or cut it, for `class` and `href`). Never `value`, `style`, `src`, an event handler or any other
+    attribute.
+  - `text`: a sample of the element's **own** text (its text-node children, not its descendants'), whitespace
+    collapsed and trimmed, at most 100 characters (cut longer). Empty or left out when it has none.
+  - `children`: its child elements, in document order, as elements.
+- **Never in it:** `script`, `style`, `noscript`, `template`, `iframe`, `frame`, `frameset`, `object`, `embed`,
+  `link`, `meta`, `base`, `head` (an outline holding one is refused: 422 `invalid`); the text of `input`,
+  `textarea`, `select` and `option` (sent with no `text`; one with text is refused); comments; anything inside an
+  `svg` (send the `svg` element without children) or a shadow root or frame. Leave out elements that aren't shown
+  (`display: none`, `hidden`, `aria-hidden="true"`).
+- **Caps:** the whole request at most **200,000 bytes** as sent (413
+  `outline_too_large`, before any of it is parsed); at most **2,000 elements**, the root included, and at most
+  **60 levels** deep, the root being level 1 (413 `outline_too_large`, with the cap in `detail`). The extension
+  should fit the page in before sending: stop at the caps in document order and leave out the elements that hold
+  nothing a job needs (empty wrappers' leaf children, navigation lists past their first few items), rather than
+  send what will be refused. The outline may leave out elements, so the AI is told not to rely on positions.
+
+**The answer, a job page** (200):
+
+```json
+{"site": "jobs.example.org", "kind": "job", "worked_out": true,
+ "mapping": {"version": 1, "kind": "job", "fields": {"title": {"selector": "h1.job-title"},
+             "description": {"selector": "div#ad-body"}, "date": {"selector": "time.posted", "attribute": "datetime"}}}}
+```
+
+Nothing is saved. The extension applies the mapping to the page (8.7), shows the person the job it finds, and saves
+the mapping with `PUT` (8.8) only once they accept it.
+
+**The answer, a careers page** (200). The app reads the page **itself** (through its scraping rules, never the
+browser's copy): first the usual ways (a known job board, the job data sites embed, links that look like postings,
+a rendered page); only when they find nothing is the AI asked, and the page read again with the mapping alone:
+
+```json
+{"site": "careers.acme.example", "kind": "careers", "url": "https://careers.acme.example/jobs",
+ "worked_out": true, "mapping": {"version": 1, "kind": "careers", "fields": {...}},
+ "test": {"ok": true, "method": "careers page read with its worked-out layout (careers.acme.example)", "count": 14,
+          "sample": [{"title": "Senior Analyst", "location": "Sydney NSW", "url": "https://careers.acme.example/o/a1"}],
+          "notes": []}}
+```
+
+- `worked_out: false` and `mapping: null` when the usual ways found jobs: no AI was asked, and the source needs no
+  mapping. `test` is then their result.
+- `test` is the shape of `POST /api/sources/{id}/test` (8.5): `ok: false` with `error` when the page can't be read
+  at all (robots.txt, a bot check, an error page: then no AI is asked and `mapping` is null) or the mapping finds
+  no jobs.
+- Show the person `test` (the jobs **the app** found). When they accept, save the source with `POST /api/sources`
+  `{"url": <the answer's url>, "label"?, "mapping": <the answer's mapping or none>}`; nothing is saved before. The
+  extension never applies a careers mapping itself.
+- 422 `refused_address` (before anything is read) for a page on the local network or this computer.
+
+## 8.7 The mapping
+
+A mapping is **data, never code**: CSS selectors and attribute names, checked by the app, applied with the browser's
+own selector functions. Nothing in it is ever evaluated, inserted as HTML or used as an address by itself.
+
+```json
+{"version": 1, "kind": "job" | "careers", "fields": {"<field>": {"selector": "<CSS selector>", "attribute": "<name>"}}}
+```
+
+- `version`: `1` (the app refuses another: 422 `invalid_mapping`). When sending a mapping it may be left out.
+- **`kind: "job"`** fields: `title`, `company`, `location`, `salary`, `employment_type`, `work_mode`, `date`,
+  `description`. `title` and `description` are required. Applied by the extension: for each field,
+  `el = document.querySelector(selector)` (inside `try`: a selector the browser rejects is a field not found); the
+  value is `el.getAttribute(attribute)` when `attribute` is given, else the element's text (`innerText` for the
+  description, keeping its paragraphs; `textContent`, whitespace collapsed, for the rest). The values then fill the
+  job of 8.4: `location` is `location_text`, `salary` is `salary_text`, `date` is `posted_at` (sent only when it is
+  an ISO date or date-time; else left out), `work_mode` is mapped to the contract's words or left `""`, and
+  `description_from` is `site`, `method` is `site`. A saved mapping "stops working" when it no longer finds a
+  title: then offer to work the site out again.
+- **`kind: "careers"`** fields: `list`, `title`, `link`, `location`, `salary`, `employment_type`, `work_mode`, `date`.
+  `list`, `title` and `link` are required. Applied by the app only: `list` picks every job entry
+  (`querySelectorAll`); every other selector is matched inside one entry, and `":scope"` means the entry itself;
+  `link`'s value is its `attribute`, `href` when none is given. Entries without a title or a link to an http(s)
+  page are skipped, as are links on the local network. `list` never has an attribute.
+- Each field is `{"selector", "attribute"?}`: no other key. A field that isn't on the page is left out (in the AI's
+  answer it may be null). At most the fields listed for the kind; an unknown field refuses the whole mapping.
+- **A selector** is a string of 1 to 300 characters, trimmed, made only of ASCII letters, digits, space and
+  `_ # . : > + ~ * [ ] = ^ $ | " ' ( ) , / ? & % -`; quotes balanced; no `javascript:`, `vbscript:`, `livescript:`,
+  `url(`, `expression(` or `@import` (in any case); pseudo-classes only from `:scope`, `:not()`, `:is()`,
+  `:where()`, `:has()`, `:first-child`, `:last-child`, `:only-child`, `:nth-child()`, `:nth-last-child()`,
+  `:first-of-type`, `:last-of-type`, `:only-of-type`, `:nth-of-type()`, `:nth-last-of-type()`, `:empty`, and no
+  pseudo-element (`::`); and it must parse. `":scope"` alone only in a careers field other than `list`.
+- **An attribute** is null, absent, or a name of 1 to 40 characters matching `^[a-z][a-z0-9_-]*$` (the app lowers
+  its case), never one that starts with `on` and a letter (an event handler).
+- The AI's answer is checked the same way and refused whole when anything breaks a rule (422 `not_worked_out`); the
+  app never repairs one or uses part of it. A mapping the app answers with is always in this checked shape, in
+  this field order, with `version` and `kind`.
+
+## 8.8 Saved job-site mappings
+
+A **site** is a host name, normalised: lower case, IDNA (punycode) for a non-ASCII name, no trailing dot, a leading
+`www.` taken off; no scheme, port or path (`https://WWW.Seek.com.au:443/job/1` is `seek.com.au`). Send
+`location.hostname`; the app normalises it and answers with the normalised `site`. Each account has its own
+mappings (an older install's accounts don't share them), at most 500, sealed under the account's key.
+
+- `GET /api/extension/mappings`: `{"mappings": [{"site", "fields": [<the field names it has>], "updated_at"}],
+  "max": 500}`, by site.
+- `GET /api/extension/mappings/{site}`: `{"site", "mapping", "updated_at"}`, or 404 `not_found`.
+- `PUT /api/extension/mappings/{site}` with `{"mapping": <a job mapping>}` (nothing else; a body of at most 16 KB,
+  else 413 `too_large`): 201 when new, 200 when it replaced one: `{"site", "mapping", "updated_at", "created"}`. A
+  mapping not in the shape of 8.7 or of another kind: 422 `invalid_mapping`. A `{site}` that isn't a host name: 422
+  `invalid`, `field: "site"` (with a key, one with a character outside `[A-Za-z0-9.-]` is 403 `token_scope` before
+  that: send the punycode form `location.hostname` gives).
+- `DELETE /api/extension/mappings/{site}`: `{"ok": true}`, or 404 `not_found`. The person can also forget one in
+  Settings > Browser extension (*Job sites the AI worked out*).
+
+**The popup's flow** (§1.15): read the page as before (JSON-LD, the sites the extension knows, the page's heading);
+when that finds no title or no description, `GET` the site's mapping and apply it; when there is none, or it finds no
+title, offer to work the site out (`work-out` with `kind: "job"`), apply the answer, show the job, and `PUT` it on
+acceptance. The extension still never clicks, scrolls, turns pages or fetches anything on a job site by itself; the
+outline is built from the page the person has open.
+
+## 8.9 What changed from api 2
+
+- `status` says `"api": 3`.
+- New: `POST /api/extension/work-out`, `GET /api/extension/mappings`, `GET`, `PUT` and `DELETE
+  /api/extension/mappings/{site}` (8.6 to 8.8), with the codes `ai_not_set_up`, `ai_failed`, `busy`,
+  `not_worked_out`, `outline_too_large`, `invalid_mapping`, `too_many_mappings` and `not_found`.
+- `POST /api/sources` takes `mapping`; with one, a URL the workspace has gets it (200, `updated: true`) instead of
+  409. Sources list their `mapping`.
+- `POST /api/sources` refuses an address on the local network or this computer (422 `refused_address`), as the bulk
+  add and the import do.
+- Unchanged: keys, status's other fields, preview, jobs, jobs/batch and the source test.
