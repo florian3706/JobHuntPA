@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=JobHuntPA
+Comment=Personal job-hunt dashboard
+Exec=AppRun
+Icon=jobhuntpa
+Terminal=false
+Categories=Office;

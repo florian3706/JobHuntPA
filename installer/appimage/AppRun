@@ -1,0 +1,34 @@
+#!/bin/sh
+# The AppImage's entry point: JobHuntPA with its own Python (installer/appimage.sh builds it).
+#   JobHuntPA-x86_64.AppImage [--port N] [--no-browser]   start it and open it in the browser
+#   JobHuntPA-x86_64.AppImage --stop                        stop it
+#   JobHuntPA-x86_64.AppImage --service install|remove|status [options]   start it at boot (service.sh)
+#   JobHuntPA-x86_64.AppImage --reset [--confirm RESET]     the reset tool (with JobHuntPA stopped)
+#   JobHuntPA-x86_64.AppImage --uninstall [--yes]           remove its data folder, its service and this file
+#   JobHuntPA-x86_64.AppImage --server --port N             the server alone (what the service runs)
+HERE="$(dirname "$(readlink -f "$0")")"
+APPDIR="${APPDIR:-$HERE}"
+export APPDIR
+PY="$APPDIR/python/bin/python3"
+# The bundled Python only: nothing from the computer's own Python setup.
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+cd "$APPDIR/app" || exit 1
+case "${1:-}" in
+  --server)
+    shift
+    exec "$PY" -m uvicorn backend.app:app --host 127.0.0.1 --proxy-headers --forwarded-allow-ips 127.0.0.1 "$@" ;;
+  --service)
+    shift
+    exec bash "$APPDIR/app/service.sh" "$@" ;;
+  --reset)
+    shift
+    exec "$PY" -m backend.reset "$@" ;;
+  --uninstall)
+    shift
+    exec "$PY" "$APPDIR/app/installer/uninstaller.py" --folder "$APPDIR/app" "$@" ;;
+  --help|-h)
+    sed -n '2,8p' "$APPDIR/AppRun" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+esac
+exec "$PY" "$APPDIR/app/installer/launch.py" "$@"

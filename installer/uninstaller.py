@@ -371,7 +371,7 @@ def main() -> int:
             say(f"  Delete {appimage} yourself to finish.")
     else:
         delete_folder(folder)
-    say("\nJobHuntPA has been uninstalled. Python was left installed.")
+    say("\nJobHuntPA has been uninstalled." + ("" if appimage else " Python was left installed."))
     return 0
 
 

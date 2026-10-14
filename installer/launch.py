@@ -14,7 +14,9 @@ a server log. When the folder step is done the app exits with status 3 and is
 started again here, now on the chosen folder; the page carries on by itself.
 
 Options: --port N (default 8000; the next free port is used if taken),
-         --no-browser
+         --no-browser,
+         --stop (stop the JobHuntPA a launcher started, e.g. the AppImage
+         started from the file manager, which has no window to close)
 """
 from __future__ import annotations
 
@@ -149,11 +151,35 @@ def write_run_file(port: int, server: subprocess.Popen) -> Optional[Path]:
     return path
 
 
+def stop_running() -> int:
+    """Stops the JobHuntPA a launcher started (its running.json in the data folder names the launcher's process)."""
+    path = run_file()
+    try:
+        found = json.loads(path.read_text()) if path else {}
+        pid = found.get("launcher_pid") or found.get("pid")
+    except (OSError, ValueError, AttributeError):
+        pid = None
+    if not isinstance(pid, int) or pid <= 0:
+        print("JobHuntPA isn't running (or wasn't started by its launcher).")
+        return 1
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        print("JobHuntPA isn't running any more.")
+        path.unlink(missing_ok=True)
+        return 1
+    print("Stopping JobHuntPA...")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start JobHuntPA.")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--stop", action="store_true")
     args = parser.parse_args()
+    if args.stop:
+        return stop_running()
 
     if healthy(args.port):
         url = f"http://{HOST}:{args.port}"
