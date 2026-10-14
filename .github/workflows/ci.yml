@@ -125,7 +125,7 @@ jobs:
           test ! -d "$RUNNER_TEMP/JobHuntPA-app"
           # The data folder the pointer names, outside the app folder, is backed up and removed, and so is the pointer
           test ! -e "$DATA" && test ! -f "$JOBHUNT_CONFIG_DIR/data-folder.json"
-          backup="$(ls ~/Documents/JobHuntPA-backup-*.zip ~/JobHuntPA-backup-*.zip 2>/dev/null | head -1)"
+          backup="$(ls ~/Documents/JobHuntPA-backup-*.zip ~/JobHuntPA-backup-*.zip 2>/dev/null | head -1 || true)"
           test -n "$backup"
           python3 -m zipfile -l "$backup" | grep -q data/server-keys.json
           python3 -m zipfile -l "$backup" | grep -q data/.env
