@@ -1150,6 +1150,9 @@ A posting missing from one user's query results says nothing about whether it cl
 
 ## 19. Browser-extension keys (2026-10-09)
 
+> The extension's API as it stands (`"api": 3`, with the AI mappings) is written down in full in
+> docs/design/open-source.md, Part 8; where this section differs, Part 8 holds.
+
 The Chrome and Firefox extensions (repos `JobHuntPA-chrome-extension`, `JobHuntPA-firefox-extension`) add the
 page in the current tab as a job or as a company source. They can't use the session cookie (SameSite, CSRF, an
 `Origin` of `chrome-extension://...`), and everything is sealed under the person's DEK, so a key carries a wrapped
