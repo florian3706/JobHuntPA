@@ -1,5 +1,10 @@
 # JobHuntPA design: user accounts, per-user encryption, admin panel, Stripe memberships and email digests
 
+> **Since the open-source plan (`docs/design/open-source.md`, Phase A):** memberships and Stripe (§8), email (§9,
+> §16), job digests (§17) and two-step sign-in (TOTP, in §3 and §6) are removed from the code. What this file says
+> about them is history. The rest (encryption §2, sessions §3, the shared pool §14) is still in force. A database
+> from before is cleaned at start-up by `backend/db.py` `_retire_removed_features`.
+
 **Base.** `main` at 48fb435, plus Phase 1 of the documents work (d8eea88 on branch `worktree-agent-a3d7c32a94762a7dd`). Phase 1 adds notes and summaries as `Document` rows (`filetype` "note"/"summary"), `concise_text`, `use_concise`, `summary_of`, `updated_at`, the "preferences" kind and `llm_usage`. Rebase every phase below on it.
 
 **Threat model.** The goal is that someone holding only the database, its backups or the `data/` folder cannot read a user's searches, documents, jobs or personal details. This holds even if that person is the operator browsing with `sqlite3`, as long as the user has not opted in to background access. Personal and billing details of other people (the admin details key, §1.4) stay closed even to someone who holds the database **and** the key file, because the key that opens them is never reachable through the server key (the identity key, §1.2).
