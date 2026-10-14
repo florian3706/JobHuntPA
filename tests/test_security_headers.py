@@ -137,7 +137,7 @@ class Policy(unittest.TestCase):
         site's address, never the page's."""
         layers = [(script.name, m.group(0)) for script in SCRIPTS
                   for m in re.finditer(r"L\.tileLayer\(.*?\}\)", script.read_text(encoding="utf-8"), re.S)]
-        self.assertEqual(sorted(name for name, _ in layers), ["app.js", "job.js"])
+        self.assertEqual(sorted(name for name, _ in layers), ["app.js"])  # (the job page has no map: commute links)
         for name, call in layers:
             self.assertIn("tile.openstreetmap.org", call, name)
             self.assertRegex(call, r"referrerPolicy: 'origin'", name)
