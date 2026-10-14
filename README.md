@@ -640,6 +640,30 @@ those under **Search setup > Company sources**, once per workspace:
 
 ![Company sources: careers pages with their last results, one blocked by the site](docs/screenshots/company-sources.png)
 
+**Many pages at once.** **Bulk add** takes a list of careers pages, pasted or from a file, and
+**Export sources** saves the workspace's list in the same format, so you can pass it on or load it into
+another workspace. The format is CSV (UTF-8 text) with the columns `company,url`: one page a line, a
+first line `company,url` if you like, and double quotes around a name that contains a comma (write a quote
+inside a name twice):
+
+```csv
+company,url
+"Smith, Jones & Co",https://careers.smithjones.example/jobs
+Acme,https://jobs.lever.co/acme
+```
+
+1. Click **Bulk add**, paste the list or choose the file, and click **Show the list**.
+2. Check the list. **Nothing has been fetched from any of the sites yet**, not even a name look-up.
+   Untick or **Remove** the pages you don't want. A page is marked **Unusual**, with the reason, when its
+   address is a raw IP address, carries a user name or password, is a link shortener, has a lookalike or
+   encoded name (punycode, mixed alphabets, `%` codes), uses plain `http` or names an odd port. Those start
+   unticked: tick one only if you know the address is right. The marks judge the address's shape only; they
+   are not a safety check of the site. An address on your local network or this computer, or one that isn't
+   a web link, can't be added at all.
+3. Click **Add**. Each ticked page is added the way a single one is, and each line says what happened:
+   *added*, *already there* (the source you have is left as it is), *repeated in the file* (only the first
+   counts) or *could not be read*.
+
 **Which address to use.** Many companies run their jobs on a hosted job board. The app reads
 those boards' own job feeds, which is quick and complete, so if a careers page links to one, the
 board's address works best (the careers page itself usually works too, as the app follows the link):

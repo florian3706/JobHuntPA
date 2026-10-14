@@ -240,7 +240,7 @@ class GeneratedMarkupTest(unittest.TestCase):
     def test_templates_label_their_controls(self):
         problems = []
         for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js", "account.js", "server-settings.js",
-                     "export.js", "restore.js", "background.js", "extension.js"):
+                     "export.js", "restore.js", "background.js", "extension.js", "sources-bulk.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
 
@@ -792,6 +792,81 @@ class RestoreCardTest(unittest.TestCase):
         css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
         self.assertIn('#restore-card input[type="file"] { max-width: 100%; font-size: 16px; }', css)
         self.assertIn(".restore-option { align-items: flex-start; overflow-wrap: anywhere; }", css)
+
+
+class SourcesBulkDialogTest(unittest.TestCase):
+    """Careers pages in bulk (Search setup > Company sources; sources-bulk.js, open-source spec §1.14)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = (FRONTEND / "sources-bulk.js").read_text(encoding="utf-8")
+        cls.html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        cls.index = parse("index.html")
+
+    def node(self, node_id):
+        found = [n for n in self.index.nodes if n["attrs"].get("id") == node_id]
+        self.assertEqual(len(found), 1, node_id)
+        return found[0]
+
+    def test_loaded_after_the_dashboard_and_its_helpers(self):
+        self.assertLess(self.html.index('src="./common.js"'), self.html.index('src="./sources-bulk.js"'))
+        self.assertLess(self.html.index('src="./app.js"'), self.html.index('src="./sources-bulk.js"'))
+
+    def test_a_labelled_native_dialog_opened_by_a_button_that_says_so(self):
+        self.assertEqual(self.node("srcbulk-dialog")["tag"], "dialog")
+        self.assertEqual(self.node("srcbulk-dialog")["attrs"].get("aria-labelledby"), "srcbulk-title")
+        self.assertEqual(self.node("sources-bulk-open")["attrs"].get("aria-haspopup"), "dialog")
+        self.assertIn("dlg.showModal()", self.js)
+        self.assertIn("dlg.addEventListener('close'", self.js, "focus goes back to the button that opened it")
+
+    def test_each_step_is_a_section_named_by_a_heading_that_takes_focus(self):
+        for step in ("input", "review", "done"):
+            section = self.node(f"srcbulk-step-{step}")
+            self.assertEqual(section["attrs"].get("aria-labelledby"), f"srcbulk-{step}-heading")
+            self.assertEqual(self.node(f"srcbulk-{step}-heading")["attrs"].get("tabindex"), "-1")
+        self.assertIn("el(`srcbulk-${step}-heading`)).focus()", self.js)
+
+    def test_the_format_is_shown_and_describes_the_box(self):
+        self.assertEqual(self.node("srcbulk-text")["attrs"].get("aria-describedby"), "srcbulk-format")
+        for words in ("company,url", "double quotes", "UTF-8", "optional"):
+            self.assertIn(words, self.html)
+        self.assertEqual(self.node("srcbulk-file")["attrs"].get("type"), "file")
+
+    def test_it_says_nothing_is_fetched_and_the_flags_are_not_a_safety_verdict(self):
+        self.assertIn("Nothing is fetched from these sites yet", self.html)
+        self.assertIn("Nothing has been fetched from these sites yet", self.html)
+        self.assertIn("it is not a safety check of the site", self.html)
+        self.assertIn("can't be added", self.html)
+
+    def test_addresses_are_text_never_links(self):
+        """An address in the list must not be opened by a stray click before the person confirms."""
+        self.assertNotIn("<a ", self.js.split("/* -- export")[0])
+        self.assertNotIn("href", self.js.split("/* -- export")[0])
+
+    def test_flagged_rows_start_unticked_and_blocked_rows_have_no_tick_box(self):
+        self.assertIn("ticked: canAdd(row) && !row.flags.length", self.js)
+        self.assertIn("const head = blocked", self.js)
+
+    def test_counts_results_and_errors_are_said(self):
+        self.assertEqual(self.node("srcbulk-count")["attrs"].get("role"), "status")
+        self.assertEqual(self.node("sources-export-status")["attrs"].get("role"), "status")
+        for said in ("announce(`Removed", "announce(`${summary}.`)", "setFieldError(box, e.message)",
+                     "announce(`Nothing was added"):
+            self.assertIn(said, self.js)
+        self.assertIn("setBusy(btn, true)", self.js)
+        self.assertIn("aria-describedby=\"${id}-info\"", self.js, "a tick box is described by its address and flags")
+
+    def test_meaning_is_not_colour_alone_and_targets_are_big_enough(self):
+        self.assertIn("<strong>${mark}:</strong>", self.js)
+        self.assertIn(".srcbulk-head input[type=\"checkbox\"] { width: 24px; height: 24px;", self.css)
+        self.assertIn("@media (pointer: coarse) { .srcbulk-row .btn-sm { min-height: 44px; } }", self.css)
+        self.assertIn(".srcbulk-url { font-family", self.css)
+        self.assertIn("overflow-wrap: anywhere", self.css.split("/* Careers pages in bulk")[1].split("/* Map */")[0],
+                      "long addresses wrap at 320 px")
+
+    def test_no_inline_styles_or_handlers(self):
+        self.assertNotRegex(self.js, r"style=|\bon[a-z]+=")
 
 
 class WelcomePageTest(unittest.TestCase):
