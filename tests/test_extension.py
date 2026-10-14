@@ -369,7 +369,7 @@ class KeyAuthTest(Base):
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertEqual({k: body[k] for k in ("ok", "api", "label", "default_workspace")},
-                         {"ok": True, "api": 2, "label": "Firefox on laptop", "default_workspace": acct.workspace_id})
+                         {"ok": True, "api": 3, "label": "Firefox on laptop", "default_workspace": acct.workspace_id})
         # Using the key moves its idle expiry on, so the two can be a second apart: compare within 2 seconds.
         from datetime import datetime
         when = lambda iso: datetime.fromisoformat(iso.replace("Z", "+00:00"))  # noqa: E731

@@ -183,6 +183,7 @@ class FullRun(unittest.TestCase):
         self.secrets: dict[str, str] = {}
         self.llm_calls = 0
         self.llm_status = 200  # an error status: the provider answers it, echoing the request
+        self.mapping_reply: dict | None = None  # the AI's answer to a page outline (None: a score, refused)
 
     # -- clients --------------------------------------------------------------------------------------------------
 
@@ -209,6 +210,8 @@ class FullRun(unittest.TestCase):
             return _Response(400, {"error": {"message": f"bad request, you sent: {prompt[:200]}"}})
         text = SCORE_REPLY if "response_format" in (json or {}) else (
             "Dear hiring team,\n\nZQX answer: I led delivery programs.\n\nZqx Quillon")
+        if "PAGE OUTLINE" in prompt and self.mapping_reply is not None:  # an AI mapping (backend/mappings.py)
+            text = self.mapping_reply["careers" if '"list" picks every job entry' in prompt else "job"]
         return _Response(200, {"choices": [{"message": {"content": text}, "finish_reason": "stop"}],
                                "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
 
@@ -462,11 +465,66 @@ class FullRun(unittest.TestCase):
             self.assertFalse(k.post(f"/api/sources/{r.json()['id']}/test").json()["ok"])
             self.source.failure = None
         self.assertEqual(k.get("/api/jobs").status_code, 403)
+        self.ai_mappings(c, k)
         wrong = self.anonymous()
         wrong.headers["Authorization"] = "Bearer " + self.secrets["extension_key"][:-4] + "zqxq"
         self.secrets["wrong_extension_key"] = wrong.headers["Authorization"][7:]
         self.assertEqual(wrong.get("/api/extension/status").status_code, 401)
         ratelimit.BAD_KEY.reset()
+
+    @staticmethod
+    def outline(n: int = 5) -> dict:
+        """A page outline as the extension sends it: the person's page, marked everywhere."""
+        return {"title": "ZQX Delivery Lead at ZQX Corp", "root": {"tag": "body", "attrs": {"class": "zqx-page"},
+                "children": [{"tag": "h1", "attrs": {"class": "zqx-title", "id": "zqx-h1"}, "text": "ZQX Delivery Lead"},
+                             {"tag": "a", "attrs": {"href": "/zqx/apply?zqx=token", "aria-label": "ZQX apply"},
+                              "text": "ZQX apply"},
+                             {"tag": "div", "attrs": {"id": "zqx-ad", "data-testid": "zqx-ad"}, "children": [
+                                 {"tag": "p", "text": f"ZQX paragraph {i} for Zqx Quillon"} for i in range(n)]}]}}
+
+    def ai_mappings(self, c, k):
+        """AI mappings (Phase I1): a job page and a careers page worked out from the person's page outline, answers
+        that aren't selectors refused, an oversized outline refused, the layouts saved, read and forgotten. The
+        outline, the sites and the selectors never reach the log."""
+        from tests.test_mappings import Pages
+
+        site = "jobs.zqx-site.example"
+        job = {"kind": "job", "url": f"https://{site}/zqx-role/7?zqx=private", "outline": self.outline()}
+        r = k.post("/api/extension/work-out", json=job)  # the AI answers with a score: not a mapping
+        self.assertEqual((r.status_code, r.json()["code"]), (422, "not_worked_out"), r.text)
+        self.mapping_reply = {
+            "job": json.dumps({"title": {"selector": "h1.zqx-title"}, "description": {"selector": "#zqx-ad"},
+                               "company": {"selector": "[data-testid='zqx-company']"}}),
+            "careers": json.dumps({"list": {"selector": "li.zqx-job"}, "title": {"selector": "h3"},
+                                   "link": {"selector": "a", "attribute": "href"}})}
+        r = k.post("/api/extension/work-out", json=job)
+        self.assertEqual(r.status_code, 200, r.text)
+        mapping = r.json()["mapping"]
+        self.assertEqual(mapping["fields"]["title"], {"selector": "h1.zqx-title"})
+        for refused in ({"title": {"selector": "a[href^='javascript:zqx()']"}, "description": {"selector": "#zqx"}},
+                        {"title": {"selector": "h1"}, "description": {"selector": "#zqx"}, "zqx": {"selector": "p"}}):
+            self.mapping_reply["job"] = json.dumps(refused)
+            self.assertEqual(k.post("/api/extension/work-out", json=job).status_code, 422)
+        big = {**job, "outline": self.outline(2100)}
+        self.assertEqual(k.post("/api/extension/work-out", json=big).status_code, 413)
+        bad = {**job, "outline": {"root": {"tag": "script", "text": "ZQX token = 1"}}}
+        self.assertEqual(k.post("/api/extension/work-out", json=bad).status_code, 422)
+        self.assertEqual(k.put(f"/api/extension/mappings/{site}", json={"mapping": mapping}).status_code, 201)
+        self.assertEqual(c.get(f"/api/extension/mappings/{site}").json()["site"], site)
+        self.assertEqual([m["site"] for m in k.get("/api/extension/mappings").json()["mappings"]], [site])
+        bad_mapping = {**mapping, "fields": {**mapping["fields"], "title": {"selector": "zqx:hover"}}}
+        self.assertEqual(k.put(f"/api/extension/mappings/{site}", json={"mapping": bad_mapping}).status_code, 422)
+        careers = "https://careers.zqx-three.example/zqx-jobs"
+        page = ('<html><body><ul>' + "".join(f'<li class="zqx-job"><h3>ZQX Analyst {n}</h3>'
+                                             f'<a href="/zqx/o/{n}">ZQX more</a></li>' for n in range(3))
+                + "</ul></body></html>")
+        with Pages({careers: page}).served():
+            r = k.post("/api/extension/work-out", json={"kind": "careers", "url": careers, "outline": self.outline()})
+        self.assertEqual((r.status_code, r.json()["test"]["count"]), (200, 3), r.text)
+        r = k.post("/api/sources", json={"url": careers, "label": "ZQX careers", "mapping": r.json()["mapping"]})
+        self.assertEqual(r.status_code, 201, r.text)
+        self.assertEqual(c.delete(f"/api/extension/mappings/{site}").status_code, 200)
+        self.assertEqual(k.get(f"/api/extension/mappings/{site}").status_code, 404)
 
     def when_things_fail(self, c):
         """Errors carry the text that caused them (a provider echoes the prompt, a library names the address): none
@@ -481,7 +539,9 @@ class FullRun(unittest.TestCase):
         self.llm_status = 401
         for path, body in (("/api/chats", {"job_ids": [self.job_id], "message": "ZQX failing question"}),
                            (f"/api/jobs/{self.job_id}/cover-letter", {"instructions": "ZQX failing instruction"}),
-                           (f"/api/score/{self.job_id}", None)):
+                           (f"/api/score/{self.job_id}", None),
+                           ("/api/extension/work-out", {"kind": "job", "url": "https://jobs.zqx-fail.example/zqx",
+                                                        "outline": self.outline()})):
             self.assertGreaterEqual(c.post(path, json=body).status_code, 400, path)
         self.assertEqual(self.run_to_end(c, c.post("/api/score/run", json={"mode": "all"}).json())["state"], "done")
         self.llm_status = 200

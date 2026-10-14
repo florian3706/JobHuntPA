@@ -16,6 +16,7 @@ from tests import test_export
 from backend import data_import, docs, import_file
 from backend.db import (
     CompanyProfile,
+    CompanySource,
     Document,
     Job,
     Posting,
@@ -839,3 +840,87 @@ class RefusalTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MappingsTest(Base):
+    """Phase I1: a source's page layout comes with its source, and the account's saved job-site layouts come with the
+    file (backend/mappings.py); never a source on the local network, and never a layout of another shape."""
+
+    def setUp(self):
+        super().setUp()
+        from backend import mapping_format, mappings
+
+        self.careers = mapping_format.mapping("careers", {"list": {"selector": "li.job"}, "title": {"selector": "h3"},
+                                                          "link": {"selector": ":scope", "attribute": "href"}})
+        self.job = mapping_format.mapping("job", {"title": {"selector": "h1"}, "description": {"selector": "#ad"}})
+        with helpers.as_account(self.bob):
+            db = SessionLocal()
+            try:
+                src = db.query(CompanySource).filter(CompanySource.workspace_id == self.bob.workspace_id).first()
+                src.mapping = self.careers
+                mappings.save(db, self.bob.id, "jobs.example.org", self.job)
+                mappings.save(db, self.bob.id, "board.example.net", self.job)
+                db.commit()
+            finally:
+                db.close()
+
+    def sources(self, ws, who):
+        db = SessionLocal()
+        try:
+            with helpers.as_account(who):
+                return [(s.careers_url, s.mapping) for s in
+                        db.query(CompanySource).filter(CompanySource.workspace_id == ws).order_by(CompanySource.id)]
+        finally:
+            db.close()
+
+    def sites(self, who):
+        from backend import mappings
+
+        db = SessionLocal()
+        try:
+            with helpers.as_account(who):
+                return {r.site: r.mapping for r in mappings.for_account(db, who.id)}
+        finally:
+            db.close()
+
+    def test_layouts_go_out_and_come_back_and_an_accounts_own_are_kept(self):
+        from backend import mappings
+
+        blob = self.export()
+        data = self.import_data(blob)
+        self.assertEqual(data["workspaces"][0]["sources"][0]["mapping"], self.careers)
+        self.assertEqual([m["site"] for m in data["site_mappings"]], ["board.example.net", "jobs.example.org"])
+        alice = helpers.make_user(f"MARK-name-alice-{os.urandom(4).hex()}")
+        own = {**self.job, "fields": {**self.job["fields"], "title": {"selector": "h1.alice"}}}
+        with helpers.as_account(alice):
+            db = SessionLocal()
+            mappings.save(db, alice.id, "jobs.example.org", own)
+            db.commit()
+            db.close()
+        r = self.do_import(blob, who=alice)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["site_mappings"], 1)
+        ws = r.json()["workspaces"][0]["id"]
+        self.assertEqual([m for _, m in self.sources(ws, alice)], [self.careers])
+        self.assertEqual(self.sites(alice), {"jobs.example.org": own, "board.example.net": self.job})
+        self.assertEqual(len(self.sites(self.bob)), 2, "the exporting account's are untouched")
+
+    def test_local_sources_and_layouts_of_another_shape_are_left_out(self):
+        blob = self.export()
+        data = self.import_data(blob)
+        sources = data["workspaces"][0]["sources"]
+        sources[0]["mapping"] = {**self.careers, "fields": {"list": {"selector": "li:hover"}}}
+        sources.append({"ref": 90, "label": "Router", "url": "http://192.168.1.1/jobs", "enabled": True})
+        sources.append({"ref": 91, "label": "Here", "url": "http://localhost:8000/careers", "enabled": True})
+        sources.append({"ref": 92, "label": "Fine", "url": "https://careers.example.org/fine", "enabled": True,
+                        "mapping": "javascript:alert(1)"})
+        data["site_mappings"] = [{"site": "javascript:alert(1)", "mapping": self.job},
+                                 {"site": "ok.example", "mapping": {**self.job, "kind": "careers"}},
+                                 {"site": "fine.example", "mapping": self.job}, "junk"]
+        r = self.do_import(self.replace_import_file(blob, data))
+        self.assertEqual(r.status_code, 200, r.text)
+        ws = r.json()["workspaces"][0]["id"]
+        self.assertEqual(self.sources(ws, self.bob), [("https://careers.example/bob", None),
+                                                      ("https://careers.example.org/fine", None)])
+        self.assertEqual(r.json()["site_mappings"], 1)
+        self.assertIn("fine.example", self.sites(self.bob))

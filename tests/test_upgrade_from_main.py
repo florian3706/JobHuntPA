@@ -18,6 +18,9 @@ the old SMTP_* and STRIPE_* lines leave .env.
 Phase D: the jobs get the new applied date column empty, so none shows a date, and the workspaces keep their
 scheduled searches on (new workspaces start with them off).
 
+Phase I1: the sources get the new page-layout column empty (no source is read with a layout), the site_mappings table
+is made, and each account saves and reads its own job-site layout.
+
 Phase C: the commute services are gone. The test writes what they left into its copy of the fixture, in the old
 shape: a row of the commute cache (sealed, per account) and the TFNSW_API_KEY / TOMTOM_API_KEY lines in .env, before
 the first start; and, between the two starts, a search setup with "Commute from" stations and arrive-by / leave-at
@@ -115,6 +118,12 @@ with TestClient(app, base_url="https://jobs.example.invalid") as c:
             got["llm_model"] = c.get("/api/settings/llm").json().get("model")
             got["usage"] = c.get("/api/settings/usage").status_code
             got["address"] = c.get("/api/settings/address").json()
+            # Phase I1: the sources have no page layout yet, and each account saves its own job-site layout.
+            got["source_mappings"] = [s.get("mapping") for s in c.get("/api/sources").json()]
+            layout = {"kind": "job", "fields": {"title": {"selector": "h1." + email.split("@")[0]},
+                                                "description": {"selector": "#ad"}}}
+            got["mapping_put"] = c.put("/api/extension/mappings/jobs.example.org", json={"mapping": layout}).status_code
+            got["mapping_title"] = c.get("/api/extension/mappings/jobs.example.org").json()["mapping"]["fields"]["title"]
             if email == ACCOUNTS[0][0]:
                 changed = c.put("/api/settings/llm", json={"model": "fixture-model-changed"})
                 got["changed_model"] = (changed.status_code, changed.json().get("model"))
@@ -151,7 +160,9 @@ out["after"] = {"two_step": raw("SELECT COUNT(*) FROM users WHERE mfa_enabled !=
                 "accounts": raw("SELECT COUNT(*) FROM users")[0][0],
                 "applied_column": [[r[2], r[4]] for r in raw("PRAGMA table_info(jobs)") if r[1] == "applied_at"],
                 "applied_set": raw("SELECT COUNT(*) FROM jobs WHERE applied_at IS NOT NULL")[0][0],
-                "schedules": raw("SELECT COUNT(*) FROM search_schedules")[0][0]}
+                "schedules": raw("SELECT COUNT(*) FROM search_schedules")[0][0],
+                "mapping_column": [[r[2], r[4]] for r in raw("PRAGMA table_info(company_sources)") if r[1] == "mapping"],
+                "site_mappings": raw("SELECT COUNT(*) FROM site_mappings")[0][0]}
 out["env_after"] = (Path(FOLDER) / ".env").read_text()
 files = [p for p in (DB, DB.with_name(DB.name + "-wal")) if p.exists()]
 out["secrets_left"] = sum(1 for p in files for s in secrets if s in p.read_bytes())
@@ -274,6 +285,15 @@ class UpgradeFromMainTest(unittest.TestCase):
                 self.assertEqual(got["applied_at"], [["Fixture Delivery Lead", None], ["Fixture Private Role", None]])
                 self.assertEqual(got["applied_at_page"], [None, None])
                 self.assertTrue(got["schedule_on"], "an existing workspace's scheduled searches stay on")
+
+    def test_sources_have_no_layout_and_each_account_keeps_its_own_site_layouts(self):
+        self.assertEqual(self.out["after"]["mapping_column"], [["BLOB", None]], "sealed, no server default")
+        for email, _ in (OWNER, MEMBER):
+            self.assertTrue(all(m is None for m in self.out[email]["source_mappings"]))
+            self.assertEqual(self.out[email]["mapping_put"], 201)
+            self.assertEqual(self.again[email]["mapping_put"], 200, "the second start finds it saved")
+            self.assertEqual(self.again[email]["mapping_title"], {"selector": "h1." + email.split("@")[0]})
+        self.assertEqual(self.again["after"]["site_mappings"], 2)
 
     def test_the_former_admin_can_change_the_ai_settings(self):
         for run in (self.out, self.again):

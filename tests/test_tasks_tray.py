@@ -206,6 +206,16 @@ class TasksTrayTest(unittest.TestCase):
         self.check_request("titles", "post", "/api/documents/suggest-titles")
         self.check_request("titles", "post", "/api/documents/suggest-titles", fail=True)
 
+    def test_working_out_a_job_site_while_it_runs_and_after_it_failed(self):
+        """Phase I1 (backend/mappings.py): a careers page's work-out is in tests/test_mappings.py, which serves the
+        page it reads."""
+        self.chat.answer = json.dumps({"title": {"selector": "h1"}, "description": {"selector": "#ad"}})
+        body = {"kind": "job", "url": "https://jobs.example.org/role/1",
+                "outline": {"root": {"tag": "body", "children": [{"tag": "h1", "text": f"{MARK} title"}]}}}
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                self.check_request("mapping_job", "post", "/api/extension/work-out", body, fail=fail)
+
     def test_scoring_one_job(self):
         self.check_request("rescore", "post", f"/api/score/{self.job_id}", subject="job", job_ids=[self.job_id])
         self.check_request("rescore", "post", f"/api/score/{self.job_id}", fail=True, subject="job")
@@ -358,8 +368,8 @@ class CallSitesTest(unittest.TestCase):
         calling = {p.name for p in backend.rglob("*.py")
                    if p.name not in ("llm_providers.py", "llm_anthropic.py")
                    and re.search(r"\bcall_model\(|llm_providers\.(chat|web_search)\(", p.read_text(encoding="utf-8"))}
-        self.assertEqual(calling, {"cover_letters.py", "docs.py", "job_chat.py", "offices.py", "research.py",
-                                   "scorer.py", "title_suggestions.py"})
+        self.assertEqual(calling, {"cover_letters.py", "docs.py", "job_chat.py", "mappings.py", "offices.py",
+                                   "research.py", "scorer.py", "title_suggestions.py"})
         # scorer.py's own calls: score_one (inside the scoring tasks) and the Settings tab's connection test, which
         # is a check of the settings, not AI work.
         scorer = (backend / "scorer.py").read_text(encoding="utf-8")

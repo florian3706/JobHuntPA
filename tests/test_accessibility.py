@@ -869,6 +869,32 @@ class SourcesBulkDialogTest(unittest.TestCase):
         self.assertNotRegex(self.js, r"style=|\bon[a-z]+=")
 
 
+class PageLayoutsTest(unittest.TestCase):
+    """AI mappings (open-source spec §1.15): the Settings card's list of job sites the AI worked out (extension.js),
+    and a source read with a worked-out layout (app.js)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ext = (FRONTEND / "extension.js").read_text(encoding="utf-8")
+        cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+
+    def test_the_sites_are_a_list_named_by_its_heading_with_forget_buttons_that_name_their_site(self):
+        self.assertIn('<h4 id="ext-sites-heading" tabindex="-1">', self.ext)
+        self.assertIn('<ul class="ext-keys" aria-labelledby="ext-sites-heading">', self.ext)
+        self.assertRegex(self.ext, r'data-ext-forget="\$\{esc\(m\.site\)\}">Forget<span class="visually-hidden"> '
+                                   r'\$\{esc\(m\.site\)\}</span></button>')
+        forget = self.ext[self.ext.index("async function forget("):]
+        self.assertIn("say(`Forgot the layout of ${site}.`)", forget, "the result is announced (role=status)")
+        self.assertIn("$('#ext-sites-heading').focus()", forget, "focus doesn't fall to the page when the list redraws")
+        self.assertIn('role="alert"', self.ext[self.ext.index("async function loadSites("):])
+
+    def test_a_source_says_it_is_read_with_a_layout_and_its_forget_button_names_it(self):
+        self.assertIn("Read with a page layout the AI worked out", self.app)
+        self.assertIn('data-act="forget" type="button">Forget layout<span class="visually-hidden"> of ${name}</span>',
+                      self.app)
+        self.assertIn("announce(`${src.label || src.url} is read the usual ways again.`)", self.app)
+
+
 class WelcomePageTest(unittest.TestCase):
     """The sign-up walkthrough (welcome.html + welcome.js): static checks that need no browser. The steps are
     written by script, so the checks read the templates in welcome.js."""
