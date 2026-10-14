@@ -548,6 +548,8 @@ where it is: the service runs it from there).
   `~/.local/share/JobHuntPA`). Like the first run's folder question, it takes a new or empty folder or one that
   already holds JobHuntPA's data, never a folder of your own files. Run `install` again to change them.
 - The service passes the folder to JobHuntPA (`JOBHUNT_DATA_DIR`), so its first run skips the folder question.
+  `remove` says where the data is and, when nothing else names a data folder, remembers that one
+  (`data-folder.json`), so starting JobHuntPA by hand afterwards keeps using it.
   If there is no account yet, open `http://127.0.0.1:8000/first-run.html` on that computer and paste the
   setup code from `first-run.txt` in the data folder (or `journalctl --user -u jobhuntpa | grep first-run`).
 - To start before anyone signs in to the computer, the service needs "lingering"; `install` turns it on, and
@@ -1117,7 +1119,7 @@ the database and `server-keys.json` must stay together, and you still sign in wi
   prints a fresh link (once the data folder is chosen, the code is also in `first-run.txt` in it). The code
   only works until the first account exists; after that, sign in instead.
 - **The first-run page refuses the data folder:** give the whole path (starting with `/`, a drive letter
-  such as `C:\`, or `~`), of a folder that is new, empty or already JobHuntPA's, somewhere you may write
+  such as `C:\`, or `~/` for your home folder), of a folder that is new, empty or already JobHuntPA's, somewhere you may write
   (in your own folders). "Holds other files" means choose an empty or new folder instead.
 - **"JobHuntPA didn't come back after choosing the folder":** it restarts on the chosen folder by itself when
   started with its shortcut, `start.sh` or the AppImage; started any other way, start it again and reload

@@ -7,8 +7,9 @@ working and be reflected in them**:
 
 - New or changed dependency → `requirements.txt` (with version bounds); `installer/installer.py`
   installs from it.
-- New setting in `.env` → `.env.example`, and prompt for it in `installer/installer.py`
-  `configure_llm` (or a sibling step) if users must set it.
+- New setting in `.env` → `.env.example`, and `backend/app_settings.py` (its fixed list of names and the
+  value checks). Setup asks nothing: if users must set it, ask in the browser, in the first run
+  (`frontend/first-run.html`, `welcome.html`) or a card on the Settings tab, saving through `app_settings`.
 - New data folder, startup step, port or entry point → `installer/installer.py`,
   `installer/launch.py`, `setup.sh`, `start.sh`, `Setup.command`, `Start JobHuntPA.command`,
   `installer/windows_setup.py`, `installer/windows_launch.py`. A new table or data file is also either
@@ -16,12 +17,17 @@ working and be reflected in them**:
   `installer/windows_reset.py`); `tests/test_reset.py` fails until it is listed.
 - Anything setup creates outside the app folder (shortcuts, registry entries, caches) must also be
   removed by `installer/uninstaller.py` (`uninstall.sh`, `Uninstall JobHuntPA.command`,
-  JobHuntPA-Uninstall.exe). Anything users would want to keep belongs in `data/` or `.env`,
-  which the uninstaller backs up.
+  JobHuntPA-Uninstall.exe). Anything users would want to keep belongs in the data folder (with `.env` in
+  it), which the uninstaller backs up. The data folder is chosen at the first run, not fixed next to the app
+  (`backend/paths.py`: `JOBHUNT_DATA_DIR`, else the pointer `data-folder.json` in the per-user configuration
+  folder, with an older install's `data/` next to the app coming first); never assume `data/` and never write
+  anything but the pointer before the folder is chosen (`backend/data_folder.py`).
 - Update the README install/usage sections when user-visible steps change.
 - `.github/workflows/ci.yml` runs the real setup + launch on Linux, macOS and Windows; keep it
-  passing. Publish Windows programs by bumping `VERSION` and pushing tag `v<VERSION>`
-  (`release.yml` builds and attaches the .exe files).
+  passing. Publish by bumping `VERSION` and pushing tag `v<VERSION>` (`release.yml` builds and attaches the
+  .exe files and the AppImage).
+- New dependency, bundled file or outside script → a line in `THIRD-PARTY.md` with its licence (from the
+  package's own metadata), which must be one GPL-3.0-only code may be combined with.
 
 ## Conventions
 

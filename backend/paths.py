@@ -54,7 +54,7 @@ PATH_MAX = 1000
 # "data" folder ships with .gitkeep placeholders and an old sources.json): JobHuntPA's files are never mixed with the
 # person's own, so the uninstaller can remove the folder after backing it up.
 OWN_NAMES = frozenset({
-    DB_NAME, f"{DB_NAME}-wal", f"{DB_NAME}-shm", f"{DB_NAME}.bak", KEY_NAME, f"{KEY_NAME}.new", f"{KEY_NAME}.lock",
+    DB_NAME, f"{DB_NAME}-wal", f"{DB_NAME}-shm", f"{DB_NAME}-journal", f"{DB_NAME}.bak", KEY_NAME, f"{KEY_NAME}.new", f"{KEY_NAME}.lock",
     ENV_NAME, "uploads", "cache", "browsers", "leftovers", "first-run.txt", "running.json", "sources.json", ".gitkeep",
 })
 
@@ -263,7 +263,13 @@ def _parse(text: object) -> Path:
     text = text.strip()
     if len(text) > PATH_MAX or any(ord(c) < 32 or ord(c) == 127 for c in text):
         raise FolderProblem("That folder path is too long or has characters a folder name can't have.")
-    path = Path(os.path.expanduser(text)) if text.startswith("~") else Path(text)
+    if text.startswith("~"):
+        # Only this person's own home: "~bob" would be another user's folder.
+        if text != "~" and not text.startswith(("~/", "~" + os.sep)):
+            raise FolderProblem("Start the path with ~/ for your own home folder, or give the whole path.")
+        path = Path(os.path.expanduser(text))
+    else:
+        path = Path(text)
     if not path.is_absolute():
         raise FolderProblem("Give the whole path of the folder, starting from the top (for example "
                             + str(default_folder()) + ").")

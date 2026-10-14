@@ -181,25 +181,13 @@ class FileTest(unittest.TestCase):
         self.assertEqual([p.name for p in self.dir.iterdir()], ["abc.sealed"])  # no temp file left
 
 
-class SealedBoxTest(unittest.TestCase):
-    def test_seal_to_and_open(self):
+class KeyPairTest(unittest.TestCase):
+    def test_new_keypair(self):
         priv, pub = crypto.new_keypair()
+        self.assertEqual((len(priv), len(pub)), (32, 32))
         self.assertEqual(crypto.public_key_of(priv), pub)
-        blob = crypto.seal_to(pub, b'{"email":"a@b.c"}', "users.pii_admin|5")
-        self.assertEqual(len(blob), len(b'{"email":"a@b.c"}') + crypto.BOX_OVERHEAD)
-        self.assertNotEqual(blob, crypto.seal_to(pub, b'{"email":"a@b.c"}', "users.pii_admin|5"))  # fresh ephemeral
-        self.assertEqual(crypto.open_sealed(priv, blob, "users.pii_admin|5"), b'{"email":"a@b.c"}')
-        with self.assertRaises(Corrupt):
-            crypto.open_sealed(priv, blob, "users.pii_admin|6")
-        other_priv, _ = crypto.new_keypair()
-        with self.assertRaises(KeyMismatch):
-            crypto.open_sealed(other_priv, blob, "users.pii_admin|5")
-        tampered = bytearray(blob)
-        tampered[40] ^= 1
-        with self.assertRaises(Corrupt):
-            crypto.open_sealed(priv, bytes(tampered), "users.pii_admin|5")
-        with self.assertRaises(ValueError):  # a low-order point gives an all-zero shared secret
-            crypto.seal_to(bytes(32), b"x", "l")
+        self.assertNotEqual(crypto.new_keypair()[0], priv)
+        self.assertFalse(hasattr(crypto, "seal_to"), "the admin panel's sealed boxes are gone")
 
 
 class ContextTest(unittest.TestCase):

@@ -18,3 +18,5 @@ data/first-run.txt
 data/.first-run.txt-*.tmp
 build/
 dist/
+data/browsers/
+data/leftovers/

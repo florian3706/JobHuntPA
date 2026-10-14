@@ -225,8 +225,8 @@ class ExportZip:
 
 
 def items(data: dict) -> int:
-    """How many jobs, documents, chat messages, sources, pins and companies the (parsed, not yet checked) file
-    holds: counted on the plain JSON, before any of them becomes an object."""
+    """How many jobs, documents, chat messages, sources, pins, schedule days and times and companies the (parsed, not
+    yet checked) file holds: counted on the plain JSON, before any of them becomes an object."""
     def size(value) -> int:
         return len(value) if isinstance(value, list) else 0
 
@@ -236,6 +236,9 @@ def items(data: dict) -> int:
         if not isinstance(ws, dict):
             continue
         total += sum(size(ws.get(name)) for name in ("jobs", "documents", "chats", "sources", "pins"))
+        sched = ws.get("schedule")
+        if isinstance(sched, dict):
+            total += size(sched.get("days")) + size(sched.get("times"))
         for chat in ws.get("chats") if isinstance(ws.get("chats"), list) else []:
             total += size(chat.get("messages")) if isinstance(chat, dict) else 0
     return total

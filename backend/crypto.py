@@ -15,10 +15,8 @@ Nothing here invents a primitive. AES-256-GCM, X25519 and HKDF-SHA256 come from 
 * The AES-GCM associated data is the 5-byte header followed by a label. The header binds the version and kid to the
   ciphertext; the label binds the value to where it belongs, so a value copied somewhere else fails to open.
 
-**Sealed box** (X25519; it sealed the admin panel's copies of personal details, removed with the panel, and nothing in
-the app seals to a public key now), 85 bytes longer than the plaintext::
-
-    0x02 | recipient kid (4) | ephemeral X25519 public key (32) | nonce (12) | ciphertext + tag (16)
+**Version 0x02** was the sealed box (X25519 to a public key) of the admin panel's copies of personal details. It went
+with the panel, and its code with it; the byte stays retired, so a new format never takes it.
 
 **Associated data, one namespace per use.** Callers pass the design's short labels; the functions add a prefix of
 their own, so a blob made for one purpose can never be opened as another, even under the same key:
@@ -36,7 +34,7 @@ Sealed* column types      ``jh/<table>.<column>``     a value moved to another c
                                                       ``pending-codes|{uid}``
 ``seal_file``/``open_*``  ``jh-file|<label>``         an upload, labelled ``file|{stored_name}``: a file
                                                       renamed onto another document's name won't open
-``seal_to``/``open_*``    ``jh-box|<label>``          (unused since the admin panel went) by table and column
+(retired)                 ``jh-box|<label>``          the sealed boxes of the admin panel; never reuse the prefix
 ========================  ==========================  ======================================================
 
 What the labels can't do: a column label doesn't name the row (the id doesn't exist yet when a row is inserted), so
@@ -100,7 +98,7 @@ from typing import Any, Callable, Iterator, Optional, Union
 from argon2.low_level import ARGON2_VERSION, Type, hash_secret_raw
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from datetime import date, datetime
@@ -126,11 +124,9 @@ KID_LEN = 4
 TAG_LEN = 16
 _V1 = 0x01            # envelope v1: AES-256-GCM
 _V1_BYTE = bytes([_V1])
-_BOX_V1 = 0x02        # sealed box v1: X25519 + HKDF-SHA256 + AES-256-GCM
+# 0x02 was the sealed box of the admin panel (removed): never reuse it.
 _HEADER_LEN = 1 + KID_LEN
 OVERHEAD = _HEADER_LEN + NONCE_LEN + TAG_LEN                 # 33
-_BOX_HEADER_LEN = 1 + KID_LEN + KEY_LEN
-BOX_OVERHEAD = _BOX_HEADER_LEN + NONCE_LEN + TAG_LEN         # 85
 INDEX_LEN = 16
 
 Label = Union[str, bytes]
@@ -431,9 +427,8 @@ def open_file(path: Union[str, Path], label: Label) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Sealed boxes (X25519): anyone with the public key can seal; only the private key opens. Once used for the admin
-# personal-details key (removed with the admin panel); the key pair of each account is still made with
-# ``new_keypair``.
+# X25519 key pairs: each account has one (its private key wrapped under the identity key). The sealed boxes to a
+# public key that the admin panel used went with it.
 # ---------------------------------------------------------------------------
 
 def new_keypair() -> tuple[bytes, bytes]:
@@ -444,53 +439,6 @@ def new_keypair() -> tuple[bytes, bytes]:
 
 def public_key_of(private: bytes) -> bytes:
     return X25519PrivateKey.from_private_bytes(_key(private, "private key")).public_key().public_bytes_raw()
-
-
-def _box_kid(public: bytes) -> bytes:
-    return hashlib.sha256(b"jh box kid|" + public).digest()[:KID_LEN]
-
-
-def _box_key(shared: bytes, ephemeral_public: bytes, public: bytes) -> bytes:
-    # HKDF over the shared secret, with both public keys in the label (design 1.1), so the key is tied to this
-    # exchange and this recipient.
-    return hkdf(shared, b"jh box v1|" + ephemeral_public + public)
-
-
-def seal_to(public: bytes, plain: bytes, label: Label) -> bytes:
-    """``plain`` sealed to the X25519 ``public`` key: a fresh ephemeral key pair per value, so each value has its own
-    AES key. Label it with where it's stored."""
-    public = _key(public, "public key")
-    recipient = X25519PublicKey.from_public_bytes(public)
-    ephemeral = X25519PrivateKey.generate()
-    ephemeral_public = ephemeral.public_key().public_bytes_raw()
-    shared = ephemeral.exchange(recipient)  # ValueError for a low-order public key (an all-zero shared secret)
-    header = bytes([_BOX_V1]) + _box_kid(public) + ephemeral_public
-    nonce = os.urandom(NONCE_LEN)  # the key is already single-use; a random nonce costs nothing
-    aead = AESGCM(_box_key(shared, ephemeral_public, public))
-    return header + nonce + aead.encrypt(nonce, _as_bytes(plain, "The plaintext"),
-                                         header + _label(b"jh-box|", label))
-
-
-def open_sealed(private: bytes, blob: bytes, label: Label) -> bytes:
-    """Opens what ``seal_to`` made for this private key's public key, with the same label."""
-    key = X25519PrivateKey.from_private_bytes(_key(private, "private key"))
-    public = key.public_key().public_bytes_raw()
-    blob = _as_bytes(blob, "A sealed box")
-    if len(blob) < BOX_OVERHEAD or blob[0] != _BOX_V1:
-        raise Corrupt("Not a sealed box (unknown version, or truncated)")
-    if not hmac.compare_digest(blob[1:1 + KID_LEN], _box_kid(public)):
-        raise KeyMismatch("Sealed to a different key")
-    ephemeral_public = blob[1 + KID_LEN:_BOX_HEADER_LEN]
-    try:
-        shared = key.exchange(X25519PublicKey.from_public_bytes(ephemeral_public))
-    except ValueError:
-        raise Corrupt("The sealed box's ephemeral key is invalid") from None
-    aead = AESGCM(_box_key(shared, ephemeral_public, public))
-    try:
-        return aead.decrypt(blob[_BOX_HEADER_LEN:_BOX_HEADER_LEN + NONCE_LEN], blob[_BOX_HEADER_LEN + NONCE_LEN:],
-                            blob[:_BOX_HEADER_LEN] + _label(b"jh-box|", label))
-    except InvalidTag:
-        raise Corrupt("The sealed box doesn't open here (moved, or changed)") from None
 
 
 # ---------------------------------------------------------------------------

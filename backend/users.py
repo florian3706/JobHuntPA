@@ -327,8 +327,9 @@ def _write_first_run_token() -> None:
         crypto.write_private(path, (token + "\n").encode("ascii"))
     _first_run_token = token
     # The operator needs this to create the first account; it is only ever written to this server's own log.
+    # Not the folder's path: it can hold the person's name (a home folder), and logs never carry personal data.
     log.warning("First run: no account exists yet. Open /first-run.html#token=%s on this server to create your "
-                "account (the token is also in %s).", token, path)
+                "account (the token is also in %s in the data folder).", token, FIRST_RUN_FILE)
 
 
 def _remove_first_run_token() -> None:

@@ -79,7 +79,8 @@ class ServiceScriptTest(unittest.TestCase):
         self.assertIn(f'JOBHUNT_DATA_DIR={self.app}/data"', self.unit.read_text())
 
     def test_bad_options_are_refused(self):
-        for args in (("--port", "80"), ("--port", "eighty"), ("--data-dir", "relative/folder"), ("--colour", "red")):
+        for args in (("--port", "80"), ("--port", "eighty"), ("--data-dir", "relative/folder"), ("--data-dir", "~root/x"),
+                     ("--colour", "red")):
             done = self.run_script("install", *args)
             self.assertNotEqual(done.returncode, 0, args)
             self.assertFalse(self.unit.exists(), args)
@@ -133,6 +134,38 @@ class ServiceScriptTest(unittest.TestCase):
         self.assertFalse(self.unit.exists())
         self.assertIn("systemctl --user disable --now jobhuntpa.service", self.calls())
         self.assertTrue((self.top / "d").is_dir(), "the data stays")
+
+    def test_remove_leaves_a_pointer_to_the_data_so_start_sh_keeps_using_it(self):
+        """The service passed its folder in JOBHUNT_DATA_DIR and wrote no pointer; once it is removed, starting
+        JobHuntPA by hand must not ask where the data lives again (nor start empty somewhere else)."""
+        data = self.top / "data \"100%\""
+        self.assertEqual(self.run_script("install", "--data-dir", str(data)).returncode, 0)
+        (data / "jobhunt.db").write_bytes(b"")  # what the service's first start makes
+        self.assertFalse((self.top / "config").exists())
+        done = self.run_script("remove")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"Your data stays in {data}", done.stdout)
+        sys.path.insert(0, str(ROOT))
+        from backend import paths
+        env = {"JOBHUNT_CONFIG_DIR": str(self.top / "config"), "HOME": str(self.home)}
+        self.assertEqual(paths.read_pointer(env), data)
+        self.assertEqual(paths.locate(self.app, env).folder, data)
+
+    def test_remove_keeps_a_pointer_that_names_another_folder(self):
+        sys.path.insert(0, str(ROOT))
+        from backend import paths
+        env = {"JOBHUNT_CONFIG_DIR": str(self.top / "config"), "HOME": str(self.home)}
+        other = self.top / "other"
+        other.mkdir()
+        (other / "jobhunt.db").write_bytes(b"")
+        paths.write_pointer(other, env)
+        data = self.top / "d"
+        self.assertEqual(self.run_script("install", "--data-dir", str(data)).returncode, 0)
+        (data / "jobhunt.db").write_bytes(b"")
+        done = self.run_script("remove")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"Your data stays in {data}", done.stdout)
+        self.assertEqual(paths.read_pointer(env), other)
 
     def test_the_uninstaller_finds_this_service(self):
         sys.path.insert(0, str(ROOT / "installer"))

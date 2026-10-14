@@ -419,6 +419,9 @@ class SourceIn(_In):
 
 class ScheduleIn(schedule.ScheduleSchema):
     model_config = ConfigDict(extra="ignore")
+    # An export lists each weekday once (the app stores them that way); the times keep the schedule's own bound.
+    days: list[Annotated[int, Field(ge=0, le=6)]] = Field(default_factory=lambda: list(schedule.DEFAULT_DAYS),
+                                                          max_length=7)
 
 
 class DocumentIn(_In):

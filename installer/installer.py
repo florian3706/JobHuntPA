@@ -135,7 +135,7 @@ def write_env(path: Path, lines: list[str], updates: dict[str, str]) -> None:
             out.append(line)
     if not lines:
         out = ["# LLM used for fit scoring, cover letters, job-title suggestions and company research.",
-               "# Works with any OpenAI-compatible API. Re-run setup to change these."]
+               "# Change these on the Settings tab (AI provider), or here with JobHuntPA stopped."]
     for key, val in updates.items():
         if key not in done:
             out.append(f"{key}={val}")

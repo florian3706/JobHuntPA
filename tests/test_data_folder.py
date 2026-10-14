@@ -386,9 +386,21 @@ class PathsTest(unittest.TestCase):
     def test_foreign_entries(self):
         folder = self.top / "f"
         (folder / "uploads").mkdir(parents=True)
-        for name in ("jobhunt.db", "jobhunt.db.bak-before-job-pool", ".env", ".cv-1.tmp", "taxes.pdf", ".hidden"):
+        for name in ("jobhunt.db", "jobhunt.db-journal", "jobhunt.db.bak-before-job-pool", ".env", ".cv-1.tmp",
+                     "taxes.pdf", ".hidden", "jobhunt.db-other"):
             (folder / name).write_text("")
-        self.assertEqual(paths.foreign_entries(folder), [".hidden", "taxes.pdf"])
+        # SQLite's rollback journal is the database's own; another name that only starts like it isn't.
+        self.assertEqual(paths.foreign_entries(folder), [".hidden", "jobhunt.db-other", "taxes.pdf"])
+
+    def test_a_tilde_path_means_this_persons_home_only(self):
+        """"~/x" is in this person's home; "~bob/x" would be another user's folder, so it is refused."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.top / "home")}):
+            path, kind = paths.check_folder("~/JobHuntPA data")
+            self.assertEqual(path, self.top / "home" / "JobHuntPA data")
+            for text in ("~root/JobHuntPA", "~bob", "~nobody/x"):
+                with self.assertRaises(paths.FolderProblem, msg=text) as caught:
+                    paths.check_folder(text)
+                self.assertIn("~/", str(caught.exception))
 
     def test_an_unreadable_pointer_is_ignored(self):
         pointer = paths.pointer_file(self.env)

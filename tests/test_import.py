@@ -13,6 +13,7 @@ from unittest import mock
 from tests import helpers
 from tests import test_export
 
+from pydantic import ValidationError  # noqa: E402
 from backend import data_import, docs, import_file
 from backend.db import (
     CompanyProfile,
@@ -656,6 +657,23 @@ class LimitTest(Base):
         with mock.patch.object(data_import, "MAX_ITEMS", 5), \
                 mock.patch.object(import_file.ImportFile, "model_validate", side_effect=AssertionError("validated")):
             r = self.check(blob)
+        self.assertEqual((r.status_code, r.json()["code"]), (413, "import_too_many"))
+
+    def test_a_schedule_is_bounded_and_counted(self):
+        """A schedule's days are each weekday at most once (as the app stores them), and its days and times count
+        towards the file's item limit like everything else in it."""
+        self.assertEqual(data_import.items({"workspaces": [{"schedule": {"days": [0] * 1000, "times": ["10:00"] * 9}}]}),
+                         1 + 1000 + 9)
+        with self.assertRaises(ValidationError):
+            import_file.ScheduleIn.model_validate({"days": [0] * 8})
+        self.assertEqual(import_file.ScheduleIn.model_validate({"days": [0, 1, 2, 3, 4, 5, 6]}).days, list(range(7)))
+        blob = self.export()
+        data = self.import_data(blob)
+        data["workspaces"][0]["schedule"] = {"enabled": True, "days": [1] * 100_000}
+        r = self.check(self.replace_import_file(blob, data))
+        self.assertEqual(r.status_code, 422, r.text)
+        with mock.patch.object(data_import, "MAX_ITEMS", 50):
+            r = self.check(self.replace_import_file(blob, data))
         self.assertEqual((r.status_code, r.json()["code"]), (413, "import_too_many"))
 
     def test_the_limits_take_in_whatever_an_export_holds(self):

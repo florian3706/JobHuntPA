@@ -72,7 +72,8 @@ install() {
     || die "--port takes a number from 1024 to 65535."
   if [ -z "$data" ]; then data="$(current_data_dir)"; fi
   case "$data" in
-    "~"*) data="$HOME${data#\~}" ;;
+    "~"|"~/"*) data="$HOME${data#\~}" ;;
+    "~"*) die "--data-dir: start the path with ~/ for your own home folder, or give the whole path." ;;
   esac
   [[ "$data" = /* ]] || die "--data-dir takes the whole path of a folder, starting with /."
   # The same check as the first run's "Where your data lives" (backend/paths.py check_folder): a new or empty folder,
@@ -131,9 +132,38 @@ EOF
 remove() {
   if [ ! -f "$UNIT" ]; then say "The JobHuntPA service isn't installed."; return 0; fi
   systemctl --user disable --now "$NAME" >/dev/null 2>&1 || true
+  # The service passed its data folder in JOBHUNT_DATA_DIR. When nothing else says where the data is (no pointer, no
+  # data/ next to the app), the pointer is written now, so starting JobHuntPA by hand keeps using that folder instead
+  # of asking again.
+  local where
+  where="$("$PYTHON" -I -c '
+import os, re, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from backend import paths
+data = None
+for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
+    if line.startswith("Environment=\"JOBHUNT_DATA_DIR=") and line.endswith("\""):
+        value = line[len("Environment=\"JOBHUNT_DATA_DIR="):-1]
+        data = Path(re.sub(r"\\(.)", r"\1", value).replace("%%", "%"))
+if data is None or not data.is_absolute():
+    sys.exit(0)
+env = {k: v for k, v in os.environ.items() if k != paths.DATA_DIR_ENV}
+place = paths.locate(Path(sys.argv[1]), env)
+if place.folder is None and paths.holds_data(data):
+    try:
+        paths.write_pointer(data, env)
+    except OSError:
+        pass
+print(data)
+' "$APP_DIR" "$UNIT" 2>/dev/null)" || where=""
   rm -f "$UNIT"
   systemctl --user daemon-reload
-  say "The JobHuntPA service is removed. Your data folder is untouched; start JobHuntPA with ./start.sh."
+  if [ -n "$where" ]; then
+    say "The JobHuntPA service is removed. Your data stays in $where; start JobHuntPA with ./start.sh (or the AppImage)."
+  else
+    say "The JobHuntPA service is removed. Your data folder is untouched; start JobHuntPA with ./start.sh."
+  fi
 }
 
 status() {

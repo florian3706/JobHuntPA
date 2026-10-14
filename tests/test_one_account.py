@@ -313,5 +313,28 @@ class NameTest(Base):
         self.assertEqual(sorted(results), ["renamed", "taken"])
 
 
+class FirstRunLogTest(unittest.TestCase):
+    def test_the_first_run_log_line_names_no_folder(self):
+        """The data folder's path can hold the person's name (a home folder): the first-run line names the file only."""
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        folder = Path(tempfile.mkdtemp(prefix="jobhunt-log-")) / "Jane Citizen" / "JobHuntPA"
+        folder.mkdir(parents=True)
+        self.addCleanup(__import__("shutil").rmtree, folder.parent.parent, True)
+        before = users._first_run_token
+        self.addCleanup(setattr, users, "_first_run_token", before)
+        with mock.patch.object(users, "first_run_path", return_value=folder / users.FIRST_RUN_FILE), \
+                mock.patch.object(users, "_launcher_token", return_value=None), \
+                self.assertLogs("backend.users", "WARNING") as logs:
+            users._write_first_run_token()
+        text = "\n".join(logs.output)
+        self.assertIn("first-run.html#token=", text)
+        self.assertIn(users.FIRST_RUN_FILE, text)
+        self.assertNotIn("Jane Citizen", text)
+        self.assertNotIn(str(folder.parent.parent), text)
+
+
 if __name__ == "__main__":
     unittest.main()
