@@ -62,7 +62,8 @@ with engine.begin() as conn:
 from fastapi.testclient import TestClient
 from backend import crypto, users
 from backend.app import app
-from backend.db import AdminKeyGrant, AppSetting, EmailPrefs, Membership, RecoveryCode, User, UserKeys
+from backend.db import AdminKeyGrant, AppSetting, RecoveryCode, User, UserKeys
+from sqlalchemy import inspect
 
 with TestClient(app) as c:
     out["state"] = c.get("/api/auth/state").json()
@@ -106,8 +107,7 @@ keys_row = db.get(UserKeys, user.id)
 out["user"] = {"role": user.role, "created_via": user.created_via, "pii_admin": user.pii_admin is not None,
                "pii_admin_version": user.pii_admin_version, "background": keys_row.server_wrapped_dek is not None}
 out["grant"] = db.query(AdminKeyGrant).filter(AdminKeyGrant.user_id == user.id).count()
-out["membership"] = db.query(Membership).filter(Membership.user_id == user.id).count()
-out["email_prefs"] = db.query(EmailPrefs).filter(EmailPrefs.user_id == user.id).count()
+out["tables"] = sorted(inspect(db.get_bind()).get_table_names())
 out["migration"] = db.get(AppSetting, "encryption_migration").value_json
 out["owners"] = sorted({o for (o,) in db.query(Workspace.owner_id)})
 with engine.connect() as conn:  # the old rows are sealed now (the first run encrypted them with the admin's key)
@@ -175,7 +175,9 @@ class FirstRunTest(unittest.TestCase):
         self.assertIn("HttpOnly", out["cookie"])
         self.assertEqual(out["user"], {"role": "admin", "created_via": "first_run", "pii_admin": True,
                                        "pii_admin_version": 1, "background": True})
-        self.assertEqual((out["grant"], out["membership"], out["email_prefs"]), (1, 1, 1))
+        self.assertEqual(out["grant"], 1)
+        for gone in ("memberships", "membership_grants", "email_prefs"):  # removed features make no tables
+            self.assertNotIn(gone, out["tables"])
         migration = json.loads(out["migration"])  # a small database is encrypted within the first-run request
         self.assertEqual((migration["state"], migration["owner"]), ("done", out["user_id"]))
         self.assertEqual(out["stored"], [["blob"], ["blob"], ["blob", "blob", None], ["blob", "blob", None]])

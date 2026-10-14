@@ -1,7 +1,7 @@
 """Test isolation, set before any test module imports the app.
 
 ``unittest discover`` imports this package first, so every module's tests use a throwaway database and .env, even
-when a module that sorts early (test_access, test_billing, ...) imports ``backend`` before test_core sets its own
+when a module that sorts early (test_accessibility, test_accounts, ...) imports ``backend`` before test_core sets its own
 paths. backend.db and backend.config read these variables once, at import: setting them later has no effect.
 
 The server key file and the first-run token file (which sits beside the database) are throwaway too, and the app

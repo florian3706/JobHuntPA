@@ -1,10 +1,10 @@
 """No log line may hold anything of a person's (accounts design §2.5: "Logs must never contain plaintext"; Phase L).
 
-One account goes through the whole app, end to end, with the network, the mail server, Stripe and the AI service
-mocked: sign-up, the search profile, documents, a search (mocked sources returning planted ads), scoring, chat, a cover
-letter, company research, a subscription, a data export, a change of email address, a password reset by email, and a
-digest. Every personal field holds a planted marker (``ZQX``), and every secret the run makes (passwords, recovery
-codes, session and CSRF tokens, links in emails) is collected. Logging is captured at DEBUG for every logger, with the
+One account goes through the whole app, end to end, with the network and the AI service mocked: sign-up, the search
+profile, documents, a search (mocked sources returning planted ads), scoring, chat, a cover letter, company research,
+the browser extension, a data export, a scheduled search, and a password reset with a recovery code. Every personal
+field holds a planted marker (``ZQX``), and every secret the run makes (passwords, recovery codes, session and CSRF
+tokens, extension keys) is collected. Logging is captured at DEBUG for every logger, with the
 text of each record formatted the way a log file would show it, tracebacks included, and then none of the markers or
 secrets may be in it. The test also checks that the markers really are in the person's data (so a pass isn't just an
 empty run) and that the log isn't empty.
@@ -22,24 +22,20 @@ import time
 import unittest
 import zipfile
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest import mock
-from urllib.parse import parse_qs, urlsplit
 
 from tests import helpers  # noqa: E402  (sets the test environment first)
-from tests.mail_helpers import MailTestCase, token_in  # noqa: E402
 
-from backend import app as app_module, billing, digest, mail_queue, mailer, membership, users  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from backend import app as app_module, ratelimit, users  # noqa: E402
 from backend.adapters.base import Adapter, Posting  # noqa: E402
 from backend.db import SessionLocal, User, Workspace  # noqa: E402
 
 MARK = "ZQX"
 PASSWORD = "zqx-first-password-1"
 NEW_PASSWORD = "zqx-second-password-2"
-NEW_EMAIL = "zqxmoved.address@example.invalid"
-STRIPE_KEY = "sk_test_" + "a1B2c3D4" * 4
-STRIPE_IDS = {"customer": "cus_ZqxCustomer1", "subscription": "sub_ZqxSub1", "session": "cs_test_ZqxSession1",
-              "method": "pm_ZqxMethod1"}
 LLM_ENV = {"LLM_API_KEY": "zqx-llm-key-never-logged", "LLM_BASE_URL": "https://api.openai.com/v1", "LLM_MODEL": "m",
            "LLM_REASONING_EFFORT": ""}
 NOW = datetime.now(timezone.utc)
@@ -167,29 +163,40 @@ def capture_all():
             lg.setLevel(level)
 
 
-class FullRun(MailTestCase):
+class FullRun(unittest.TestCase):
     def setUp(self):
-        super().setUp()
+        helpers.started()
+        ratelimit.reset_all()
+        self.addCleanup(ratelimit.reset_all)
         patches = [
-            mock.patch.dict(os.environ, {**LLM_ENV, "STRIPE_SECRET_KEY": STRIPE_KEY, "STRIPE_PRICE_LOOKUP_KEY": "",
-                                         "STRIPE_WEBHOOK_SECRET": ""}),
+            mock.patch.dict(os.environ, LLM_ENV),
             mock.patch("backend.pipeline.source_adapter", side_effect=lambda *a, **k: self.source),
             mock.patch("backend.llm_providers.httpx.post", side_effect=self.llm),
             mock.patch("backend.geo.httpx.get", side_effect=self.nominatim),
             mock.patch("backend.geo.time.sleep"),
             mock.patch("backend.research.run_response", side_effect=self.web_search),
-            mock.patch("backend.billing._client", return_value=self.stripe_client()),
         ]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
-        billing.clear_price_cache()
-        self.addCleanup(billing.clear_price_cache)
-        membership._tried.clear()
         self.source = _Source([])
         self.secrets: dict[str, str] = {}
         self.llm_calls = 0
         self.llm_status = 200  # an error status: the provider answers it, echoing the request
+
+    # -- clients --------------------------------------------------------------------------------------------------
+
+    def anonymous(self, **kwargs) -> TestClient:
+        c = TestClient(app_module.app, **kwargs)
+        c.__enter__()
+        self.addCleanup(c.__exit__, None, None, None)
+        return c
+
+    def signed_in(self) -> helpers.SignedInClient:
+        c = helpers.client()
+        c.__enter__()
+        self.addCleanup(c.__exit__, None, None, None)
+        return c
 
     # -- the outside world, mocked ------------------------------------------------------------------------------
 
@@ -220,26 +227,16 @@ class FullRun(MailTestCase):
                 {"type": "text_result", "title": "About ZQX", "url": "https://zqx-corp.example/about"}]},
             {"type": "message", "content": [{"type": "output_text", "text": RESEARCH_REPLY, "annotations": []}]}]}
 
-    def stripe_client(self):
-        client = mock.MagicMock()
-        client.v1.prices.list.return_value = {"data": [
-            {"id": "price_m", "lookup_key": "jobhunt_monthly", "unit_amount": 900, "currency": "aud",
-             "recurring": {"interval": "month"}}]}
-        client.v1.checkout.sessions.create.return_value = {"id": STRIPE_IDS["session"],
-                                                           "url": "https://checkout.stripe.test/zqx"}
-        self.stripe = client
-        return client
-
     # -- the person ---------------------------------------------------------------------------------------------
 
     @staticmethod
     def restore_signup():
         with helpers.client() as admin:
-            admin.put("/api/admin/signup", json={"mode": "invite", "free_searches": 3})
+            admin.put("/api/admin/signup", json={"mode": "invite"})
 
     def signed_up(self):
         admin = self.signed_in()
-        self.assertEqual(admin.put("/api/admin/signup", json={"mode": "open", "free_searches": 20}).status_code, 200)
+        self.assertEqual(admin.put("/api/admin/signup", json={"mode": "open"}).status_code, 200)
         self.addCleanup(self.restore_signup)
         email = "zqxowner.private@example.invalid"
         c = self.anonymous()
@@ -267,19 +264,17 @@ class FullRun(MailTestCase):
             logging.getLogger("test").info("the capture works")
             c = self.signed_up()
             self.sign_up_and_set_up(c)
-            grant = self.free_period(c)  # the AI features are for members (a free period, as an admin grants it)
             ads = self.search_and_score(c)
             self.talk_to_the_ai(c, ads)
             self.browser_extension(c)
             self.when_things_fail(c)
             self.with_claude(c)
-            self.end_free_period(grant)  # so the account pays for its membership next
-            self.pay_export_and_change(c)
-            self.reset_and_digest(c, notice)
+            self.export(c)
+            self.scheduled_search_and_recovery(c, notice)
         everything = "\n".join(log.lines + [printed.getvalue()])
         self.assertGreater(len(log.lines), 100, "the capture saw almost nothing")
         self.assertIn("the capture works", everything)
-        planted = {"marker": MARK.lower(), "email": "zqxowner", "new email": "zqxmoved", "name": "quillon",
+        planted = {"marker": MARK.lower(), "email": "zqxowner", "name": "quillon",
                    **{k: v.lower() for k, v in self.secrets.items() if v}}
         for what, value in planted.items():
             found = [line[:300] for line in log.lines if value in line.lower()]
@@ -289,23 +284,8 @@ class FullRun(MailTestCase):
 
     # -- the steps ----------------------------------------------------------------------------------------------
 
-    def free_period(self, c) -> tuple:
-        user_id = c.get("/api/auth/me").json()["user"]["id"]
-        admin = self.signed_in()
-        r = admin.post(f"/api/admin/users/{user_id}/grants",
-                       json={"kind": "free_period", "days": 1, "note": f"{MARK} free period for {self.email}"})
-        self.assertEqual(r.status_code, 201, r.text)
-        return admin, user_id, r.json()["grant"]["id"]
-
-    def end_free_period(self, grant: tuple) -> None:
-        admin, user_id, grant_id = grant
-        self.assertEqual(admin.delete(f"/api/admin/users/{user_id}/grants/{grant_id}").status_code, 200)
-
     def sign_up_and_set_up(self, c):
-        # The address check mail, then the search profile, a pin, a source and documents.
-        token = token_in(self.last_to(self.email), "verify-email.html")
-        self.secrets["verify_link_token"] = token
-        self.assertEqual(c.post("/api/auth/verify-email", json={"token": token}).status_code, 200)
+        # The search profile, a pin, a source and documents.
         self.assertEqual(c.put("/api/profile", json={
             "titles": ["ZQX Delivery Lead"], "keywords_include": ["zqx include"], "keywords_exclude": ["zqx exclude"],
             "seek_enabled": False, "seek_locations": ["Zqxtown NSW"], "salary_floor": 100000}).status_code, 200)
@@ -325,7 +305,6 @@ class FullRun(MailTestCase):
             self.assertEqual(r.status_code, 200, r.text)
         texts = " ".join(d["text"] if "text" in d else "" for d in c.get("/api/documents").json())
         self.assertEqual(len(c.get("/api/documents").json()), 4, texts)
-        self.assertEqual(c.get("/api/auth/email").json()["verified"], True)
 
     def search_and_score(self, c):
         self.source.postings = [
@@ -464,13 +443,6 @@ class FullRun(MailTestCase):
         self.source.failure = None
         with mock.patch("backend.pipeline.run_search", side_effect=RuntimeError("ZQX run failed for zqxowner.private")):
             self.assertEqual(self.run_to_end(c, c.post("/api/search/run").json())["state"], "failed")
-        # Stripe fails with an error that names the customer; the mail server fails with the address.
-        self.stripe.v1.checkout.sessions.create.side_effect = RuntimeError(f"ZQX {STRIPE_IDS['customer']} {self.email}")
-        self.assertGreaterEqual(c.post("/api/billing/checkout", json={"plan": "jobhunt_monthly"}).status_code, 400)
-        self.stripe.v1.checkout.sessions.create.side_effect = None
-        with mock.patch.object(mailer, "send", side_effect=RuntimeError(f"ZQX smtp refused {self.email}")):
-            self.anonymous().post("/api/auth/forgot", json={"email": self.email})
-            mail_queue.drain(20)
         self.assertEqual(self.anonymous().post("/api/auth/login", json={"email": "zqxnobody@example.invalid",
                                                                         "password": "zqx nobody"}).status_code, 401)
 
@@ -496,25 +468,7 @@ class FullRun(MailTestCase):
             r = c.post(f"/api/jobs/{self.job_id}/cover-letter", json={"instructions": "ZQX Claude instruction"})
             self.assertEqual(r.status_code, 200, r.text)
 
-    def pay_export_and_change(self, c):
-        self.assertEqual(c.post("/api/billing/checkout", json={"plan": "jobhunt_monthly"}).status_code, 200)
-        ref = self.stripe.v1.checkout.sessions.create.call_args.kwargs["params"]["client_reference_id"]
-        self.secrets["stripe_ref"] = ref
-        ts = int(time.time())
-        subscription = {
-            "id": STRIPE_IDS["subscription"], "status": "active", "customer": STRIPE_IDS["customer"],
-            "created": ts - 100, "cancel_at_period_end": False, "metadata": {"jh_ref": ref},
-            "items": {"data": [{"current_period_start": ts - 100, "current_period_end": ts + 86400 * 29,
-                                "price": {"id": "price_m", "lookup_key": "jobhunt_monthly"}}]},
-            "default_payment_method": {"id": STRIPE_IDS["method"], "card": {"brand": "visa", "last4": "4242"}}}
-        self.stripe.v1.checkout.sessions.retrieve.return_value = {
-            "id": STRIPE_IDS["session"], "client_reference_id": ref, "status": "complete", "subscription": subscription}
-        r = c.post("/api/billing/verify", json={"session_id": STRIPE_IDS["session"]})
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(r.json()["me"]["member"])
-        self.secrets.update({f"stripe_{k}": v for k, v in STRIPE_IDS.items()})
-        self.assertEqual(c.get("/api/billing/status").status_code, 200)
-
+    def export(self, c):
         r = c.post("/api/account/export")
         self.assertEqual(r.status_code, 200, r.text)
         names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
@@ -522,53 +476,33 @@ class FullRun(MailTestCase):
         self.assertIn(b"ZQX", text, "the export should hold the planted data")
         self.assertIn(b"zqxowner", text.lower())
 
-        r = c.post("/api/auth/email/change", json={"new_email": NEW_EMAIL, "password": PASSWORD})
-        self.assertEqual(r.status_code, 200, r.text)
-        token = token_in(self.last_to(NEW_EMAIL), "verify-email.html")
-        self.secrets["change_link_token"] = token
-        r = self.anonymous().post("/api/auth/verify-email", json={"token": token})
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(c.get("/api/auth/email").json()["email"], NEW_EMAIL)
-
-    def reset_and_digest(self, c, notice):
-        # Background access (so the reset keeps the data and scheduled runs can open it), the digest, a scheduled run.
+    def scheduled_search_and_recovery(self, c, notice):
+        # Background access (so scheduled runs can open the data), then a scheduled run.
         self.assertEqual(c.post("/api/account/background", json={"enabled": True}).status_code, 200)
-        self.assertEqual(c.put("/api/account/digest", json={"enabled": True, "every_days": 1}).status_code, 200)
         db = SessionLocal()
         try:
-            uid = users.find_by_email(db, NEW_EMAIL).id
+            uid = users.find_by_email(db, self.email).id
             ws = db.query(Workspace.id).filter(Workspace.owner_id == uid).order_by(Workspace.id).scalar()
         finally:
             db.close()
-        helpers._passwords[NEW_EMAIL] = PASSWORD
-        acct = helpers.Account(uid, NEW_EMAIL, PASSWORD, ws)
+        acct = helpers.Account(uid, self.email, PASSWORD, ws)
         self.source.postings = [_ad(10, title="ZQX Delivery Lead scheduled one"),
                                 _ad(11, title="ZQX Delivery Lead scheduled two")]
         with helpers.as_account(acct):
             run = app_module.start_search_run(ws, scheduled=True)
         self.assertEqual(self.run_to_end(c, run)["state"], "done")
-        now = (datetime.now(timezone.utc) + timedelta(days=2)).replace(hour=3, minute=0, second=0, microsecond=0)
-        self.assertEqual(digest.tick(now), 1)
-        message = self.last_to(NEW_EMAIL)
-        self.assertIn("ZQX", message.as_string() + message.get_body(preferencelist=("plain",)).get_content())
-        self.secrets["unsubscribe_token"] = parse_qs(urlsplit(message["List-Unsubscribe"].strip("<>")).query)["token"][0]
-        anon = self.anonymous()
-        self.assertEqual(anon.post(f"/unsubscribe?token={self.secrets['unsubscribe_token']}",
-                                   data={"List-Unsubscribe": "One-Click"}).status_code, 200)
 
-        # A password reset by email: the address the link goes to is the new one.
-        forgot = self.anonymous()
-        self.assertEqual(forgot.post("/api/auth/forgot", json={"email": NEW_EMAIL}).status_code, 202)
-        token = token_in(self.last_to(NEW_EMAIL), "reset-password.html")
-        self.secrets["reset_link_token"] = token
-        self.assertEqual(forgot.post("/api/auth/reset/info", json={"token": token}).json()["keeps_data"], True)
-        r = forgot.post("/api/auth/reset", json={"token": token, "new_password": NEW_PASSWORD})
+        # A forgotten password, reset with a recovery code (a wrong one first): the data is kept.
+        anon = self.anonymous()
+        r = anon.post("/api/auth/recover", json={"email": self.email, "recovery_code": "ZQXQ-ZQXQ-ZQXQ-ZQXQ",
+                                                 "new_password": NEW_PASSWORD})
+        self.assertEqual(r.status_code, 401, r.text)
+        r = anon.post("/api/auth/recover", json={"email": self.email, "recovery_code": self.secrets["recovery_code_0"],
+                                                 "new_password": NEW_PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(r.json()["kept_data"])
-        self.secrets["new_password"] = NEW_PASSWORD
-        self.assertEqual(forgot.post("/api/auth/login", json={"email": NEW_EMAIL, "password": "zqx wrong password"}
-                                     ).status_code, 401)
-        self.flush()
+        self.secrets.update(new_password=NEW_PASSWORD, recovered_csrf=r.json()["csrf"])
+        self.assertEqual(anon.post("/api/auth/login", json={"email": self.email, "password": "zqx wrong password"}
+                                   ).status_code, 401)
         notice.append(True)
 
 

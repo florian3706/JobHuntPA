@@ -1218,7 +1218,7 @@ class ResultsPageTest(SavingBase):
 
 class PagesSayWhereAJobCameFromTest(unittest.TestCase):
     """frontend/common.js and app.js: the label of a job the extension added, and "Upload full ad" (no browser
-    needed: the rule is read from the scripts; tests/test_digest.py runs the same rule for the emails)."""
+    needed: the rule is read from the scripts)."""
 
     @classmethod
     def setUpClass(cls):

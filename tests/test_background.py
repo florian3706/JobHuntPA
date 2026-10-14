@@ -328,154 +328,6 @@ class SchedulerTest(Base):
         self.assertEqual(sorted(started), sorted([(alice.workspace_id, alice.id), (bob.workspace_id, bob.id)]))
 
 
-class KeepDataResetTest(Base):
-    """``users.reset_password_keeping_data``: the hook Phase H calls for a password reset by email."""
-
-    NEW = "a brand new password 99"
-
-    def sign_in_fails(self, acct, password) -> bool:
-        from backend import ratelimit
-        ratelimit.reset_all()
-        r = TestClient(app).post("/api/auth/login", json={"email": acct.email, "password": password})
-        return r.status_code == 401
-
-    def test_data_stays_readable_with_the_new_password(self):
-        acct, c = self.new_user(background=True, titles=("Kept Through The Reset",))
-        old_dek = helpers.key_of(acct.email)[1]
-        before = self.snapshot(acct.id)
-        db = SessionLocal()
-        try:
-            self.assertIsNotNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
-        finally:
-            db.close()
-        after = self.snapshot(acct.id)
-        self.assertNotEqual(after["salt"], before["salt"])
-        self.assertNotEqual(after["verifier"], before["verifier"])
-        self.assertNotEqual(after["wrap"], before["wrap"])
-        self.assertEqual(after["server_wrap"], before["server_wrap"])  # background access carries on
-        # every session ended, the old password is gone
-        self.assertEqual(c.get("/api/auth/me").status_code, 401)
-        self.assertTrue(self.sign_in_fails(acct, acct.password))
-        helpers._passwords[acct.email] = self.NEW
-        with helpers.client(acct.email, self.NEW) as fresh:
-            self.assertEqual(fresh.get("/api/profile").json()["titles"], ["Kept Through The Reset"])
-        db = SessionLocal()
-        try:
-            self.assertEqual(users.unlock_with_password(db, db.get(User, acct.id), self.NEW), old_dek)
-            self.assertEqual(db.query(AuthSession).filter(AuthSession.user_id == acct.id).count(), 1)  # only the new one
-        finally:
-            db.close()
-
-    def test_a_locked_out_account_can_sign_in_with_the_new_password(self):
-        acct, _ = self.new_user(background=True)
-        from backend import ratelimit
-        helpers.lock_out(acct.id, failures=9)
-        self.assertGreater(ratelimit.guesses.waiting(acct.id), 0)
-        db = SessionLocal()
-        try:
-            self.assertIsNotNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
-        finally:
-            db.close()
-        self.assertEqual((ratelimit.guesses.waiting(acct.id), helpers.wrong_tries(acct.id)), (0, 0))
-
-    def test_recovery_codes_are_replaced_and_the_old_ones_open_nothing(self):
-        """Each old code opens the data key, so it must stop working: whoever held the account before the person who
-        proved the mailbox may have kept them. The new ones wrap the same key."""
-        from backend.db import RecoveryCode
-        email = f"keepdata-codes-{os.getpid()}@example.invalid"
-        account = users.create_user(email, helpers.USER_PASSWORD, background=True)
-        db = SessionLocal()
-        try:
-            kept = users.reset_password_keeping_data(db, account.user_id, self.NEW)
-            new_codes = kept.recovery_codes
-            self.assertEqual(len(new_codes), 8)
-            self.assertFalse(set(new_codes) & set(account.recovery_codes))
-            for code in account.recovery_codes:
-                self.assertIsNone(users.open_recovery_code(db, account.user_id, code))
-            self.assertEqual(db.query(RecoveryCode).filter(RecoveryCode.user_id == account.user_id).count(), 8)
-            for code in new_codes:
-                self.assertEqual(users.open_recovery_code(db, account.user_id, code)[1], account.dek)
-            self.assertEqual(users.pending_recovery_codes(db, account.user_id, kept.ik), new_codes)
-        finally:
-            db.close()
-
-    def test_without_background_access_it_returns_false_and_changes_nothing(self):
-        acct, c = self.new_user(background=False, titles=("Still Locked",))
-        before = self.snapshot(acct.id)
-        db = SessionLocal()
-        try:
-            self.assertIsNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
-        finally:
-            db.close()
-        self.assertEqual(self.snapshot(acct.id), before)
-        self.assertEqual(c.get("/api/auth/me").status_code, 200)  # still signed in
-        self.assertFalse(self.sign_in_fails(acct, acct.password))  # the old password still works
-        self.assertTrue(self.sign_in_fails(acct, self.NEW))
-
-    def test_after_turning_it_off_it_returns_false(self):
-        acct, c = self.new_user(background=True)
-        c.post("/api/account/background", json={"enabled": False})
-        db = SessionLocal()
-        try:
-            self.assertIsNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
-        finally:
-            db.close()
-
-    def test_a_bad_password_is_refused_before_anything_changes(self):
-        acct, c = self.new_user(background=True)
-        before = self.snapshot(acct.id)
-        db = SessionLocal()
-        try:
-            for bad in ("short", "", None, "x" * 2000):
-                with self.subTest(password=bad), self.assertRaises(users.AccountError):
-                    users.reset_password_keeping_data(db, acct.id, bad)
-        finally:
-            db.close()
-        self.assertEqual(self.snapshot(acct.id), before)
-        self.assertEqual(c.get("/api/auth/me").status_code, 200)
-
-    def test_a_key_the_server_cant_open_returns_false_and_changes_nothing(self):
-        acct, c = self.new_user(background=True)
-        db = SessionLocal()
-        try:
-            db.query(UserKeys).filter(UserKeys.user_id == acct.id).update({UserKeys.server_wrapped_dek: os.urandom(80)})
-            db.commit()
-            before = self.snapshot(acct.id)
-            self.assertIsNone(users.reset_password_keeping_data(db, acct.id, self.NEW))
-        finally:
-            db.close()
-        self.assertEqual(self.snapshot(acct.id), before)
-
-    def test_an_unknown_account_returns_false(self):
-        db = SessionLocal()
-        try:
-            self.assertIsNone(users.reset_password_keeping_data(db, 10 ** 9, self.NEW))
-        finally:
-            db.close()
-
-    def test_other_accounts_are_untouched(self):
-        acct, _ = self.new_user(background=True)
-        other, oc = self.new_user(background=True)
-        before = self.snapshot(other.id)
-        db = SessionLocal()
-        try:
-            users.reset_password_keeping_data(db, acct.id, self.NEW)
-        finally:
-            db.close()
-        self.assertEqual(self.snapshot(other.id), before)
-        self.assertEqual(oc.get("/api/auth/me").status_code, 200)
-
-    def snapshot(self, user_id: int) -> dict:
-        db = SessionLocal()
-        try:
-            user, row = db.get(User, user_id), db.get(UserKeys, user_id)
-            return {"salt": bytes(user.kdf_salt), "verifier": bytes(user.pw_verifier), "params": user.kdf_params,
-                    "wrap": bytes(row.pw_wrapped_dek), "server_wrap": row.server_wrapped_dek,
-                    "sessions": db.query(AuthSession).filter(AuthSession.user_id == user_id).count()}
-        finally:
-            db.close()
-
-
 RECOVER = '''
 import io
 from contextlib import redirect_stderr, redirect_stdout
@@ -492,8 +344,6 @@ alice = users.create_user("alice@example.invalid", "alice-password-1", name="Ali
 bob = users.create_user("bob@example.invalid", "bob-password-12", name="Bob")
 carol = users.create_user("carol@example.invalid", "carol-password-1", name="Carol")
 db = SessionLocal()
-db.query(User).filter(User.id == alice.user_id).update({User.mfa_enabled: True, User.totp_secret_enc: b"sealed-secret",
-                                                       User.totp_last_step: 5})
 db.query(User).filter(User.id == carol.user_id).update({User.pii_admin: None})   # her details can't be worked out
 db.commit()
 old_hash = {u.id: bytes(u.email_hash) for u in db.query(User)}
@@ -513,7 +363,7 @@ def recover(email, password):
 
 def state():
     db = SessionLocal()
-    rows = {u.id: (bytes(u.email_hash), u.mfa_enabled, u.totp_secret_enc) for u in db.query(User)}
+    rows = {u.id: bytes(u.email_hash) for u in db.query(User)}
     bg = [r.user_id for r in db.query(UserKeys).filter(UserKeys.server_wrapped_dek.isnot(None))]
     fp = db.get(AppSetting, "server_keys_fingerprint").value_json
     db.close()
@@ -549,14 +399,13 @@ out["nothing_changed"] = state() == before and not key_path.exists() and not (ke
 out["recover"] = recover("Root@Example.invalid", ADMIN_PW)              # the email is matched whatever its case
 out["file_exists"] = key_path.exists()
 db_files = [Path(str(DB_PATH) + suffix) for suffix in ("", "-wal")]
-out["old_copies_left"] = [f.name for f in db_files if f.exists() and (old_blob in f.read_bytes() or b"sealed-secret" in f.read_bytes())]
+out["old_copies_left"] = [f.name for f in db_files if f.exists() and old_blob in f.read_bytes()]
 out["file_mode"] = oct(key_path.stat().st_mode & 0o777)
 out["new_file_differs"] = key_path.read_bytes() != old_file
 out["leftover"] = sorted(p.name for p in key_path.parent.iterdir() if p.name.startswith("server-keys") and p.name not in ("server-keys.json", "server-keys.json.lock"))
 
 rows, bg, fp = state()
 out["background_left"] = bg
-out["mfa_left"] = [uid for uid, (_, mfa, secret) in rows.items() if mfa or secret]
 out["fingerprint_changed"] = fp != old_fp
 
 users.startup()                                                           # a restart: the new file matches the database
@@ -634,13 +483,13 @@ class RecoverLostKeyFileTest(unittest.TestCase):
         self.assertIn("1 could not be worked out", out["recover"]["out"])
         self.assertIn("Email lookup was rebuilt for 3 account(s)", out["recover"]["out"])
 
-    def test_background_access_and_two_step_sign_in_are_switched_off(self):
+    def test_background_access_is_switched_off(self):
         out = self.out
         self.assertEqual(out["background_left"], [])
-        self.assertEqual(out["old_copies_left"], [], "the deleted key copies and TOTP secret are in neither the database nor its log")
-        self.assertEqual(out["mfa_left"], [])
+        self.assertEqual(out["old_copies_left"], [], "the deleted key copies are in neither the database nor its log")
         self.assertTrue(out["alice_background_key"])
-        self.assertIn("Background access was switched off for 2 account(s) and two-step sign-in for 1", out["recover"]["out"])
+        self.assertIn("Background access was switched off for 2 account(s): each person turns it on again",
+                      out["recover"]["out"])
 
     def test_nobodys_data_is_lost_and_nobody_is_named(self):
         out = self.out

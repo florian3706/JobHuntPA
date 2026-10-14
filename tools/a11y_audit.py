@@ -11,8 +11,8 @@ imports it. It needs Playwright with Chromium (setup installs both).
 
 What it does
 1. Builds a throwaway demo database (tools/demo_data.py), starts the app on it (like tools/readme_screenshots.py)
-   with email going to a small mail catcher inside this script, and a second, empty app for the first-run page.
-   Nothing touches data/ or the real .env; the scheduler is off; the LLM, Stripe and the map's tile servers are
+   and a second, empty app for the first-run page.
+   Nothing touches data/ or the real .env; the scheduler is off; the LLM and the map's tile servers are
    never contacted (the browser's requests to them are answered by this script).
 2. Opens each page and each state of it (every tab, card, step and dialog) as the right account, at each width
    and in each theme, and runs axe-core with the WCAG 2.0/2.1/2.2 A and AA tags on it. axe is injected through the
@@ -29,23 +29,17 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
-import hashlib
-import hmac
 import json
 import mimetypes
 import os
 import re
 import shutil
 import socket
-import socketserver
-import struct
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import urllib.request
-from email import message_from_bytes, policy
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -64,79 +58,6 @@ REAL_DATA = (ROOT / "data").resolve()
 
 
 # --------------------------------------------------------------------------
-# Mail catcher: a minimal SMTP server, so the pages reached by an emailed link can be reached
-# --------------------------------------------------------------------------
-
-class MailCatcher:
-    """Accepts every message on 127.0.0.1 and keeps it. Just enough SMTP for smtplib with SMTP_SECURITY=none."""
-
-    def __init__(self):
-        self.messages: list[dict] = []
-        outer = self
-
-        class Handler(socketserver.StreamRequestHandler):
-            def handle(self):
-                w = lambda s: (self.wfile.write(s.encode() + b"\r\n"), self.wfile.flush())  # noqa: E731
-                w("220 catcher ready")
-                sender, rcpts = "", []
-                while True:
-                    line = self.rfile.readline()
-                    if not line:
-                        return
-                    cmd = line.decode("latin-1").strip()
-                    up = cmd.upper()
-                    if up.startswith(("EHLO", "HELO")):
-                        w("250 catcher")
-                    elif up.startswith("MAIL FROM"):
-                        sender, rcpts = cmd, []
-                        w("250 ok")
-                    elif up.startswith("RCPT TO"):
-                        rcpts.append(cmd.split(":", 1)[1].strip().strip("<>"))
-                        w("250 ok")
-                    elif up == "DATA":
-                        w("354 go on")
-                        raw = b""
-                        while True:
-                            data_line = self.rfile.readline()
-                            if data_line in (b".\r\n", b".\n", b""):
-                                break
-                            raw += data_line[1:] if data_line.startswith(b"..") else data_line
-                        outer.messages.append({"to": rcpts, "msg": message_from_bytes(raw, policy=policy.default)})
-                        w("250 queued")
-                    elif up == "QUIT":
-                        w("221 bye")
-                        return
-                    else:
-                        w("250 ok")
-
-        class Server(socketserver.ThreadingTCPServer):
-            daemon_threads = True
-            allow_reuse_address = True
-
-        self.server = Server(("127.0.0.1", 0), Handler)
-        self.port = self.server.server_address[1]
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def stop(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
-
-    def link(self, to: str, pattern: str, since: int = 0, timeout: float = 20) -> str:
-        """The first link matching ``pattern`` in a message to ``to`` that arrived after the first ``since``."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            for item in self.messages[since:]:
-                if to.lower() not in [r.lower() for r in item["to"]]:
-                    continue
-                body = item["msg"].get_body(preferencelist=("plain", "html"))
-                m = re.search(pattern, body.get_content() if body else "")
-                if m:
-                    return m.group(0)
-            time.sleep(0.2)
-        raise TimeoutError(f"no email to {to} with {pattern!r}")
-
-
-# --------------------------------------------------------------------------
 # The apps under audit
 # --------------------------------------------------------------------------
 
@@ -146,13 +67,12 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-# The app, as uvicorn runs it, except that the sign-in and email limits are lifted: an audit signs in and loads the
-# reset and confirmation pages dozens of times in a few minutes, which the real limits (10 sign-in requests in 5
-# minutes) would refuse. Nothing else differs.
+# The app, as uvicorn runs it, except that the sign-in limit is lifted: an audit signs in dozens of times in a few
+# minutes, which the real limit (10 sign-in requests in 5 minutes) would refuse. Nothing else differs.
 LAUNCH = """
 import sys, uvicorn
 from backend import ratelimit
-for name in ("AUTH", "FORGOT_ADDRESS", "RESET_ACCOUNT", "VERIFY_RESEND", "EMAIL_CHANGE", "EMAIL_TEST", "UNSUBSCRIBE"):
+for name in ("AUTH",):
     getattr(ratelimit, name).rules = [(10 ** 6, 60)]
 uvicorn.run("backend.app:app", host="127.0.0.1", port=int(sys.argv[1]), log_level="warning")
 """
@@ -161,7 +81,7 @@ uvicorn.run("backend.app:app", host="127.0.0.1", port=int(sys.argv[1]), log_leve
 class App:
     """One running copy of the app on its own throwaway database."""
 
-    def __init__(self, work: Path, name: str, *, demo: bool, mail: MailCatcher):
+    def __init__(self, work: Path, name: str, *, demo: bool):
         self.work = work / name
         self.work.mkdir(parents=True)
         self.db = (self.work / "app.db").resolve()
@@ -171,15 +91,12 @@ class App:
         self.port = free_port()
         self.base = f"http://127.0.0.1:{self.port}"
         self.demo = demo
-        self.mail = mail
         self.proc: subprocess.Popen | None = None
         self.log_path = self.work / "server.log"
 
     def env(self) -> dict:
         env = shots.server_env(self.db, self.env_file)
-        env.update({"SMTP_HOST": "127.0.0.1", "SMTP_PORT": str(self.mail.port), "SMTP_SECURITY": "none",
-                    "SMTP_FROM": "JobHuntPA <jobs@example.com>", "PUBLIC_BASE_URL": self.base,
-                    "JOBHUNT_DATA_DIR": str(self.work)})
+        env.update({"PUBLIC_BASE_URL": self.base, "JOBHUNT_DATA_DIR": str(self.work)})
         if not self.demo:  # an empty install: the first-run page
             env.pop("JOBHUNT_ADMIN_EMAIL", None)
             env.pop("JOBHUNT_ADMIN_PASSWORD", None)
@@ -238,15 +155,6 @@ class Api:
             return r.json()
         except Exception:
             return None
-
-
-def totp(secret: str, at: float | None = None) -> str:
-    """The 6-digit code an authenticator app shows (RFC 6238: SHA-1, 30 s)."""
-    key = base64.b32decode(secret.replace(" ", "").upper() + "=" * (-len(secret.replace(" ", "")) % 8))
-    counter = int((at or time.time()) // 30)
-    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
-    offset = digest[-1] & 15
-    return f"{(struct.unpack('>I', digest[offset:offset + 4])[0] & 0x7fffffff) % 1000000:06d}"
 
 
 # --------------------------------------------------------------------------
@@ -369,8 +277,8 @@ GREY_TILE = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
 
 
 class Auditor:
-    def __init__(self, playwright, browser, apps: dict, mail: MailCatcher, node_modules: Path, findings: Findings):
-        self.pw, self.browser, self.apps, self.mail = playwright, browser, apps, mail
+    def __init__(self, playwright, browser, apps: dict, node_modules: Path, findings: Findings):
+        self.pw, self.browser, self.apps = playwright, browser, apps
         self.axe_src = (node_modules / "axe-core" / "axe.min.js").read_text(encoding="utf-8")
         self.leaflet = node_modules / "leaflet" / "dist"
         self.findings = findings
@@ -397,8 +305,6 @@ class Auditor:
                   self.external)
         if login is not None:
             r = ctx.request.post(f"{app.base}/api/auth/login", data={"email": login[0], "password": login[1]})
-            if r.ok and r.json().get("mfa_required"):  # login[2] is the account's authenticator secret
-                r = ctx.request.post(f"{app.base}/api/auth/login/mfa", data={"code": totp(login[2], time.time() + 30)})  # a step ahead: the setup spent this one
             if not r.ok:
                 raise RuntimeError(f"sign-in as {login[0]} failed: {r.status} {r.text()[:200]}")
         return ctx
@@ -442,21 +348,6 @@ class Auditor:
         self.counter = getattr(self, "counter", 0) + 1
         return f"{name}-{self.counter}"
 
-    # -- emailed links ---------------------------------------------------------
-    def reset_link(self, key: str) -> str:
-        """A fresh password-reset link for a fixture account (read from the mail catcher)."""
-        user = self.fixtures[key]
-        before = len(self.mail.messages)
-        r = self.pw.request.new_context().post(f"{self.apps['demo'].base}/api/auth/forgot", data={"email": user["email"]})
-        if r.status != 202:
-            raise RuntimeError(f"forgot-password answered {r.status}")
-        return self.mail.link(user["email"], r"https?://\S+/reset-password\.html#token=[\w-]+", before)
-
-    def verify_link(self) -> str:
-        """A fresh email-confirmation link (single use): a new account's own confirmation email."""
-        before = len(self.mail.messages)
-        user = new_account(self, self.unique("unverified"))
-        return self.mail.link(user["email"], r"https?://\S+/verify-email\.html#token=[\w-]+", before)
 
     # -- one page ---------------------------------------------------------------
     def page(self, ctx, state: str):
@@ -709,12 +600,6 @@ def sc_tabs(a, w, theme):
         open_tab(page, "settings")
         page.wait_for_selector("#acct-pw-form")
         a.check(page, "index: Settings tab (every card)")
-    with a.step("index: Settings, two-step setup"):
-        page.click("#acct-mfa-start")
-        page.wait_for_selector("#acct-mfa-on-form")
-        settle(page, 400)
-        a.check(page, "index: Settings, two-step sign-in setup")
-        page.click("#acct-mfa-on-cancel")
     with a.step("index: Settings, errors under fields"):
         page.click("#acct-pw-submit")
         page.wait_for_selector("#acct-pw-form .field-error, #acct-pw-form [aria-invalid=true]")
@@ -767,49 +652,6 @@ def sc_dialogs(a, w, theme):
         page.wait_for_selector("dialog.confirm-dialog [role=alert]:not(:empty)")
         a.check(page, "index: confirm your password dialog, wrong password")
         page.keyboard.press("Escape")
-    ctx.close()
-
-
-@scenario("index")
-def sc_members_only(a, w, theme):
-    """A trial account (payments on, not a member): the notes beside the AI features, on the Documents tab, in the chat,
-    the cover letter and company dialogs, and the job page. (The page is told it is a trial; the server is not.)"""
-    app = a.apps["demo"]
-    ctx = admin_ctx(a, w, theme)
-    page = a.page(ctx, "index: members-only notes")
-    mock(page, "/api/billing/status", {"billing": {"enabled": True, "test_mode": True, "prices": PRICES}, "me": person()})
-    page._expect.append((404, "/api/"))
-    with a.step("index: members-only notes"):
-        page.goto(f"{app.base}/#jobs")
-        page.wait_for_selector(".job-card")
-        page.wait_for_function("() => document.querySelector('#next-scheduled') && !document.querySelector('#next-scheduled').hidden", timeout=30000)
-        settle(page)
-        open_tab(page, "docs")
-        page.wait_for_selector(".ai-note:not([hidden])")
-        a.check(page, "index: Documents tab, members-only note")
-        open_tab(page, "jobs")
-        first = ".job-card:first-of-type"
-        page.click(f'{first} [data-act="letter"]')
-        page.wait_for_selector("#modal[open] .ai-note")
-        settle(page, 400)
-        a.check(page, "index: cover letter dialog, members-only note")
-        page.keyboard.press("Escape")
-        page.click(f'{first} [data-act="company"]')
-        page.wait_for_selector("#modal[open]")
-        settle(page, 600)
-        a.check(page, "index: company dialog, members-only note")
-        page.keyboard.press("Escape")
-        page.click(f'{first} [data-act="chat"]')
-        page.wait_for_selector("#chat-panel .ai-note:not([hidden]), .chat-hint:not([hidden])")
-        settle(page, 400)
-        a.check(page, "index: chat panel, members-only note")
-        page.click("#chat-close")
-    with a.step("job.html: members-only note"):
-        page.goto(f"{app.base}/job.html?id=1&ws={a.fixtures['ws']}")
-        page.wait_for_selector("#job-company dl.profile")
-        page.wait_for_selector("#job-company .ai-note")
-        settle(page, 600)
-        a.check(page, "job.html: members-only note")
     ctx.close()
 
 
@@ -946,41 +788,10 @@ def sc_login(a, w, theme):
         page.wait_for_function("() => document.querySelector('#error-summary-list li')?.textContent.length > 0")
         settle(page, 300)
         a.check(page, "login: wrong password error")
-    with a.step("login: forgot link shown"):
-        page.fill("#password", "")
-        page.click("#forgot-btn")
-        settle(page, 500)
-        a.check(page, "login: after Email me a link")
     with a.step("login: show password"):
         page.fill("#password", "something")
         page.click(".pw-toggle")
         a.check(page, "login: password shown")
-    ctx.close()
-
-
-@scenario("auth")
-def sc_login_code(a, w, theme):
-    base = a.apps["demo"].base
-    user = new_account(a, a.unique("code-login"), mfa=True)
-    ctx = plain_ctx(a, w, theme)
-    page = a.page(ctx, "login: code step")
-    with a.step("login: code step"):
-        page.goto(f"{base}/login.html")
-        fill_submit(page, {"#email": user["email"], "#password": PASSWORD}, "#login-submit")
-        page.wait_for_selector("#mfa-form:not([hidden])")
-        settle(page, 300)
-        a.check(page, "login: two-step code step")
-    with a.step("login: wrong code"):
-        page._expect.append((422, "/api/auth/login/mfa"))
-        page._expect.append((401, "/api/auth/login/mfa"))
-        fill_submit(page, {"#code": "000000"}, "#mfa-submit")
-        page.wait_for_selector("#error-summary:not([hidden])")
-        settle(page, 300)
-        a.check(page, "login: wrong code error")
-    with a.step("login: recovery code step"):
-        page.click("#mfa-switch")
-        page.wait_for_selector("#recovery-field:not([hidden])")
-        a.check(page, "login: recovery code step")
     ctx.close()
 
 
@@ -1019,16 +830,14 @@ def sc_recover(a, w, theme):
         page.click("#recover-submit")
         page.wait_for_selector("#error-summary:not([hidden])")
         a.check(page, "recover: error summary")
-    with a.step("recover: second factor asked"):
-        user = a.fixtures["mfa"]
-        page._expect.append((422, "/api/auth/recover"))
+    with a.step("recover: a code that isn't right"):
+        user = a.fixtures["fresh"]
         page._expect.append((401, "/api/auth/recover"))
-        page._expect.append((403, "/api/auth/recover"))
-        fill_submit(page, {"#email": user["email"], "#recovery-code": user["codes"][0], "#password": "another long password"},
+        fill_submit(page, {"#email": user["email"], "#recovery-code": "AAAA-BBBB-CCCC-DDDD", "#password": "another long password"},
                     "#recover-submit")
-        page.wait_for_selector("#code-field:not([hidden])")
+        page.wait_for_function("() => document.querySelector('#error-summary-list li')?.textContent.length > 0")
         settle(page, 300)
-        a.check(page, "recover: second code asked for")
+        a.check(page, "recover: wrong recovery code")
     ctx.close()
 
 
@@ -1058,7 +867,7 @@ def sc_signup(a, w, theme):
                     page.wait_for_function("() => document.querySelector('#error-summary-list li')?.textContent.length > 0")
                     a.check(page, "signup: address already used")
             ctx.close()
-        invite = admin.call("POST", "/api/admin/invites", {"email": "invited@example.invalid", "send": False})["link"]
+        invite = admin.call("POST", "/api/admin/invites", {"email": "invited@example.invalid"})["link"]
         ctx = plain_ctx(a, w, theme)
         page = a.page(ctx, "signup: invitation")
         with a.step("signup: invitation link"):
@@ -1094,9 +903,6 @@ def sc_codes_step(a, w, theme):
         page.click("#show-submit")
         page.wait_for_selector("#error-summary:not([hidden])")
         a.check(page, "first-run: recovery codes, password missing")
-        page.evaluate("() => { document.querySelector('#show-code-field').hidden = false; }")  # (the field a two-step account gets)
-        a.check(page, "first-run: recovery codes, password and code asked")
-        page.evaluate("() => { document.querySelector('#show-code-field').hidden = true; }")
         page.fill("#show-password", PASSWORD)
         page.click("#show-submit")
         page.wait_for_selector("#codes-step:not([hidden])")
@@ -1119,95 +925,6 @@ def sc_codes_step(a, w, theme):
     ctx.close()
     api.call("POST", "/api/auth/recovery-codes/ack", {})
 
-
-# -- the pages an emailed link opens -----------------------------------------------------------------------
-
-@scenario("links")
-def sc_reset(a, w, theme):
-    app = a.apps["demo"]
-    for key, label in (("keeps", "keep data"), ("wipes", "wipe"), ("mfa", "two-step")):
-        link = a.reset_link(key)
-        ctx = plain_ctx(a, w, theme)
-        page = a.page(ctx, f"reset-password: {label}")
-        with a.step(f"reset-password: {label}"):
-            page.goto(link)
-            page.wait_for_selector("#setup-step:not([hidden])")
-            settle(page, 300)
-            a.check(page, f"reset-password: {label}")
-        if key == "wipes":
-            with a.step("reset-password: wipe errors"):
-                page.click("#reset-submit")
-                page.wait_for_selector("#error-summary:not([hidden])")
-                a.check(page, "reset-password: wipe, errors")
-        ctx.close()
-    ctx = plain_ctx(a, w, theme)
-    page = a.page(ctx, "reset-password: bad link")
-    with a.step("reset-password: bad link"):
-        page._expect.append((410, "/api/auth/reset/info"))
-        page.goto(f"{app.base}/reset-password.html#token=notarealtoken")
-        page.wait_for_selector("#invalid-step:not([hidden])")
-        a.check(page, "reset-password: link that doesn't work")
-    with a.step("reset-password: no token"):
-        page.goto(f"{app.base}/reset-password.html")
-        page.wait_for_selector("#invalid-step:not([hidden])")
-        a.check(page, "reset-password: incomplete link")
-    ctx.close()
-
-
-@scenario("links")
-def sc_verify(a, w, theme):
-    app = a.apps["demo"]
-    ctx = plain_ctx(a, w, theme)
-    page = a.page(ctx, "verify-email: confirmed")
-    link = a.verify_link()
-    with a.step("verify-email: confirmed"):
-        page.goto(link)
-        page.wait_for_selector("#verify-ask:not([hidden])")  # opening the link only asks; the button confirms
-        settle(page, 300)
-        a.check(page, "verify-email: asks to confirm")
-        page.click("#verify-confirm")
-        page.wait_for_selector("#verify-result:not([hidden])")
-        settle(page, 300)
-        a.check(page, "verify-email: confirmed")
-    with a.step("verify-email: used link"):
-        page._expect.append((410, "/api/auth/verify-email"))
-        page.goto("about:blank")  # (a link that differs only by its #fragment would not reload the page)
-        page.goto(link)
-        page.wait_for_selector("#error-summary:not([hidden])")
-        a.check(page, "verify-email: link already used")
-    with a.step("verify-email: incomplete link"):
-        page.goto(f"{app.base}/verify-email.html")
-        page.wait_for_selector("#error-summary:not([hidden])")
-        a.check(page, "verify-email: incomplete link")
-    ctx.close()
-
-
-@scenario("links")
-def sc_unsubscribe(a, w, theme):
-    app = a.apps["demo"]
-    token = a.fixtures["unsub_token"]
-    ctx = plain_ctx(a, w, theme)
-    page = a.page(ctx, "unsubscribe: confirm")
-    with a.step("unsubscribe: confirm"):
-        page.goto(f"{app.base}/unsubscribe?token={token}")
-        settle(page, 200)
-        a.check(page, "unsubscribe: confirm page")
-    with a.step("unsubscribe: done"):
-        page.click("button[type=submit]")
-        page.wait_for_selector("text=You are unsubscribed")
-        settle(page, 200)
-        a.check(page, "unsubscribe: unsubscribed page")
-        page.click("button[type=submit]")  # Subscribe again
-        page.wait_for_selector("text=You are subscribed again")
-        a.check(page, "unsubscribe: subscribed again page")
-    with a.step("unsubscribe: bad link"):
-        page._expect.append((410, "/unsubscribe"))
-        page.goto(f"{app.base}/unsubscribe?token=bad")
-        a.check(page, "unsubscribe: invalid link page")
-    ctx.close()
-
-
-# -- the walkthrough ----------------------------------------------------------------------------------------
 
 @scenario("wizard")
 def sc_wizard(a, w, theme):
@@ -1285,80 +1002,6 @@ def sc_job(a, w, theme):
     ctx.close()
 
 
-# -- billing ------------------------------------------------------------------------------------------------
-
-def mock(page, path: str, body, status: int = 200) -> None:
-    page.route(re.compile(re.escape(path)), lambda r: r.fulfill(status=status, content_type="application/json", body=json.dumps(body)))
-
-
-PRICES = [{"plan": "monthly", "interval": "month", "amount": 900, "currency": "aud"},
-          {"plan": "yearly", "interval": "year", "amount": 9000, "currency": "aud"}]
-
-
-def person(**kw) -> dict:
-    base = {"member": False, "reason": None, "free_searches_left": 2, "free_searches_limit": 3, "can_search": True, "message": None,
-            "plan": None, "stripe_status": None, "current_period_end": None, "cancel_at_period_end": False, "grace_until": None,
-            "free_period_until": None, "can_manage": False, "can_subscribe": True}
-    return {**base, **kw}
-
-
-@scenario("billing")
-def sc_billing(a, w, theme):
-    app = a.apps["demo"]
-    states = {
-        "an admin (the real answer)": None,
-        "not a member, plans on offer": {"billing": {"enabled": True, "test_mode": True, "prices": PRICES}, "me": person()},
-        "free searches used up": {"billing": {"enabled": True, "test_mode": False, "prices": PRICES},
-                                  "me": person(free_searches_left=0, can_search=False, message="Free searches used up.")},
-        "member with a plan that ends": {"billing": {"enabled": True, "test_mode": False, "prices": PRICES},
-                                         "me": person(member=True, reason="subscribed", plan="monthly", stripe_status="active",
-                                                      current_period_end="2026-11-07T00:00:00", cancel_at_period_end=True,
-                                                      can_manage=True, can_subscribe=False)},
-        "payment failed (grace)": {"billing": {"enabled": True, "test_mode": False, "prices": PRICES},
-                                   "me": person(member=True, reason="grace", plan="yearly", stripe_status="past_due",
-                                                current_period_end="2026-10-01T00:00:00", grace_until="2026-10-14T00:00:00",
-                                                can_manage=True, can_subscribe=False)},
-        "free period": {"billing": {"enabled": True, "test_mode": False, "prices": PRICES},
-                        "me": person(member=True, reason="grant", free_period_until="2026-12-01T00:00:00")},
-        "payments off": {"billing": {"enabled": False, "test_mode": False, "prices": []}, "me": person(member=True, reason="billing_off")},
-    }
-    for name, body in states.items():
-        ctx = admin_ctx(a, w, theme)
-        page = a.page(ctx, f"billing.html: {name}")
-        if body is not None:
-            mock(page, "/api/billing/status", body)
-        with a.step(f"billing.html: {name}"):
-            page.goto(f"{app.base}/billing.html")
-            page.wait_for_function("() => document.querySelector('#me-loading').hidden")
-            settle(page, 300)
-            a.check(page, f"billing.html: {name}")
-        ctx.close()
-    ctx = admin_ctx(a, w, theme)
-    page = a.page(ctx, "billing.html: back from Stripe")
-    mock(page, "/api/billing/status", {"billing": {"enabled": True, "test_mode": True, "prices": PRICES}, "me": person()})
-    mock(page, "/api/billing/verify", {"detail": "not done", "code": "not_complete"}, 409)
-    page._expect.append((409, "/api/billing/verify"))
-    with a.step("billing.html: payment not finished"):
-        page.goto(f"{app.base}/billing.html?session_id=cs_test_1")
-        page.wait_for_selector("#billing-result:not([hidden])")
-        settle(page, 300)
-        a.check(page, "billing.html: payment not finished")
-    with a.step("billing.html: cancelled"):
-        page.goto(f"{app.base}/billing.html?cancelled=1")
-        page.wait_for_selector("#billing-result:not([hidden])")
-        a.check(page, "billing.html: cancelled at Stripe")
-    ctx.close()
-    ctx = admin_ctx(a, w, theme)
-    page = a.page(ctx, "billing.html: error")
-    mock(page, "/api/billing/status", {"detail": "boom"}, 500)
-    page._expect.append((500, "/api/billing/status"))
-    with a.step("billing.html: error"):
-        page.goto(f"{app.base}/billing.html")
-        page.wait_for_selector("#billing-error:not([hidden])")
-        a.check(page, "billing.html: could not load")
-    ctx.close()
-
-
 # -- the admin panel ----------------------------------------------------------------------------------------
 
 @scenario("admin")
@@ -1384,16 +1027,6 @@ def sc_admin(a, w, theme):
             page.wait_for_selector("#invite-result:not([hidden]), #invite-result-title")
             settle(page, 400)
             a.check(page, "admin.html: invitation link shown")
-    with a.step("admin.html: membership dialog"):
-        row = '#users-table [data-act="membership"]'
-        page.click(f"{row} >> nth=1")
-        page.wait_for_selector("#person-dialog[open]")
-        settle(page, 600)
-        a.check(page, "admin: membership dialog")
-        page.click("#grant-save") if page.query_selector("#grant-save") else None
-        settle(page, 400)
-        a.check(page, "admin: membership dialog with a problem")
-        page.keyboard.press("Escape")
     with a.step("admin.html: confirm dialog"):
         page.click('#users-table [data-act="disable"] >> nth=0')
         page.wait_for_selector("#confirm-dialog[open]")
@@ -1443,34 +1076,12 @@ def sc_admin_forms(a, w, theme):
 # -- the Settings tab for other kinds of account ----------------------------------------------------------
 
 def user_ctx(a: Auditor, w: int, theme: str, user: dict):
-    login = (user["email"], user["password"]) + ((user["secret"],) if user.get("secret") else ())
-    return a.context(a.apps["demo"], width=w, theme=theme, login=login)
-
-
-@scenario("settings")
-def sc_settings_two_step(a, w, theme):
-    """Two-step sign-in on: the card with the turn-off form, and the recovery-code card that asks for a code."""
-    app = a.apps["demo"]
-    user = new_account(a, a.unique("settings-mfa"), mfa=True)
-    ctx = user_ctx(a, w, theme, user)
-    page = a.page(ctx, "settings: two-step on")
-    with a.step("settings: two-step sign-in on"):
-        page.goto(f"{app.base}/#settings")
-        page.wait_for_selector("#acct-mfa-off")
-        settle(page, 500)
-        a.check(page, "index: Settings, two-step sign-in on")
-        page.click("#acct-mfa-off")
-        page.wait_for_selector("#acct-mfa-off-form:not([hidden])")
-        a.check(page, "index: Settings, turn-off form open")
-        page.click("#acct-mfa-off-submit")
-        page.wait_for_selector("#acct-mfa-off-form .field-error, #acct-mfa-off-form [aria-invalid=true]")
-        a.check(page, "index: Settings, turn-off form with errors")
-    ctx.close()
+    return a.context(a.apps["demo"], width=w, theme=theme, login=(user["email"], user["password"]))
 
 
 @scenario("settings")
 def sc_settings_member(a, w, theme):
-    """An ordinary account (no admin link), background access on, the digest on, an unconfirmed address."""
+    """An ordinary account (no admin link), background access on."""
     app = a.apps["demo"]
     user = new_account(a, a.unique("settings-member"), background=True)
     ctx = user_ctx(a, w, theme, user)
@@ -1480,17 +1091,7 @@ def sc_settings_member(a, w, theme):
         page.wait_for_selector("#acct-pw-form")
         page.wait_for_selector("#export-btn")
         settle(page, 800)
-        a.check(page, "index: Settings, ordinary account (unconfirmed address, background on)")
-    with a.step("settings: change address form"):
-        page.click("#acct-addr-change")
-        page.wait_for_selector("#acct-addr-form:not([hidden])")
-        page.click("#acct-addr-send")
-        page.wait_for_selector("#acct-addr-form [aria-invalid=true], #acct-addr-form .field-error")
-        a.check(page, "index: Settings, change address form with an error")
-    with a.step("settings: digest on"):
-        page.check("#digest-switch")
-        settle(page, 600)
-        a.check(page, "index: Settings, digest emails on")
+        a.check(page, "index: Settings, ordinary account (background on)")
     with a.step("settings: delete account with an error"):
         page.click("#acct-del-submit")
         page.wait_for_selector("#acct-del-form [aria-invalid=true], #acct-del-form .field-error")
@@ -1603,11 +1204,11 @@ def check_order(a: Auditor, page, what: str, stops: list, expected: list[str]) -
 @scenario("keyboard")
 def kb_sign_in(a, w, theme):
     app = a.apps["demo"]
-    user = new_account(a, a.unique("kb-signin"), mfa=True)
+    user = new_account(a, a.unique("kb-signin"))
     ctx = plain_ctx(a, w, theme)
-    page = a.page(ctx, "keyboard: sign in with a code")
+    page = a.page(ctx, "keyboard: sign in")
     page._expect += [(401, "/api/auth/me")]
-    with a.step("keyboard: sign in with a code"):
+    with a.step("keyboard: sign in"):
         page.goto(f"{app.base}/login.html")
         page.wait_for_selector("#login-form:not([hidden])")
         settle(page, 300)
@@ -1620,19 +1221,6 @@ def kb_sign_in(a, w, theme):
         page.keyboard.type(user["password"])
         stops = walk(a, page, "sign-in, rest of the form", until=lambda i: i["id"] == "login-submit")
         check_order(a, page, "sign-in", stops, ["remember", "login-submit"])
-        page.keyboard.press("Enter")
-        page.wait_for_selector("#mfa-form:not([hidden])")
-        expect_focus(a, page, "sign-in: after the password, focus goes to the code field", "code")
-        a.check(page, "keyboard: sign-in code step (focus in the code field)")
-        stops = walk(a, page, "sign-in, code step", until=lambda i: i["id"] == "mfa-restart")
-        check_order(a, page, "sign-in code step", stops, ["mfa-submit", "mfa-switch", "mfa-restart"])
-        page.keyboard.press("Enter")  # Start again with your password
-        page.wait_for_selector("#login-form:not([hidden])")
-        expect_focus(a, page, "sign-in: Start again returns focus to the password field", "password")
-        page.keyboard.type(user["password"])
-        page.keyboard.press("Enter")
-        page.wait_for_selector("#mfa-form:not([hidden])")
-        page.keyboard.type(totp(user["secret"], time.time() + 30))
         page.keyboard.press("Enter")
         page.wait_for_url(re.compile(r".*/(#.*)?$"), timeout=20000)
         page.wait_for_selector(".job-card, #jobs-empty:not([hidden])")
@@ -1725,43 +1313,6 @@ def kb_change_password(a, w, theme):
 
 
 @scenario("keyboard")
-def kb_two_step_setup(a, w, theme):
-    app = a.apps["demo"]
-    user = new_account(a, a.unique("kb-twostep"))
-    ctx = user_ctx(a, w, theme, user)
-    page = a.page(ctx, "keyboard: set up two-step sign-in")
-    page._expect += [(422, "/api/auth/mfa/enable")]
-    with a.step("keyboard: set up two-step sign-in"):
-        page.goto(f"{app.base}/#settings")
-        page.wait_for_selector("#acct-mfa-start")
-        settle(page, 500)
-        page.focus("#acct-mfa-start")
-        page.keyboard.press("Enter")
-        page.wait_for_selector("#acct-mfa-on-form")
-        expect_focus(a, page, "two-step setup: focus goes to the setup heading", "acct-mfa-setup-title")
-        stops = walk(a, page, "two-step setup", until=lambda i: i["id"] == "acct-mfa-on-cancel")
-        check_order(a, page, "two-step setup", stops, ["acct-mfa-copy", "acct-mfa-on-code", "acct-mfa-on-submit", "acct-mfa-on-cancel"])
-        page.keyboard.press("Enter")  # Cancel
-        page.wait_for_selector("#acct-mfa-start")
-        expect_focus(a, page, "two-step setup: Cancel returns focus to the start button", "acct-mfa-start")
-        page.keyboard.press("Enter")
-        page.wait_for_selector("#acct-mfa-on-form")
-        secret = page.evaluate("() => document.querySelector('.mfa-secret').textContent")
-        walk(a, page, "two-step setup (again)", until=lambda i: i["id"] == "acct-mfa-on-code")
-        page.keyboard.type("123456")
-        page.keyboard.press("Enter")
-        page.wait_for_selector("#acct-mfa-on-form [aria-invalid=true], #acct-mfa-on-form .field-error")
-        expect_focus(a, page, "two-step setup: a wrong code keeps focus in the field", "acct-mfa-on-code")
-        a.check(page, "keyboard: two-step setup, wrong code")
-        page.keyboard.press("Control+a")
-        page.keyboard.type(totp(secret))
-        page.keyboard.press("Enter")
-        page.wait_for_function("() => document.querySelector('#acct-mfa-status').textContent.includes('is on')", timeout=20000)
-        expect_focus(a, page, "two-step setup: after turning on, focus is on the card's heading", "acct-mfa-heading")
-    ctx.close()
-
-
-@scenario("keyboard")
 def kb_job_status(a, w, theme):
     ctx = admin_ctx(a, w, theme)
     page = dashboard(a, ctx)
@@ -1830,23 +1381,8 @@ def kb_admin(a, w, theme):
         page.goto(f"{app.base}/admin.html")
         page.wait_for_selector("#users-grid")
         settle(page, 800)
-        stops = walk(a, page, "admin page", until=lambda i: i["id"] == "usage-title" or "Membership" in i["text"], limit=80)
-        stops = walk(a, page, "admin people table", until=lambda i: i["text"] == "Membership", limit=80)
-        for _ in range(3):  # to a second person's Membership button
-            walk(a, page, "admin people table", until=lambda i: i["text"] == "Membership", limit=40)
-        opener = focus_now(page)
-        page.evaluate("() => { window.__opener = document.activeElement; }")
-        page.keyboard.press("Enter")
-        page.wait_for_selector("#person-dialog[open]")
-        expect_focus(a, page, "membership dialog: focus goes to its heading", "person-title", in_dialog=True)
-        walk(a, page, "membership dialog", limit=60, modal=True)
-        page.keyboard.press("Shift+Tab")
-        page.keyboard.press("Escape")
-        page.wait_for_function("() => !document.querySelector(\'#person-dialog\').open")
-        back = page.evaluate("() => document.activeElement === window.__opener")
-        if not back:
-            key_problem(a, page, f"membership dialog: Escape does not return focus to the button that opened it (it is on {focus_now(page) and focus_now(page)['label']})")
-        a.check(page, "keyboard: admin, after the membership dialog closed")
+        walk(a, page, "admin page", until=lambda i: i["id"] == "usage-title" or i["text"] == "Disable", limit=80)
+        walk(a, page, "admin people table", until=lambda i: i["text"] == "Disable", limit=80)
         # a confirm dialog from a row's Disable button
         page.focus('#users-table [data-act="disable"]')
         page.evaluate("() => { window.__opener = document.activeElement; }")
@@ -1870,12 +1406,12 @@ def kb_whole_pages(a, w, theme):
     page = a.page(ctx, "keyboard: whole pages")
     pages = [("the Jobs tab", "/#jobs", ".job-card"), ("the Settings tab", "/#settings", "#export-btn"),
              ("the job page", f"/job.html?id=1&ws={a.fixtures['ws']}", "#job-company dl.profile"),
-             ("the admin page", "/admin.html", "#users-grid"), ("the billing page", "/billing.html", "#me-loading[hidden]")]
+             ("the admin page", "/admin.html", "#users-grid")]
     for name, path, ready in pages:
         with a.step(f"keyboard: Tab through {name}"):
             page.goto("about:blank")
             page.goto(app.base + path)
-            page.wait_for_selector(ready, state="attached")  # ("attached": #me-loading[hidden] is never visible)
+            page.wait_for_selector(ready, state="attached")
             settle(page, 1500)
             page.evaluate("() => { document.activeElement && document.activeElement.blur(); window.scrollTo(0, 0); }")
             walk(a, page, f"Tab through {name}", whole_page=True, limit=2500)  # (the admin page lists every account the audit made)
@@ -2064,8 +1600,7 @@ def main() -> None:
 
     sys.stdout.reconfigure(line_buffering=True)
     work = Path(tempfile.mkdtemp(prefix="jobhunt-a11y-"))
-    mail = MailCatcher()
-    apps = {"demo": App(work, "demo", demo=True, mail=mail), "empty": App(work, "empty", demo=False, mail=mail)}
+    apps = {"demo": App(work, "demo", demo=True), "empty": App(work, "empty", demo=False)}
     findings = Findings()
     code = 1
     try:
@@ -2074,7 +1609,7 @@ def main() -> None:
             app.start()
         with sync_playwright() as p:
             browser = launch_browser(p, args.chrome)
-            a = Auditor(p, browser, apps, mail, args.node_modules, findings)
+            a = Auditor(p, browser, apps, args.node_modules, findings)
             a.best_practice = args.best_practice
             setup(a)
             for group in wanted:
@@ -2100,7 +1635,6 @@ def main() -> None:
     finally:
         for app in apps.values():
             app.stop()
-        mail.stop()
         if args.keep:
             print(f"Kept {work}")
         else:
@@ -2123,7 +1657,7 @@ def launch_browser(p, chrome: Path | None):
     return p.chromium.launch(executable_path=str(chrome))
 
 
-def new_account(a: Auditor, name: str, *, onboarding: bool = False, mfa: bool = False, background: bool = False) -> dict:
+def new_account(a: Auditor, name: str, *, onboarding: bool = False, background: bool = False) -> dict:
     """Signs up a fictional person through the app's own sign-up (the mode is open), and sets the account up."""
     demo = a.apps["demo"]
     email = f"{name}@example.invalid"
@@ -2138,22 +1672,7 @@ def new_account(a: Auditor, name: str, *, onboarding: bool = False, mfa: bool = 
         api.call("PUT", "/api/account/onboarding", {"done": True})
     if background:
         api.call("POST", "/api/account/background", {"enabled": True})
-    if mfa:
-        setup_ = api.call("POST", "/api/auth/mfa/setup", {})
-        user["secret"] = setup_["secret"]
-        api.call("POST", "/api/auth/mfa/enable", {"code": totp(setup_["secret"])})
     return user
-
-
-def mint_unsubscribe_token(app: App) -> str:
-    """The signed token in a digest email's unsubscribe link, made with the app's own key file."""
-    code = ("from backend import users\nfrom backend.db import SessionLocal, EmailPrefs\nusers.startup()\n"
-            "row = SessionLocal().query(EmailPrefs).order_by(EmailPrefs.user_id).first()\n"
-            "print(users.server_keys().sign('unsub', row.unsubscribe_id))")
-    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=app.env(), capture_output=True, text=True, timeout=60)
-    if out.returncode:
-        raise RuntimeError(f"could not make an unsubscribe token: {out.stderr[-300:]}")
-    return out.stdout.strip().splitlines()[-1]
 
 
 def plant_ghost_signs(app: App) -> None:
@@ -2186,16 +1705,10 @@ def setup(a: Auditor) -> None:
     a.fixtures["ws"] = ws["id"]
     a.fixtures["empty_ws"] = admin.call("POST", "/api/workspaces", {"name": "Empty audit workspace"})["id"]
     a.fixtures["admin"] = admin
-    a.fixtures["mfa"] = new_account(a, "mfa-user", mfa=True)
-    a.fixtures["keeps"] = new_account(a, "keeps-data", background=True)
-    a.fixtures["wipes"] = new_account(a, "wipes-data")
     a.fixtures["fresh"] = new_account(a, "fresh-codes")
     a.fixtures["wizard"] = new_account(a, "wizard", onboarding=True)
-    # A digest subscription, for the unsubscribe page
-    Api(a.pw, demo, DEMO_EMAIL, DEMO_PASSWORD).call("PUT", "/api/account/digest", {"enabled": True})
-    # (the key file is locked while the app runs: stop it for a moment, make the token, start it on the same database)
+    # (the key file is locked while the app runs: stop it for a moment, plant the signs, start it on the same database)
     demo.stop()
-    a.fixtures["unsub_token"] = mint_unsubscribe_token(demo)
     plant_ghost_signs(demo)
     demo.start(fresh=False)
 

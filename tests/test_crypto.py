@@ -626,13 +626,13 @@ class KekTest(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp(dir=_TMP))
         self.path = self.dir / "server-keys.json"
         self.keys = keys.ServerKeys.create(self.path)
-        # a stand-in for user_keys.server_wrapped_dek and users.totp_secret_enc: ref -> (label, blob)
+        # a stand-in for user_keys.server_wrapped_dek and another server-wrapped value: ref -> (label, blob)
         self.secrets = {}
         self.db = {}
         for uid in range(1, 6):
             self.secrets[("srv", uid)] = crypto.new_key()
-            self.secrets[("totp", uid)] = os.urandom(20)
-            for kind in ("srv", "totp"):
+            self.secrets[("other", uid)] = os.urandom(20)
+            for kind in ("srv", "other"):
                 kek_id, blob = self.keys.kek_wrap(self.secrets[(kind, uid)], f"{kind}|{uid}")
                 self.db[(kind, uid)] = (f"{kind}|{uid}", blob, kek_id)
 
@@ -679,10 +679,10 @@ class KekTest(unittest.TestCase):
         self.assertTrue(k.kek_rotation_pending)
         self.assertEqual(k.current_kek_id, "k2")
         self.assert_all_open(k)  # old wraps still open
-        kek_id, blob = k.kek_wrap(b"new while rotating", "totp|9")  # new wraps use the new key
+        kek_id, blob = k.kek_wrap(b"new while rotating", "other|9")  # new wraps use the new key
         self.assertEqual(kek_id, "k2")
-        self.db[("totp", 9)] = ("totp|9", blob, kek_id)
-        self.secrets[("totp", 9)] = b"new while rotating"
+        self.db[("other", 9)] = ("other|9", blob, kek_id)
+        self.secrets[("other", 9)] = b"new while rotating"
         self.assertEqual(k.finish_kek_rotation(self.rows, self.store), 10)  # start-up resumes
         self.assertEqual(keys.ServerKeys.load(self.path).kek_ids, ["k2"])
         self.assert_all_open(keys.ServerKeys.load(self.path))

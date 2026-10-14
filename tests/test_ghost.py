@@ -1,6 +1,6 @@
 """Ghost-job signs (backend/ghost.py, docs/design/ghost-jobs.md): each signal on planted postings with its edge
-cases, the levels, the scorer's ghost_signs (shared for a public ad, private for an uploaded one), the job JSON, the
-digest line and the export section, and that no statement filters, sorts or groups on a sealed column. The network
+cases, the levels, the scorer's ghost_signs (shared for a public ad, private for an uploaded one), the job JSON and
+the export section, and that no statement filters, sorts or groups on a sealed column. The network
 and the LLM are mocked throughout.
 
 Run:  python3 -m unittest tests.test_ghost -v
@@ -23,7 +23,7 @@ from tests import helpers  # noqa: E402  (signed-in clients; sets the test envir
 
 from sqlalchemy import event  # noqa: E402
 
-from backend import crypto, digest, email_templates, ghost, pool, scorer  # noqa: E402
+from backend import crypto, ghost, pool, scorer  # noqa: E402
 from backend.adapters.base import Adapter, Posting as Scraped  # noqa: E402
 from backend.db import CompanyProfile, FitResult, Job, Posting, SessionLocal, engine, init_db  # noqa: E402
 from backend.scraping.text import description_hash  # noqa: E402
@@ -1230,50 +1230,8 @@ class JobJsonTest(unittest.TestCase, Plant):
 
 
 # ---------------------------------------------------------------------------
-# Digest and export
+# Export
 # ---------------------------------------------------------------------------
-
-class DigestCardTest(unittest.TestCase):
-    JOB = {"id": 9, "title": "Project Manager", "company": "Acme", "url": "https://ads.example/9"}
-
-    def test_a_flagged_job_gets_one_line(self):
-        card = email_templates.digest_card({**self.JOB, "ghost_reason": "Open for 74 days"}, "https://jobs.example.com")
-        self.assertEqual(card["ghost"], "Possible ghost job: Open for 74 days")
-        self.assertIsNone(email_templates.digest_card(self.JOB, "https://jobs.example.com")["ghost"])
-        self.assertIsNone(email_templates.digest_card({**self.JOB, "ghost_reason": "  "}, "https://jobs.example.com")["ghost"])
-
-    def test_the_line_is_in_both_parts_and_escaped(self):
-        from backend.keys import ServerKeys
-        import tempfile
-
-        keys = ServerKeys.create(os.path.join(tempfile.mkdtemp(), "server-keys.json"))
-        jobs = [{**self.JOB, "ghost_reason": 'Mentions "talent <b>pool</b>"'}, {**self.JOB, "id": 10, "title": "Other"}]
-        _, text, html, _ = email_templates.job_digest(jobs, keys=keys, unsubscribe_id="u1", base_url="https://jobs.example.com")
-        self.assertEqual(text.count("Possible ghost job:"), 1)
-        self.assertEqual(html.count("Possible ghost job:"), 1)
-        self.assertIn('Possible ghost job: Mentions "talent <b>pool</b>"', text)
-        self.assertIn("Possible ghost job: Mentions &quot;talent &lt;b&gt;pool&lt;/b&gt;&quot;", html)
-        self.assertNotIn("<b>pool", html)
-
-
-class DigestFlowTest(unittest.TestCase, Plant):
-    def test_cards_carry_the_first_reason_of_a_flagged_job_only(self):
-        acct = helpers.make_user()
-        with helpers.as_account(acct):
-            db = SessionLocal()
-            try:
-                flagged = self.posting(db, unique("Cardco"), "Project Manager", first=0, text="Join our talent pool. " + AD)
-                plain = self.posting(db, unique("Cardco"), "Quiet Analyst", first=0)
-                jobs = [self.job(db, acct.workspace_id, p) for p in (flagged, plain)]
-                db.commit()
-                cards, more = digest.cards(db, jobs)
-            finally:
-                db.close()
-        reasons = {c["id"]: c["ghost_reason"] for c in cards}
-        self.assertEqual(reasons[jobs[0].id], 'Mentions "talent pool"')
-        self.assertIsNone(reasons[jobs[1].id])
-        self.assertEqual(more, 0)
-
 
 class ExportTest(unittest.TestCase, Plant):
     def test_a_flagged_job_has_a_section_and_a_column(self):

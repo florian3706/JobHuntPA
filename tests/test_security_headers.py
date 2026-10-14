@@ -3,8 +3,7 @@
 * Every page's inline script has its hash in the Content-Security-Policy; no page or script-built markup uses an inline
   event handler, a ``javascript:`` URL, a ``style`` attribute or a ``<style>`` element; everything a page loads from
   another site is in the policy.
-* Each header is on a page, a static file, an /api answer, an error answer, the unsubscribe page (which keeps its own
-  stricter policy) and an unexpected 500.
+* Each header is on a page, a static file, an /api answer, an error answer and an unexpected 500.
 * A request for a Host that isn't allowed gets 400 before anything else runs.
 
 No browser is needed. (The policy was also loaded in Chromium over every page, in two themes, when it was written,
@@ -51,7 +50,7 @@ def directive(policy: str, name: str) -> list[str]:
 
 class Policy(unittest.TestCase):
     def test_there_are_pages(self):
-        self.assertGreaterEqual(len(PAGES), 11)
+        self.assertGreaterEqual(len(PAGES), 8)
         self.assertIn("login.html", [p.name for p in PAGES])
 
     def test_every_inline_script_has_its_hash(self):
@@ -127,10 +126,9 @@ class Policy(unittest.TestCase):
         tiles = set(re.findall(r"https://\{s\}\.(tile\.[a-z.]+)/", everything))
         self.assertEqual(tiles, {"tile.openstreetmap.org"})
         self.assertIn("https://*.tile.openstreetmap.org", images)
-        # Nothing the pages fetch is outside this site; Stripe Checkout is a redirect, not a request or a form.
+        # Nothing the pages fetch is outside this site.
         self.assertNotRegex(everything, r"""fetch\(\s*[`'"]https?:""")
         self.assertNotRegex(everything, r"XMLHttpRequest|WebSocket|EventSource|sendBeacon")
-        self.assertRegex((FRONTEND_DIR / "billing.js").read_text(encoding="utf-8"), r"location\.assign\(r\.url\)")
         self.assertNotIn("stripe", POLICY.lower())
 
     def test_the_map_tiles_say_which_site_they_are_for(self):
@@ -215,16 +213,6 @@ class Headers(unittest.TestCase):
         r = self.client().get("/", headers={"Host": "evil.example"})
         self.assertEqual(r.status_code, 400)
         self.assertHeaders(r, "bad host")
-
-    def test_the_unsubscribe_page_keeps_its_own_policy(self):
-        r = self.client().get("/unsubscribe?token=nonsense")
-        self.assertEqual(r.status_code, 410)
-        self.assertTrue(r.headers["content-security-policy"].startswith("default-src 'none'"))
-        self.assertEqual(r.headers["referrer-policy"], "no-referrer")
-        self.assertEqual(r.headers["x-content-type-options"], "nosniff")
-        self.assertEqual(r.headers["permissions-policy"], security_headers.PERMISSIONS_POLICY)
-        r = self.client().post("/unsubscribe?token=nonsense")
-        self.assertTrue(r.headers["content-security-policy"].startswith("default-src 'none'"))
 
     def test_an_unexpected_error_has_them_too(self):
         small = FastAPI()
@@ -354,7 +342,7 @@ class Guard(unittest.TestCase):
             self.assertEqual((r.status_code, r.json()), (200, {"ok": True}), base)
             self.assertEqual(self.client(base).get("/login.html").status_code, 200, base)
         for base in ("http://evil.example", "http://127.0.0.1.evil.example:8040", "https://localhost.evil.example"):
-            for path in ("/api/health", "/login.html", "/", "/styles.css", "/api/jobs", "/unsubscribe?token=x"):
+            for path in ("/api/health", "/login.html", "/", "/styles.css", "/api/jobs"):
                 r = self.client(base).get(path)
                 self.assertEqual(r.status_code, 400, (base, path))
                 self.assertEqual(r.headers["content-type"], "text/plain; charset=utf-8")
@@ -376,7 +364,6 @@ class Guard(unittest.TestCase):
             r = c.post("/api/auth/login", json={"email": "a@example.invalid", "password": "x" * 12})
             self.assertEqual(r.status_code, 400)
         self.assertEqual(c.post("/api/search/run").status_code, 400)  # (not 403 bad_origin, not 401)
-        self.assertEqual(c.post("/api/billing/webhook", content=b"{}").status_code, 400)
         self.assertEqual(c.get("/api/auth/me", headers={"Origin": "http://evil.example"}).status_code, 400)
         # ... and none of it counted against a real sign-in from a good address.
         good = self.client("http://127.0.0.1:8123")
@@ -392,9 +379,7 @@ class Guard(unittest.TestCase):
         for i in range(14):
             headers = {"Origin": "http://evil.example:8123", "X-Forwarded-For": f"203.0.113.{i}"}
             for path, payload in (("/api/auth/login", body), ("/api/auth/recover", {**body, "recovery_code": "x"}),
-                                  ("/api/auth/signup", body), ("/api/auth/forgot", {"email": body["email"]}),
-                                  ("/api/auth/reset", {"token": "x", "new_password": "x" * 12}),
-                                  ("/api/auth/first-run", {"token": "x", **body})):
+                                  ("/api/auth/signup", body), ("/api/auth/first-run", {"token": "x", **body})):
                 r = c.post(path, json=payload, headers=headers)
                 self.assertEqual(r.status_code, 400, (path, i, r.text))
         self.assertEqual(ratelimit.AUTH.hit("testclient"), None)  # nothing was counted for anyone

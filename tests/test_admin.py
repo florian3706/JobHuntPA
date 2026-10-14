@@ -15,7 +15,7 @@ import tempfile
 import threading
 import types
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from unittest import mock
 
 from tests import helpers  # noqa: E402  (sets the test environment first)
@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from backend import admin, admin_key, crypto, docs, key_rotation, keys, llm_providers, migrate_encryption, ratelimit  # noqa: E402
-from backend import tokens, totp, users  # noqa: E402
+from backend import tokens, users  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import (  # noqa: E402
     DB_PATH,
@@ -36,8 +36,6 @@ from backend.db import (  # noqa: E402
     Document,
     Job,
     LlmUsage,
-    Membership,
-    MembershipGrant,
     SearchRun,
     SessionLocal,
     User,
@@ -195,21 +193,15 @@ class UsersTest(AdminTestCase):
         bob = helpers.make_user(name="Bob Example")
         background = users.create_user(f"bg-{os.getpid()}@example.invalid", PASSWORD, name="Back Ground",
                                        background=True)
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE users SET mfa_enabled = 1 WHERE id = :i"), {"i": bob.id})
-            conn.execute(text("UPDATE memberships SET exempt = 1, free_searches_used = 2, stripe_status = 'active', "
-                              "plan = 'monthly' WHERE user_id = :i"), {"i": bob.id})
         out = c.get("/api/admin/users").json()
         self.assertTrue(out["admin_key_available"])
         row = next(u for u in out["users"] if u["id"] == bob.id)
         self.assertEqual((row["email"], row["name"], row["role"], row["status"]), (bob.email, "Bob Example", "user", "active"))
         self.assertTrue(row["details_available"])
         self.assertIsNone(row["details_note"])
-        self.assertEqual((row["mfa"], row["background"], row["workspaces"]), (True, False, 1))
-        self.assertEqual(row["membership"]["exempt"], True)
-        self.assertEqual(row["membership"]["free_searches_used"], 2)
-        self.assertEqual((row["membership"]["stripe_status"], row["membership"]["plan"]), ("active", "monthly"))
-        self.assertEqual(row["membership"]["active_grants"], 0)
+        self.assertEqual((row["background"], row["workspaces"]), (False, 1))
+        for gone in ("mfa", "membership", "email_verified"):  # features that were taken out
+            self.assertNotIn(gone, row)
         self.assertTrue(row["created_at"].endswith("Z"))
         self.assertNotIn("admin_key_shared", row)
         self.assertTrue(next(u for u in out["users"] if u["id"] == background.user_id)["background"])
@@ -232,8 +224,7 @@ class UsersTest(AdminTestCase):
     def test_unknown_person_is_404(self):
         c = self.signed_in()
         for method, path, body in (("post", "/api/admin/users/999999/disable", None),
-                                   ("put", "/api/admin/users/999999/membership", {"exempt": True}),
-                                   ("post", "/api/admin/users/999999/mfa/disable", None)):
+                                   ("post", "/api/admin/users/999999/regrant", None)):
             r = getattr(c, method)(path, **({"json": body} if body else {}))
             self.assertEqual((r.status_code, r.json()["code"]), (404, "not_found"), path)
 
@@ -262,11 +253,7 @@ class NoContentTest(AdminTestCase):
         calls = [("get", "/api/admin/stats", None), ("get", "/api/admin/users", None), ("get", "/api/admin/signup", None),
                  ("get", "/api/admin/invites", None), ("get", "/api/admin/audit", None),
                  ("get", "/api/admin/plaintext-audit", None),
-                 ("put", f"/api/admin/users/{bob.id}/membership", {"exempt": True}),
-                 ("post", f"/api/admin/users/{bob.id}/grants", {"kind": "free_period", "days": 3, "note": "thanks"}),
                  ("post", f"/api/admin/users/{bob.id}/disable", None), ("post", f"/api/admin/users/{bob.id}/enable", None),
-                 ("post", f"/api/admin/users/{bob.id}/mfa/disable", None),
-                 ("post", f"/api/admin/users/{bob.id}/reset-email", None),
                  ("post", f"/api/admin/users/{bob.id}/regrant", None),
                  ("post", f"/api/admin/users/{bob.id}/role", {"role": "user"}),
                  ("post", "/api/admin/invites", {"email": "someone@example.invalid"}), ("get", "/api/admin/audit", None)]
@@ -321,17 +308,10 @@ class RoleTest(AdminTestCase):
         version = apk_version()
         self.assertEqual(db_rows(lambda s: s.get(AdminKeyGrant, carol.id).apk_version), version)
         self.assertEqual(self.read_as(carol)[bob.id], bob.email)   # Carol reads with her own grant
-        # Something sealed to the key in each place: a note, an audit detail, billing details.
-        self.assertEqual(c.post(f"/api/admin/users/{bob.id}/grants", json={"kind": "manual", "days": 5,
-                                                                          "note": "before rotation"}).status_code, 201)
+        # Something sealed to the key besides the details: an audit entry's detail (the invitation's address).
+        self.assertEqual(c.post("/api/admin/invites", json={"email": "before-rotation@example.invalid"}).status_code, 201)
         with helpers.as_admin():
-            apk_public = admin_key.current_public(SessionLocal())[0]
-        db = SessionLocal()
-        membership = db.get(Membership, bob.id)
-        membership.billing_admin = admin_key.seal_json(apk_public, {"last4": "4242"}, admin_key.billing_label(bob.id))
-        db.commit()
-        db.close()
-        old_public = apk_public
+            old_public = admin_key.current_public(SessionLocal())[0]
         r = c.post(f"/api/admin/users/{carol.id}/role", json={"role": "user"})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertTrue(r.json()["apk_rotated"])
@@ -344,19 +324,12 @@ class RoleTest(AdminTestCase):
             self.assertEqual(carol_client.get("/api/admin/users").status_code, 403)
         row = self.user_row(c, bob.id)
         self.assertEqual((row["email"], row["name"]), (bob.email, "Bob"))
-        self.assertEqual(row["membership"]["grants"][0]["note"], "before rotation")
         self.assertEqual(db_rows(lambda s: s.get(User, bob.id).pii_admin_version), version + 1)
-
-        # (the new private key is reachable only through an admin's own grant: do what a request does)
-        with helpers.as_admin():
-            s = SessionLocal()
-            apk = admin_key.open_apk(s, self.admin_id)
-            self.assertEqual(admin_key.open_json(apk, s.get(Membership, bob.id).billing_admin,
-                                                 admin_key.billing_label(bob.id)), {"last4": "4242"})
-            s.close()
         mine = [e for e in c.get("/api/admin/audit").json()["entries"] if e["id"] > first_entry]
         self.assertIn("role_changed", [e["action"] for e in mine])  # entries made before the rotation still open
         self.assertTrue(all(e["detail"] is not None for e in mine))
+        invited = next(e for e in mine if e["action"] == "invite_created")
+        self.assertEqual(invited["detail"]["email"], "before-rotation@example.invalid")
         self.assertGreaterEqual(len(mine), 3)
 
     def test_a_failed_demotion_changes_nothing(self):
@@ -413,8 +386,7 @@ class RoleTest(AdminTestCase):
         r = c.post(f"/api/admin/users/{bob.id}/role", json={"role": "admin"})
         self.assertEqual((r.status_code, r.json()["code"]), (403, "reauth_required"))
         self.assertEqual(db_rows(lambda s: s.get(User, bob.id).role), "user")
-        for path in (f"/api/admin/users/{bob.id}/regrant", f"/api/admin/users/{bob.id}/mfa/disable",
-                     "/api/admin/keys/rotate", "/api/admin/plaintext-files/delete"):
+        for path in (f"/api/admin/users/{bob.id}/regrant", "/api/admin/keys/rotate", "/api/admin/plaintext-files/delete"):
             r = c.post(path)
             self.assertEqual((r.status_code, r.json()["code"]), (403, "reauth_required"), path)
 
@@ -515,79 +487,6 @@ class AccountActionsTest(AdminTestCase):
         self.assertEqual(c.post(f"/api/admin/users/{bob.id}/enable").json()["user"]["status"], "active")
         self.assertEqual(self.anonymous().post("/api/auth/login", json={"email": bob.email, "password": bob.password}).status_code, 200)
 
-    def test_mfa_off_clears_the_secrets_and_signs_them_out(self):
-        c = self.signed_in()
-        bob = helpers.make_user()
-        b = self.signed_in(bob)  # (signing in with two-step on arrives with Phase E)
-        server = users.server_keys()
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE users SET mfa_enabled = 1, totp_secret_enc = :s, totp_pending_enc = :p, "
-                              "totp_last_step = 77 WHERE id = :i"),
-                         {"s": server.kek_wrap(b"s" * 20, f"totp|{bob.id}")[1], "p": server.kek_wrap(b"p" * 20, f"totp|{bob.id}")[1],
-                          "i": bob.id})
-        with mock.patch.object(admin, "notify_mfa_disabled", return_value=False) as notice:
-            r = c.post(f"/api/admin/users/{bob.id}/mfa/disable")
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual((r.json()["user"]["mfa"], r.json()["notice_sent"]), (False, False))
-        notice.assert_called_once()  # the call point Phase H fills in
-        row = db_rows(lambda s: s.get(User, bob.id))
-        self.assertEqual((row.mfa_enabled, row.totp_secret_enc, row.totp_pending_enc, row.totp_last_step),
-                         (False, None, None, None))
-        self.assertEqual(b.get("/api/auth/me").status_code, 401)
-        self.assertEqual(c.post(f"/api/admin/users/{self.admin_id}/mfa/disable").json()["code"], "self")
-
-    def test_reset_email_waits_for_email(self):
-        c = self.signed_in()
-        bob = helpers.make_user()
-        r = c.post(f"/api/admin/users/{bob.id}/reset-email")
-        self.assertEqual((r.status_code, r.json()["code"]), (409, "email_not_set_up"))
-        self.assertTrue(r.json()["detail"].startswith("Email isn't set up yet"))
-
-
-class MembershipTest(AdminTestCase):
-    def test_exempt_free_searches_and_grants_are_stored_with_sealed_notes(self):
-        c = self.signed_in()
-        bob = helpers.make_user()
-        r = c.put(f"/api/admin/users/{bob.id}/membership", json={"exempt": True, "free_searches_used": 3})
-        m = r.json()["user"]["membership"]
-        self.assertEqual((m["exempt"], m["free_searches_used"]), (True, 3))
-        self.assertEqual(c.put(f"/api/admin/users/{bob.id}/membership", json={}).status_code, 422)
-        self.assertEqual(c.put(f"/api/admin/users/{bob.id}/membership", json={"free_searches_used": -1}).status_code, 422)
-        r = c.post(f"/api/admin/users/{bob.id}/grants", json={"kind": "free_period", "days": 14, "note": "launch gift"})
-        self.assertEqual(r.status_code, 201, r.text)
-        grant = r.json()["grant"]
-        self.assertEqual((grant["kind"], grant["note"], grant["active"]), ("free_period", "launch gift", True))
-        raw = db_rows(lambda s: s.get(MembershipGrant, grant["id"]).note_admin)
-        self.assertNotIn(b"launch gift", raw)  # sealed to the admin key
-        start = datetime.fromisoformat(grant["starts_at"][:-1])
-        end = datetime.fromisoformat(grant["ends_at"][:-1])
-        self.assertEqual((end - start).days, 14)
-        # Dates; a bad period; both end and days; neither.
-        r = c.post(f"/api/admin/users/{bob.id}/grants", json={"kind": "manual", "starts_at": "2030-01-01",
-                                                              "ends_at": "2030-02-01T00:00:00Z"})
-        self.assertEqual(r.status_code, 201, r.text)
-        self.assertFalse(r.json()["grant"]["active"])
-        for body in ({"kind": "manual", "starts_at": "2030-02-01", "ends_at": "2030-01-01"},
-                     {"kind": "manual", "days": 3, "ends_at": "2031-01-01"}, {"kind": "manual"},
-                     {"kind": "manual", "days": 3, "ends_at": "garbage"}, {"kind": "other", "days": 3}):
-            self.assertEqual(c.post(f"/api/admin/users/{bob.id}/grants", json=body).status_code, 422, body)
-        # Change, end, and the history stays.
-        gid = grant["id"]
-        r = c.patch(f"/api/admin/users/{bob.id}/grants/{gid}", json={"days": 30, "note": "extended"})
-        self.assertEqual((r.json()["grant"]["note"],), ("extended",))
-        self.assertEqual((datetime.fromisoformat(r.json()["grant"]["ends_at"][:-1]) - start).days, 30)
-        self.assertEqual(c.patch(f"/api/admin/users/{bob.id}/grants/{gid}", json={"note": ""}).json()["grant"]["note"], None)
-        r = c.delete(f"/api/admin/users/{bob.id}/grants/{gid}")
-        self.assertEqual((r.json()["grant"]["active"], r.json()["grant"]["revoked_at"] is not None), (False, True))
-        self.assertEqual(c.patch(f"/api/admin/users/{bob.id}/grants/{gid}", json={"days": 3}).status_code, 409)
-        other = helpers.make_user()  # a grant belongs to the person in the path
-        self.assertEqual(c.delete(f"/api/admin/users/{other.id}/grants/{gid}").status_code, 404)
-        shown = self.user_row(c, bob.id)["membership"]
-        self.assertEqual(shown["active_grants"], 0)
-        self.assertEqual(len(shown["grants"]), 2)
-        self.assertEqual(db_rows(lambda s: s.query(MembershipGrant).filter(MembershipGrant.user_id == bob.id).count()), 2)
-
-
 class UpgradeTest(unittest.TestCase):
     def test_an_older_database_gets_the_usage_user_column(self):
         out = helpers.scenario("""
@@ -626,7 +525,7 @@ class NonAdminTest(AdminTestCase):
                 r = b.request(method, path, json={})
                 self.assertEqual(r.status_code, 403, f"{method} {path}: {r.text}")
                 self.assertEqual(anonymous.request(method, path, json={}).status_code, 401, f"{method} {path}")
-        self.assertGreaterEqual(seen, 20)
+        self.assertGreaterEqual(seen, 15)
         # And the state didn't change: the first admin is still an admin, with their grant.
         self.assertEqual(db_rows(lambda s: s.get(User, self.admin_id).role), "admin")
 
@@ -646,11 +545,10 @@ class SignupTest(AdminTestCase):
         super().setUp()
         self.addCleanup(self.set_mode, "invite")
 
-    def set_mode(self, mode: str, free: int | None = None) -> None:
+    def set_mode(self, mode: str) -> None:
         c = helpers.client()
         with c:
-            body = {"mode": mode} if free is None else {"mode": mode, "free_searches": free}
-            self.assertEqual(c.put("/api/admin/signup", json=body).status_code, 200)
+            self.assertEqual(c.put("/api/admin/signup", json={"mode": mode}).status_code, 200)
 
     def new_email(self) -> str:
         return f"signup-{os.urandom(4).hex()}@example.invalid"
@@ -661,14 +559,14 @@ class SignupTest(AdminTestCase):
 
     def test_settings_default_to_invite_and_are_validated_and_audited(self):
         c = self.signed_in()
-        self.assertEqual(c.get("/api/admin/signup").json(), {"mode": "invite", "free_searches": 3})
-        self.assertEqual(c.put("/api/admin/signup", json={"mode": "open", "free_searches": 5}).json(),
-                         {"mode": "open", "free_searches": 5})
-        for body in ({}, {"mode": "wide open"}, {"free_searches": -1}, {"free_searches": 10_000}, {"mode": "open", "x": 1}):
+        self.assertEqual(c.get("/api/admin/signup").json(), {"mode": "invite"})
+        self.assertEqual(c.put("/api/admin/signup", json={"mode": "open"}).json(), {"mode": "open"})
+        for body in ({}, {"mode": "wide open"}, {"free_searches": 3}, {"mode": "open", "free_searches": 3},
+                     {"mode": "open", "x": 1}):
             self.assertEqual(c.put("/api/admin/signup", json=body).status_code, 422, body)
         self.assertEqual(c.get("/api/admin/signup").json()["mode"], "open")
         self.assertIn("signup_changed", [e["action"] for e in c.get("/api/admin/audit").json()["entries"]])
-        self.set_mode("invite", 3)
+        self.set_mode("invite")
 
     def test_state_reports_the_mode_and_whether_an_invite_works(self):
         anon = self.anonymous()
@@ -713,7 +611,7 @@ class SignupTest(AdminTestCase):
         self.assertEqual(len(me["workspaces"]), 1)
         self.assertFalse(me["features"]["admin_panel"])
         created = db_rows(lambda s: s.get(User, me["user"]["id"]))
-        self.assertEqual((created.created_via, created.email_verified), ("invite", False))
+        self.assertEqual(created.created_via, "invite")
         self.assertEqual(db_rows(lambda s: s.get(User, me["user"]["id"]).pii_admin_version), apk_version())
         # Used up.
         again = self.sign_up(self.anonymous(), invite=token)
@@ -722,17 +620,6 @@ class SignupTest(AdminTestCase):
         self.assertEqual((row["status"], row["used_by"]), ("used", me["user"]["id"]))
         # The admin sees the new person with their details.
         self.assertEqual(self.user_row(admin_client, me["user"]["id"])["email"], email)
-
-    def test_an_invitation_that_was_not_emailed_does_not_make_the_address_verified(self):
-        """Email is off here, so the admin copied the link and sent it some other way (a mistyped address would be
-        "verified" just the same): the mailbox has proved nothing. Emailed invitations: tests/test_email_accounts.py."""
-        c = self.signed_in()
-        email = self.new_email()
-        invite = c.post("/api/admin/invites", json={"email": email}).json()
-        self.assertEqual((invite["emailed"], invite["email_status"]), (False, "not_set_up"))
-        r = self.sign_up(self.anonymous(), email=email.upper(), invite=invite["link"].split("invite=")[1])
-        self.assertEqual(r.status_code, 201, r.text)
-        self.assertFalse(db_rows(lambda s: users.find_by_email(s, email).email_verified))
 
     def test_expired_and_cancelled_invitations_are_refused_and_a_failed_signup_keeps_the_invite(self):
         c = self.signed_in()
@@ -755,7 +642,7 @@ class SignupTest(AdminTestCase):
         taken = helpers.make_user()
         r = self.sign_up(anon, invite=fresh, email=taken.email)
         self.assertEqual((r.status_code, r.json()["code"], r.json()["field"]), (409, "email_taken", "email"))
-        self.assertEqual(r.json()["detail"], "An account with this email already exists. Sign in or reset your password.")
+        self.assertEqual(r.json()["detail"], "An account with this email already exists. Sign in instead.")
         self.assertEqual(self.sign_up(anon, invite=fresh).status_code, 201)
 
     def test_open_mode_needs_no_invitation_and_closed_mode_allows_nobody(self):
@@ -802,8 +689,11 @@ class SignupTest(AdminTestCase):
 
     def test_audit_log_keeps_sealed_details_for_admins(self):
         c = self.signed_in()
+        for n in range(4):  # older entries, so there is a page of five
+            self.assertEqual(c.post("/api/admin/invites", json={}).status_code, 201)
         c.post("/api/admin/invites", json={"email": "audit-me@example.invalid"})
-        raw = db_rows(lambda s: [bytes(r.detail_admin) for r in s.query(AdminAudit).filter(AdminAudit.action == "invite_created")])
+        raw = db_rows(lambda s: [bytes(r.detail_admin) for r in s.query(AdminAudit).filter(AdminAudit.action == "invite_created")
+                                 if r.detail_admin is not None])  # (a replaced admin key drops what it can't open)
         self.assertTrue(raw)
         self.assertTrue(all(b"audit-me" not in blob for blob in raw))
         out = c.get("/api/admin/audit?limit=5").json()
@@ -814,8 +704,8 @@ class SignupTest(AdminTestCase):
         self.assertEqual(len(out["entries"]), 5)
         older = c.get(f"/api/admin/audit?limit=2&before_id={first['id']}").json()
         self.assertTrue(all(e["id"] < first["id"] for e in older["entries"]))
-        listed = next(i for i in c.get("/api/admin/invites").json()["invites"] if i["status"] == "pending")
-        self.assertEqual(listed["email"], "audit-me@example.invalid")
+        listed = c.get("/api/admin/invites").json()["invites"][0]  # newest first
+        self.assertEqual((listed["status"], listed["email"]), ("pending", "audit-me@example.invalid"))
 
 
 # ---------------------------------------------------------------------------
@@ -874,27 +764,17 @@ class KekRotationTest(AdminTestCase):
         c = self.signed_in()
         a, b = self.background_user(), self.background_user()
         server = users.server_keys()
-        plain = helpers.make_user()
-        secret, pending = b"S" * 20, b"P" * 20
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE users SET totp_secret_enc = :s, totp_pending_enc = :p WHERE id = :i"),
-                         {"s": server.kek_wrap(secret, f"totp|{plain.id}")[1], "p": server.kek_wrap(pending, f"totp|{plain.id}")[1],
-                          "i": plain.id})
         old_id = server.current_kek_id
         r = c.post("/api/admin/keys/rotate")
         self.assertEqual(r.status_code, 200, r.text)
         new_id = r.json()["key"]
         self.assertNotEqual(new_id, old_id)
-        self.assertGreaterEqual(r.json()["rewrapped"], 4)
+        self.assertGreaterEqual(r.json()["rewrapped"], 2)
         self.assertEqual(users.server_keys().kek_ids, [new_id])  # the old key is gone from the file
         self.assertEqual(keys.ServerKeys.load().kek_ids, [new_id])
         for acct in (a, b):
             self.assertEqual(self.kek_ids(acct.user_id), (new_id, new_id))
             self.assertEqual(db_rows(lambda s: users.background_key(s, acct.user_id)), acct.dek)
-        row = db_rows(lambda s: s.get(User, plain.id))
-        self.assertEqual(server.kek_unwrap(row.totp_secret_enc, f"totp|{plain.id}"), secret)
-        self.assertEqual(server.kek_unwrap(row.totp_pending_enc, f"totp|{plain.id}"), pending)
-        self.assertEqual(server.kek_id_of(row.totp_secret_enc), new_id)
         self.assertIn("server_key_rotated", [e["action"] for e in c.get("/api/admin/audit").json()["entries"]])
 
     def test_rows_still_under_the_old_key_after_a_crash_are_rewrapped_at_startup(self):
@@ -929,19 +809,19 @@ class KekRotationTest(AdminTestCase):
 
     def test_a_wrap_not_yet_committed_holds_the_rotation_back(self):
         """A wrap made before a rotation but committed after it would sit under a dropped key for good."""
-        plain = helpers.make_user()
+        a = users.create_user(f"wrap-{os.urandom(4).hex()}@example.invalid", PASSWORD)
         server = users.server_keys()
-        secret = "JBSWY3DPEHPK3PXP"
         wrapped, release, result = threading.Event(), threading.Event(), {}
 
-        def writer():  # what users.enable_totp does
+        def writer():  # what users.enable_background does
             db = SessionLocal()
             try:
                 with server.wrapping():
-                    blob = users.seal_totp(plain.id, secret)
+                    kek_id, blob = server.kek_wrap(a.dek, f"srv|{a.user_id}")
                     wrapped.set()
                     release.wait(10)
-                    db.query(User).filter(User.id == plain.id).update({User.totp_secret_enc: blob})
+                    db.query(UserKeys).filter(UserKeys.user_id == a.user_id).update(
+                        {UserKeys.server_wrapped_dek: blob, UserKeys.server_kek_id: kek_id})
                     db.commit()
             finally:
                 db.close()
@@ -960,8 +840,8 @@ class KekRotationTest(AdminTestCase):
         w.join(10)
         r.join(30)
         self.assertEqual(server.kek_ids, [server.current_kek_id])
-        blob = db_rows(lambda s: bytes(s.get(User, plain.id).totp_secret_enc))
-        self.assertEqual(users.open_totp(plain.id, blob), secret)
+        blob = db_rows(lambda s: bytes(s.get(UserKeys, a.user_id).server_wrapped_dek))
+        self.assertEqual(server.kek_unwrap(blob, f"srv|{a.user_id}"), a.dek)
         self.assertEqual(server.kek_id_of(blob), server.current_kek_id)
 
     def test_the_users_wrap_paths_hold_the_lock_until_they_commit(self):
@@ -978,13 +858,9 @@ class KekRotationTest(AdminTestCase):
             try:
                 users.enable_background(db, a.user_id, a.dek)
                 users.create_user(f"hold-{os.urandom(4).hex()}@example.invalid", PASSWORD, background=True)
-                user = db.get(User, a.user_id)
-                users.start_totp_enrolment(db, user)
-                secret = users.open_totp(a.user_id, user.totp_pending_enc)
-                self.assertTrue(users.enable_totp(db, user, totp.code_at(secret, totp.current_step())))
             finally:
                 db.close()
-        self.assertEqual(len(seen), 4)
+        self.assertEqual(len(seen), 2)
 
     def test_rotation_leaves_no_old_copy_in_the_log(self):
         a = self.background_user()
@@ -1128,8 +1004,6 @@ class DeleteUserTest(AdminTestCase):
                     "jobs": s.query(Job).filter(Job.workspace_id == ws).count(),
                     "keys": s.query(UserKeys).filter(UserKeys.user_id == account.id).count(),
                     "sessions": s.query(AuthSession).filter(AuthSession.user_id == account.id).count(),
-                    "membership": s.query(Membership).filter(Membership.user_id == account.id).count(),
-                    "grants": s.query(MembershipGrant).filter(MembershipGrant.user_id == account.id).count(),
                     "usage": s.query(LlmUsage).filter(LlmUsage.user_id == account.id).count(),
                     "user": s.query(User).filter(User.id == account.id).count()}
         return db_rows(read)
@@ -1160,8 +1034,6 @@ class DeleteUserTest(AdminTestCase):
         c = self.signed_in()
         bob, dave = helpers.make_user(name="Bob"), helpers.make_user(name="Dave")
         bob_file, dave_file = self.plant(bob), self.plant(dave)
-        for account in (bob, dave):
-            self.assertEqual(c.post(f"/api/admin/users/{account.id}/grants", json={"kind": "manual", "days": 3}).status_code, 201)
         self.signed_in(bob)
         self.assertTrue((UPLOAD_DIR / bob_file).is_file())
         dave_before = self.counts(dave)
@@ -1234,7 +1106,7 @@ class DeleteUserTest(AdminTestCase):
         bob = helpers.make_user(name="Bob")
         carol = self.make_admin(name="Carol")
         self.plant(carol)
-        self.assertEqual(c.post(f"/api/admin/users/{bob.id}/grants", json={"kind": "manual", "days": 5, "note": "kept note"}).status_code, 201)
+        self.assertEqual(c.post("/api/admin/invites", json={"email": "kept-note@example.invalid"}).status_code, 201)
         version = apk_version()
         r = c.delete(f"/api/admin/users/{carol.id}")
         self.assertEqual((r.status_code, r.json()), (200, {"ok": True, "apk_rotated": True}))
@@ -1243,12 +1115,13 @@ class DeleteUserTest(AdminTestCase):
         self.assertEqual(db_rows(lambda s: s.get(AdminKeyGrant, self.admin_id).apk_version), version + 1)
         row = self.user_row(c, bob.id)
         self.assertEqual((row["email"], row["name"]), (bob.email, "Bob"))
-        self.assertEqual(row["membership"]["grants"][0]["note"], "kept note")
         entries = c.get("/api/admin/audit").json()["entries"]
+        self.assertEqual(next(e for e in entries if e["action"] == "invite_created")["detail"]["email"],
+                         "kept-note@example.invalid")
         deleted = next(e for e in entries if e["action"] == "user_deleted")
         self.assertEqual(deleted["detail"]["role"], "admin")
         self.assertEqual(deleted["detail"]["apk_version"], version + 1)
-        self.assertTrue(all(e["detail"] is not None for e in entries if e["action"] in ("grant_added", "role_changed")))
+        self.assertTrue(all(e["detail"] is not None for e in entries if e["action"] in ("invite_created", "role_changed")))
         self.assertEqual(self.counts(carol)["user"], 0)
 
     def test_a_failed_deletion_changes_nothing(self):
@@ -1260,80 +1133,6 @@ class DeleteUserTest(AdminTestCase):
         self.assertEqual(self.counts(bob)["user"], 1)
         self.assertEqual(self.counts(bob)["documents"], 1)
         self.assertTrue((UPLOAD_DIR / stored).is_file())
-
-
-# ---------------------------------------------------------------------------
-# Notes sealed while a demotion replaces the key, and grant dates
-# ---------------------------------------------------------------------------
-
-class GrantNoteRaceTest(AdminTestCase):
-    def demote_meanwhile(self, carol) -> threading.Thread:
-        """Makes another admin's demotion of ``carol`` start right after a route has read the admin key's public half."""
-        real = admin._public
-        started = threading.Event()
-        other = helpers.client()
-        other.__enter__()
-        self.addCleanup(other.__exit__, None, None, None)
-        thread = threading.Thread(target=lambda: (started.set(), other.post(f"/api/admin/users/{carol.id}/role", json={"role": "user"})))
-
-        def wrapped(db):
-            value = real(db)  # the key as this request read it ...
-            if not started.is_set():
-                thread.start()  # ... and then the demotion replaces it
-                started.wait(5)
-                thread.join(1.5)  # (with the write lock already taken, the demotion has to wait for this request)
-            return value
-
-        patcher = mock.patch.object(admin, "_public", wrapped)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        return thread
-
-    def test_a_new_note_is_never_sealed_to_a_key_a_demotion_just_replaced(self):
-        c = self.signed_in()
-        bob = helpers.make_user()
-        carol = self.make_admin()
-        version = apk_version()
-        thread = self.demote_meanwhile(carol)
-        r = c.post(f"/api/admin/users/{bob.id}/grants", json={"kind": "free_period", "days": 3, "note": "racing note"})
-        self.assertEqual(r.status_code, 201, r.text)
-        thread.join(30)
-        self.assertEqual(apk_version(), version + 1)
-        self.assertEqual(self.user_row(c, bob.id)["membership"]["grants"][0]["note"], "racing note")
-
-    def test_a_changed_note_is_never_sealed_to_a_key_a_demotion_just_replaced(self):
-        c = self.signed_in()
-        bob = helpers.make_user()
-        carol = self.make_admin()
-        gid = c.post(f"/api/admin/users/{bob.id}/grants", json={"kind": "manual", "days": 3}).json()["grant"]["id"]
-        version = apk_version()
-        thread = self.demote_meanwhile(carol)
-        r = c.patch(f"/api/admin/users/{bob.id}/grants/{gid}", json={"note": "changed while racing"})
-        self.assertEqual(r.status_code, 200, r.text)
-        thread.join(30)
-        self.assertEqual(apk_version(), version + 1)
-        self.assertEqual(self.user_row(c, bob.id)["membership"]["grants"][0]["note"], "changed while racing")
-
-
-class GrantDatesTest(AdminTestCase):
-    def test_changing_only_the_note_leaves_the_dates_alone(self):
-        c = self.signed_in()
-        bob = helpers.make_user()
-        grant = c.post(f"/api/admin/users/{bob.id}/grants", json={"kind": "free_period", "days": 30}).json()["grant"]
-        r = c.patch(f"/api/admin/users/{bob.id}/grants/{grant['id']}", json={"note": "only the note"})
-        self.assertEqual(r.status_code, 200, r.text)
-        changed = r.json()["grant"]
-        self.assertEqual((changed["starts_at"], changed["ends_at"], changed["note"]),
-                         (grant["starts_at"], grant["ends_at"], "only the note"))
-        # ... while sending the dates back as a date alone is what moves them to midnight.
-        r = c.patch(f"/api/admin/users/{bob.id}/grants/{grant['id']}", json={"ends_at": grant["ends_at"][:10]})
-        self.assertTrue(r.json()["grant"]["ends_at"].endswith("T00:00:00Z"))
-
-    def test_the_admin_page_sends_only_what_was_edited_and_ends_a_period_at_the_end_of_its_day(self):
-        src = open(os.path.join(os.path.dirname(helpers.__file__), "..", "frontend", "admin.js"), encoding="utf-8").read()
-        self.assertIn("editingDates", src)
-        self.assertIn("body.ends_at = addDay(end, 1)", src)
-        self.assertNotIn("g.ends_at.slice(0, 10)", src)
 
 
 # ---------------------------------------------------------------------------
@@ -1350,9 +1149,10 @@ class AuditDetailTest(AdminTestCase):
         self.assertEqual(disabled["detail"], {})
         self.assertIsNone(db_rows(lambda s: s.get(AdminAudit, disabled["id"]).detail_admin))
         # a detail sealed to a key that is gone is the one that says "not readable"
-        self.assertEqual(c.put(f"/api/admin/users/{bob.id}/membership", json={"exempt": True}).status_code, 200)
-        entry = next(e for e in c.get("/api/admin/audit").json()["entries"] if e["action"] == "membership_updated")
-        self.assertEqual(entry["detail"], {"exempt": True})
+        self.assertEqual(c.put("/api/admin/signup", json={"mode": "closed"}).status_code, 200)
+        self.addCleanup(lambda: helpers.client().__enter__().put("/api/admin/signup", json={"mode": "invite"}))
+        entry = next(e for e in c.get("/api/admin/audit").json()["entries"] if e["action"] == "signup_changed")
+        self.assertEqual(entry["detail"], {"mode": "closed"})
         with engine.begin() as conn:
             conn.execute(text("UPDATE admin_audit SET detail_admin = :b WHERE id = :i"), {"b": b"not a sealed value", "i": entry["id"]})
         entry = next(e for e in c.get("/api/admin/audit").json()["entries"] if e["id"] == entry["id"])
@@ -1593,37 +1393,6 @@ class DisabledAdminKeyTest(AdminTestCase):
         self.assertEqual((r.status_code, r.json()["code"]), (409, "admin_key_missing"))
         self.assertEqual(db_rows(lambda s: s.get(User, dave.id).role), "admin")
         self.assertTrue(self.grant_of(dave.id))
-
-
-class RecentPasswordForMembershipTest(AdminTestCase):
-    """Free access, exemptions and turning accounts off are what a stolen session would use first: they ask for the
-    password again (Phase L review)."""
-
-    def test_each_of_them_wants_a_recent_password(self):
-        c = self.signed_in()
-        bob = helpers.make_user()
-        gid = c.post(f"/api/admin/users/{bob.id}/grants", json={"kind": "manual", "days": 2}).json()["grant"]["id"]
-        self.make_stale()
-        calls = [("put", f"/api/admin/users/{bob.id}/membership", {"exempt": True}),
-                 ("put", f"/api/admin/users/{bob.id}/membership", {"free_searches_used": 0}),
-                 ("post", f"/api/admin/users/{bob.id}/grants", {"kind": "free_period", "days": 3650}),
-                 ("patch", f"/api/admin/users/{bob.id}/grants/{gid}", {"days": 9}),
-                 ("delete", f"/api/admin/users/{bob.id}/grants/{gid}", None),
-                 ("post", f"/api/admin/users/{bob.id}/disable", None)]
-        for method, path, body in calls:
-            r = getattr(c, method)(path, **({"json": body} if body is not None else {}))
-            self.assertEqual((r.status_code, r.json().get("code")), (403, "reauth_required"), (method, path))
-        self.assertEqual(db_rows(lambda s: (s.get(Membership, bob.id) is None or not s.get(Membership, bob.id).exempt,
-                                            s.get(User, bob.id).status,
-                                            s.query(MembershipGrant).filter(MembershipGrant.user_id == bob.id).count(),
-                                            s.get(MembershipGrant, gid).revoked_at)),
-                         (True, "active", 1, None))
-        # Enter the password, and the same calls go through.
-        r = c.post("/api/auth/reauth", json={"password": helpers.ADMIN_PASSWORD})
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(c.put(f"/api/admin/users/{bob.id}/membership", json={"exempt": True}).status_code, 200)
-        self.assertEqual(c.post(f"/api/admin/users/{bob.id}/disable").status_code, 200)
-        self.assertEqual(c.post(f"/api/admin/users/{bob.id}/enable").status_code, 200)
 
 
 if __name__ == "__main__":

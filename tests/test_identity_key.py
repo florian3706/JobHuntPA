@@ -15,13 +15,12 @@ import os
 import sqlite3
 import time
 import unittest
-from unittest import mock
 
 from tests import helpers  # noqa: E402  (sets the test environment first)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from backend import admin_key, crypto, ratelimit, tasks, totp, users  # noqa: E402
+from backend import admin_key, crypto, ratelimit, tasks, users  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import (  # noqa: E402
     DB_PATH,
@@ -220,8 +219,8 @@ class ServerKeyTest(Case):
             db.close()
 
     def test_nothing_in_the_database_wraps_an_identity_key_under_the_server_key(self):
-        """Every blob in the database that the server KEK opens is the data key of a background-access account or a
-        two-step secret. None of them is, or holds, an identity key."""
+        """Every blob in the database that the server KEK opens is the data key of a background-access account. None of
+        them is, or holds, an identity key."""
         admin = helpers.ADMIN_EMAIL
         uid = helpers.key_of(admin)[0]
         iks = {helpers.ik_of(admin)}
@@ -241,7 +240,7 @@ class ServerKeyTest(Case):
         finally:
             con.close()
         self.assertIn(("user_keys", "server_wrapped_dek"), found)
-        allowed = {("user_keys", "server_wrapped_dek"), ("users", "totp_secret_enc"), ("users", "totp_pending_enc")}
+        allowed = {("user_keys", "server_wrapped_dek")}
         self.assertLessEqual(set(found), allowed, "only these columns are ever wrapped under the server key")
         opened = {}
         for owner, blob in rows(lambda s: [(i, bytes(b)) for i, b in s.query(UserKeys.user_id, UserKeys.server_wrapped_dek)
@@ -379,33 +378,6 @@ class FlowsTest(Case):
         self.assertTrue(self.sees_details(c))
         self.assert_session_has_ik(c)
 
-    def test_sign_in_with_two_step_carries_the_ik_through_the_code_step(self):
-        admin = self.make_admin()
-        t = [(int(time.time()) // totp.STEP_SECONDS) * totp.STEP_SECONDS + 15.0]
-        with mock.patch("backend.totp.now", lambda: t[0]):
-            c = self.signed_in(admin)
-            secret = c.post("/api/auth/mfa/setup").json()["secret"]
-            step = int(t[0] // totp.STEP_SECONDS)
-            self.assertEqual(c.post("/api/auth/mfa/enable", json={"code": totp.code_at(secret, step)}).status_code, 200)
-            c.post("/api/auth/logout")
-            t[0] += 2 * totp.STEP_SECONDS
-            ratelimit.AUTH.reset()
-            d = self.anonymous()
-            r = d.post("/api/auth/login", json={"email": admin.email, "password": PASSWORD})
-            self.assertEqual((r.status_code, r.json().get("mfa_required")), (200, True))
-            pending = rows(lambda s: s.query(AuthSession).filter(AuthSession.user_id == admin.id,
-                                                                 AuthSession.state == "pending_mfa").one())
-            self.assertIsNotNone(pending.wrapped_ik)
-            self.assertEqual(d.get("/api/admin/users").status_code, 401)  # nothing opens before the code
-            ratelimit.AUTH.reset()
-            r = d.post("/api/auth/login/mfa", json={"code": totp.code_at(secret, int(t[0] // totp.STEP_SECONDS))})
-            self.assertEqual(r.status_code, 200, r.text)
-            d.headers["X-CSRF-Token"] = r.json()["csrf"]
-            self.assertTrue(self.sees_details(d))
-            self.assert_session_has_ik(d)
-            self.assertEqual(rows(lambda s: s.query(AuthSession).filter(AuthSession.user_id == admin.id,
-                                                                        AuthSession.state == "pending_mfa").count()), 0)
-
     def test_a_password_change_wraps_the_ik_under_the_new_password(self):
         admin = self.make_admin()
         c = self.signed_in(admin)
@@ -461,65 +433,6 @@ class FlowsTest(Case):
         self.assert_session_has_ik(anon)
         self.assertEqual(self.assert_identity(admin.email, NEW_PASSWORD, codes[1:]), before)
         self.assertIsNotNone(rows(lambda s: s.get(AdminKeyGrant, admin.id)))
-
-    def test_a_reset_by_email_that_keeps_the_data_makes_a_new_key_pair_and_ik(self):
-        bob = helpers.make_user(password=PASSWORD)
-        with helpers.client(bob.email) as c:
-            self.assertEqual(c.post("/api/account/background", json={"enabled": True}).status_code, 200)
-        old_ik = helpers.ik_of(bob.email)
-        old_pub = rows(lambda s: bytes(s.get(UserKeys, bob.id).x25519_pub))
-        db = SessionLocal()
-        try:
-            kept = users.reset_password_keeping_data(db, bob.id, NEW_PASSWORD)
-        finally:
-            db.close()
-        helpers._passwords[bob.email] = NEW_PASSWORD
-        helpers._iks.pop(bob.email, None)
-        self.assertNotEqual(kept.ik, old_ik)
-        self.assertFalse(kept.admin_key_lost)  # (an ordinary user had no share)
-        self.assertEqual(self.assert_identity(bob.email, NEW_PASSWORD, kept.recovery_codes), kept.ik)
-        self.assertNotEqual(rows(lambda s: bytes(s.get(UserKeys, bob.id).x25519_pub)), old_pub)
-        db = SessionLocal()
-        try:
-            with self.assertRaises(crypto.CryptoError):  # the old IK opens nothing now
-                users.open_private_key(db.get(UserKeys, bob.id), bob.id, old_ik)
-        finally:
-            db.close()
-
-    def test_a_reset_by_email_that_deletes_the_data_makes_a_new_key_pair_and_ik(self):
-        bob = helpers.make_user(password=PASSWORD)
-        old_ik = helpers.ik_of(bob.email)
-        db = SessionLocal()
-        try:
-            wiped = users.reset_password_wiping_data(db, bob.id, NEW_PASSWORD, bob.email)
-        finally:
-            db.close()
-        helpers._passwords[bob.email] = NEW_PASSWORD
-        helpers._keys.pop(bob.email, None)
-        helpers._iks.pop(bob.email, None)
-        self.assertNotEqual(wiped.ik, old_ik)
-        self.assertEqual(self.assert_identity(bob.email, NEW_PASSWORD, wiped.recovery_codes), wiped.ik)
-
-    def test_an_admin_who_resets_by_email_with_the_data_kept_needs_the_key_shared_again(self):
-        admin = self.make_admin()
-        with helpers.client(admin.email) as c:
-            self.assertEqual(c.post("/api/account/background", json={"enabled": True}).status_code, 200)
-        db = SessionLocal()
-        try:
-            kept = users.reset_password_keeping_data(db, admin.id, NEW_PASSWORD)
-        finally:
-            db.close()
-        helpers._passwords[admin.email] = NEW_PASSWORD
-        helpers._iks.pop(admin.email, None)
-        self.assertTrue(kept.admin_key_lost)
-        self.assertIsNone(rows(lambda s: s.get(AdminKeyGrant, admin.id)))
-        self.assertIn("admin_key_lost", [a for (a,) in rows(lambda s: s.query(AdminAudit.action).all())])
-        c = self.login(admin.email, NEW_PASSWORD)
-        self.assertFalse(self.sees_details(c))
-        self.assertFalse(c.get("/api/admin/users").json()["admin_key_needs_sign_in"])  # (it is the grant, not the session)
-        with helpers.client() as first:
-            self.assertEqual(first.post(f"/api/admin/users/{admin.id}/regrant").status_code, 200)
-        self.assertTrue(self.sees_details(c))
 
     def test_the_wrong_ik_cannot_be_used_to_change_a_password_or_make_codes(self):
         bob = helpers.make_user(password=PASSWORD)

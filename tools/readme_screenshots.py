@@ -24,10 +24,10 @@ Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide
     jobs, run-report, job-page, map (light theme), search-setup, company-sources, settings, search-schedule
     (the Scheduled searches card, on the Settings tab), theme-picker (the first rows of the Theme card on the
     Settings tab), themes, chat, cover-letter, ghost-job (a job card with the ghost-job circle under its
-    fit score and its "why?" list opened), settings-account (the account cards on the Settings tab: password, two-step sign-in,
-    recovery codes, signed-in devices, email address, background access), settings-data (the digest, download
+    fit score and its "why?" list opened), settings-account (the account cards on the Settings tab: password,
+    recovery codes, signed-in devices, background access), settings-data (the download
     your data and delete account cards), admin-people (the admin panel: summary, people, sign-up), admin-server
-    (the admin panel's Server section: AI provider, email and payments), sign-in (the sign-in page, signed out)
+    (the admin panel's Server section: AI provider and commute keys), sign-in (the sign-in page, signed out)
 """
 from __future__ import annotations
 
@@ -450,9 +450,9 @@ def shot_settings_account(s: Shooter) -> None:
 
 def shot_settings_data(s: Shooter) -> None:
     ctx, page = settings_page(s)
-    page.wait_for_selector("#account-email-slot .card, #account-export-slot .card")
+    page.wait_for_selector("#account-export-slot .card")
     s.settle(page)
-    s.save("settings-data", s.grab(page, span(s, page, "#account-email-slot .card", "#acct-del-card")))
+    s.save("settings-data", s.grab(page, span(s, page, "#account-export-slot .card", "#acct-del-card")))
     ctx.close()
 
 

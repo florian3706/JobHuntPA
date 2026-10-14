@@ -514,47 +514,32 @@ class ExportTest(unittest.TestCase):
         self.assertNotIn(9201, export._running)
         self.assertIsNone(hold._timer)
 
-    def test_account_details_membership_and_no_secrets(self):
+    def test_account_details_and_no_secrets(self):
         from datetime import datetime
-        from sqlalchemy import text as sql
-        from backend.db import EmailPrefs, Membership, MembershipGrant, UserKeys, engine
-        with engine.begin() as conn:
-            conn.execute(sql("UPDATE users SET totp_secret_enc = :s WHERE id = :u"), {"s": b"MARK-totp-secret-bytes", "u": self.bob.id})
+        from backend.db import UserKeys
         db = SessionLocal()
         try:
-            member = db.get(Membership, self.bob.id)
-            member.stripe_status, member.plan, member.free_searches_used = "active", "monthly", 3
-            member.current_period_end = datetime(2027, 1, 2)
-            db.add(MembershipGrant(user_id=self.bob.id, kind="free_period", starts_at=datetime(2026, 1, 1), ends_at=datetime(2026, 2, 1)))
-            prefs = db.get(EmailPrefs, self.bob.id) or EmailPrefs(user_id=self.bob.id)
-            prefs.digest_enabled, prefs.digest_every_days, prefs.unsubscribe_id = True, 3, "MARK-unsub-id"
-            db.add(prefs)
             keys = db.get(UserKeys, self.bob.id)
             self.addCleanup(self.reset_bob)
             keys.server_wrapped_dek, keys.background_since = b"MARK-wrapped-secret", datetime(2026, 3, 4)
-            ref = member.stripe_ref
             db.commit()
         finally:
             db.close()
         z = self.open_zip(self.export())
         root = z.namelist()[0].split("/")[0]
         account = z.read(f"{root}/Account.md").decode()
-        for expected in ("(background access): on", "since: 2026-03-04", "Free searches used: 3", "Plan: monthly",
-                         "Paid until: 2027-01-02", "| free_period | 2026-01-01 | 2026-02-01 |", "every 3 days"):
+        for expected in ("(background access): on", "since: 2026-03-04", "Theme"):
             self.assertIn(expected, account)
+        for gone in ("Membership", "Two-step", "digest", "Email address confirmed", "Free searches"):
+            self.assertNotIn(gone, account, "features that were taken out")
         blob = b"".join(z.read(n) for n in z.namelist())
-        for secret in (b"MARK-totp-secret-bytes", b"MARK-wrapped-secret", ref.encode(), b"MARK-unsub-id"):
-            self.assertNotIn(secret, blob)
+        self.assertNotIn(b"MARK-wrapped-secret", blob)
 
     def reset_bob(self):
         from sqlalchemy import text as sql
         from backend.db import engine
         with engine.begin() as conn:
             conn.execute(sql("UPDATE user_keys SET server_wrapped_dek = NULL, background_since = NULL WHERE user_id = :u"), {"u": self.bob.id})
-            conn.execute(sql("DELETE FROM email_prefs WHERE user_id = :u"), {"u": self.bob.id})
-            conn.execute(sql("DELETE FROM membership_grants WHERE user_id = :u"), {"u": self.bob.id})
-            conn.execute(sql("UPDATE memberships SET stripe_status = NULL, plan = NULL, free_searches_used = 0, "
-                             "current_period_end = NULL WHERE user_id = :u"), {"u": self.bob.id})
 
     def demote(self, user_id):
         from sqlalchemy import text as sql
