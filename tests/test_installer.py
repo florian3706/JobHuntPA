@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import shutil
 import stat
 import sys
 import tempfile
@@ -168,6 +170,96 @@ class UninstallerTest(unittest.TestCase):
                          [".env", "data/server-keys.json", "data/uploads/cv.pdf"])
         if os.name == "posix":  # it holds the server keys and the API keys: owner-only (accounts design §15)
             self.assertEqual(stat.S_IMODE(backups[0].stat().st_mode), 0o600)
+
+    def _run(self, app: Path, home: Path, env: dict, *args: str):
+        clean = {k: v for k, v in os.environ.items() if k not in ("JOBHUNT_DATA_DIR", "APPIMAGE", "XDG_CONFIG_HOME")}
+        with mock.patch.object(sys, "argv", ["uninstaller", "--yes", "--folder", str(app), *args]), \
+                mock.patch.object(uninstaller, "say"), mock.patch.object(uninstaller, "running_ports", return_value=[]), \
+                mock.patch.object(uninstaller, "playwright_cache", return_value=home / "no-cache"), \
+                mock.patch.object(uninstaller.subprocess, "run") as systemctl, \
+                mock.patch.object(Path, "home", return_value=home), mock.patch.dict(os.environ, {**clean, **env}, clear=True):
+            code = uninstaller.main()
+        return code, systemctl
+
+    def _app_with_paths(self) -> Path:
+        app = self._app()
+        shutil.copy(Path(__file__).resolve().parent.parent / "backend" / "paths.py", app / "backend" / "paths.py")
+        return app
+
+    def test_a_data_folder_elsewhere_is_backed_up_and_removed_with_its_pointer(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from backend import paths
+        app = self._app_with_paths()
+        shutil.rmtree(app / "data")
+        top = Path(tempfile.mkdtemp())
+        home, config, data = top / "home", top / "config", top / "elsewhere" / "JobHuntPA"
+        (home / "Documents").mkdir(parents=True)
+        (data / "uploads").mkdir(parents=True)
+        (data / "jobhunt.db").write_bytes(b"db")
+        (data / "server-keys.json").write_text("{}")
+        (data / "uploads" / "cv.pdf").write_text("cv")
+        (data / "browsers" / "chromium-1").mkdir(parents=True)
+        (data / "browsers" / "chromium-1" / "chrome").write_text("big")
+        env = {"JOBHUNT_CONFIG_DIR": str(config)}
+        paths.write_pointer(data, env)
+        code, _ = self._run(app, home, env)
+        self.assertEqual(code, 0)
+        self.assertFalse(data.exists())
+        self.assertFalse(config.exists(), "the pointer (and its folder) is gone")
+        self.assertFalse(app.exists())
+        import zipfile
+        backup = next((home / "Documents").glob("JobHuntPA-backup-*.zip"))
+        self.assertEqual(sorted(zipfile.ZipFile(backup).namelist()),
+                         [".env", "data/jobhunt.db", "data/server-keys.json", "data/uploads/cv.pdf"])
+
+    def test_the_service_and_its_data_folder_go_too(self):
+        app = self._app_with_paths()
+        top = Path(tempfile.mkdtemp())
+        home, data = top / "home", top / "srv" / "jobhunt"
+        (home / "Documents").mkdir(parents=True)
+        data.mkdir(parents=True)
+        (data / "jobhunt.db").write_bytes(b"db")
+        unit = top / "xdg" / "systemd" / "user" / "jobhuntpa.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text(f"[Service]\nWorkingDirectory={app}\nEnvironment=JOBHUNT_DATA_DIR={data}\n"
+                        f"ExecStart={app}/.venv/bin/python -m uvicorn backend.app:app\n")
+        code, systemctl = self._run(app, home, {"XDG_CONFIG_HOME": str(top / "xdg"),
+                                                "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertFalse(unit.exists())
+        self.assertFalse(data.exists())
+        if platform.system() == "Linux":
+            calls = [c.args[0] for c in systemctl.call_args_list]
+            self.assertIn(["systemctl", "--user", "disable", "--now", "jobhuntpa.service"], calls)
+
+    def test_only_a_jobhuntpa_data_folder_is_ever_deleted(self):
+        top = Path(tempfile.mkdtemp())
+        app, home = top / "app", top / "home"
+        app.mkdir()
+        home.mkdir()
+        mine = top / "mine"
+        mine.mkdir()
+        (mine / "photo.jpg").write_text("x")
+        with mock.patch.object(Path, "home", return_value=home):
+            self.assertFalse(uninstaller.safe_to_delete(mine, app))
+            (home / "jobhunt.db").write_bytes(b"")
+            self.assertFalse(uninstaller.safe_to_delete(home, app))  # never the home folder, even with data in it
+            self.assertFalse(uninstaller.safe_to_delete(top, app))  # nor one that holds the app
+            (mine / "jobhunt.db").write_bytes(b"")
+            self.assertTrue(uninstaller.safe_to_delete(mine, app))
+
+    def test_the_appimage_deletes_its_file_not_its_mount(self):
+        app = self._app()
+        top = Path(tempfile.mkdtemp())
+        home = top / "home"
+        (home / "Documents").mkdir(parents=True)
+        image = top / "JobHuntPA-x86_64.AppImage"
+        image.write_text("image")
+        with mock.patch.object(uninstaller, "delete_folder") as deleted:
+            code, _ = self._run(app, home, {"APPIMAGE": str(image), "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertFalse(image.exists())
+        deleted.assert_not_called()
 
     def test_refuses_while_running(self):
         app = self._app()
