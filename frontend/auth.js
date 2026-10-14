@@ -1,4 +1,5 @@
-/* JobHuntPA sign-in pages: login.html, first-run.html, recover.html and signup.html (accounts design, sections 5 and 6).
+/* JobHuntPA sign-in pages: login.html, first-run.html and recover.html (accounts design, sections 5 and 6). There is
+   one account per install, made at the first run, and it signs in with a name and a password.
 
    There is no workspace and often no session yet, so these pages call /api/auth themselves rather than through
    common.js's api(). WCAG 2.2 notes:
@@ -38,7 +39,7 @@ function nextPage() {
   if (!next.startsWith('/')) return './';
   let url;
   try { url = new URL(next, location.origin); } catch { return './'; }
-  if (url.origin !== location.origin || /^\/(login|first-run|recover|signup)\.html/.test(url.pathname)) return './';
+  if (url.origin !== location.origin || /^\/(login|first-run|recover)\.html/.test(url.pathname)) return './';
   if (/^\/[\/\\]/.test(url.pathname)) return './'; // "//host" or "/\host" is a link to another site
   return url.pathname + url.search + url.hash;
 }
@@ -119,20 +120,20 @@ async function initLogin() {
   if (state.status === 200 && state.data.setup_required) { location.replace('first-run.html'); return; }
   if (state.status === 200 && state.data.signed_in) { location.replace(nextPage()); return; }
   const form = $('#login-form');
-  $('#email').focus();
+  $('#name').focus();
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = $('#email').value.trim();
+    const name = $('#name').value.trim();
     const password = $('#password').value;
     const missing = [];
-    if (!email) missing.push({ field: 'email', message: 'Enter your email address.' });
+    if (!name) missing.push({ field: 'name', message: 'Enter your name.' });
     if (!password) missing.push({ field: 'password', message: 'Enter your password.' });
     if (missing.length) { showErrors(missing); return; }
     const btn = $('#login-submit');
     setBusy(btn, true);
     status('Signing in…');
     hidePasswords();
-    const res = await authCall('/api/auth/login', { method: 'POST', body: { email, password, remember: $('#remember').checked } });
+    const res = await authCall('/api/auth/login', { method: 'POST', body: { name, password, remember: $('#remember').checked } });
     setBusy(btn, false);
     if (res.status === 200) {
       status('Signed in. Opening JobHuntPA…');
@@ -150,19 +151,19 @@ async function initLogin() {
 /* ================= recover.html ================= */
 /* Forgot the password, but have a recovery code: set a new one and keep the data. */
 function initRecover() {
-  $('#email').focus();
+  $('#name').focus();
   $('#recover-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = $('#email').value.trim();
+    const name = $('#name').value.trim();
     const recovery = $('#recovery-code').value.trim();
     const password = $('#password').value;
     const problems = [];
-    if (!email) problems.push({ field: 'email', message: 'Enter your email address.' });
+    if (!name) problems.push({ field: 'name', message: 'Enter your name.' });
     if (!recovery) problems.push({ field: 'recovery-code', message: 'Enter one of your recovery codes.' });
     if (!password) problems.push({ field: 'password', message: 'Choose a new password.' });
     else if (password.length < 10) problems.push({ field: 'password', message: 'Use at least 10 characters. A few random words work well.' });
     if (problems.length) { showErrors(problems); return; }
-    const body = { email, recovery_code: recovery, new_password: password, remember: $('#remember').checked };
+    const body = { name, recovery_code: recovery, new_password: password, remember: $('#remember').checked };
     const btn = $('#recover-submit');
     setBusy(btn, true);
     status('Setting your new password…');
@@ -170,20 +171,19 @@ function initRecover() {
     const res = await authCall('/api/auth/recover', { method: 'POST', body });
     setBusy(btn, false);
     status('');
-    if (res.status === 200) { showRecovered(res.data.recovery_codes_left, res.data.admin_key_lost); return; }
+    if (res.status === 200) { showRecovered(res.data.recovery_codes_left); return; }
     showErrors(answerProblem(res, `That didn't work (error ${res.status}). Try again.`));
   });
 }
 
-function showRecovered(left, adminKeyLost) {
+function showRecovered(left) {
   clearErrors();
   $('#recover-form').hidden = true;
   document.title = 'Password changed · JobHuntPA';
   $('#page-title').textContent = 'Password changed';
   const note = typeof left === 'number' ? ` ${recoveryLeftText(left)}` : '';
-  const lost = adminKeyLost ? ' You no longer have the admin key. Ask another admin to share it with you again.' : '';
   const done = $('#recover-done');
-  done.querySelector('p').textContent = `You're signed in, your data is kept and other browsers are signed out.${note}${lost}`;
+  done.querySelector('p').textContent = `You're signed in, your data is kept and other browsers are signed out.${note}`;
   done.hidden = false;
   $('#recover-continue').href = nextPage();
   $('#page-title').focus();
@@ -219,7 +219,7 @@ async function initFirstRun() {
   status('');
   $('#setup-step').hidden = false;
   $('#token-field').hidden = Boolean(setupToken);
-  (setupToken ? $('#email') : $('#token')).focus();
+  (setupToken ? $('#name') : $('#token')).focus();
   $('#setup-form').addEventListener('submit', submitSetup);
   // The setup link opened in a tab that already shows this page changes only the #fragment: no reload.
   window.addEventListener('hashchange', () => {
@@ -263,11 +263,11 @@ async function askForCodes(csrf) {
 async function submitSetup(e) {
   e.preventDefault();
   const token = setupToken || $('#token').value.trim();
-  const email = $('#email').value.trim();
+  const name = $('#name').value.trim();
   const password = $('#password').value;
   const problems = [];
   if (!token) problems.push({ field: 'token', message: 'Paste the setup code from first-run.txt.' });
-  if (!email) problems.push({ field: 'email', message: 'Enter your email address.' });
+  if (!name) problems.push({ field: 'name', message: 'Enter a name to sign in with.' });
   if (!password) problems.push({ field: 'password', message: 'Choose a password.' });
   else if (password.length < 10) problems.push({ field: 'password', message: 'Use at least 10 characters. A few random words work well.' });
   if (problems.length) { showErrors(problems); return; }
@@ -277,7 +277,7 @@ async function submitSetup(e) {
   hidePasswords();
   const res = await authCall('/api/auth/first-run', {
     method: 'POST',
-    body: { token, email, password, name: $('#name').value.trim(), remember: $('#remember').checked, background: $('#background').checked },
+    body: { token, name, password, remember: $('#remember').checked, background: $('#background').checked },
   });
   setBusy(btn, false);
   if (res.status === 201) {

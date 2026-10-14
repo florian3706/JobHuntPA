@@ -37,8 +37,8 @@
       </div>
 
       <div id="setup-step" class="auth-step" hidden>
-        <p>You're the first person to use this JobHuntPA, so this account will be its <strong>admin</strong>.
-          The jobs, documents, searches and settings already in JobHuntPA move into your account.</p>
+        <p>JobHuntPA has one account: yours. The jobs, documents, searches and settings already in JobHuntPA move into it.
+          Later, Settings &gt; <strong>Download your data</strong> saves a copy of everything: it is your safety net.</p>
         <form id="setup-form" class="auth-form" novalidate>
           <div id="token-field" class="auth-field" hidden>
             <label for="token">Setup code</label>
@@ -48,14 +48,11 @@
                    aria-describedby="token-hint" />
           </div>
           <div class="auth-field">
-            <label for="email">Email address</label>
-            <p id="email-hint" class="hint">You sign in with it. It stays on this server.</p>
-            <input id="email" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="none"
-                   spellcheck="false" aria-describedby="email-hint" required />
-          </div>
-          <div class="auth-field">
-            <label for="name">Your name <span class="muted">(optional)</span></label>
-            <input id="name" name="name" type="text" autocomplete="name" />
+            <label for="name">Name</label>
+            <p id="name-hint" class="hint">You sign in with it: your name, a nickname, anything you'll remember. It stays on
+              this computer, encrypted, and you can change it in Settings.</p>
+            <input id="name" name="name" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"
+                   maxlength="254" aria-describedby="name-hint" required />
           </div>
           <div class="auth-field">
             <label for="password">Password</label>

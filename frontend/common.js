@@ -234,8 +234,8 @@ function saveAccountTheme(theme) {
   return api('/api/account/prefs', { method: 'PUT', body: JSON.stringify({ theme }) }).catch(() => {});
 }
 
-/* Who is signed in: { user: {id, email, name, role}, csrf, recovery_codes_pending, workspaces, features,
-   onboarding_step, prefs: {theme} }. */
+/* Who is signed in: { user: {id, name}, csrf, recovery_codes_pending, workspaces, features, onboarding_step,
+   prefs: {theme} }. There are no roles: whoever is signed in may change every setting. */
 function loadSession(force = false) {
   if (!SESSION.loading || force) {
     SESSION.loading = (async () => {
@@ -253,8 +253,6 @@ function loadSession(force = false) {
   }
   return SESSION.loading;
 }
-
-const isAdmin = () => SESSION.me?.user?.role === 'admin';
 
 async function api(url, opts = {}) {
   return (await apiResponse(url, opts)).data;
@@ -327,8 +325,8 @@ async function withRecentAuth(fn) {
 /* Asks for the password again (POST /api/auth/reauth) in a "Confirm your password" dialog and resolves true once it
    is confirmed, false if the person cancels (Cancel or Escape). A native <dialog>: focus moves into it and goes back
    to the control that opened it. A wrong password is said under the field and announced; the dialog stays open.
-   Two calls at once share one dialog. A hidden username field holds the account email, so password managers fill in
-   the right password. */
+   Two calls at once share one dialog. A hidden username field holds the account's sign-in name, so password managers
+   fill in the right password. */
 let confirmDialogOpen = null;
 function confirmPassword() {
   if (!confirmDialogOpen) confirmDialogOpen = openConfirmDialog().finally(() => { confirmDialogOpen = null; });
@@ -337,7 +335,7 @@ function confirmPassword() {
 
 async function openConfirmDialog() {
   const opener = document.activeElement;
-  const email = (SESSION.me || await loadSession())?.user?.email || '';
+  const name = (SESSION.me || await loadSession())?.user?.name || '';
   const dlg = document.createElement('dialog');
   dlg.className = 'confirm-dialog';
   dlg.setAttribute('aria-labelledby', 'confirm-pw-title');
@@ -347,7 +345,7 @@ async function openConfirmDialog() {
     <p id="confirm-pw-intro">To keep your account safe, enter your password to go on. You won't be asked again for 15 minutes.</p>
     <div id="confirm-pw-status" class="visually-hidden" role="status"></div>
     <input class="visually-hidden" type="text" name="username" autocomplete="username" tabindex="-1" readonly
-           aria-hidden="true" aria-label="Email address" value="${esc(email)}" />
+           aria-hidden="true" aria-label="Name" value="${esc(name)}" />
     <div class="auth-field">
       <label for="confirm-password">Password</label>
       <div class="pw-row">
@@ -494,31 +492,26 @@ function fmtBytes(n) {
 }
 
 /* After the encryption: the copies of the data that still hold it unencrypted (the backup it made first, older
-   backups, an old page cache) are reported in the admin panel's Server section (accounts design §5.5), where an
-   admin can delete them. This notice only points there, until they are gone. */
-async function remindLeftovers(me) {
-  if (me?.user?.role !== 'admin') return;
+   backups, an old page cache) are reported in the Settings tab (accounts design §5.5), where they can be deleted.
+   This notice only points there, until they are gone. */
+async function remindLeftovers() {
   let status;
   try { status = await api('/api/encryption/status'); } catch { return; }
   const files = status?.leftovers || [];
   if (status?.state !== 'done' || !files.length) return;
   pageNotice('leftovers', `<p><strong>Your data is encrypted now.</strong> ${files.length === 1 ? 'A file' : `${files.length} files`} from before still
-      ${files.length === 1 ? 'holds' : 'hold'} it unencrypted, with old keys. <a href="admin.html#server">See them in the admin panel</a> and delete the <code>.bak-*</code> files you don't need.</p>`);
+      ${files.length === 1 ? 'holds' : 'hold'} it unencrypted, with old keys. <a href="./#settings">See them in Settings</a> (Unencrypted copies of data) and delete the <code>.bak-*</code> files you don't need.</p>`);
 }
 
 /* ---------- the account menu in the header ----------
-   A disclosure button: it opens a small panel with who is signed in, "Admin" for admins once the admin panel
-   exists (accounts design, Phase F), and Sign out. Escape or a click elsewhere closes it. */
+   A disclosure button: it opens a small panel with who is signed in, a link to Settings, and Sign out. Escape or a
+   click elsewhere closes it. */
 function initAccountMenu(me) {
   const btn = document.getElementById('account-btn');
   const panel = document.getElementById('account-panel');
   if (!btn || !panel) return;
   const user = me.user || {};
-  setText(document.getElementById('account-email'), user.email || '');
-  const role = document.getElementById('account-role');
-  if (role) { setText(role, 'Admin'); role.hidden = user.role !== 'admin'; }
-  const admin = document.getElementById('account-admin');
-  if (admin) admin.hidden = !(user.role === 'admin' && me.features?.admin_panel);
+  setText(document.getElementById('account-name'), user.name || '');
   const open = (yes) => {
     btn.setAttribute('aria-expanded', String(yes));
     panel.hidden = !yes;
@@ -733,8 +726,7 @@ function siteName(host) {
   return known ? SITE_NAMES[known] : host;
 }
 
-/* Where a job's ad came from, in words (backend/job_source.py lists the values; email_templates.source_label
-   follows the same rule). */
+/* Where a job's ad came from, in words (backend/job_source.py lists the values). */
 function sourceLabel(src) {
   const s = String(src || '');
   if (s === 'seek') return 'SEEK';

@@ -4,7 +4,7 @@
    same endpoints as the dashboard's Search setup tab (/api/profile, /api/dealbreakers, /api/pins) and then tells the
    server which step is next (/api/account/onboarding), so leaving and coming back resumes where it was left.
 
-   The first admin, whose existing search settings moved into the account, gets a short path: theme, then keep the
+   The first account, whose existing search settings moved into it, gets a short path: theme, then keep the
    settings or review them step by step.
 
    WCAG 2.2 notes:
@@ -24,7 +24,7 @@ function currentWorkspace() { return 0; }
 
 const wiz = {
   me: null,
-  short: false, // the first admin's short path
+  short: false, // the first account's short path
   features: {},
   steps: [], // step ids in order
   idx: 0,

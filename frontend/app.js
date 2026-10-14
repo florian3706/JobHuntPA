@@ -1218,12 +1218,12 @@ function initTitleSuggestions() {
 }
 
 /* ================= COMMUTE DATA (Search setup > Commute) ================= */
-/* Which commute times the job pages can show. The keys are the admin's (admin.html, Server). */
+/* Which commute times the job pages can show. The keys are set in the Settings tab (Commute data). */
 async function loadCommuteAvailability() {
   let st;
   try { st = await api('/api/commute/status'); } catch { return; }
-  const who = isAdmin() ? 'add a free Transport for NSW key in the <a href="admin.html#server">admin panel</a>' : 'the admin of this JobHuntPA can add a free Transport for NSW key';
-  const who2 = isAdmin() ? 'a free TomTom key, added in the <a href="admin.html#server">admin panel</a>, adds peak-hour traffic' : 'the admin can add a free TomTom key for peak-hour traffic';
+  const who = 'add a free Transport for NSW key in <a href="#settings">Settings, Commute data</a>';
+  const who2 = 'a free TomTom key, added in <a href="#settings">Settings, Commute data</a>, adds peak-hour traffic';
   $('#commute-keys').innerHTML = `Public transport: ${st.transit ? '<span class="ok-text">available<span aria-hidden="true"> ✓</span></span>'
     : `not set up (${who})`}.
     Driving: ${st.traffic ? '<span class="ok-text">with peak traffic<span aria-hidden="true"> ✓</span></span>'
@@ -1632,16 +1632,14 @@ async function loadScorerStatus() {
   try {
     const s = await api('/api/score/status');
     const failing = s.configured && s.scored === 0 && s.errors > 0;
-    // Admins see the model and address; everyone else only whether AI works (accounts design §14.8).
-    const admin = isAdmin();
     badge.className = `api-status ${!s.configured || failing ? 'is-fail' : s.scored ? 'is-ok' : 'is-unknown'}`;
-    badge.innerHTML = `<span aria-hidden="true">● </span>${esc(!s.configured ? (admin ? 'LLM not configured' : 'AI not set up')
-      : failing ? (admin ? 'scorer: failing (admin panel, Server, Test connection)' : 'AI scoring failing (tell your admin)')
-        : `${admin ? s.model : 'AI ready'}${s.scored ? '' : ' (not verified yet)'}`)}`;
+    badge.innerHTML = `<span aria-hidden="true">● </span>${esc(!s.configured ? 'AI not set up (Settings)'
+      : failing ? 'scorer: failing (Settings, Test connection)'
+        : `${s.model}${s.scored ? '' : ' (not verified yet)'}`)}`;
     badge.title = `${s.scored} scored, ${s.errors} failed`;
     $('#scorer-info').innerHTML = `
       ${s.problem ? `<span class="err-text">${esc(s.problem)}</span><br>` : ''}
-      ${admin ? `Model <strong>${esc(s.model || '(LLM_MODEL not set)')}</strong> at ${esc(s.base_url || '(LLM_BASE_URL not set)')}${s.reasoning_effort ? ` · reasoning effort ${esc(s.reasoning_effort)}` : ''}<br>` : ''}
+      Model <strong>${esc(s.model || '(not set)')}</strong> at ${esc(s.base_url || '(no address set)')}${s.reasoning_effort ? ` · reasoning effort ${esc(s.reasoning_effort)}` : ''}<br>
       ${s.scored} scored · ${s.pending} waiting to be scored · ${s.stale} stale (documents changed) · ${s.errors} failed ·
       profile ${s.profile_chars.toLocaleString()} characters`;
   } catch (e) {
@@ -2436,16 +2434,12 @@ async function switchWorkspace(id) {
   loadAll();
 }
 
-/* What this account may see: the LLM and commute-key settings are the admin's, for everyone (accounts design
-   §14.8), and live in the admin panel (admin.html); here everyone sees whether AI and commute times are available,
-   and their own workspace's actions. */
+/* The signed-in account's header and reminders. There are no roles: the Settings tab's cards for the whole of this
+   JobHuntPA (frontend/server-settings.js) are everyone's. */
 function applyAccount(me) {
-  const admin = me.user.role === 'admin';
-  $$('[data-admin-only]').forEach((el) => { el.hidden = !admin; });
-  $$('[data-user-only]').forEach((el) => { el.hidden = admin; });
   initAccountMenu(me);
   remindRecoveryCodes(me);
-  remindLeftovers(me);
+  remindLeftovers();
   showSignInNotice();
 }
 

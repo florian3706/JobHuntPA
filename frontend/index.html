@@ -42,9 +42,9 @@
           <div id="account-menu" class="account-menu">
             <button id="account-btn" class="btn btn-ghost btn-sm" type="button" aria-expanded="false" aria-controls="account-panel">Account<span aria-hidden="true"> ▾</span></button>
             <div id="account-panel" class="account-panel" hidden>
-              <p class="account-who">Signed in as <strong id="account-email"></strong> <span id="account-role" class="scope-tag" hidden></span></p>
+              <p class="account-who">Signed in as <strong id="account-name"></strong></p>
               <ul class="account-links">
-                <li id="account-admin" hidden><a href="admin.html">Admin</a></li>
+                <li><a href="./#settings">Settings</a></li>
                 <li><button id="account-signout" class="btn btn-sm" type="button">Sign out</button></li>
               </ul>
             </div>
@@ -393,7 +393,7 @@
     <section id="tab-settings" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-settings" tabindex="0" hidden>
       <div class="panel-head">
         <h2>Settings</h2>
-        <span class="muted">Each card says whether it applies to this workspace or to all of them</span>
+        <span class="muted">Each card says what it applies to: this browser, this workspace, your account, or the whole of this JobHuntPA</span>
       </div>
 
       <div id="theme-card" class="card form-card theme-card-section">
@@ -446,15 +446,160 @@
         <div id="sched-status" class="sched-status"></div>
       </div>
 
+      <!-- This JobHuntPA's settings (frontend/server-settings.js). They serve every workspace; whoever is signed in may
+           change them (open-source spec §1.4). -->
+      <div class="card form-card install-card" id="llm-card">
+        <h3 id="llm-title">AI provider <span class="scope-tag">This JobHuntPA</span></h3>
+        <p class="hint">The AI that scores jobs, writes cover letters, researches companies and answers job chats. Bring your own
+          key: JobHuntPA sends your jobs and documents to this provider only when one of those features runs.</p>
+        <form id="llm-form" class="llm-form" autocomplete="off" novalidate aria-labelledby="llm-form-title">
+          <h4 id="llm-form-title">Provider, model and API key</h4>
+          <div class="form-grid">
+            <label class="field"><span class="field-label">Provider</span><select id="llm-provider"></select></label>
+            <label class="field"><span class="field-label">Model</span>
+              <input id="llm-model" type="text" list="llm-models" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Model name" required /></label>
+            <label class="field"><span class="field-label">API address</span>
+              <input id="llm-base-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://api.example.com/v1" required /></label>
+            <div class="field">
+              <label class="field-label" for="llm-key">API key</label>
+              <input id="llm-key" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" aria-describedby="llm-key-state" />
+              <div id="llm-key-state" class="key-state"></div>
+            </div>
+          </div>
+          <datalist id="llm-models"></datalist>
+          <p id="llm-note" class="hint"></p>
+          <p id="llm-key-hint" class="hint warn-text" hidden></p>
+          <div id="llm-web-notice" class="callout" role="note" hidden></div>
+          <div id="llm-error" class="error" role="alert" hidden></div>
+          <div class="toolbar-row">
+            <button id="llm-save" class="btn btn-primary" type="submit">Save<span class="visually-hidden"> the AI provider</span></button>
+            <span id="llm-save-status" class="muted" role="status"></span>
+          </div>
+        </form>
+        <div class="reasoning-settings">
+          <h4>Reasoning level</h4>
+          <p class="hint">Higher levels think longer: usually better results, but slower and more expensive.
+            The choices are the levels your model accepts; use <strong>Detect</strong> after changing model.</p>
+          <div class="form-grid">
+            <label class="field"><span class="field-label">Fit scoring</span><select data-task="scoring"></select></label>
+            <label class="field"><span class="field-label">Cover letters</span><select data-task="cover_letter"></select></label>
+            <label class="field"><span class="field-label">Company research</span><select data-task="research"></select></label>
+            <label class="field"><span class="field-label">Job chat</span><select data-task="chat"></select></label>
+          </div>
+          <div class="toolbar-row">
+            <button id="detect-levels" class="btn btn-sm" type="button">Detect supported levels</button>
+            <span id="levels-status" class="muted" role="status"></span>
+          </div>
+        </div>
+        <div class="toolbar-row llm-actions">
+          <button id="score-test" class="btn" type="button">Test connection</button>
+          <span id="score-test-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
       <div class="card form-card">
-        <h3>AI (scoring, cover letters, company research and job chat)</h3>
+        <h3>Fit scores <span class="scope-tag">This workspace</span></h3>
         <div id="scorer-info" class="muted"></div>
-        <p class="hint">The AI provider, model and keys are set by the admin of this JobHuntPA, for everyone who uses it<span data-admin-only hidden>:
-          open <a href="admin.html#server">the admin panel, Server</a></span>.
-          The buttons below rescore this workspace's jobs.</p>
+        <p class="hint">The buttons below rescore this workspace's jobs with the AI provider above.</p>
         <div class="toolbar-row llm-actions">
           <button id="score-stale" class="btn" type="button" title="Also rescore this workspace's jobs that were scored before your documents changed">Rescore stale</button>
           <button id="score-all" class="btn btn-ghost" type="button" title="Rescore every job in this workspace">Rescore all</button>
+        </div>
+      </div>
+
+      <section class="card form-card install-card" id="usage-card" aria-labelledby="usage-title">
+        <h3 id="usage-title">AI usage <span class="scope-tag">This JobHuntPA</span></h3>
+        <p class="hint">Requests and tokens sent to the AI provider, to compare with your provider's bill. Cached tokens are
+          prompt tokens the provider served from its cache, usually at a discount.</p>
+        <dl id="usage-tiles" class="tiles"></dl>
+        <div id="usage-tables"></div>
+        <p id="usage-status" class="muted" role="status"></p>
+      </section>
+
+      <div id="commute-keys-card" class="card form-card install-card">
+        <h3>Commute data <span class="scope-tag">This JobHuntPA</span></h3>
+        <p class="hint">Both keys are optional and free. They are saved in the <code>.env</code> file on this computer and work straight away,
+          with no restart. A saved key is never shown again in full, only its last few characters. Where the commute starts and when it
+          arrives is set under Search setup &gt; Commute.</p>
+        <div class="form-grid">
+          <form class="form-group key-field" data-key="tfnsw" autocomplete="off" novalidate>
+            <label for="key-tfnsw">Transport for NSW key (public transport times)</label>
+            <div class="key-state"></div>
+            <div class="key-row">
+              <input id="key-tfnsw" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> Transport for NSW key</span></button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> Transport for NSW key</span></button>
+            </div>
+            <small class="hint">Free: sign up at <a href="https://opendata.transport.nsw.gov.au" target="_blank" rel="noopener">opendata.transport.nsw.gov.au<span class="visually-hidden"> (opens in a new tab)</span></a>,
+              create an application, and copy its API key. Without it the job page shows driving only.</small>
+          </form>
+          <form class="form-group key-field" data-key="tomtom" autocomplete="off" novalidate>
+            <label for="key-tomtom">TomTom key (driving with peak traffic)</label>
+            <div class="key-state"></div>
+            <div class="key-row">
+              <input id="key-tomtom" class="key-input" type="password" autocomplete="new-password" spellcheck="false"
+                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" />
+              <button class="btn btn-primary btn-sm key-save" type="submit">Save<span class="visually-hidden"> TomTom key</span></button>
+              <button class="btn btn-ghost btn-sm key-clear" type="button">Clear<span class="visually-hidden"> TomTom key</span></button>
+            </div>
+            <small class="hint">Free: sign up at <a href="https://developer.tomtom.com" target="_blank" rel="noopener">developer.tomtom.com<span class="visually-hidden"> (opens in a new tab)</span></a>
+              and copy the default key. Without it, driving times come from OSRM's public server and ignore traffic (the job page says so).</small>
+          </form>
+        </div>
+        <div class="toolbar-row key-test">
+          <button id="keys-test" class="btn btn-sm" type="button" title="Makes one small real request to each service with the saved key">Test saved keys</button>
+          <span id="keys-test-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
+      <form id="address-card" class="card form-card install-card" autocomplete="off" novalidate aria-labelledby="address-title">
+        <h3 id="address-title">Public address and host names <span class="scope-tag">This JobHuntPA</span></h3>
+        <p class="hint">Only for using JobHuntPA from other devices, through an HTTPS proxy on this computer such as
+          <code>tailscale serve</code> (the README's "Using it from your phone or other computers" has the steps). Leave both
+          empty when you only use it on this computer.</p>
+        <div class="form-grid">
+          <div class="field">
+            <label class="field-label" for="public-url">Public address</label>
+            <input id="public-url" type="url" inputmode="url" autocapitalize="off" spellcheck="false"
+                   placeholder="https://jobs.example.com" aria-describedby="public-url-hint" />
+            <small id="public-url-hint" class="hint">The https:// address other devices open. Sign-in cookies are then marked secure, and
+              pages at that address are accepted. Changing it may sign this browser out.</small>
+          </div>
+          <div class="field">
+            <label class="field-label" for="allowed-hosts">More host names</label>
+            <input id="allowed-hosts" type="text" autocapitalize="off" spellcheck="false"
+                   placeholder="pi.tail1234.ts.net" aria-describedby="allowed-hosts-hint" />
+            <small id="allowed-hosts-hint" class="hint">Other names this computer is reached by, separated by commas (no http://, port or
+              path). IP addresses always work.</small>
+          </div>
+        </div>
+        <div id="address-error" class="error" role="alert" hidden></div>
+        <div class="toolbar-row">
+          <button id="address-save" class="btn btn-primary" type="submit">Save<span class="visually-hidden"> the public address and host names</span></button>
+          <span id="address-status" class="muted" role="status"></span>
+        </div>
+      </form>
+
+      <div class="card form-card install-card" id="rotate-card">
+        <h3>Server key <span class="scope-tag">This JobHuntPA</span></h3>
+        <p>The server key protects the keys JobHuntPA keeps for background searches. Replacing it
+          moves all of them to a new key and drops the old one. Do it if the <code>data</code> folder or a backup of it
+          may have been copied by someone else. It asks for your password and takes a few seconds.</p>
+        <div class="toolbar-row">
+          <button id="rotate-key" class="btn" type="button">Replace the server key</button>
+          <span id="rotate-status" class="muted" role="status"></span>
+        </div>
+      </div>
+
+      <div class="card form-card install-card" id="plain-card" hidden>
+        <h3>Unencrypted copies of data <span class="scope-tag">This JobHuntPA</span></h3>
+        <p id="plain-summary" class="muted" role="status" tabindex="-1"></p>
+        <div id="plain-details"></div>
+        <div class="toolbar-row">
+          <button id="plain-delete" class="btn btn-primary" type="button" hidden>Delete these files now</button>
+          <span id="plain-status" class="muted" role="status"></span>
         </div>
       </div>
 
@@ -525,6 +670,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="./common.js"></script>
   <script src="./app.js"></script>
+  <script src="./server-settings.js"></script>
   <script src="./account.js"></script>
   <script src="./export.js"></script>
   <script src="./background.js"></script>

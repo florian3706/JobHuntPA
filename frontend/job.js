@@ -208,8 +208,8 @@ function carHtml(c, label) {
   return `<div class="trip"><strong>${label}</strong> ${when}<strong>${minutes(c.minutes)}</strong>${traffic} · ${c.km} km</div>`;
 }
 
-// A commute note may point to the admin panel (API keys): make that a link.
-const noteHtml = (n) => esc(n).replace('the admin panel', isAdmin() ? `<a href="admin.html#server" target="_blank" rel="noopener">the admin panel${NEW_TAB}</a>` : 'the admin panel');
+// A commute note may point to the Settings tab (API keys): make that a link.
+const noteHtml = (n) => esc(n).replace('Settings (Commute data)', `<a href="./#settings" target="_blank" rel="noopener">Settings (Commute data)${NEW_TAB}</a>`);
 
 async function loadCommute() {
   const box = $('#job-commute');

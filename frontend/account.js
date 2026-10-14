@@ -1,6 +1,6 @@
-/* JobHuntPA: the account cards on the Settings tab (accounts design, sections 3 and 6): change password, recovery
-   codes, sign out everywhere else, and delete account. They apply to the signed-in account, in
-   every workspace.
+/* JobHuntPA: the account cards on the Settings tab (accounts design, sections 3 and 6): the name you sign in with,
+   change password, recovery codes, sign out everywhere else, and delete account (or, for the install's only account,
+   how to start over with the reset tool). They apply to the signed-in account, in every workspace.
 
    - Everything that needs a recent sign-in goes through withRecentAuth() (common.js), which asks for the password in
      the "Confirm your password" dialog. Where a form already has the password in it, that is used first, so nobody
@@ -16,7 +16,7 @@
   const NO_RECENT = 'Your password was not confirmed, so nothing was changed.';
 
   const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) });
-  const email = () => SESSION.me?.user?.email || '';
+  const userName = () => SESSION.me?.user?.name || '';
   /* The result is also announced through the page's permanent live region: the card's own status region is hidden while
      empty, and text that arrives together with its display is often not read. */
   const say = (id, text) => { setText(document.getElementById(id), text); if (text) announce(text); };
@@ -44,30 +44,23 @@
 
   /* A hidden username field, so a password manager files the password under this account. */
   const usernameField = () => `<input class="visually-hidden" type="text" autocomplete="username" tabindex="-1" readonly
-    aria-hidden="true" aria-label="Email address" value="${esc(email())}" />`;
+    aria-hidden="true" aria-label="Name" value="${esc(userName())}" />`;
 
   const errorBox = '<div class="error acct-error" hidden></div>';
 
   function mount() {
     $('#account-security-slot').innerHTML =
-      card('acct-pw', 'Password', 'Changing it keeps all your data. It is never sent anywhere, and JobHuntPA can\'t show it to you.')
+      card('acct-name', 'Your name', 'The name you sign in with. Capitals and spaces around it don\'t matter when you sign in.')
+      + card('acct-pw', 'Password', 'Changing it keeps all your data. It is never sent anywhere, and JobHuntPA can\'t show it to you.')
       + card('acct-rc', 'Recovery codes', 'If you forget your password, a recovery code sets a new one and keeps your data. It is the only way back in: keep them safe. Each code works once.')
       + card('acct-ses', 'Signed-in devices');
     $('#account-delete-slot').innerHTML =
       `<div id="acct-del-card" class="card form-card account-card account-danger">
         <div class="card-head"><h3 id="acct-del-heading" tabindex="-1">Delete account <span class="scope-tag">This account</span></h3></div>
-        <p>This deletes your account and everything in it: your workspaces, jobs, documents and the files you uploaded, chats,
-          cover letters, search settings, keys and sign-ins. <strong>It can't be undone.</strong> Job postings and company
-          research that everyone shares stay, because they hold nothing of yours.</p>
-        <form id="acct-del-form" class="account-form" novalidate>
-          ${usernameField()}
-          ${pwField('acct-del-password', 'Your password', 'current-password')}
-          ${errorBox}
-          <button id="acct-del-submit" class="btn btn-danger" type="submit">Delete my account</button>
-        </form>
+        <div id="acct-del-body"><p class="muted">Loading…</p></div>
         <p id="acct-del-status" class="account-status" role="status"></p>
       </div>`;
-    $('#acct-del-form').addEventListener('submit', deleteAccount);
+    renderDelete();
     for (const slot of ['#account-security-slot', '#account-delete-slot']) {
       $(slot).addEventListener('click', (e) => {
         const btn = e.target.closest('.pw-toggle');
@@ -140,9 +133,44 @@
   }
 
   function renderAll() {
+    renderName();
     renderPassword();
     renderCodes();
     renderSessions();
+  }
+
+  /* ---------- the sign-in name ---------- */
+  function renderName() {
+    $('#acct-name-body').innerHTML = `<form id="acct-name-form" class="account-form" novalidate>
+      <div class="auth-field">
+        <label for="acct-name-input">Name</label>
+        <p id="acct-name-hint" class="hint">Changing it needs your password, and you sign in with the new name from then on. Your data and password stay as they are.</p>
+        <input id="acct-name-input" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" maxlength="254"
+               aria-describedby="acct-name-hint" value="${esc(userName())}" required />
+      </div>
+      ${errorBox}
+      <div><button id="acct-name-submit" class="btn" type="submit">Change name</button></div>
+    </form>`;
+    $('#acct-name-form').addEventListener('submit', changeName);
+  }
+
+  async function changeName(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const input = $('#acct-name-input');
+    clearForm(form);
+    const value = input.value.trim();
+    if (!value) { setFieldError(input, 'Enter the name you want to sign in with.'); return; }
+    if (value === userName()) { say('acct-name-status', 'That is your name already.'); return; }
+    say('acct-name-status', '');
+    await guarded(form, $('#acct-name-submit'), { name: input }, async () => {
+      const res = await withRecentAuth(() => api('/api/auth/name', { method: 'PUT', body: JSON.stringify({ name: value }) }));
+      if (SESSION.me?.user) SESSION.me.user.name = res.name;
+      setText(document.getElementById('account-name'), res.name);
+      renderName();
+      document.getElementById('acct-name-heading')?.focus(); // the button that had focus was replaced
+      say('acct-name-status', `Saved. From now on you sign in as ${res.name}.`);
+    });
   }
 
   /* ---------- password ---------- */
@@ -189,13 +217,9 @@
     if (!sec) return;
     const left = sec.recovery_codes_left;
     const pending = sec.recovery_codes_pending;
-    const old = sec.recovery_codes_old
-      ? `<p class="callout" role="note"><strong>Make new codes.</strong> Your codes were made before the admin key got its own
-        protection. Resetting your password with one of them keeps your data, but you would then need another admin to share
-        the admin key with you again.</p>` : '';
     $('#acct-rc-body').innerHTML = `<p>${pending
       ? '<strong>You haven\'t saved your new codes yet.</strong> <a href="first-run.html">Show my recovery codes</a>'
-      : `You have <strong>${left} of 8</strong> recovery codes left.`}</p>${old}
+      : `You have <strong>${left} of 8</strong> recovery codes left.`}</p>
       <p class="hint">Making new codes replaces all eight at once, including any you haven't used. You then see them once, to copy, download or print. Because a code can set a new password, you enter your password.</p>
       <form id="acct-rc-form" class="account-form" novalidate>
         ${usernameField()}
@@ -246,6 +270,33 @@
   }
 
   /* ---------- delete account ---------- */
+  // The install's only account can't be deleted here (nothing over the web wipes JobHuntPA): the card says how to
+  // start over with the reset tool instead. An older install with several accounts can delete all but the last.
+  async function renderDelete() {
+    let allowed = false;
+    try { allowed = (await api('/api/account/delete')).allowed; } catch { /* shown as the only account */ }
+    const body = $('#acct-del-body');
+    if (!allowed) {
+      body.innerHTML = `<p>This is the only account on this JobHuntPA, so it can't be deleted here. To start over, first use
+          <strong>Download your data</strong> above if you want to keep anything, then stop JobHuntPA and run the reset tool on the
+          computer it runs on: <code>reset.sh</code> on Linux, <strong>Reset JobHuntPA.command</strong> on a Mac, or
+          <strong>Reset JobHuntPA</strong> in the Windows Start menu. It deletes the account and everything in it, keeps the
+          settings (such as the AI provider and its key), and opens the first run again.</p>
+        <p class="hint">The reset tool is also the way back in if you lose your password and every recovery code.</p>`;
+      return;
+    }
+    body.innerHTML = `<p>This deletes your account and everything in it: your workspaces, jobs, documents and the files you uploaded,
+        chats, cover letters, search settings, keys and sign-ins. <strong>It can't be undone.</strong> Job postings and company
+        research that every account shares stay, because they hold nothing of yours.</p>
+      <form id="acct-del-form" class="account-form" novalidate>
+        ${usernameField()}
+        ${pwField('acct-del-password', 'Your password', 'current-password')}
+        ${errorBox}
+        <button id="acct-del-submit" class="btn btn-danger" type="submit">Delete my account</button>
+      </form>`;
+    $('#acct-del-form').addEventListener('submit', deleteAccount);
+  }
+
   async function deleteAccount(e) {
     e.preventDefault();
     const form = e.currentTarget;

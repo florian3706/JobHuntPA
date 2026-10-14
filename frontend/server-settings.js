@@ -1,10 +1,15 @@
-/* JobHuntPA admin panel, Server section: the AI provider, model, key and reasoning levels, the connection test, and
-   the commute API keys (accounts design §7 and §14.8). They are global for everyone who uses this JobHuntPA and
-   were on the dashboard's Settings tab before the admin panel existed. Loaded by admin.html after common.js; the
-   markup it fills is in admin.html. */
+/* JobHuntPA Settings tab, the cards for the whole of this JobHuntPA (open-source spec §1.4): the AI provider, model,
+   key and reasoning levels with the connection test, the AI usage figures, the commute API keys, the public address
+   and extra host names, the server key and the unencrypted copies left from before encryption. They serve every
+   workspace, and whoever is signed in may change them (there are no roles). Loaded by index.html after common.js and
+   app.js; the markup it fills is in index.html's Settings tab.
+
+   WCAG 2.2 notes: every field has a label and its hint is tied to it (aria-describedby); results are said in the
+   card's status line (role="status") and in toasts; errors go under the field (setFieldError) or in a role="alert"
+   box; the usage tables have captions and header scopes and become cards on narrow screens (.stack-table). */
 'use strict';
 
-/* ================= LLM SETTINGS (admin panel > Server) ================= */
+/* ================= LLM SETTINGS (Settings > AI provider) ================= */
 const LEVEL_LABEL = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 let levelsAutoDetected = false;
 
@@ -59,7 +64,7 @@ function initLlmSettings() {
   }));
 }
 
-/* ---------- LLM provider, address, model and key (admin panel > Server) ---------- */
+/* ---------- LLM provider, address, model and key (Settings > AI provider) ---------- */
 // The server never sends the saved key back: only whether one is set and its last characters.
 let llmCfg = null; // the provider, address, model and key state (/api/settings/llm), with the provider presets
 const llmPreset = (id) => llmCfg?.presets.find((p) => p.id === id);
@@ -164,7 +169,7 @@ function initLlmProvider() {
   $('#llm-form').addEventListener('submit', saveLlmProvider);
 }
 
-/* ================= API KEYS (admin panel > Server) ================= */
+/* ================= API KEYS (Settings > Commute data) ================= */
 // The server never sends a saved key back, only whether one is set and its last characters.
 const KEY_LABEL = { tfnsw: 'Transport for NSW', tomtom: 'TomTom' };
 const keyField = (name) => document.querySelector(`.key-field[data-key="${name}"]`);
@@ -233,10 +238,8 @@ function initCommuteKeys() {
       setFieldError(input, '');
       putCommuteKey(name, value);
     });
-    box.querySelector('.key-clear').addEventListener('click', async (e) => {
-      const clear = e.currentTarget;
-      if (await confirmDialog({ title: `Remove the ${KEY_LABEL[name]} key?`, ok: 'Remove key', returnTo: () => clear,
-        text: 'Commute times stop working until you save a key again.' })) putCommuteKey(name, '');
+    box.querySelector('.key-clear').addEventListener('click', () => {
+      if (confirm(`Remove the ${KEY_LABEL[name]} key? Commute times stop working until you save a key again.`)) putCommuteKey(name, '');
     });
   });
   $('#keys-test').addEventListener('click', testCommuteKeys);
@@ -252,3 +255,141 @@ async function testScorer() {
   } catch (e) { out.innerHTML = `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(e.message)}</span>`; }
 }
 
+/* ================= AI USAGE (Settings > AI usage) ================= */
+const num = (n) => Number(n || 0).toLocaleString();
+const pct = (rate) => (rate === null || rate === undefined ? '–' : `${Math.round(rate * 100)}%`);
+const TASK_LABEL = {
+  scoring: 'Fit scoring', research: 'Company research', cover_letter: 'Cover letters', chat: 'Job chat',
+  concise: 'Concise documents', summary: 'Document summaries', title_suggestions: 'Job title suggestions',
+  offices: 'Finding offices', office_from_ad: 'Reading offices from ads', other: 'Other',
+};
+const taskLabel = (t) => TASK_LABEL[t] || String(t || 'other').replace(/_/g, ' ');
+
+function usageTable(caption, rows) {
+  if (!rows.length) return '<p class="muted">No AI requests yet.</p>';
+  const heads = ['Task', 'Requests', 'Input tokens', 'Output tokens', 'Cached tokens'];
+  const body = rows.map((r) => `<tr role="row"><th role="rowheader" scope="row" data-label="Task">${esc(r.name)}</th>${
+    [num(r.f.requests), num(r.f.input), num(r.f.output), `${num(r.f.cached)} (${pct(r.f.cache_hit_rate)})`]
+      .map((v, i) => `<td role="cell" data-label="${esc(heads[i + 1])}">${v}</td>`).join('')}</tr>`).join('');
+  return `<table class="report stack-table usage-table" role="table"><caption class="visually-hidden">${esc(caption)}</caption>
+    <thead role="rowgroup"><tr role="row">${heads.map((h) => `<th role="columnheader" scope="col">${esc(h)}</th>`).join('')}</tr></thead>
+    <tbody role="rowgroup">${body}</tbody></table>`;
+}
+
+async function loadUsage() {
+  const status = $('#usage-status');
+  let u;
+  try { u = await api('/api/settings/usage'); } catch (e) { setText(status, `Could not load the figures: ${e.message}`); return; }
+  setText(status, u.since ? `Counted since ${new Date(u.since).toLocaleDateString([], { dateStyle: 'medium' })}.` : '');
+  const tile = (name, f) => `<div class="tile"><dt>${esc(name)}</dt><dd>${num(f.requests)}<span class="tile-hint"> requests,
+    ${num(f.input + f.output)} tokens</span></dd></div>`;
+  $('#usage-tiles').innerHTML = tile('Last 7 days', u.last_7_days) + tile('Last 30 days', u.last_30_days) + tile('In all', u.totals);
+  const rows = (which) => u.by_task.filter((t) => t[which].requests).map((t) => ({ name: taskLabel(t.task), f: t[which] }));
+  $('#usage-tables').innerHTML = u.totals.requests ? `
+    <h4>By task, last 30 days</h4>${usageTable('AI use by task, last 30 days', rows('last_30_days'))}
+    <details class="usage-days"><summary>By task, in all</summary>${usageTable('AI use by task, in all', rows('totals'))}</details>`
+    : '<p class="muted">No AI requests yet.</p>';
+}
+
+/* ================= PUBLIC ADDRESS AND HOST NAMES (Settings) ================= */
+function renderAddress(st) {
+  $('#public-url').value = st.public_base_url || '';
+  $('#allowed-hosts').value = (st.allowed_hosts || []).join(', ');
+}
+
+async function loadAddress() {
+  try { renderAddress(await api('/api/settings/address')); }
+  catch (e) { setText($('#address-status'), `Could not load the address settings: ${e.message}`); }
+}
+
+async function saveAddress(e) {
+  e.preventDefault();
+  const err = $('#address-error');
+  err.hidden = true;
+  setFieldError($('#public-url'), '');
+  setFieldError($('#allowed-hosts'), '');
+  const url = $('#public-url').value.trim().replace(/\/+$/, '');
+  if (url && !/^https?:\/\//i.test(url)) {
+    setFieldError($('#public-url'), 'Start the address with https:// (http:// only for localhost), like https://jobs.example.com.');
+    return;
+  }
+  const names = $('#allowed-hosts').value.split(/[\s,]+/).map((n) => n.trim()).filter(Boolean);
+  if (names.some((n) => n.includes('/') || n.includes(':'))) {
+    setFieldError($('#allowed-hosts'), 'Give the names alone, like pi.tail1234.ts.net: no http://, port or path.');
+    return;
+  }
+  const btn = $('#address-save');
+  setBusy(btn, true);
+  setText($('#address-status'), 'Saving…');
+  try {
+    renderAddress(await api('/api/settings/address', { method: 'PUT', body: JSON.stringify({ public_base_url: url, allowed_hosts: names }) }));
+    setText($('#address-status'), 'Saved. It works straight away.');
+  } catch (ex) {
+    setText($('#address-status'), '');
+    showError(err, `Not saved: ${ex.message}`);
+  }
+  setBusy(btn, false);
+}
+
+/* ================= SERVER KEY AND UNENCRYPTED COPIES (Settings) ================= */
+async function rotateKey() {
+  if (!confirm('Replace the server key? JobHuntPA moves the keys for background searches to a new server key and drops '
+    + 'the old one. Nobody is signed out. If it can\'t move everything, the old key is kept and nothing is lost. You may '
+    + 'be asked for your password.')) return;
+  const btn = $('#rotate-key');
+  setBusy(btn, true);
+  setText($('#rotate-status'), 'Replacing the key…');
+  try {
+    const out = await withRecentAuth(() => api('/api/settings/server-key/rotate', { method: 'POST', body: '{}' }));
+    if (out) setText($('#rotate-status'), `Done. ${num(out.rewrapped)} ${out.rewrapped === 1 ? 'key was' : 'keys were'} moved to the new server key.`);
+    else setText($('#rotate-status'), 'Not replaced.');
+  } catch (e) { setText($('#rotate-status'), `Not replaced: ${e.message}`); }
+  setBusy(btn, false);
+}
+
+async function loadPlaintext() {
+  let p;
+  try { p = await api('/api/settings/leftovers'); } catch { return; }
+  const card = $('#plain-card');
+  card.hidden = !p.leftovers.length;
+  if (!p.leftovers.length) return;
+  setText($('#plain-summary'), `${p.leftovers.length === 1 ? 'A file' : `${p.leftovers.length} files`} from before encryption still ${p.leftovers.length === 1 ? 'holds' : 'hold'} your data unencrypted.`);
+  $('#plain-details').innerHTML = `<p class="hint">Backups made before encryption and the old page cache. You only need the backup to go back to an older version of JobHuntPA. Delete the <code>.bak-*</code> files you don't need: they also hold keys from before, and anyone who gets them with the key file can read what they held.</p>
+    <ul class="leftover-files">${p.leftovers.map((f) => `<li><code>${esc(f.path)}</code> (${esc(fmtBytes(f.bytes))})</li>`).join('')}</ul>`;
+  $('#plain-delete').hidden = false;
+}
+
+async function deletePlaintext() {
+  const btn = $('#plain-delete');
+  if (!confirm('Delete the unencrypted files? They are overwritten and removed. Without the backup, you can\'t go back to an older version of JobHuntPA.')) return;
+  setBusy(btn, true);
+  setText($('#plain-status'), 'Deleting…');
+  try {
+    const out = await withRecentAuth(() => api('/api/settings/leftovers/delete', { method: 'POST', body: '{}' }));
+    if (out) {
+      setText($('#plain-status'), out.leftovers.length ? `${out.leftovers.length} file(s) could not be deleted. Check the data folder's permissions.` : `Deleted ${num(out.deleted.length)} file(s).`);
+      await loadPlaintext();
+    } else setText($('#plain-status'), 'Not deleted.');
+  } catch (e) { setText($('#plain-status'), `Not deleted: ${e.message}`); }
+  setBusy(btn, false);
+  ($('#plain-delete').hidden ? $('#plain-summary') : $('#plain-delete')).focus?.();
+}
+
+/* ================= boot ================= */
+document.addEventListener('DOMContentLoaded', async () => {
+  if (!$('#llm-card')) return;
+  initLlmSettings();
+  initLlmProvider();
+  initCommuteKeys();
+  $('#score-test').addEventListener('click', testScorer);
+  $('#address-card').addEventListener('submit', saveAddress);
+  $('#rotate-key').addEventListener('click', rotateKey);
+  $('#plain-delete').addEventListener('click', deletePlaintext);
+  try { if (!(await loadSession())) return; } catch { return; } // (app.js shows why; signed out goes to sign-in)
+  loadLlmProvider();
+  loadLlmSettings();
+  loadCommuteKeys();
+  loadUsage();
+  loadAddress();
+  loadPlaintext();
+});
