@@ -2,7 +2,8 @@
 
 One account goes through the whole app, end to end, with the network and the AI service mocked: sign-up, the search
 profile, documents, a search (mocked sources returning planted ads), scoring, chat, a cover letter, company research,
-the browser extension, a data export (in every file type) and its import, a scheduled search, and a password reset
+the browser extension, a data export (in every file type) and its import, merged and unmerged ads, a copied
+workspace, a password change, new recovery codes shown again, a scheduled search, and a password reset
 with a recovery code (and, in a process of its own, the first run's folder step). Every personal field holds a planted marker (``ZQX``), and every secret the run makes
 (passwords, recovery codes, session and CSRF tokens, extension keys) is collected. Logging is captured at DEBUG for every logger, with the
 text of each record formatted the way a log file would show it, tracebacks included, and then none of the markers or
@@ -296,6 +297,7 @@ class FullRun(unittest.TestCase):
             self.when_things_fail(c)
             self.with_claude(c)
             self.export(c)
+            self.merges_a_copy_and_the_password(c)
             self.scheduled_search_and_recovery(c, notice)
         everything = "\n".join(log.lines + [printed.getvalue()])
         self.assertGreater(len(log.lines), 100, "the capture saw almost nothing")
@@ -643,6 +645,49 @@ class FullRun(unittest.TestCase):
         r = c.post("/api/account/import", content=out.getvalue(), headers=headers, params={"pick": "0"})
         self.assertEqual(r.status_code, 422, r.text)
         self.assertNotIn("ZQX", r.text)
+
+    def merges_a_copy_and_the_password(self, c):
+        """Two planted ads merged and unmerged (by hand and as a suggested pair), a workspace copied from this one with
+        its documents, the password changed (planted old and new values) and changed back, and new recovery codes
+        made and shown again with the password."""
+        jobs = [j for j in c.get("/api/jobs?include=excluded,hidden").json() if not j.get("duplicate_of")]
+        self.assertGreaterEqual(len(jobs), 2, "two planted ads to merge")
+        a, b = jobs[0]["id"], jobs[1]["id"]
+        r = c.post("/api/jobs/merge", json={"ids": [a, b]})
+        self.assertEqual(r.status_code, 200, r.text)
+        other = b if r.json()["id"] == a else a
+        self.assertEqual(c.post(f"/api/jobs/{other}/unmerge").status_code, 200)
+        for decision in ("merge", "distinct"):
+            r = c.post("/api/duplicates/decide", json={"a": a, "b": b, "decision": decision})
+            self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(c.get("/api/duplicates").status_code, 200)
+
+        ws = c.get("/api/workspaces").json()[0]["id"]
+        r = c.post("/api/workspaces", json={"name": "ZQX copied search", "copy_from": ws, "copy_documents": True})
+        self.assertEqual(r.status_code, 201, r.text)
+
+        changed = "zqx-changed-password-3"
+        r = c.post("/api/auth/password", json={"current_password": "zqx wrong current", "new_password": changed,
+                                                "sign_out_others": False})
+        self.assertEqual(r.status_code, 422, r.text)
+        r = c.post("/api/auth/password", json={"current_password": PASSWORD, "new_password": changed,
+                                                "sign_out_others": False})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = c.post("/api/auth/password", json={"current_password": changed, "new_password": PASSWORD,
+                                                "sign_out_others": False})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.secrets.update(changed_password=changed, wrong_current="zqx wrong current")
+
+        r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD})
+        self.assertEqual(r.status_code, 200, r.text)
+        codes = r.json()["recovery_codes"]
+        self.assertEqual(c.post("/api/auth/recovery-codes/show", json={"password": "zqx wrong password"}).status_code,
+                         422)
+        r = c.post("/api/auth/recovery-codes/show", json={"password": PASSWORD})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["codes"], codes)
+        self.secrets.update({f"recovery_code_{i}": code for i, code in enumerate(codes)})
+        ratelimit.reset_all()  # (the two wrong passwords above would otherwise slow the sign-ins of the last step)
 
     def scheduled_search_and_recovery(self, c, notice):
         # Background access (so scheduled runs can open the data), then a scheduled run.

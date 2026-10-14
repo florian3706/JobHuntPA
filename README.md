@@ -331,7 +331,7 @@ ticked workspaces**.
 ### How your data is protected
 
 Your searches, documents and jobs are **encrypted with a key that only your password or a recovery
-code can unlock**. Someone who copies the database, its backups or the `data/` folder can't read
+code can unlock**. Someone who copies the database, its backups or the [data folder](#where-your-data-lives) can't read
 them by looking, not even the person who runs this JobHuntPA, unless you allow background access
 (below). That is the whole promise: it protects data at rest. It does not stop someone who changes the
 running app or reads its memory (see *The limits*), and it is not a promise about anything outside
@@ -350,7 +350,7 @@ JobHuntPA, such as your AI provider.
   yours, such as a full ad you uploaded or a job imported from a saved page (its address too);
 - fit scores and their evidence, cover letters, chats, and what each search run found;
 - your documents and notes (title, text and concise version), and **uploaded files**: they are
-  stored encrypted (`data/uploads/*.sealed`), and their text is read in memory, never written out;
+  stored encrypted (`uploads/*.sealed` in the [data folder](#where-your-data-lives)), and their text is read in memory, never written out;
 - company careers pages you added and your theme.
 
 Even whether a job is hidden or excluded doesn't show: those fields are always stored encrypted,
@@ -394,7 +394,7 @@ printed on purpose, and the traceback of an unhandled error (a bug) could name d
 - **Old copies of a key** (a spent recovery code, or background access you turned off) can stay in the database's log file
   for a short while until it is cleaned up; JobHuntPA checks every 10 minutes. On SSDs and SD cards, deleted
   data may linger in storage the disk manages itself.
-- **Other accounts on the same computer** can't read the `data/` folder, the database or its backups:
+- **Other accounts on the same computer** can't read the [data folder](#where-your-data-lives), the database or its backups:
   JobHuntPA makes them readable by you only (on Windows it relies on the folder's permissions). The
   computer's administrator (root) and you can still read everything.
 
@@ -489,7 +489,7 @@ web apps.
 
 **The server key** (`server-keys.json` in the data folder) protects the keys kept for background searches. *Replace the
 server key* (Settings > Server key, with your password) moves them all to a new one and drops the old one; if
-something can't be moved, the old key is kept and nothing is lost. Do it if the `data` folder or a backup of it
+something can't be moved, the old key is kept and nothing is lost. Do it if the [data folder](#where-your-data-lives) or a backup of it
 may have been copied by someone else. You can also run `python -m backend.keys rotate-kek` with JobHuntPA
 stopped. The app holds a lock on its key file for as long as it runs, however it was started, and these
 commands refuse while they can't get it (if the launcher's `running.json` in the data folder is left over from a
@@ -875,8 +875,8 @@ throws away the whole reading.
 **When the app finds no jobs on a page**, the [browser extension](#browser-extension) can have the AI work
 out where the page lists them: open the careers page in your browser and use the extension's **Add as a
 company source**. JobHuntPA first reads the page the usual ways; if they find nothing, the extension sends it
-a trimmed outline of the page (element names, a few attributes and short text samples; no scripts, styles or
-form values) and the AI says, as selectors, where each job, its title and its link are. JobHuntPA then reads
+a trimmed outline of the page (element names, a few attributes and short text samples; never the page's HTML, scripts,
+styles, anything hidden on it or form values) and the AI says, as selectors, where each job, its title and its link are. JobHuntPA then reads
 the page **itself** with that layout and the extension shows you the jobs it found; only when you accept is
 the source saved, with its layout. Searches and **Test** read it the same way (the source says *Read with a
 page layout the AI worked out*). If the site changes and the layout finds nothing, the usual ways are tried
@@ -906,11 +906,16 @@ The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your curr
 - **Add as a job**: the extension reads the ad you are looking at, shows what it found (title, employer,
   location, salary, employment type, work mode, description) so you can correct it, and saves it as your own
   job in the workspace you pick, like an imported page. It reads the page in your own browser, on your own
-  machine, so ads behind a sign-in work too, and it sends JobHuntPA only the job: those values and the
-  description as plain text. The page itself (its HTML, the rest of its text, anything else you are signed in
-  to) never leaves your browser. Select the ad's text first to use only that as the description. A job you
-  already have (the same address) is brought up to date instead of added twice, and the popup tells you before
-  you save. If your filters leave the saved job out of the Jobs list (for example a location or keyword you
+  machine, so ads behind a sign-in work too, and it sends JobHuntPA only the job: the page address, those
+  values, the posting date and the description as plain text. Opening the popup on a page already sends them, to
+  ask whether you have the job (nothing is saved until you press **Save job**). The description is the page's own
+  job description where the extension finds one (the page's job data, or the description element of a site it
+  knows); otherwise it is the visible text of the page's main part, or of the whole page, and the form shows you
+  which. Select the ad's text first to send only that as the description. The page's HTML, its scripts, styles
+  and cookies, what you typed into its forms, other tabs and anything while the popup is closed never leave your
+  browser. **Work out a site** and **Add as a company source** send a trimmed outline of the page instead
+  (below). A job you already have (the same address) is brought up to date instead of added twice, and the popup
+  tells you before you save. If your filters leave the saved job out of the Jobs list (for example a location or keyword you
   excluded), JobHuntPA tells the extension why; tick **Show excluded** in the Jobs tab to see it.
 - **Jobs on this page**: on a SEEK search results page the popup lists every job on the page with a tick
   box and adds the ticked ones in one go. It works on whichever view you have open in your own, signed-in
@@ -935,7 +940,8 @@ button on its card, like the jobs of JobHuntPA's own SEEK search.
 - **Work out a site** (version 1.3 of the extension): when the extension can't find a job's title and
   description on a job site, the popup offers to have the AI work the site out. The extension sends JobHuntPA a
   trimmed outline of the page (element names, a few attributes such as `id` and `class`, and short text
-  samples, capped in size; never scripts, styles or what you typed into forms), JobHuntPA asks your AI
+  samples, capped in size; never the page's HTML, scripts, styles, anything hidden on it or the text of its
+  form fields), JobHuntPA asks your AI
   provider which parts of the page hold the title, company, location, salary, employment type, work mode,
   date and description, and checks that the answer is only selectors. The popup shows you the job it finds;
   once you accept, the layout is saved for that site and used from then on. If a saved layout stops finding a
@@ -1258,7 +1264,8 @@ Tests: `python3 -m unittest discover -s tests -t .`
 **Accounts in development and CI:** `JOBHUNT_ADMIN_EMAIL` (the account's name) and `JOBHUNT_ADMIN_PASSWORD` in
 the process environment (not `.env`) create the install's one account at start-up, which is how CI signs in
 (`/api/auth/login`, then the session cookie). Every `/api` route needs a session except
-`/api/health`, the sign-in endpoints and the first run's (they take its one-time token); the browser extension's
+`/api/health`, `/api/auth/state`, sign-in and sign-out (`/api/auth/login`, `/api/auth/recover`,
+`/api/auth/logout`) and the first run's (`/api/auth/first-run` and the data-folder step; they take its one-time token); the browser extension's
 routes also take its key. `tests/test_route_access.py` lists who may call each route, and a new endpoint fails it
 until it is listed there. POST, PUT, PATCH and DELETE also need the page's
 `X-CSRF-Token` (from `/api/auth/me`) and must not come from another site. The tests run on a throwaway

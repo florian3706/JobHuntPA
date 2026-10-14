@@ -160,7 +160,7 @@ process-only random key (never on disk) ─► http_cache
 - **API:**
   - `blind_index(purpose, value) -> bytes`: `HMAC(index_key, purpose\0value)[:16]`.
   - `wrap`/`unwrap(kek, secret, aad)`.
-  - `seal_to(pub, plain, aad)`/`open_sealed(priv, blob, aad)`.
+  - (Retired) `seal_to(pub, plain, aad)`/`open_sealed(priv, blob, aad)`, the sealed box (version byte `0x02`, label prefix `jh-box|`) of the admin panel's copies of personal details: removed with the panel; never reuse the byte or the prefix.
   - `seal_file(data, path, aad)`/`open_file(path, aad)`.
   - `submit(pool, fn, *args)`, which is `pool.submit(contextvars.copy_context().run, fn, *args)`.
 - **Threads.** `tasks.start` captures `copy_context()` and runs the job inside it. The scorer's thread pool must use `crypto.submit`. The research and office-lookup thread pools write only to shared plaintext tables, but use `crypto.submit` anyway for consistency.
