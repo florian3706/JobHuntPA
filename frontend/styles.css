@@ -939,6 +939,8 @@ summary { cursor: pointer; min-height: 24px; }
 .error-summary h2 { font-size: 16px; color: var(--danger); margin: 0 0 6px; }
 .error-summary ul { margin: 0; padding-left: 20px; }
 .error-summary a { color: var(--danger); font-weight: 600; text-decoration: underline; display: inline-flex; align-items: center; min-height: 28px; }
+/* A long folder path in a message wraps instead of widening the page at 320 px. */
+.error-summary, .field-error, .auth-step { overflow-wrap: anywhere; }
 .auth-help { padding: 0 4px; font-size: 14px; }
 .auth-help h2 { margin: 0 0 6px; font-size: 16px; }
 .auth-help ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }

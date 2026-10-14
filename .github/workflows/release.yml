@@ -43,6 +43,9 @@ jobs:
   appimage:
     # The oldest supported Ubuntu runner: the AppImage then runs on that and every newer Linux.
     runs-on: ubuntu-22.04
+    # After windows-exe, which makes the release and its text: two jobs publishing at once can race and make two
+    # releases. This one adds the AppImage to that release.
+    needs: windows-exe
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches VERSION

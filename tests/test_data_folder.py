@@ -368,6 +368,28 @@ class PathsTest(unittest.TestCase):
         self.assertFalse((self.top / "config").exists())
         self.assertFalse(paths.remove_pointer(self.env))
 
+    def test_a_data_folder_named_in_an_older_env_next_to_the_app_is_still_used(self):
+        """An install from before this version that moved its data with a JOBHUNT_DATA_DIR line in the .env next to the
+        app keeps that folder (the line is read here, before the settings file is loaded); only while it holds data."""
+        moved = self.top / "moved data"
+        moved.mkdir()
+        (self.app / ".env").write_text(f'# mine\nLLM_MODEL=x\nexport JOBHUNT_DATA_DIR="{moved}"  # moved\n')
+        self.assertEqual(paths.locate(self.app, self.env, "Linux"), paths.Place(None, ""))  # no data there: asked
+        (moved / "jobhunt.db").write_bytes(b"")
+        (self.app / "data" / "jobhunt.db").write_bytes(b"")
+        self.assertEqual(paths.locate(self.app, self.env, "Linux"), paths.Place(moved, "env-file"))
+        service = {**self.env, "JOBHUNT_DATA_DIR": str(self.top / "service")}
+        self.assertEqual(paths.locate(self.app, service, "Linux").how, "env")  # the environment still comes first
+        (self.app / ".env").write_text("JOBHUNT_DATA_DIR=\n")
+        self.assertEqual(paths.locate(self.app, self.env, "Linux").how, "app-folder")
+
+    def test_foreign_entries(self):
+        folder = self.top / "f"
+        (folder / "uploads").mkdir(parents=True)
+        for name in ("jobhunt.db", "jobhunt.db.bak-before-job-pool", ".env", ".cv-1.tmp", "taxes.pdf", ".hidden"):
+            (folder / name).write_text("")
+        self.assertEqual(paths.foreign_entries(folder), [".hidden", "taxes.pdf"])
+
     def test_an_unreadable_pointer_is_ignored(self):
         pointer = paths.pointer_file(self.env)
         pointer.parent.mkdir(parents=True)
