@@ -112,7 +112,7 @@ def refuse_while_running() -> None:
         return
     if isinstance(pid, int) and pid > 0 and pid != os.getpid() and _process_alive(pid):
         raise keys.KeyFileError("JobHuntPA is running. Stop it first, then run this again. (If it isn't running, "
-                                "delete data/running.json.)")
+                                "delete running.json in its data folder.)")
 
 
 def server_keys_for_cli() -> keys.ServerKeys:

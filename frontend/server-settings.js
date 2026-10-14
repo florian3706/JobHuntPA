@@ -245,7 +245,8 @@ async function saveAddress(e) {
   setBusy(btn, true);
   setText($('#address-status'), 'Saving…');
   try {
-    renderAddress(await api('/api/settings/address', { method: 'PUT', body: JSON.stringify({ public_base_url: url, allowed_hosts: names }) }));
+    // It widens which addresses and origins the app accepts, so it asks for the password if it was entered a while ago.
+    renderAddress(await withRecentAuth(() => api('/api/settings/address', { method: 'PUT', body: JSON.stringify({ public_base_url: url, allowed_hosts: names }) })));
     setText($('#address-status'), 'Saved. It works straight away.');
   } catch (ex) {
     setText($('#address-status'), '');
