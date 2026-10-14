@@ -90,13 +90,15 @@ echo "Installing the packages from requirements.txt"
 echo "Copying the app"
 # The files the app runs from; tests, tools and design notes stay out.
 if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git -C "$ROOT" ls-files -z -- backend frontend installer VERSION requirements.txt service.sh README.md 'LICENSE*' \
+  git -C "$ROOT" ls-files -z -- backend frontend installer VERSION requirements.txt service.sh README.md LICENSE THIRD-PARTY.md \
     | (cd "$ROOT" && xargs -0 cp --parents -t "$APPDIR/app")
 else
-  (cd "$ROOT" && cp -r --parents backend frontend installer VERSION requirements.txt service.sh README.md "$APPDIR/app")
+  (cd "$ROOT" && cp -r --parents backend frontend installer VERSION requirements.txt service.sh README.md LICENSE THIRD-PARTY.md "$APPDIR/app")
   find "$APPDIR/app" -name __pycache__ -type d -prune -exec rm -rf {} +
 fi
 [ -f "$APPDIR/app/backend/app.py" ] || fail "the app's files weren't copied."
+# The AppImage carries other people's code too (Python and the packages): the licences go with it.
+[ -f "$APPDIR/app/LICENSE" ] && [ -f "$APPDIR/app/THIRD-PARTY.md" ] || fail "LICENSE or THIRD-PARTY.md is missing (commit them first)."
 chmod +x "$APPDIR/app/service.sh"
 
 # The AppImage is mounted read-only, so Python can't save compiled files at run time: compile them now.
