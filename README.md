@@ -93,10 +93,10 @@ says what is encrypted and what isn't.
    download **JobHuntPA-Setup.exe**.
 2. Double-click it. Windows may say *"Windows protected your PC"* because the program isn't
    signed: click **More info**, then **Run anyway**.
-3. Press Enter to accept the install folder. Setup asks nothing else: it installs Python for you if
+3. Setup asks only for the install folder (press Enter to accept it). It installs Python for you if
    needed (no admin rights required) and the packages JobHuntPA uses.
-4. When it finishes, start JobHuntPA from the **JobHuntPA** shortcut on your Desktop or in the Start
-   menu. A window opens with the app's messages and your browser opens JobHuntPA. Keep that
+4. At the end it offers to start JobHuntPA (press Enter); later, start it from the **JobHuntPA** shortcut
+   on your Desktop or in the Start menu. A window opens with the app's messages and your browser opens JobHuntPA. Keep that
    window open while you use JobHuntPA; close it to stop the app.
 5. The first time, the browser asks [where to keep your data](#where-your-data-lives) (the suggestion is the
    `data` folder in the install folder), then has you [create your account](#your-account) (a name and a
@@ -1258,7 +1258,9 @@ Tests: `python3 -m unittest discover -s tests -t .`
 **Accounts in development and CI:** `JOBHUNT_ADMIN_EMAIL` (the account's name) and `JOBHUNT_ADMIN_PASSWORD` in
 the process environment (not `.env`) create the install's one account at start-up, which is how CI signs in
 (`/api/auth/login`, then the session cookie). Every `/api` route needs a session except
-`/api/health` and the sign-in endpoints; POST, PUT, PATCH and DELETE also need the page's
+`/api/health`, the sign-in endpoints and the first run's (they take its one-time token); the browser extension's
+routes also take its key. `tests/test_route_access.py` lists who may call each route, and a new endpoint fails it
+until it is listed there. POST, PUT, PATCH and DELETE also need the page's
 `X-CSRF-Token` (from `/api/auth/me`) and must not come from another site. The tests run on a throwaway
 database, `.env` and key file, with `JOBHUNT_TESTING=1` and the fast `JOBHUNT_KDF_PROFILE=test`
 (tests/__init__.py); `tests/helpers.py` gives signed-in clients (`with helpers.client() as c:`),

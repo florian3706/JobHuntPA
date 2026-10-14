@@ -73,7 +73,7 @@ install's `site-packages`.
 | --- | --- | --- |
 | CPython 3.12 | PSF-2.0 | Windows setup installs it from python.org; the AppImage bundles a build from [python-build-standalone](https://github.com/astral-sh/python-build-standalone), which brings, among others, OpenSSL (Apache-2.0), SQLite (public domain), libffi, expat and mpdecimal (MIT/BSD-style), zlib, bzip2 and xz (permissive), libedit (BSD-3-Clause, not GNU readline) and Tcl/Tk (BSD-style) |
 | [appimagetool](https://github.com/AppImage/appimagetool) and the AppImage runtime | MIT (the runtime includes libraries such as libfuse and squashfuse under their own licences; see the [type2-runtime](https://github.com/AppImage/type2-runtime) project) | `installer/appimage.sh` downloads appimagetool to build the AppImage; the runtime it writes is the first part of every AppImage |
-| [PyInstaller](https://pyinstaller.org/) | GPL-2.0-or-later with the bootloader exception (programs it builds may carry any licence) | `release.yml` builds the Windows `.exe` files with it |
+| [PyInstaller](https://pyinstaller.org/) | GPL-2.0-or-later with the bootloader exception (programs it builds may carry any licence) | `release.yml` builds the Windows `.exe` files with it; each `.exe` carries the CPython 3.12 runtime it was built with (PSF-2.0, and the libraries named in the CPython row) |
 
 ## Downloaded while the app runs, never shipped with it
 

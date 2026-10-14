@@ -851,15 +851,15 @@ Every phase must leave `python3 -m unittest discover -s tests -t .` passing, kee
 - The admin panel is a separate page.
 
 ### Critical Files for Implementation
-- /home/florian/Projects/JobHuntPA/backend/db.py
-- /home/florian/Projects/JobHuntPA/backend/workspaces.py
-- /home/florian/Projects/JobHuntPA/backend/app.py
-- /home/florian/Projects/JobHuntPA/backend/tasks.py
-- /home/florian/Projects/JobHuntPA/backend/schedule.py
-- /home/florian/Projects/JobHuntPA/backend/app_settings.py
-- /home/florian/Projects/JobHuntPA/frontend/common.js
-- /home/florian/Projects/JobHuntPA/installer/launch.py
-- /home/florian/Projects/JobHuntPA/.github/workflows/ci.yml
+- backend/db.py
+- backend/workspaces.py
+- backend/app.py
+- backend/tasks.py
+- backend/schedule.py
+- backend/app_settings.py
+- frontend/common.js
+- installer/launch.py
+- .github/workflows/ci.yml
 
 New modules: `backend/crypto.py`, `backend/keys.py`, `backend/sessions.py`, `backend/auth.py`, `backend/account.py`, `backend/admin.py`, `backend/access.py`, `backend/billing.py`, `backend/mailer.py`, `backend/email_templates.py`, `backend/digest.py`, `backend/migrate_encryption.py`, `backend/ratelimit.py` and `tests/helpers.py`. New pages under `frontend/`: `login.html`, `signup.html`, `first-run.html`, `forgot.html`, `reset.html`, `welcome.html`, `admin.html`, `billing.html` and `unsubscribe.html`.
 
