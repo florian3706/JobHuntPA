@@ -73,9 +73,9 @@ previews on the Settings tab.
   [Anthropic (Claude)](https://platform.claude.com/), [Google Gemini](https://aistudio.google.com/),
   [Meta](https://dev.meta.ai/) (Muse Spark), Mistral, Groq, xAI (Grok), DeepSeek or OpenRouter, or
   any other service with an OpenAI-compatible API. A model running on your own computer with
-  [Ollama](https://ollama.com/) needs no key. Setup lets you pick the provider, then asks for the
-  model and your key; you can change them any time on the Settings tab (AI provider). Using the model costs
-  money on your provider account. The app still collects and filters jobs without one, but
+  [Ollama](https://ollama.com/) needs no key. The first start asks for the provider, model and key in the
+  browser (or skip it and add them later); you can change them any time on the Settings tab (AI provider).
+  Using the model costs money on your provider account. The app still collects and filters jobs without one, but
   scoring, cover letters, title suggestions, chat and company research need it.
 - Company research, finding offices and *Search the web* in chats use the provider's web search,
   which OpenAI, Claude, Gemini, Meta, xAI and OpenRouter offer. With the others everything else
@@ -94,39 +94,95 @@ says what is encrypted and what isn't.
    download **JobHuntPA-Setup.exe**.
 2. Double-click it. Windows may say *"Windows protected your PC"* because the program isn't
    signed: click **More info**, then **Run anyway**.
-3. Press Enter to accept the install folder, then answer the questions about your AI provider.
-   Setup installs Python for you if needed (no admin rights required).
+3. Press Enter to accept the install folder. Setup asks nothing else: it installs Python for you if
+   needed (no admin rights required) and the packages JobHuntPA uses.
 4. When it finishes, start JobHuntPA from the **JobHuntPA** shortcut on your Desktop or in the Start
-   menu. A window opens with the app's messages and your browser opens the dashboard. Keep that
+   menu. A window opens with the app's messages and your browser opens JobHuntPA. Keep that
    window open while you use JobHuntPA; close it to stop the app.
-5. The first time, the browser asks you to [create your account](#your-account) (a name and a
-   password); anything already in JobHuntPA moves into it. Setup also adds **Reset JobHuntPA** to the
-   Start menu, for [starting over](#starting-over-the-reset-tool) if the password and every recovery
-   code are lost.
+5. The first time, the browser asks [where to keep your data](#where-your-data-lives) (the suggestion is the
+   `data` folder in the install folder), then has you [create your account](#your-account) (a name and a
+   password) and choose your AI provider. Setup also adds **Reset JobHuntPA** to the Start menu, for
+   [starting over](#starting-over-the-reset-tool) if the password and every recovery code are lost.
 
 ## Install on macOS
 
-1. On this page click the green **Code** button, then **Download ZIP**, and unzip it (for example
-   into your Documents folder).
-2. In the unzipped folder, **right-click `Setup.command` and choose Open** (the first time macOS
-   asks whether you're sure, because it was downloaded: click **Open**).
-3. Follow the questions in the Terminal window. If Python is missing, setup offers to install it
-   with Homebrew or opens the python.org download page; install it and run `Setup.command` again.
-4. Start JobHuntPA by double-clicking **`Start JobHuntPA.command`**. Keep the Terminal window
-   open while you use it; close it to stop the app.
-5. The first time, the browser asks you to [create your account](#your-account).
+*These steps are for current macOS (15 Sequoia and later); they are still **to be checked on a real Mac**.*
 
-If double-clicking doesn't work: open Terminal, type `cd ` (with a space), drag the folder into
-the window, press Enter, then run `./setup.sh` once and `./start.sh` to start.
+1. On this page click the green **Code** button, then **Download ZIP**. Safari unzips it into Downloads; move
+   the folder somewhere it can stay (for example your Documents folder).
+2. In that folder, double-click **`Setup.command`**. macOS refuses the first time, because the file was
+   downloaded and isn't from an identified developer: click **Done** (not *Move to Bin*), open **System Settings >
+   Privacy & Security**, scroll down to *"Setup.command" was blocked*, click **Open Anyway** and confirm with
+   your password or Touch ID. (On older macOS, right-click the file and choose **Open** instead.)
+3. A Terminal window shows setup's progress; it asks nothing about JobHuntPA. If Python 3.10 or newer is
+   missing, setup offers to install it with Homebrew or opens the python.org download page: install it
+   (the *macOS 64-bit universal2 installer*) and run `Setup.command` again.
+4. Start JobHuntPA by double-clicking **`Start JobHuntPA.command`** (the first time, allow it under
+   Privacy & Security as in step 2). Keep the Terminal window open while you use it; close it (or press
+   Control-C) to stop the app.
+5. The first time, the browser asks [where to keep your data](#where-your-data-lives) (the suggestion is the
+   `data` folder next to the scripts), then has you [create your account](#your-account) and choose your AI
+   provider.
+
+If macOS keeps blocking the scripts, open Terminal, type `cd ` (with a space), drag the folder into the window
+and press Enter, then run `xattr -dr com.apple.quarantine .` once (it removes the "downloaded" mark from the
+folder's files), `./setup.sh` once, and `./start.sh` to start.
 
 ## Install on Linux
 
+**The AppImage** (no setup, Python is inside):
+
+1. Download **JobHuntPA-*version*-x86_64.AppImage** from the
+   [latest release](https://github.com/florian3706/JobHuntPA/releases/latest).
+2. Make it executable: right-click it > *Properties* > *Allow executing file as program*, or
+   `chmod +x JobHuntPA-*-x86_64.AppImage`.
+3. Double-click it, or run it in a terminal: your browser opens JobHuntPA. The first time it asks
+   [where to keep your data](#where-your-data-lives) (the suggestion is `~/.local/share/JobHuntPA`), then has
+   you [create your account](#your-account) and choose your AI provider.
+4. To stop it, close its terminal, or run `./JobHuntPA-*-x86_64.AppImage --stop` (started by double-click, it
+   has no window). `--help` lists the rest: `--service install` (start at boot, see
+   [Hosting on your own network](#hosting-on-your-own-network)), `--reset` (the
+   [reset tool](#starting-over-the-reset-tool)) and `--uninstall`.
+
+If it says it needs FUSE, install your system's FUSE 2 library (Ubuntu 24.04 and later: `sudo apt install
+libfuse2t64`; Ubuntu 22.04 and Debian: `libfuse2`), or run it with `--appimage-extract-and-run`.
+
+**From the source:**
+
 1. Download the ZIP (green **Code** button, then **Download ZIP**) and unzip it, or
    `git clone https://github.com/florian3706/JobHuntPA.git`.
-2. Open a terminal in the folder and run `./setup.sh`. If Python 3.10+ or its `venv` module is
-   missing, setup shows the command to install it and offers to run it.
+2. Open a terminal in the folder and run `./setup.sh`. It asks nothing about JobHuntPA; if Python 3.10+
+   or its `venv` module is missing, it shows the command to install it and offers to run it.
 3. Start JobHuntPA from your applications menu (setup adds it) or with `./start.sh`.
-4. The first time, the browser asks you to [create your account](#your-account).
+4. The first time, the browser asks [where to keep your data](#where-your-data-lives), then has you
+   [create your account](#your-account) and choose your AI provider.
+
+## Where your data lives
+
+Everything JobHuntPA keeps (the database with your jobs and documents, uploaded files, the server's key file
+`server-keys.json`, the settings file `.env` with your AI key, and the browser it may download for some careers
+pages) is in one **data folder**. The first start asks where it should be, with a suggestion filled in:
+
+- **Linux:** `~/.local/share/JobHuntPA` (or `$XDG_DATA_HOME/JobHuntPA`);
+- **Windows:** the `data` folder in the install folder;
+- **macOS:** the `data` folder next to the scripts.
+
+Any folder of your own works, as long as it is new or empty (JobHuntPA's files are never mixed with yours, so
+the uninstaller can remove the folder). The page checks that JobHuntPA can create it and write to it. A folder
+that **already holds JobHuntPA's data** (a copy of an older install's data folder, or a backup you unzipped) is
+used as it is, and you sign in with its account. Nothing is written anywhere before you choose.
+
+JobHuntPA remembers the choice in a small file, `data-folder.json`, in your configuration folder
+(`~/.config/JobHuntPA` on Linux, `%APPDATA%\JobHuntPA` on Windows, `~/Library/Application Support/JobHuntPA` on
+macOS). If that folder is gone the next time (an unplugged drive), the first start asks again with the old path
+filled in, rather than starting an empty JobHuntPA somewhere else.
+
+- **An existing install isn't asked and nothing moves:** a `data` folder next to the app that already holds
+  JobHuntPA's data is used where it is, and an older `.env` next to the app keeps being read and written there.
+- **The service** ([`service.sh`](#hosting-on-your-own-network)) and other headless setups say where the data is
+  with `JOBHUNT_DATA_DIR`; they are never asked.
+- **To move the data later,** stop JobHuntPA, move the folder, and either edit `data-folder.json` or delete it
+  (the next start asks again: choose the moved folder, which already holds your data).
 
 ## Your account
 
@@ -141,11 +197,12 @@ recovery codes and signed-in devices, background access, then download your data
 
 - **The first start** opens a page that creates the account: a name to sign in with (any name; it is
   not an email address, and JobHuntPA never sends mail) and a password of at least 10 characters (a few
-  random words work well; your password manager can fill it in). Everything already in JobHuntPA
-  (workspaces, jobs, documents, searches and settings) moves into it. The page's address carries a
-  one-time setup code; if the browser didn't open, the address is printed in the JobHuntPA window, and
-  the code is in `data/first-run.txt`. Once the account exists the code stops working and the file is
-  deleted.
+  random words work well; your password manager can fill it in). It comes right after choosing
+  [where your data lives](#where-your-data-lives). Everything already in JobHuntPA (workspaces, jobs,
+  documents, searches and settings) moves into it. The page's address carries a one-time setup code; if
+  the browser didn't open, the address is printed in the JobHuntPA window, and once the data folder is
+  chosen the code is also in `first-run.txt` in it. Once the account exists the code stops working and the
+  file is deleted.
 - **Recovery codes:** the first-run page then shows 8 recovery codes. Copy, download or print them
   and keep them somewhere safe: if you forget your password, they are how you get back in and keep
   your data. A reminder stays at the top of the dashboard until you confirm you've saved them; to see
@@ -153,14 +210,17 @@ recovery codes and signed-in devices, background access, then download your data
   back in if you forget your password.** The page also says that **Download your data** (Settings) is your
   safety net: a copy of everything, kept wherever you like.
 - **The setup walkthrough:** once your recovery codes are saved, a new account opens a short
-  walkthrough (`welcome.html`) instead of the dashboard. It starts with **choosing a theme**, which
-  changes the page as you pick it, then sets up your search a step at a time: job titles; places,
+  walkthrough (`welcome.html`) instead of the dashboard. It starts with **your AI provider**: the
+  provider, the model and your API key (**Skip for now** is fine: searching, filtering and the map work
+  without one, and the step says what waits for it: fit scores, cover letters, title suggestions, company
+  research, questions about a job and document summaries). Then **choosing a theme**, which
+  changes the page as you pick it, then setting up your search a step at a time: job titles; places,
   remote/hybrid/onsite work, days in the office and your home suburb; a salary floor and words or
   industries to include or avoid; automatic searches (background access); and an
   optional résumé (on the Documents tab, where it powers the fit scores). Every step has Back, Next
   and Skip for now, saves as you go, and picks up where you left off if you close the page. "Skip the
   walkthrough" at the bottom goes straight to the dashboard; everything is on the Search setup tab
-  later. On an existing install the account gets a short version: choose a theme, then keep the
+  later. On an existing install the account gets a short version: the AI provider, a theme, then keep the
   search settings that moved into the account or review them step by step. Your theme is saved with
   your account (encrypted with your key), so a new browser or device shows it too.
 - **No roles:** whoever is signed in may change every setting, the ones for the whole of this JobHuntPA
@@ -337,7 +397,7 @@ printed on purpose, and the traceback of an unhandled error (a bug) could name d
 
 **If someone can change the database file, not only copy it,** a few things in it are not protected by
 your key: the lookup values the app needs before anyone signs in (which account a name belongs to, which
-account is turned off). Someone who has the database **and** `data/server-keys.json` can do anything the
+account is turned off). Someone who has the database **and** the key file `server-keys.json` can do anything the
 server can with the data of an account that has background access.
 
 ### Background access
@@ -350,10 +410,10 @@ Settings > **Background access** is a switch for your account.
   searches while you're away. The server's operator could technically read your data.
 
 How it works: turning it on (it asks for your password again if you haven't typed it in the last 15
-minutes) stores a copy of your data key locked with the server's own key, in `data/server-keys.json`.
+minutes) stores a copy of your data key locked with the server's own key, in `server-keys.json` in the data folder.
 Whoever has the database **and** that file can read the data of an account with it on. Turning it
 off deletes that copy at once. The setup walkthrough's *Automatic searches* step turns it on for you
-if you tick it. Back up `data/server-keys.json` with the database; it also records that the one-time
+if you tick it. Back up `server-keys.json` with the database; it also records that the one-time
 encryption of an older install has finished, so restore the two together.
 
 Your recovery codes are never under the server's key: background access opens your data, not the codes
@@ -376,11 +436,17 @@ your data.
 - **AI usage:** the requests and tokens sent to your provider, in all, in the last 7 and 30 days and by task
   (scoring, research, cover letters, chat ...), with how much the provider served from its cache: handy to
   compare with your provider's bill.
-- **Public address and host names:** for using JobHuntPA from your phone or other computers (below).
+- **Public address and host names:** for using JobHuntPA from your phone or other computers (below, and
+  [Hosting on your own network](#hosting-on-your-own-network)). Saving them asks for your password if you entered
+  it more than 15 minutes ago, because they widen which addresses JobHuntPA accepts.
+- **Browser for JavaScript pages:** a few careers pages show their jobs only with JavaScript. JobHuntPA reads
+  them with a browser component (Chromium, about 180 MB), which it downloads into your data folder only when
+  you click **Download the browser** here, or **Download it** when the Search setup tab offers it after a careers
+  page needed it. Until then (and if you choose **Not now**) those pages say in their test result what they need.
 - **Server key** and **Unencrypted copies of data** (below).
 
-Changes take effect at once and are saved in `.env` in the app folder; the log names the settings that
-changed, never their values. Keys are never shown again in full, only their last few characters.
+Changes take effect at once and are saved in `.env` in the [data folder](#where-your-data-lives) (an older
+install's `.env` next to the app keeps being used); the log names the settings that changed, never their values. Keys are never shown again in full, only their last few characters.
 
 ### Reaching JobHuntPA from other devices and addresses
 
@@ -416,13 +482,13 @@ web apps.
 
 ### The server key and unencrypted copies
 
-**The server key** (`data/server-keys.json`) protects the keys kept for background searches. *Replace the
+**The server key** (`server-keys.json` in the data folder) protects the keys kept for background searches. *Replace the
 server key* (Settings > Server key, with your password) moves them all to a new one and drops the old one; if
 something can't be moved, the old key is kept and nothing is lost. Do it if the `data` folder or a backup of it
 may have been copied by someone else. You can also run `python -m backend.keys rotate-kek` with JobHuntPA
 stopped. The app holds a lock on its key file for as long as it runs, however it was started, and these
-commands refuse while they can't get it (if the launcher's `data/running.json` is left over from a crash,
-delete it). A running JobHuntPA also won't overwrite a key file that something else changed: it stops with
+commands refuse while they can't get it (if the launcher's `running.json` in the data folder is left over from a
+crash, delete it). A running JobHuntPA also won't overwrite a key file that something else changed: it stops with
 "The key file was changed by something else", and a restart picks up the new file.
 
 **Unencrypted copies of data** appears after an older install's data has been encrypted: it lists the files
@@ -437,16 +503,119 @@ JobHuntPA is installed on, never from the web:
 - **Linux and macOS:** stop JobHuntPA, then run `./reset.sh` in the app folder (on a Mac you can double-click
   **`Reset JobHuntPA.command`**; right-click > Open the first time).
 - **Windows:** stop JobHuntPA, then choose **Reset JobHuntPA** in the Start menu.
+- **The AppImage:** stop JobHuntPA, then run `./JobHuntPA-*-x86_64.AppImage --reset`.
 
-It says what will be lost and asks you to type **RESET**; anything else stops it with nothing changed. It
+It says what will be lost and asks you to type **RESET**, exactly, in capitals; anything else stops it with
+nothing changed. It
 refuses while JobHuntPA is running. Then it deletes the account (every account, on an older install with
 several), its encrypted data (workspaces, jobs, documents and uploaded files, chats, search setup, schedules),
 its keys, recovery codes and sessions, and the server key file. **It keeps** your settings (`.env`: the AI
 provider, model and key, and the public address), the reasoning levels, the shared job ads,
-the company research and the AI usage counts (no longer tied to anyone). The next start is a first run, where
-you create a new account. Nothing can bring the deleted data back: if you can still sign in, **Download your
+the company research, the AI usage counts (no longer tied to anyone), the downloaded browser and the data
+folder itself. The next start is a first run in the same data folder, where you create a new account. Nothing can bring the deleted data back: if you can still sign in, **Download your
 data** first. For scripts, `./reset.sh --confirm RESET` answers the question (`JobHuntPA-Reset.exe --confirm
 RESET` on Windows).
+
+## Hosting on your own network
+
+JobHuntPA listens on its own computer only (`127.0.0.1`). To use it from your phone or other computers, keep
+it running on one computer (a Raspberry Pi, a home server, an always-on PC) and put a proxy on that same
+computer that gives it an HTTPS address: **Tailscale's `serve`** (simplest, and private to your own devices) or
+**any reverse proxy** (Caddy, nginx). Both routes follow the same three steps.
+
+### 1. Start JobHuntPA at boot (Linux)
+
+`service.sh` makes a systemd user service that starts JobHuntPA when the computer starts, without a browser
+or a window:
+
+```
+./service.sh install --port 8000 --data-dir ~/.local/share/JobHuntPA
+./service.sh status          # installed, running, answering?
+./service.sh remove          # stop it and remove the service (the data stays)
+```
+
+With the AppImage, the same is `./JobHuntPA-*-x86_64.AppImage --service install --port 8000` (keep the AppImage
+where it is: the service runs it from there).
+
+- `--port` is the port on this computer (default 8000); `--data-dir` is the
+  [data folder](#where-your-data-lives) (default: the one JobHuntPA already uses, else
+  `~/.local/share/JobHuntPA`). Run `install` again to change them.
+- The service passes the folder to JobHuntPA (`JOBHUNT_DATA_DIR`), so its first run skips the folder question.
+  If there is no account yet, open `http://127.0.0.1:8000/first-run.html` on that computer and paste the
+  setup code from `first-run.txt` in the data folder (or `journalctl --user -u jobhuntpa | grep first-run`).
+- To start before anyone signs in to the computer, the service needs "lingering"; `install` turns it on, and
+  says so if it couldn't (then run `sudo loginctl enable-linger $USER` once).
+- Messages: `journalctl --user -u jobhuntpa -f`. Stop it for a while with `systemctl --user stop jobhuntpa`.
+- Don't also start JobHuntPA with `start.sh` on the same data folder while the service runs: the second copy
+  refuses to start, because the key file is in use.
+
+On Windows or macOS, keep JobHuntPA running with its shortcut or `start.sh` instead.
+
+### 2a. Tailscale serve (private to your devices)
+
+1. Install [Tailscale](https://tailscale.com/download) on the JobHuntPA computer and on each phone or computer
+   that should reach it, and sign in to the same account on all of them.
+2. In the Tailscale admin console, open **DNS**: keep **MagicDNS** on and, under **HTTPS Certificates**, click
+   **Enable HTTPS**.
+3. On the JobHuntPA computer, run `sudo tailscale serve --bg 8000` (the port JobHuntPA uses). It prints the
+   address, such as `https://pi.tail1234.ts.net`; `tailscale serve status` shows it again.
+4. In JobHuntPA (on that computer, or at that address), open **Settings > Public address and host names**,
+   type the address under **Public address** (no `/` at the end) and click **Save**.
+5. Open the address on your phone and sign in. Only devices signed in to your Tailscale account can reach it.
+   Don't use `tailscale funnel`: that puts JobHuntPA on the public internet.
+
+To stop sharing it: `sudo tailscale serve --https=443 off`.
+
+### 2b. A reverse proxy (Caddy, nginx)
+
+Run the proxy on the JobHuntPA computer and point a name at that computer (in your router's DNS, a
+`hosts` file, or a public DNS record). The proxy must pass on the name people typed (`Host`) and **append**
+the visitor's address to `X-Forwarded-For`; uploads and imports need large bodies (up to 250 MB).
+
+With [Caddy](https://caddyserver.com/), which gets and renews the certificate itself (for a public name; for a
+name only your network knows, add `tls internal` and trust Caddy's certificate on your devices), the whole
+`Caddyfile` is:
+
+```
+jobs.example.com {
+    reverse_proxy 127.0.0.1:8000
+    request_body {
+        max_size 250MB
+    }
+}
+```
+
+With nginx, a server block like this (the certificate from Let's Encrypt or your own):
+
+```
+server {
+    listen 443 ssl;
+    server_name jobs.example.com;
+    ssl_certificate     /etc/ssl/jobs.example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/jobs.example.com/privkey.pem;
+    client_max_body_size 250m;
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+    }
+}
+```
+
+Then set **Settings > Public address and host names > Public address** to `https://jobs.example.com` and click
+**Save**.
+
+### 3. Check it
+
+- Open the public address on another device and sign in; the browser shows the padlock.
+- "This address isn't allowed" means the name isn't known to JobHuntPA: set it as the public address, or add it
+  under *More host names* ([Reaching JobHuntPA from other devices and addresses](#reaching-jobhuntpa-from-other-devices-and-addresses)
+  has the rules).
+- Keep the proxy on the same computer: JobHuntPA trusts proxy headers only from `127.0.0.1` (`start.sh`, the
+  launcher, the AppImage and the service all start it that way). Don't open port 8000 itself to the network.
+- The [browser extension](#browser-extension) connects to the public address as well.
 
 ## Using it
 
@@ -760,9 +929,12 @@ header and your browser's sign-in works as usual.
 - **Windows:** download the newest JobHuntPA-Setup.exe and run it again with the same folder.
 - **macOS/Linux:** download the new ZIP and copy its contents over your folder (or `git pull`),
   then run setup again.
+- **The AppImage:** download the new one and use it instead of the old (it doesn't update itself). If a
+  service runs it, run `--service install` again with the new file.
 
-Your settings, documents, jobs and API key are kept. Keep `data/server-keys.json` with your database
-when you copy or back up either.
+Your settings, documents, jobs and API key are kept, in the same [data folder](#where-your-data-lives): an
+install from before this version keeps its `data` folder next to the app and isn't asked where the data lives.
+Keep `server-keys.json` with your database when you copy or back up either.
 
 ### Updating from an older version
 
@@ -845,12 +1017,13 @@ updating:
 Open **Settings > AI provider** (whoever is signed in may change it): pick the provider (it fills in the API address and suggests models),
 choose the model, paste your key and click **Save**. It takes effect straight away; click
 **Detect supported levels** afterwards, as each model offers different reasoning levels, and
-**Test connection** to check the key. The key is saved in the `.env` file in the app folder and
-is never shown again in full. Changing to a provider at a different address needs the key again,
-so a saved key can't be sent anywhere new.
+**Test connection** to check the key. The key is saved in the `.env` file in the data folder (an older
+install's `.env` next to the app keeps being used) and is never shown again in full. Changing to a provider at
+a different address needs the key again, so a saved key can't be sent anywhere new.
 
-You can also run setup again with `--reconfigure` (macOS/Linux: `./setup.sh --reconfigure`), or
-edit `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` in `.env` and restart the app.
+You can also edit `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` in that `.env` and restart the app. Setup no
+longer asks about the AI; for scripted installs, `setup.sh --non-interactive` writes the `LLM_*` environment
+variables into the data folder's `.env` when the data folder is already known (`JOBHUNT_DATA_DIR`).
 
 ## Commute links
 
@@ -877,15 +1050,18 @@ Close JobHuntPA first, then:
   shortcut **Uninstall JobHuntPA**. It also removes the Start-menu entries **JobHuntPA** and **Reset JobHuntPA**.
 - **macOS:** double-click **`Uninstall JobHuntPA.command`** in the app folder (right-click > Open
   the first time).
-- **Linux:** run `./uninstall.sh` in the app folder.
+- **Linux:** run `./uninstall.sh` in the app folder, or `./JobHuntPA-*-x86_64.AppImage --uninstall` for the
+  AppImage.
 
-The uninstaller first offers to save a **backup** (your jobs, documents, workspaces, account,
-settings, API keys and the server's key file `data/server-keys.json`) as
-`JobHuntPA-backup-<date>.zip` in your Documents folder, readable only by you. Keep it private. It
-then removes the shortcuts and the app folder. It asks before removing the shared browser
-component, and leaves Python installed because other programs may use it. To restore a backup,
-install JobHuntPA again and unzip the backup into the new app folder: the database and
-`data/server-keys.json` must stay together, and you still sign in with your password.
+The uninstaller first offers to save a **backup** of the [data folder](#where-your-data-lives), wherever it is
+(your jobs, documents, workspaces, account, settings, API keys and the server's key file `server-keys.json`), as
+`JobHuntPA-backup-<date>.zip` in your Documents folder, readable only by you. Keep it private. It then removes
+the shortcuts and Start-menu entries, the service `service.sh` installed, the data folder, the note of where it
+was (`data-folder.json`), and the app folder (for the AppImage, the AppImage file). A data folder that holds
+anything but JobHuntPA's files is left where it is. It asks before removing the browser component an older
+setup downloaded to Playwright's shared folder, and leaves Python installed because other programs may use it.
+To restore a backup, unzip it and, at a new install's first start, choose its `data` folder as the data folder:
+the database and `server-keys.json` must stay together, and you still sign in with your password.
 
 ## Troubleshooting
 
@@ -894,15 +1070,21 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **"LLM not configured" in the app:** your API settings are missing; see *Changing your AI
   provider or key*.
 - **The first-run page says the setup code isn't right:** close JobHuntPA and start it again; it
-  prints a fresh link, and the code is in `data/first-run.txt`. The code only works until the first
-  account exists; after that, sign in instead.
+  prints a fresh link (once the data folder is chosen, the code is also in `first-run.txt` in it). The code
+  only works until the first account exists; after that, sign in instead.
+- **The first-run page refuses the data folder:** give the whole path (starting with `/`, a drive letter
+  such as `C:\`, or `~`), of a folder that is new, empty or already JobHuntPA's, somewhere you may write
+  (in your own folders). "Holds other files" means choose an empty or new folder instead.
+- **"JobHuntPA didn't come back after choosing the folder":** it restarts on the chosen folder by itself when
+  started with its shortcut, `start.sh` or the AppImage; started any other way, start it again and reload
+  the page.
 - **Forgotten password:** see [Signing in](#signing-in): a recovery code sets a new password and keeps your
   data. Without your password or a recovery code, your encrypted data can't be read, by you or anyone else;
   the [reset tool](#starting-over-the-reset-tool) starts over (it deletes the account and its data and keeps
   the settings).
 - **The reset tool says "JobHuntPA is running" or that the key file is in use:** stop JobHuntPA (close its
-  window) and run it again. If JobHuntPA really isn't running, delete `data/running.json` (a crash can leave it
-  behind).
+  window) and run it again. If JobHuntPA really isn't running, delete `running.json` in the data folder (a
+  crash can leave it behind).
 - **"Too many sign-in attempts from this network. Try again in 5 minutes":** one network address is held to 10
   sign-in requests in 5 minutes; wait, then try again. After wrong passwords, the wait is per place and
   grows up to 15 minutes. Restarting JobHuntPA clears the counts.
@@ -924,22 +1106,25 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **"Encrypting your data stopped (...)":** JobHuntPA tries again a minute later and whenever that
   account signs in. If it keeps stopping, the JobHuntPA window says why; your data is safe meanwhile,
   and the backup `data/jobhunt.db.bak-before-encryption` was saved before anything changed.
-- **JobHuntPA stops at start-up with "Restore data/server-keys.json from your backup":** the key file
-  is missing or isn't the one that belongs to this database. Put back the `data/server-keys.json`
+- **JobHuntPA stops at start-up with "Restore server-keys.json (in the data folder) from your backup":** the
+  key file is missing or isn't the one that belongs to this database. Put back the `server-keys.json`
   from the same backup as the database. A new key file is never made while accounts exist.
 - **The key file is lost and there is no backup:** nobody can sign in, because names are
   found through that file. With JobHuntPA stopped (the command refuses while it is running), make a new
   one: run `.venv/bin/python -m backend.keys recover-lost --name "your name"` (on Windows,
   `.venv\Scripts\python -m backend.keys ...`) from the JobHuntPA folder and type the account's
   password when asked (on an older install with several accounts, give `--name` once for each). It writes a
-  new `data/server-keys.json` and works out each named account's lookup again, so it signs in as before and
+  new `server-keys.json` in the data folder and works out each named account's lookup again, so it signs in as before and
   **keeps its data**. Then **turn background access on again** (Settings > Background access; until then
   scheduled searches are skipped). An account that wasn't named can't sign in until the original key file is
   back. Then back up the new file with the database. Without the account's password either, the
   [reset tool](#starting-over-the-reset-tool) starts over.
-- **Some company sites return no jobs:** they may block automated access or need the browser
-  component; setup's step 3 installs it. On Linux you can fix a failed browser install with
-  `.venv/bin/python -m playwright install --with-deps chromium`.
+- **Some company sites return no jobs:** they may block automated access, or show their jobs only with
+  JavaScript: then the test result says so, and **Settings > Browser for JavaScript pages** downloads the
+  browser component into your data folder. On Linux, if it downloads but doesn't start, Chromium is missing
+  some system libraries: from the source, `sudo .venv/bin/python -m playwright install-deps chromium` installs
+  them; otherwise install your system's packages for Chromium (Ubuntu and Debian: `sudo apt install libnss3
+  libatk-bridge2.0-0 libgbm1 libxkbcommon0 libasound2`, on Ubuntu 24.04 `libasound2t64`).
 
 ## Accessibility
 
@@ -999,14 +1184,30 @@ the pages' basics (language, viewport, skip link, headings, labels) checked on e
 Setup lives in one place, `installer/installer.py` (standard library only), called by `setup.sh`
 (Linux/macOS) and by `JobHuntPA-Setup.exe` (`installer/windows_setup.py`). Removal is
 `installer/uninstaller.py`, called by `uninstall.sh` and built into `JobHuntPA-Uninstall.exe`. Starting goes through
-`installer/launch.py`, called by `start.sh` and `JobHuntPA.exe` (`installer/windows_launch.py`).
-**Any change to dependencies, configuration, data folders or how the app starts must update
-these scripts**; `.github/workflows/ci.yml` runs the real setup and launch on Linux, macOS and
-Windows on every push to catch breakage.
+`installer/launch.py`, called by `start.sh`, `JobHuntPA.exe` (`installer/windows_launch.py`) and the AppImage
+(`installer/appimage/AppRun`). `service.sh` makes the Linux service. **Any change to dependencies,
+configuration, data folders or how the app starts must update these scripts**; `.github/workflows/ci.yml` runs
+the real setup and launch on Linux, macOS and Windows, and builds and starts the AppImage, on every push to catch
+breakage.
 
-Manual run: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, copy
-`.env.example` to `.env`, then `.venv/bin/python installer/launch.py`. Tests:
-`python3 -m unittest discover -s tests -t .`
+**Where the data lives** is `backend/paths.py` (standard library only, so the launcher, the uninstaller and
+setup load it by its path): `JOBHUNT_DATA_DIR`, then the pointer `data-folder.json` in the per-user configuration
+folder (`JOBHUNT_CONFIG_DIR` moves that folder), then a `data` folder next to the app that holds a database or
+key file. With none of them the app starts in the first run's step 1 (`backend/data_folder.py`): the database
+is in memory, only health, `/api/auth/state` and the folder step answer, and choosing a folder writes the
+pointer and ends the process with status 3, which `installer/launch.py` answers by starting it again. The
+launcher makes the first-run token and hands it to the app (`JOBHUNT_FIRST_RUN_TOKEN`), so the page it opens
+works for the folder step and, after the restart, the account. `JOBHUNT_DB_PATH`, `JOBHUNT_ENV_PATH` and
+`JOBHUNT_KEY_FILE` still move one file each.
+
+**The AppImage:** `installer/appimage.sh` builds `dist/JobHuntPA-<VERSION>-x86_64.AppImage` (it needs `curl`,
+`tar`, `sha256sum` and `desktop-file-validate` from desktop-file-utils; it downloads a pinned, checksum-checked
+CPython from python-build-standalone and appimagetool, and the packages from PyPI, all into `build/appimage/`).
+`release.yml` runs it on a tag on ubuntu-22.04. To try one without FUSE, set `APPIMAGE_EXTRACT_AND_RUN=1`.
+
+Manual run: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, then
+`.venv/bin/python installer/launch.py` (its first run asks where the data lives; or set `JOBHUNT_DATA_DIR`).
+Tests: `python3 -m unittest discover -s tests -t .`
 
 **Accounts in development and CI:** `JOBHUNT_ADMIN_EMAIL` (the account's name) and `JOBHUNT_ADMIN_PASSWORD` in
 the process environment (not `.env`) create the install's one account at start-up, which is how CI signs in
@@ -1084,8 +1285,9 @@ rules:
   encryption (`backend/migrate_encryption.py`) strict mode refuses plaintext in a sealed column.
 - Never log user data.
 
-`JOBHUNT_DATA_DIR` moves the whole data folder (uploads included); tests and tools point it at a
-throwaway folder, so they never touch `data/`. `python3 tools/bench_jobs_list.py` times the job list
+`JOBHUNT_DATA_DIR` sets the whole data folder (uploads included); tests and tools point it at a
+throwaway folder, so they never touch a real one, and `tests/__init__.py` points the configuration folder
+(`JOBHUNT_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`) at throwaway folders too. `python3 tools/bench_jobs_list.py` times the job list
 on 5,000 made-up encrypted jobs in such a folder (target: under 1.5 s on a Raspberry Pi 4; run it on
 the Pi to check there).
 
