@@ -469,5 +469,5 @@ def test_connection() -> dict:
     try:
         reply = call_model(messages, {**cfg, "timeout_s": 60})
     except ScorerError as exc:
-        return {**out, "ok": False, "message": str(exc)}
+        return {**out, "ok": False, "message": llm_providers.user_message(exc)}  # (never the key)
     return {**out, "ok": True, "message": f"Connected. Model replied: {reply[:200]}"}

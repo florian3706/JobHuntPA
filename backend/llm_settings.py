@@ -98,7 +98,7 @@ def detect_levels(cfg: dict) -> dict:
         try:
             why_not = llm_providers.probe_level(cfg, level)
         except llm_providers.ScorerError as exc:
-            raise HTTPException(status_code=502, detail=str(exc))
+            raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))  # (never the key)
         if why_not is None:
             accepted.append(level)
         else:
