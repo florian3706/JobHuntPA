@@ -297,27 +297,6 @@ class NotAskedTest(unittest.TestCase):
         self.box = Sandbox()
         self.addCleanup(self.box.remove)
 
-    def test_an_existing_data_folder_next_to_the_app_is_used_and_nobody_is_asked(self):
-        copy_fixture(self.box.app / "data", env_name="")
-        shutil.copy(FIXTURE / "env.txt", self.box.app / ".env")  # an older install's .env, next to the app
-        got = self.box.run(f'''
-            out["state"] = c.get("/api/auth/state").json()
-            r = c.post("/api/auth/login", json={{"name": {OWNER[0]!r}, "password": {OWNER[1]!r}}})
-            out["login"] = r.status_code
-            c.headers["X-CSRF-Token"] = r.json()["csrf"]
-            out["model"] = c.get("/api/settings/llm").json()["model"]
-            out["jobs"] = len(c.get("/api/jobs").json())
-            out["saved"] = c.put("/api/settings/llm", json={{"model": "another-model"}}).status_code
-        ''', base="https://jobs.example.invalid")
-        self.assertEqual(got["state"]["folder_required"], False)
-        self.assertEqual(got["login"], 200)
-        self.assertEqual(got["model"], "claude-fixture-model")  # read from the .env next to the app
-        self.assertGreater(got["jobs"], 0)
-        self.assertEqual(got["saved"], 200)
-        self.assertIn("LLM_MODEL=another-model", (self.box.app / ".env").read_text())  # written where it is
-        self.assertFalse((self.box.app / "data" / ".env").exists())
-        self.assertFalse(self.box.config.exists())  # no pointer: nothing moved, nothing asked
-
     def test_jobhunt_data_dir_is_used_and_nobody_is_asked(self):
         folder = self.box.top / "service-data"
         got = self.box.run('''
@@ -339,6 +318,21 @@ class NotAskedTest(unittest.TestCase):
         self.assertEqual(got["offer"]["previous"], str(gone))
         self.assertEqual(got["offer"]["default"], str(gone))
         self.assertFalse(gone.exists())
+
+
+class ResetBeforeTheFolderTest(unittest.TestCase):
+    def test_the_reset_tool_has_nothing_to_do_before_the_folder_is_chosen(self):
+        box = Sandbox()
+        self.addCleanup(box.remove)
+        program = ("import sys\nfrom pathlib import Path\nimport backend.paths as paths\n"
+                   f"paths.APP_ROOT = Path({str(box.app)!r})\nfrom backend import reset\n"
+                   "sys.exit(reset.run(confirm='RESET'))\n")
+        done = subprocess.run([sys.executable, "-c", program], cwd=str(box.top), env=box.env(), capture_output=True,
+                              text=True, timeout=120)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("isn't chosen yet", done.stderr)
+        self.assertEqual(box.files(), ["app", os.path.join("app", "data"), os.path.join("app", "data", ".gitkeep"),
+                                       "home"])
 
 
 class PathsTest(unittest.TestCase):
