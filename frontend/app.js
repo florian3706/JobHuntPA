@@ -1675,14 +1675,17 @@ function renderSources(sources) {
         <input class="source-label" id="src-${src.id}-label" data-act="label" type="text" value="${esc(src.label)}" aria-label="Company name for ${esc(src.url)}" autocomplete="off" />
         <a class="doc-meta" href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.url)}</a>
         <div class="doc-meta">${last}</div>
+        ${src.mapping ? '<div class="doc-meta">Read with a page layout the AI worked out (from the browser extension)</div>' : ''}
         <div class="doc-meta test-result" role="status"></div>
       </div>
       <button class="btn btn-ghost btn-sm" id="src-${src.id}-test" data-act="test" type="button">Test<span class="visually-hidden"> ${name}</span></button>
+      ${src.mapping ? `<button class="btn btn-ghost btn-sm" id="src-${src.id}-forget" data-act="forget" type="button">Forget layout<span class="visually-hidden"> of ${name}</span></button>` : ''}
       <button class="btn btn-danger btn-sm" id="src-${src.id}-delete" data-act="delete" type="button">Delete<span class="visually-hidden"> ${name}</span></button>`;
     row.querySelector('input[type="checkbox"]').addEventListener('change', (e) => patchSource(src.id, { enabled: e.target.checked }));
     row.querySelector('.source-label').addEventListener('change', (e) => patchSource(src.id, { label: e.target.value }));
     row.querySelector('[data-act="test"]').addEventListener('click', (e) => testSource(src, e.currentTarget, row.querySelector('.test-result')));
     row.querySelector('[data-act="delete"]').addEventListener('click', () => deleteSource(src));
+    row.querySelector('[data-act="forget"]')?.addEventListener('click', () => forgetLayout(src));
     list.appendChild(row);
   });
   if (focusBack) (focusBack() || $('#source-url')).focus();
@@ -1707,6 +1710,14 @@ async function addSource(e) {
 async function patchSource(id, body) {
   try { await api(`/api/sources/${id}`, { method: 'PATCH', body: JSON.stringify(body) }); toast('Source updated', 'ok', 2000); loadSchedule({ controls: false }); }
   catch (e) { toast(`Update failed: ${e.message}`, 'err'); loadSources(); }
+}
+
+async function forgetLayout(src) {
+  try {
+    await api(`/api/sources/${src.id}`, { method: 'PATCH', body: JSON.stringify({ mapping: null }) });
+    announce(`${src.label || src.url} is read the usual ways again.`);
+    await loadSources();
+  } catch (e) { toast(`Couldn't forget the layout: ${e.message}`, 'err'); }
 }
 
 async function deleteSource(src) {

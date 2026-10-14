@@ -3,7 +3,8 @@
    The Chrome and Firefox extensions add the page in the current tab as a job, or as a company source. To connect one,
    the person names it and gets the server address and an extension key, shown once, to paste into the extension's
    options. Connecting needs the password entered in the last 15 minutes (withRecentAuth); disconnecting doesn't.
-   The card lists the connected extensions with Disconnect buttons.
+   The card lists the connected extensions with Disconnect buttons, and the job sites whose page layout the AI worked
+   out for the extension (backend/mappings.py) with Forget buttons.
 
    WCAG 2.2: the name field has a label and its problem is written under it; results go to a status region and are
    announced; the key and the address are read-only fields with their own labels and Copy buttons (a failed copy
@@ -15,6 +16,7 @@
   const FIREFOX_URL = 'https://github.com/florian3706/JobHuntPA-firefox-extension';
   const NO_RECENT = 'Your password was not confirmed, so no extension was connected.';
   const keys = { list: [], loaded: false };
+  const sites = { list: [], loaded: false };
 
   const say = (text) => { setText(document.getElementById('ext-status'), text); if (text) announce(text); };
   const day = (iso) => {
@@ -32,6 +34,10 @@
       <p>Get the extension for <a href="${CHROME_URL}" target="_blank" rel="noopener">Chrome${NEW_TAB}</a> or
         <a href="${FIREFOX_URL}" target="_blank" rel="noopener">Firefox${NEW_TAB}</a>, then connect it here.</p>
       <div id="ext-list" class="account-body"><p class="muted">Loading…</p></div>
+      <h4 id="ext-sites-heading" tabindex="-1">Job sites the AI worked out</h4>
+      <p class="hint">When the extension can't find a job on a page, it can ask the AI (through JobHuntPA) which parts of
+        the page hold the job, and remember that for the site. Forget one to have it worked out again.</p>
+      <div id="ext-sites" class="account-body"><p class="muted">Loading…</p></div>
       <form id="ext-form" class="account-form" novalidate>
         <div class="auth-field">
           <label for="ext-label">Name for this connection</label>
@@ -72,6 +78,47 @@
       const btn = e.target.closest('[data-ext-revoke]');
       if (btn) revoke(btn);
     });
+    $('#ext-sites').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-ext-forget]');
+      if (btn) forget(btn);
+    });
+  }
+
+  function renderSites() {
+    const box = $('#ext-sites');
+    if (!sites.loaded) return;
+    if (!sites.list.length) {
+      box.innerHTML = '<p>None yet.</p>';
+      return;
+    }
+    box.innerHTML = `<ul class="ext-keys" aria-labelledby="ext-sites-heading">${sites.list.map((m) => `<li class="ext-key">
+      <div><strong>${esc(m.site)}</strong>
+        <div class="muted">Saved ${esc(day(m.updated_at))}</div></div>
+      <button class="btn btn-sm" type="button" data-ext-forget="${esc(m.site)}">Forget<span class="visually-hidden"> ${esc(m.site)}</span></button>
+    </li>`).join('')}</ul>`;
+  }
+
+  async function loadSites() {
+    try {
+      sites.list = (await api('/api/extension/mappings')).mappings || [];
+      sites.loaded = true;
+      renderSites();
+    } catch (e) {
+      $('#ext-sites').innerHTML = `<p class="error" role="alert">Couldn't load the job sites: ${esc(e.message)}</p>`;
+    }
+  }
+
+  async function forget(btn) {
+    const site = btn.dataset.extForget;
+    setBusy(btn, true);
+    try {
+      await api(`/api/extension/mappings/${encodeURIComponent(site)}`, { method: 'DELETE' });
+      say(`Forgot the layout of ${site}.`);
+    } catch (err) {
+      say(`Couldn't forget it: ${err.message}`);
+    }
+    await loadSites();
+    $('#ext-sites-heading').focus();
   }
 
   async function copy(sel, done) {
@@ -160,5 +207,6 @@
     mount(slot);
     try { await loadSession(); } catch { return; } // signed out: goes to the sign-in page
     load();
+    loadSites();
   });
 }());

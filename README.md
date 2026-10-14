@@ -291,8 +291,8 @@ files in folders made for people. Tick the file types you want, any of **Markdow
 (`.docx`) and **OpenDocument** (`.odt`; at least one): each text file comes once in every type you tick. It is
 your safety net: keep a recent copy somewhere safe.
 
-- `Account.md`;
-- for each workspace: its search setup, sources, documents (with the original files you uploaded, byte
+- `Account.md` (with the job sites whose layout the AI worked out);
+- for each workspace: its search setup, sources (and whether each has a worked-out layout), documents (with the original files you uploaded, byte
   for byte), jobs sorted into folders by your status (each with its fit score, description, cover
   letter, the signs of a possible ghost job and the other sites that advertised it), jobs the filters
   left out, your chats and search history;
@@ -318,8 +318,10 @@ ticked workspaces**.
 - Each one becomes a **new workspace**: nothing is merged into the workspaces you have. If you already have one
   with that name, the new one is called "My job search (imported 2026-10-13)" (with that day's date), then
   "(imported 2026-10-13, 2)" and so on.
-- It brings the search setup, places, sources, search schedule, documents (with the files you uploaded),
-  jobs (with your status, what you hid, the filters' reasons, offices, fit scores and cover letters) and chats.
+- It brings the search setup, places, sources (with their worked-out layouts; never one on your local network),
+  search schedule, documents (with the files you uploaded), jobs (with your status, what you hid, the filters'
+  reasons, offices, fit scores and cover letters) and chats, and the job sites' layouts for the sites you have
+  none for.
   A job this JobHuntPA already has from another search is linked to it; any other job is kept as your own.
 - The company research in the file is only used where this JobHuntPA has none, or older.
 - It asks for your password again if you haven't entered it in the last 15 minutes. The zip is read in memory
@@ -510,7 +512,8 @@ JobHuntPA is installed on, never from the web:
 It says what will be lost and asks you to type **RESET**, exactly, in capitals; anything else stops it with
 nothing changed. It
 refuses while JobHuntPA is running. Then it deletes the account (every account, on an older install with
-several), its encrypted data (workspaces, jobs, documents and uploaded files, chats, search setup, schedules),
+several), its encrypted data (workspaces, jobs, documents and uploaded files, chats, search setup, schedules,
+the page layouts the AI worked out),
 its keys, recovery codes and sessions, and the server key file. **It keeps** your settings (`.env`: the AI
 provider, model and key, and the public address), the reasoning levels, the shared job ads,
 the company research, the AI usage counts (no longer tied to anyone), the downloaded browser and the data
@@ -860,7 +863,19 @@ Any other careers page works if its jobs are on the page or one click away: the 
 data many sites embed for search engines, or else follows the links to each ad (and "next page"
 links), and opens pages that only appear in a real browser in a hidden one. A job feed (RSS)
 can be added by its address, and for government jobs add an APSJobs search (see *Government
-jobs* above).
+jobs* above). An address on your local network or on this computer, or one that isn't a web link,
+can't be a source, however it is added (one at a time, in bulk, or from an export).
+
+**When the app finds no jobs on a page**, the [browser extension](#browser-extension) can have the AI work
+out where the page lists them: open the careers page in your browser and use the extension's **Add as a
+company source**. JobHuntPA first reads the page the usual ways; if they find nothing, the extension sends it
+a trimmed outline of the page (element names, a few attributes and short text samples; no scripts, styles or
+form values) and the AI says, as selectors, where each job, its title and its link are. JobHuntPA then reads
+the page **itself** with that layout and the extension shows you the jobs it found; only when you accept is
+the source saved, with its layout. Searches and **Test** read it the same way (the source says *Read with a
+page layout the AI worked out*). If the site changes and the layout finds nothing, the usual ways are tried
+again; **Forget layout** on the source drops it. A layout is only ever selectors, which JobHuntPA checks; it
+is never run as code. This uses your AI provider, like scoring.
 
 **When a source doesn't work**, its last result in the list (and **Test**) says why:
 
@@ -906,7 +921,17 @@ A job the extension added says so where its source is shown, with the site and h
 read from its own page. A job that has only its summary from SEEK's results page gets the **Upload full ad**
 button on its card, like the jobs of JobHuntPA's own SEEK search.
 - **Add as a company source**: adds the page as a [careers page](#adding-company-careers-pages) of the
-  workspace, and **Test** shows what a search would find on it.
+  workspace, and **Test** shows what a search would find on it. When JobHuntPA finds no jobs on it, the AI can
+  work out where the page lists them (see [Adding company careers pages](#adding-company-careers-pages)).
+- **Work out a site** (version 1.3 of the extension): when the extension can't find a job's title and
+  description on a job site, the popup offers to have the AI work the site out. The extension sends JobHuntPA a
+  trimmed outline of the page (element names, a few attributes such as `id` and `class`, and short text
+  samples, capped in size; never scripts, styles or what you typed into forms), JobHuntPA asks your AI
+  provider which parts of the page hold the title, company, location, salary, employment type, work mode,
+  date and description, and checks that the answer is only selectors. The popup shows you the job it finds;
+  once you accept, the layout is saved for that site and used from then on. If a saved layout stops finding a
+  title, the popup offers to work the site out again. The outline is not stored or logged, and the extension
+  never holds an AI key: all AI traffic goes through JobHuntPA.
 
 To connect it:
 
@@ -924,11 +949,13 @@ address), and **Reset** removes the whole setup from the browser after asking. A
 disconnect it here as well if you no longer want it.
 
 The card lists your connected extensions with when each was last used. **Disconnect** stops a key at once.
+Under **Job sites the AI worked out** it lists the sites whose layout is saved for your account; **Forget**
+drops one, so the extension offers to work it out again next time.
 A key also stops working after 60 days without use, a year after it was made, and whenever your account is
 signed out everywhere: *Sign out everywhere else*, a password change that signs out the other devices, a
 password reset with a recovery code, and an account being turned off. Then connect the extension again. A key can only add
-jobs and company sources and list your workspaces and sources: it can't read your jobs, documents or
-settings, or change your account.
+jobs and company sources, list your workspaces and sources, and have pages worked out (and save, read and forget the
+job sites' layouts): it can't read your jobs, documents or settings, or change your account.
 
 The extension sends its key as `Authorization: Bearer jhpa_...`. If JobHuntPA sits behind a sign-in proxy
 (oauth2-proxy, Authelia and the like) that passes its own `Authorization` header on, JobHuntPA ignores that
