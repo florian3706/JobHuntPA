@@ -184,7 +184,7 @@ const pct = (rate) => (rate === null || rate === undefined ? '–' : `${Math.rou
 const TASK_LABEL = {
   scoring: 'Fit scoring', research: 'Company research', cover_letter: 'Cover letters', chat: 'Job chat',
   concise: 'Concise documents', summary: 'Document summaries', title_suggestions: 'Job title suggestions',
-  offices: 'Finding offices', office_from_ad: 'Reading offices from ads', other: 'Other',
+  offices: 'Finding offices', office_from_ad: 'Reading offices from ads', mapping: 'Working out page layouts', other: 'Other',
 };
 const taskLabel = (t) => TASK_LABEL[t] || String(t || 'other').replace(/_/g, ' ');
 

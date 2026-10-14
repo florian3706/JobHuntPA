@@ -184,6 +184,8 @@ KINDS = {
     "summary": "Document summary",
     "concise": "Concise version",
     "titles": "Title suggestions",
+    "mapping_job": "Working out a job site",
+    "mapping_careers": "Working out a careers page",
 }
 # A task's ``part`` (which piece of the work, where a kind has several) -> words.
 PARTS = {"profile": "profile", "sentiment": "what employees say", "news": "news"}

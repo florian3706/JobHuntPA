@@ -1,8 +1,9 @@
 """Company sources API: careers pages / job boards added by URL.
 
     GET    /api/sources
-    POST   /api/sources              {url, label?}
-    PATCH  /api/sources/{id}         {enabled?, label?}
+    POST   /api/sources              {url, label?, mapping?}: a new source (201); with a mapping, a source the
+                                     workspace has gets that mapping instead (200, "updated": true)
+    PATCH  /api/sources/{id}         {enabled?, label?, mapping?} (mapping: null forgets the page's layout)
     DELETE /api/sources/{id}
     POST   /api/sources/{id}/test    dry run: list postings, store nothing
     POST   /api/sources/bulk/preview {text}: the rows of a pasted text or file, flagged; fetches and stores nothing
@@ -11,11 +12,20 @@
 
 Who may call them: whoever is signed in, on a workspace of their own (``current_workspace`` answers 404 for another
 account's). An extension key may list, add and test sources one at a time (``sessions.KEY_ENDPOINTS``), but not use
-the bulk endpoints or the export.
+the bulk endpoints or the export, or change or delete a source.
+
+**Addresses.** Every way a source is stored (one at a time here, in bulk, and from an export's import file) refuses
+an address that is not a web link or is on the local network or this computer (``source_bulk.BLOCKING``), judged by
+its shape alone (no name look-up).
+
+**A mapping** (backend/mapping_format.py, kind ``careers``) is the page's layout as the AI worked it out from the
+browser extension's outline (``POST /api/extension/work-out``, where the person saw the jobs the app found with it
+before saving). It is checked for shape again here, stored sealed with the source and used by the generic adapter
+when a search or Test reads the page.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,10 +33,11 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend import crypto, source_bulk
+from backend import crypto, mapping_format, source_bulk
 from backend.adapters.base import SourceError
 from backend.adapters.generic import source_adapter
 from backend.db import CompanySource, get_db
+from backend.sessions import AuthProblem
 from backend.workspaces import current_workspace, owned
 from backend.scraping.http import FetchError, PoliteClient
 
@@ -36,11 +47,13 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 class SourceCreate(BaseModel):
     url: str
     label: Optional[str] = None
+    mapping: Optional[Any] = None
 
 
 class SourceUpdate(BaseModel):
     enabled: Optional[bool] = None
     label: Optional[str] = None
+    mapping: Optional[Any] = None  # (only when sent: null forgets the source's mapping)
 
 
 class BulkText(BaseModel):
@@ -91,6 +104,7 @@ def source_to_dict(s: CompanySource) -> dict:
         "last_count": s.last_count or 0,
         "last_error": s.last_error,
         "last_method": s.last_method,
+        "mapping": mapping_format.stored(s.mapping, "careers"),
     }
 
 
@@ -100,27 +114,66 @@ def list_sources(db: Session = Depends(get_db), ws: int = Depends(current_worksp
     return [source_to_dict(s) for s in rows]
 
 
-def add_source(db: Session, ws: int, url: str, label: Optional[str]) -> Optional[CompanySource]:
+def refused_address(url: str) -> Optional[str]:
+    """Why an address can't be a source at all (not a web link, or on the local network or this computer), or None.
+    Judged by its shape alone: no request, no name look-up."""
+    check = source_bulk.address_flags(url)
+    if not check.blocked:
+        return None
+    return " ".join(f.reason for f in check.flags if f.code in source_bulk.BLOCKING)
+
+
+def checked_mapping(value: Any) -> dict:
+    """A careers mapping sent with a source, checked for shape (422 ``invalid_mapping`` otherwise)."""
+    try:
+        return mapping_format.check_mapping(value, "careers")
+    except mapping_format.MappingRefused as exc:
+        raise AuthProblem(422, "invalid_mapping", f"The page layout can't be used: {exc}", field="mapping") from None
+
+
+def add_source(db: Session, ws: int, url: str, label: Optional[str],
+               mapping: Optional[dict] = None) -> Optional[CompanySource]:
     """The way a source is added (``POST /api/sources`` and each row of the bulk add): the new row (added to ``db``,
     not committed), or None when the workspace has that URL already. Raises 422 for an address that isn't a web
-    link. Nothing is fetched: the scraping rules apply when a search or Test reads the page."""
+    link or is on the local network or this computer. Nothing is fetched: the scraping rules apply when a search or
+    Test reads the page. ``mapping``: a checked careers mapping (``checked_mapping``)."""
     url = normalize_url(url)
+    why = refused_address(url)
+    if why:
+        raise AuthProblem(422, "refused_address", f"This address can't be a source: {why}", field="url")
     # Found by its blind index: the URL itself is sealed (accounts design §2.3).
     if db.query(CompanySource.id).filter(CompanySource.workspace_id == ws, CompanySource.careers_url_index
                                          == crypto.blind_index("careers_url", url)).first():
         return None
     src = CompanySource(workspace_id=ws, careers_url=url, url=url, label=(label or "").strip() or default_label(url),
-                        source_type="auto", enabled=True)
+                        source_type="auto", enabled=True, mapping=mapping)
     db.add(src)
     db.flush()
     return src
 
 
+def _by_url(db: Session, ws: int, url: str) -> Optional[CompanySource]:
+    """The workspace's source with this (normalised) URL, found by its blind index, or None."""
+    return (db.query(CompanySource).filter(CompanySource.workspace_id == ws, CompanySource.careers_url_index
+                                           == crypto.blind_index("careers_url", url)).first())
+
+
 @router.post("", status_code=201)
-def create_source(payload: SourceCreate, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
-    src = add_source(db, ws, payload.url, payload.label)
+def create_source(payload: SourceCreate, response: Response, db: Session = Depends(get_db),
+                  ws: int = Depends(current_workspace)):
+    """Adds a source (201). Signed in (a session, or an extension key), own workspace. With a mapping (the jobs the
+    app found with it were shown before), a source the workspace has with that URL gets the mapping instead
+    (200, ``"updated": true``); without one, that is 409."""
+    mapping = checked_mapping(payload.mapping) if payload.mapping is not None else None
+    src = add_source(db, ws, payload.url, payload.label, mapping)
     if src is None:
-        raise HTTPException(status_code=409, detail="That URL is already a source")
+        if mapping is None:
+            raise HTTPException(status_code=409, detail="That URL is already a source")
+        src = _by_url(db, ws, normalize_url(payload.url))
+        src.mapping = mapping
+        db.commit()
+        response.status_code = 200
+        return {**source_to_dict(src), "updated": True}
     db.commit()
     return source_to_dict(src)
 
@@ -198,7 +251,7 @@ def bulk_add(payload: BulkRows, db: Session = Depends(get_db), ws: int = Depends
         seen.add(check.url)
         try:
             src = add_source(db, ws, check.url, company)
-        except HTTPException as exc:
+        except (HTTPException, AuthProblem) as exc:
             result["detail"] = str(exc.detail)
             continue
         if src is None:
@@ -229,6 +282,8 @@ def update_source(source_id: int, payload: SourceUpdate, db: Session = Depends(g
         src.enabled = payload.enabled
     if payload.label is not None and payload.label.strip():
         src.label = payload.label.strip()
+    if "mapping" in payload.model_fields_set:
+        src.mapping = checked_mapping(payload.mapping) if payload.mapping is not None else None
     db.commit()
     return source_to_dict(src)
 
@@ -247,7 +302,7 @@ def test_source(source_id: int, db: Session = Depends(get_db),
                ws: int = Depends(current_workspace)):
     src = owned(db, CompanySource, source_id, ws, "Source")
     client = PoliteClient()
-    adapter = source_adapter(client, src.careers_url, company=src.label or "")
+    adapter = source_adapter(client, src.careers_url, company=src.label or "", mapping=src.mapping)
     try:
         postings = adapter.list_postings()
     except (SourceError, FetchError) as exc:

@@ -1,6 +1,7 @@
 """The browser extensions (Chrome and Firefox): add the page in the current tab as a job, or as a company source.
 
-The extension's API contract: docs/design/accounts.md §19. Who may call each endpoint:
+The extension's API contract ("api": 3): docs/design/open-source.md, Part 8 (first written in docs/design/accounts.md
+§19). Who may call each endpoint:
 
     GET    /api/extension/status    signed in (an extension key or a session): the key's name and expiry (null for a
                                     session), the account's workspaces and the default one
@@ -14,6 +15,9 @@ The extension's API contract: docs/design/accounts.md §19. Who may call each en
     POST   /api/extension/keys      a session only, with a recent sign-in (403 reauth_required): a new key {label},
                                     shown once
     DELETE /api/extension/keys/{id} a session only: revokes one of the account's keys (404 for anyone else's)
+
+The AI mappings (api 3: ``POST /api/extension/work-out`` and ``/api/extension/mappings``) are in backend/mappings.py;
+the sources the extension adds, lists and tests in backend/sources.py.
 
 **Extension keys.** ``jhpa_`` and 43 base64url characters (32 random bytes). The server keeps a ``sessions`` row
 (``state = "extension"``) whose id is a hash of the secret and whose ``wrapped_dek`` is the person's data key
@@ -69,7 +73,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/extension", tags=["extension"])
 
-API_VERSION = 2            # 2: POST /api/extension/jobs/batch (a page of results)
+API_VERSION = 3            # 2: POST /api/extension/jobs/batch (a page of results); 3: AI mappings (backend/mappings.py)
 MAX_BODY = 512 * 1024       # bytes: the longest job the contract allows is ~110,000 characters
 MAX_KEYS = 20               # extension keys per account
 LABEL_MAX = 80

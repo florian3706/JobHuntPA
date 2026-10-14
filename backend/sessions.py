@@ -311,6 +311,11 @@ KEY_ENDPOINTS = (
     ("POST", re.compile(r"/api/extension/preview")),
     ("POST", re.compile(r"/api/extension/jobs")),
     ("POST", re.compile(r"/api/extension/jobs/batch")),
+    ("POST", re.compile(r"/api/extension/work-out")),           # api 3: AI mappings (backend/mappings.py)
+    ("GET", re.compile(r"/api/extension/mappings")),
+    ("GET", re.compile(r"/api/extension/mappings/[A-Za-z0-9.-]{1,253}")),
+    ("PUT", re.compile(r"/api/extension/mappings/[A-Za-z0-9.-]{1,253}")),
+    ("DELETE", re.compile(r"/api/extension/mappings/[A-Za-z0-9.-]{1,253}")),
     ("GET", re.compile(r"/api/sources")),
     ("POST", re.compile(r"/api/sources")),
     ("POST", re.compile(r"/api/sources/[0-9]{1,18}/test")),

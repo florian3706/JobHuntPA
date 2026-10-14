@@ -43,6 +43,7 @@ from backend.export import router as export_router
 from backend.commute import router as commute_router
 from backend.duplicates import employer_copy, job_boards, router as duplicates_router
 from backend.extension import router as extension_router
+from backend.mappings import router as mappings_router
 from backend.job_chat import router as chat_router
 from backend.filters import softened_job_ids
 from backend.llm_settings import router as llm_router
@@ -197,6 +198,7 @@ app.include_router(browser_router)
 app.include_router(cover_letters_router)
 app.include_router(duplicates_router)
 app.include_router(extension_router)
+app.include_router(mappings_router)
 app.include_router(chat_router)
 app.include_router(offices_router)
 app.include_router(commute_router)
