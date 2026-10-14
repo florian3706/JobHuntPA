@@ -1160,6 +1160,132 @@ class MainLinkTest(unittest.TestCase):
         self.assertEqual(anonymous.get("/api/jobs", headers=self.h).status_code, 401)
 
 
+class AppliedDateTest(unittest.TestCase):
+    """Open-source spec §1.12: moving a job to Applied stores the date (sealed); moved away and back, it is the
+    latest move; a job with none (one from before) shows none; the export has it."""
+
+    def setUp(self):
+        self.client = helpers.client()
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+        self.ws = self.client.post("/api/workspaces", json={"name": "Applied date"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{self.ws}"))
+        self.h = {"X-Workspace": str(self.ws)}
+
+    def add(self, name: str, ws: int | None = None, **kw) -> int:
+        from backend.db import Job, SessionLocal
+
+        db = SessionLocal()
+        job = Job(workspace_id=ws or self.ws, url=f"https://applied.example/{name}", title=f"Role {name}",
+                  company="Appliedco", status=kw.pop("status", "to_review"), detail_status="full", **kw)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        db.close()
+        return job_id
+
+    def move(self, job_id: int, status: str) -> dict:
+        r = self.client.patch(f"/api/jobs/{job_id}/status", headers=self.h, json={"status": status})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def shown(self, job_id: int) -> dict:
+        return self.client.get(f"/api/jobs/{job_id}", headers=self.h).json()
+
+    def test_moved_away_and_back_it_is_the_latest_move(self):
+        from datetime import datetime, timedelta
+        from unittest import mock
+        import backend.app as app_module
+
+        job = self.add("one")
+        self.assertIsNone(self.shown(job)["applied_at"])
+        first = datetime(2026, 10, 1, 9, 0)
+        with mock.patch.object(app_module, "datetime", wraps=datetime) as dt:
+            dt.utcnow.return_value = first
+            self.assertEqual(self.move(job, "applied")["applied_at"], first.isoformat())
+            dt.utcnow.return_value = first + timedelta(days=1)
+            self.move(job, "applied")  # already there: not a move
+        self.assertEqual(self.shown(job)["applied_at"], first.isoformat())
+        self.move(job, "interviewing")
+        self.assertEqual(self.shown(job)["applied_at"], first.isoformat())  # kept (shown only while in Applied)
+        later = datetime(2026, 10, 9, 14, 30)
+        with mock.patch.object(app_module, "datetime", wraps=datetime) as dt:
+            dt.utcnow.return_value = later
+            self.move(job, "applied")
+        out = self.shown(job)
+        self.assertEqual((out["status"], out["applied_at"]), ("applied", later.isoformat()))
+        listed = {j["id"]: j for j in self.client.get("/api/jobs", headers=self.h).json()}
+        self.assertEqual(listed[job]["applied_at"], later.isoformat())
+
+    def test_a_job_with_none_shows_none(self):
+        job = self.add("before", status="applied")  # in Applied from before the date was kept
+        out = self.shown(job)
+        self.assertEqual((out["status"], out["applied_at"]), ("applied", None))
+        self.assertIsNone({j["id"]: j for j in self.client.get("/api/jobs", headers=self.h).json()}[job]["applied_at"])
+        self.assertIsNone(self.move(job, "applied")["applied_at"])  # already there: no date is made up
+
+    def test_bulk_moves_set_it_for_the_workspaces_own_jobs_only(self):
+        from backend.db import Job, SessionLocal
+
+        a, b = self.add("bulk-a"), self.add("bulk-b", status="applied")
+        other_ws = self.client.post("/api/workspaces", json={"name": "Other applied"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{other_ws}"))
+        theirs = self.add("theirs", ws=other_ws)
+        r = self.client.patch("/api/jobs/status", headers=self.h, json={"ids": [a, b, theirs], "status": "applied"})
+        self.assertEqual(r.status_code, 200, r.text)
+        out = r.json()
+        self.assertEqual(out["updated"], 2)
+        self.assertIsNotNone(out["applied_at"][str(a)])
+        self.assertIsNone(out["applied_at"][str(b)])  # it was already in Applied
+        self.assertNotIn(str(theirs), out["applied_at"])
+        db = SessionLocal()
+        try:
+            other = db.get(Job, theirs)
+            self.assertEqual((other.status, other.applied_at), ("to_review", None))
+        finally:
+            db.close()
+
+    def test_it_is_sealed_and_has_no_server_default(self):
+        from sqlalchemy import inspect as sa_inspect
+        from backend.db import Job, SessionLocal, engine
+
+        job = self.add("sealed")
+        stamp = self.move(job, "applied")["applied_at"]
+        with engine.connect() as conn:
+            raw = conn.exec_driver_sql("SELECT applied_at FROM jobs WHERE id = ?", (job,)).scalar()
+        self.assertIsNotNone(raw)
+        self.assertNotIn(stamp[:10].encode(), bytes(raw) if not isinstance(raw, str) else raw.encode())
+        self.assertIsNone(Job.__table__.c.applied_at.server_default)
+        column = next(c for c in sa_inspect(engine).get_columns("jobs") if c["name"] == "applied_at")
+        self.assertIsNone(column["default"])
+        db = SessionLocal()
+        try:
+            self.assertEqual(db.get(Job, job).applied_at.isoformat(), stamp)
+        finally:
+            db.close()
+
+    def test_a_merge_keeps_the_latest_applied_date(self):
+        from datetime import datetime
+        from backend.db import Job, SessionLocal
+
+        a = self.add("merge-a", status="applied", applied_at=datetime(2026, 9, 1, 8, 0), description=LONG_AD)
+        b = self.add("merge-b", status="applied", applied_at=datetime(2026, 9, 5, 8, 0))
+        r = self.client.post("/api/jobs/merge", headers=self.h, json={"ids": [a, b]})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.shown(r.json()["id"])["applied_at"], datetime(2026, 9, 5, 8, 0).isoformat())
+
+    def test_who_may_move_a_job(self):
+        job = self.add("access")
+        anonymous = helpers.TestClient(helpers.app)
+        self.assertEqual(anonymous.patch(f"/api/jobs/{job}/status", headers=self.h, json={"status": "applied"}).status_code, 401)
+        self.assertEqual(anonymous.patch("/api/jobs/status", headers=self.h, json={"ids": [job], "status": "applied"}).status_code, 401)
+        other_ws = self.client.post("/api/workspaces", json={"name": "Not this one"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{other_ws}"))
+        r = self.client.patch(f"/api/jobs/{job}/status", headers={"X-Workspace": str(other_ws)}, json={"status": "applied"})
+        self.assertEqual(r.status_code, 404)
+        self.assertIsNone(self.shown(job)["applied_at"])
+
+
 class JobChatTest(unittest.TestCase):
     def test_chat_context_links_history_and_web_search(self):
         from unittest import mock

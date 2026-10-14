@@ -9,6 +9,7 @@ import re
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime
 from unittest import mock
 
 from tests import helpers
@@ -275,6 +276,36 @@ class ExportTest(unittest.TestCase):
             db.commit()
         finally:
             db.close()
+
+    def test_the_applied_date_and_the_news_section(self):
+        """Open-source spec §1.9 and §1.12: a job's applied date is in its file (none for a job with none), and the
+        company's news section is called News/Controversies, with its date."""
+        when = datetime(2026, 10, 3, 9, 30)
+        with helpers.as_account(self.bob):
+            db = SessionLocal()
+            try:
+                weird = next(j for j in db.query(Job).filter(Job.workspace_id == self.bob.workspace_id)
+                             if j.url == "https://ads.example/bob/weird")
+                weird.applied_at = when
+                profile = db.get(CompanyProfile, "acme corp")
+                profile.controversies_json = json.dumps([{"title": "MARK-news-item", "year": "2026", "summary": "s", "sources": []}])
+                profile.controversy_note, profile.news_researched_at = "MARK-news-note", datetime(2026, 10, 2, 8, 0)
+                db.commit()
+            finally:
+                db.close()
+        texts = self.texts(self.open_zip(self.export()))
+        applied = {n: b for n, b in texts.items() if "/Jobs/Applied/" in n and not n.endswith("Cover letter.md")}
+        weird_file = next(b for b in applied.values() if "CON" in b)
+        self.assertIn("Moved to Applied", weird_file)
+        self.assertIn("2026-10-03", weird_file)
+        other = next(b for b in applied.values() if "CON" not in b)  # in Applied, with no date stored
+        self.assertNotIn("Moved to Applied", other)
+        company = next(b for n, b in texts.items() if n.endswith("Companies/Acme Corp.md"))
+        self.assertIn("## News/Controversies", company)
+        self.assertNotIn("In the news", company)
+        section = company[company.index("## News/Controversies"):]
+        for part in ("MARK-news-note", "MARK-news-item", "Researched 2026-10-02"):
+            self.assertIn(part, section)
 
     def test_the_jobs_index_follows_the_folders_with_hidden_jobs_last(self):
         z = self.open_zip(self.export())

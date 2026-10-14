@@ -367,6 +367,10 @@ def merge(db: Session, roots: list[Job], crit=None, ranking: Optional[Ranking] =
     others = sorted((m for m in members.values() if m.id != primary.id), key=ranking.key, reverse=True)
 
     primary.status = max((r.status for r in roots), key=lambda s: STATUS_PROGRESS.get(s, 0))
+    # The applied date goes with the status: the latest of the group's (each copy keeps its own row).
+    applied = [m.applied_at for m in members.values() if m.applied_at is not None]
+    if applied:
+        primary.applied_at = max(applied)
     primary.hidden = all(r.hidden for r in roots)  # still listed if any copy was
     ids = list(members)
     root_ids = {r.id for r in roots}

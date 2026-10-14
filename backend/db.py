@@ -391,6 +391,10 @@ class Job(Base):
     # vacancy: a JSON list. Not SealedAlways: a column added to a database that is already in strict mode is NULL
     # in every old row. The public ad's is ``Posting.ad_ghost_json`` (backend.pool.share_ad_fact).
     ad_ghost_json = Column(SealedText(), nullable=True)
+    # When the job last moved to Applied (open-source spec §1.12; backend.app.set_status): moved away and back, the
+    # latest move. NULL: never, or before this was kept. Not SealedAlways, for the reason ad_ghost_json isn't: a column
+    # added to a database already in strict mode is NULL in every old row. No server_default (accounts design §2).
+    applied_at = Column(SealedDateTime(), nullable=True)
 
     @python_only
     def url(self) -> Optional[str]:

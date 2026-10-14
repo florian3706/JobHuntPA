@@ -1115,6 +1115,35 @@ class MainLinkPagesTest(unittest.TestCase):
         self.assertIn("...(job.also_on || []).filter((c) => c.id !== link.copy_id)", head)
 
 
+class AppliedDatePagesTest(unittest.TestCase):
+    """Open-source spec §1.12: the card (and the job page) shows the applied date while the job is in Applied, and
+    nothing when there is none; a status change updates it in place, keeping focus on the status menu."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.common, cls.app, cls.job, cls.css = read("common.js"), read("app.js"), read("job.js"), read("styles.css")
+
+    def test_shown_only_in_applied_with_a_date(self):
+        fn = self.common[self.common.index("function appliedHtml"):]
+        fn = fn[:fn.index("\n}\n") + 2]
+        self.assertIn("job.status === 'applied' && job.applied_at", fn)
+        self.assertIn("Applied ${esc(fmtDate(job.applied_at).split(',')[0])}", fn)
+        self.assertIn(": ''", fn)  # nothing at all otherwise
+        self.assertIn('<span aria-hidden="true">📨 </span>', fn)  # the icon is decoration; the word says it
+        self.assertIn('<span class="applied-slot">${appliedHtml(job)}</span>', self.app)
+        self.assertIn('<span class="applied-slot">${appliedHtml(job)}</span>', self.job)
+        self.assertIn(".applied-slot:empty { display: none; }", self.css)
+
+    def test_a_status_change_updates_it_in_place(self):
+        update = self.app[self.app.index("async function updateJobStatus"):self.app.index("function showUploadAd")]
+        self.assertIn("job.applied_at = res.applied_at ?? job.applied_at ?? null;", update)
+        self.assertIn("slot.innerHTML = appliedHtml(job)", update)
+        bulk = self.app[self.app.index("async function bulkUpdateStatus"):self.app.index("async function rescoreJob")]
+        self.assertIn("j.applied_at = res.applied_at[String(j.id)]", bulk)
+        self.assertIn("$('#job-head .applied-slot').innerHTML = appliedHtml(job);", self.job)
+
+
 class BrowserAuditRegressionsTest(unittest.TestCase):
     """Things the browser audit (tools/a11y_audit.py: axe-core, reflow, text spacing, keyboard) found or watches, kept
     as static checks so they can't creep back without a browser."""

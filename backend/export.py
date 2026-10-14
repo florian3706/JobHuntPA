@@ -530,6 +530,7 @@ def _job_md(job: Job, entry: JobEntry, fit: Optional[FitResult], entries: dict[i
     office = line(job.office_text) + (f" (from the {line(job.office_source)})" if job.office_text and job.office_source else "")
     out.append(facts([
         ("Your status", STATUS_FOLDER.get(entry.status, line(entry.status)) + (" (hidden)" if job.hidden else "")),
+        ("Moved to Applied", day(job.applied_at) if job.applied_at else ""),  # the latest move (none: not known)
         ("Fit score", f"{fit.score} out of 100" if fit and fit.status == "ok" and fit.score is not None else ("scoring failed" if fit else "")),
         ("Where", where), ("Work mode", mode),
         ("Distance from home", f"{job.distance_km:.1f} km" if job.distance_km is not None else ""),

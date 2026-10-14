@@ -193,6 +193,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .score.mid { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
 .score.low { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
 .job-sub { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+/* The applied date (common.js appliedHtml): shown while the job is in Applied, nothing (and no gap) otherwise. */
+.applied-slot:empty { display: none; }
+.applied-on { color: var(--text); }
 .job-sub a { color: var(--accent-text); }
 .job-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .job-actions select { flex: 1 1 160px; }

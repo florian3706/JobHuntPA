@@ -570,6 +570,12 @@ function fmtDate(iso) {
 }
 
 function scoreOf(job) { return job.fit && job.fit.status === 'ok' ? job.fit.score : null; }
+/* "Applied <date>" while a job is in Applied and the date it last moved there is known (job.applied_at); nothing
+   otherwise, also for a job that was in Applied before the date was kept. */
+function appliedHtml(job) {
+  return job.status === 'applied' && job.applied_at
+    ? `<span class="applied-on"><span aria-hidden="true">📨 </span>Applied ${esc(fmtDate(job.applied_at).split(',')[0])}</span>` : '';
+}
 const EMPLOYMENT_LABEL = { full_time: 'Full-time', part_time: 'Part-time', contract: 'Contract', casual: 'Casual', temporary: 'Temporary', internship: 'Internship' };
 /* Employment type badge for job facts; nothing when unknown. */
 function employmentBadge(job) {

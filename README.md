@@ -449,7 +449,9 @@ limits on searches. The AI features use the provider and key set on the Settings
   <img src="docs/screenshots/search-schedule.png" alt="The Scheduled searches card: run times, days, public holidays and the next search" width="760">
 
 - **Tracking and tidying**: set each job's status (to review, shortlisted, applied, interviewing,
-  rejected, not interested). Tick jobs, or filter the list and tick **Select all shown**, to change
+  rejected, not interested). Moving a job to *Applied* keeps the date: the card and the job page
+  show *Applied* and the date while it stays there (moved away and back, the latest move; a job
+  that was already in *Applied* before this version shows no date), and the data export has it. Tick jobs, or filter the list and tick **Select all shown**, to change
   status or **Hide** them in bulk (only jobs on screen are ever affected); hidden jobs stay hidden when a search finds them again, aren't scored or
   researched, and come back with *Show hidden*.
 - **Softening the office-days rule**: if you set a maximum number of office days for hybrid roles,

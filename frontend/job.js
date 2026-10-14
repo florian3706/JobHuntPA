@@ -44,6 +44,7 @@ function renderHead() {
     job.distance_km !== null ? `<span><span aria-hidden="true">📍 </span>${job.distance_km} km<span class="muted"> straight line to your nearest pin</span></span>` : '',
     job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : '',
     job.posted_at ? `<span class="muted">posted ${esc(fmtDate(job.posted_at).split(',')[0])}</span>` : '',
+    `<span class="applied-slot">${appliedHtml(job)}</span>`,
     job.closed ? '<span class="badge flag">closed</span>' : '',
     job.recruiter ? '<span class="badge flag">recruitment agency</span>' : '',
   ].join('');
@@ -69,8 +70,10 @@ function renderHead() {
   $('#job-head a.ghost-dot')?.addEventListener('click', () => { const why = $('#ghost-why'); if (why) why.open = true; });
   $('#job-status').addEventListener('change', async (e) => {
     try {
-      await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) });
+      const res = await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) });
       job.status = e.target.value;
+      job.applied_at = res.applied_at ?? job.applied_at ?? null;
+      $('#job-head .applied-slot').innerHTML = appliedHtml(job); // (the header isn't redrawn: focus stays)
       toast(`Status saved: ${STATUS_LABEL[job.status]}`, 'ok', 2500);
     } catch (err) { toast(`Status update failed: ${err.message}`, 'err'); e.target.value = job.status; }
   });

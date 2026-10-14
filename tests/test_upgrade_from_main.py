@@ -14,6 +14,9 @@ account's details sealed to it, the audit log) is gone too, and so is the admin 
 admin and the ordinary one) still sign in, with their email address as their name; the former admin can now change
 the AI settings (so can the other: there are no roles); the settings survive; no further account can be made; and
 the old SMTP_* and STRIPE_* lines leave .env.
+
+Phase D: the jobs get the new applied date column empty, so none shows a date, and the workspaces keep their
+scheduled searches on (new workspaces start with them off).
 """
 from __future__ import annotations
 
@@ -83,6 +86,11 @@ with TestClient(app, base_url="https://jobs.example.invalid") as c:
             c.headers["X-Workspace"] = str(ws[0]["id"])
             jobs = c.get("/api/jobs?include=excluded,hidden").json()
             got["jobs"] = sorted((j["title"], j["status"]) for j in jobs)
+            # Phase D: no job of an older install has an applied date (so none is shown), and its workspace keeps
+            # the schedule it had (no row: the preset, which is on).
+            got["applied_at"] = sorted((j["title"], j["applied_at"]) for j in jobs)
+            got["applied_at_page"] = [c.get(f"/api/jobs/{j['id']}").json()["applied_at"] for j in jobs]
+            got["schedule_on"] = c.get("/api/schedule").json()["enabled"]
             docs = c.get("/api/documents").json()
             got["documents"] = [c.get(f"/api/documents/{d['id']}/text").json().get("text") for d in docs]
             got["pins"] = [p["label"] for p in c.get("/api/pins").json()]
@@ -124,7 +132,10 @@ out["after"] = {"two_step": raw("SELECT COUNT(*) FROM users WHERE mfa_enabled !=
                 "settings": sorted(k for (k,) in raw("SELECT key FROM app_settings")),
                 "pii_admin": raw("SELECT COUNT(*) FROM users WHERE pii_admin IS NOT NULL OR pii_admin_version IS NOT NULL")[0][0],
                 "roles": sorted(set(r for (r,) in raw("SELECT role FROM users"))),
-                "accounts": raw("SELECT COUNT(*) FROM users")[0][0]}
+                "accounts": raw("SELECT COUNT(*) FROM users")[0][0],
+                "applied_column": [[r[2], r[4]] for r in raw("PRAGMA table_info(jobs)") if r[1] == "applied_at"],
+                "applied_set": raw("SELECT COUNT(*) FROM jobs WHERE applied_at IS NOT NULL")[0][0],
+                "schedules": raw("SELECT COUNT(*) FROM search_schedules")[0][0]}
 out["env_after"] = (Path(FOLDER) / ".env").read_text()
 files = [p for p in (DB, DB.with_name(DB.name + "-wal")) if p.exists()]
 out["secrets_left"] = sum(1 for p in files for s in secrets if s in p.read_bytes())
@@ -186,6 +197,21 @@ class UpgradeFromMainTest(unittest.TestCase):
             self.assertEqual(member["jobs"], [["Fixture Delivery Lead", "shortlisted"], ["Fixture Private Role", "applied"]])
             self.assertEqual(member["llm_model"], "claude-fixture-model", "the former ordinary account reads them too")
             self.assertEqual((owner["usage"], member["usage"]), (200, 200))
+
+    def test_jobs_get_no_applied_date_and_workspaces_keep_their_schedule(self):
+        """Phase D: the new sealed applied_at column is added empty (no server default), so no job of an older
+        install shows a date, the one in Applied included; and the workspaces keep their scheduled searches on."""
+        for run in (self.out, self.again):
+            after = run["after"]
+            self.assertEqual(len(after["applied_column"]), 1, "the column is added")
+            self.assertIsNone(after["applied_column"][0][1], "with no server default")
+            self.assertEqual(after["applied_set"], 0)
+            self.assertEqual(after["schedules"], 0, "no schedule row is written for an existing workspace")
+            for email, _ in (OWNER, MEMBER):
+                got = run[email]
+                self.assertEqual(got["applied_at"], [["Fixture Delivery Lead", None], ["Fixture Private Role", None]])
+                self.assertEqual(got["applied_at_page"], [None, None])
+                self.assertTrue(got["schedule_on"], "an existing workspace's scheduled searches stay on")
 
     def test_the_former_admin_can_change_the_ai_settings(self):
         for run in (self.out, self.again):

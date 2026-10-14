@@ -421,7 +421,7 @@ class ClosingRuleTest(PoolTestCase):
 class JobJsonShapeTest(PoolTestCase):
     KEYS = {"id", "source", "company", "company_key", "title", "location_text", "country", "lat", "lng", "work_mode",
             "employment_type", "office_days", "salary_text", "salary_min", "salary_max", "url", "distance_km",
-            "status", "excluded_reason", "detail_status", "posted_at", "first_seen", "last_seen", "closed", "hidden",
+            "status", "applied_at", "excluded_reason", "detail_status", "posted_at", "first_seen", "last_seen", "closed", "hidden",
             "fit", "has_cover_letter", "office_text", "office_source", "office_placed", "office_unknown",
             "location_verdict", "recruiter", "ghost", "also_on", "link"}
 

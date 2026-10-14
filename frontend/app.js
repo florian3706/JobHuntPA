@@ -357,6 +357,7 @@ function renderJobCard(job) {
       ${job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : ''}
       <span class="muted">${esc(sourceLabel(link.source))}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>${
         link.copy_id ? ` ${split(link.copy_id, link.source)}` : ''}
+      <span class="applied-slot">${appliedHtml(job)}</span>
     </div>
     ${officeHtml(job) ? `<div class="job-office">${officeHtml(job)}</div>` : ''}
     ${also ? `<div class="also-on" title="The same job advertised on other sites, merged into this card"><span class="muted">Also on:</span> ${also}</div>` : ''}
@@ -430,8 +431,11 @@ async function updateJobStatus(job, next, selectEl) {
   const prev = job.status;
   job.status = next;
   renderStatusChips();
+  const slot = selectEl.closest('.job-card')?.querySelector('.applied-slot');
   try {
-    await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: next }) });
+    const res = await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: next }) });
+    job.applied_at = res.applied_at ?? job.applied_at ?? null;
+    if (slot) slot.innerHTML = appliedHtml(job); // the card isn't redrawn (focus stays on the select)
   } catch (e) {
     job.status = prev;
     selectEl.value = prev;
@@ -502,8 +506,12 @@ async function bulkUpdateStatus() {
   const ids = Array.from(state.selected);
   const status = $('#bulk-status').value;
   try {
-    await api('/api/jobs/status', { method: 'PATCH', body: JSON.stringify({ ids, status }) });
-    state.jobs.forEach((j) => { if (state.selected.has(j.id)) j.status = status; });
+    const res = await api('/api/jobs/status', { method: 'PATCH', body: JSON.stringify({ ids, status }) });
+    state.jobs.forEach((j) => {
+      if (!state.selected.has(j.id)) return;
+      j.status = status;
+      if (res.applied_at && String(j.id) in res.applied_at) j.applied_at = res.applied_at[String(j.id)];
+    });
     state.selected.clear();
     renderJobs();
     toast(`Updated ${ids.length} job(s)`, 'ok');

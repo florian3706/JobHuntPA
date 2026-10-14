@@ -8,6 +8,7 @@ import json
 import logging
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -250,6 +251,8 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "url": job.url,
         "distance_km": job.distance_km,
         "status": job.status,
+        # When it last moved to Applied (None: never, or before this was kept); the card shows it while it's there.
+        "applied_at": job.applied_at.isoformat() if job.applied_at else None,
         "excluded_reason": job.excluded_reason,
         "detail_status": job.detail_status,
         "posted_at": job.posted_at,
@@ -401,13 +404,28 @@ class BulkStatusUpdate(StatusUpdate):
     ids: list[int]
 
 
+def set_status(job: Job, status: str, now: Optional[datetime] = None) -> None:
+    """A job's application status. Moving to Applied stores the date (sealed, like the status): moved away and
+    back, it is the latest move; set to Applied again while already there, it keeps the first."""
+    if status == "applied" and job.status != "applied":
+        job.applied_at = now or datetime.utcnow()
+    job.status = status
+
+
 @app.patch("/api/jobs/status")
 def bulk_update_status(payload: BulkStatusUpdate, db: Session = Depends(get_db),
                        ws: int = Depends(current_workspace)):
-    n = (db.query(Job).filter(Job.workspace_id == ws, Job.id.in_(payload.ids))
-         .update({Job.status: payload.status}, synchronize_session=False))
+    """Signed in: the status of the workspace's jobs among ``ids`` (others are left alone). Decided in Python:
+    the status is sealed. ``applied_at``: each changed job's applied date, for the cards."""
+    from backend.pool import jobs_query
+
+    now = datetime.utcnow()
+    jobs = jobs_query(db).filter(Job.workspace_id == ws, Job.id.in_(payload.ids)).all()
+    for job in jobs:
+        set_status(job, payload.status, now)
     db.commit()
-    return {"ok": True, "updated": n}
+    return {"ok": True, "updated": len(jobs),
+            "applied_at": {str(j.id): j.applied_at.isoformat() if j.applied_at else None for j in jobs}}
 
 
 class HiddenUpdate(BaseModel):
@@ -429,9 +447,10 @@ def set_hidden(payload: HiddenUpdate, db: Session = Depends(get_db), ws: int = D
 def update_status(job_id: int, payload: StatusUpdate, db: Session = Depends(get_db),
                   ws: int = Depends(current_workspace)):
     job = owned(db, Job, job_id, ws, "Job")
-    job.status = payload.status
+    set_status(job, payload.status)
     db.commit()
-    return {"ok": True, "id": job_id, "status": job.status}
+    return {"ok": True, "id": job_id, "status": job.status,
+            "applied_at": job.applied_at.isoformat() if job.applied_at else None}
 
 
 @app.post("/api/jobs/refilter")
