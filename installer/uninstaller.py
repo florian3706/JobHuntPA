@@ -104,18 +104,23 @@ def service_unit() -> Path:
     return Path(base) / "systemd" / "user" / SERVICE
 
 
+def service_ident(folder: Path) -> str:
+    """What service.sh writes into the unit to say which install it runs: the AppImage file, or the app folder."""
+    return os.environ.get("APPIMAGE") or str(folder)
+
+
 def service_data_folder(folder: Path) -> Path | None:
     """The data folder service.sh gave the service of this app folder (its JOBHUNT_DATA_DIR line), if there is one."""
     try:
         text = service_unit().read_text(encoding="utf-8")
     except OSError:
         return None
-    if str(folder) not in text:
+    if service_ident(folder) not in text:
         return None
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("Environment=") and "JOBHUNT_DATA_DIR=" in line:
-            value = line.split("JOBHUNT_DATA_DIR=", 1)[1].strip().strip('"')
+            value = line.split("JOBHUNT_DATA_DIR=", 1)[1].strip().strip('"').replace("%%", "%")
             return Path(value) if value and Path(value).is_absolute() else None
     return None
 
@@ -208,7 +213,7 @@ def remove_service(folder: Path) -> None:
         text = unit.read_text(encoding="utf-8")
     except OSError:
         return
-    if str(folder) not in text:
+    if service_ident(folder) not in text:
         return
     def systemctl(*args: str) -> None:
         try:
