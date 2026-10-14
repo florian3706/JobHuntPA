@@ -302,7 +302,7 @@ class Importer:
     def workspace(self, ws: int, data: WorkspaceIn) -> None:
         db = self.db
         setup = data.search_setup
-        if setup is not None:
+        if setup is not None and setup.model_fields_set - {"dealbreakers"}:  # (a setup can hold dealbreakers alone)
             profile = UserProfile(id=ws, titles=list(setup.titles), keywords_include=list(setup.keywords_include),
                                   keywords_exclude=list(setup.keywords_exclude), salary_floor=setup.salary_floor,
                                   remote_aus_ok=setup.remote_aus_ok, remote_global_ok=setup.remote_global_ok,
@@ -311,9 +311,9 @@ class Importer:
                                   seek_locations=list(setup.seek_locations))
             starting_points_in(profile, setup.starting_points)
             db.add(profile)
-            if setup.dealbreakers is not None:
-                db.add(DealbreakerSet(id=ws, industries=list(setup.dealbreakers.industries),
-                                      keywords=list(setup.dealbreakers.keywords)))
+        if setup is not None and setup.dealbreakers is not None:
+            db.add(DealbreakerSet(id=ws, industries=list(setup.dealbreakers.industries),
+                                  keywords=list(setup.dealbreakers.keywords)))
         if data.schedule is not None:
             s = data.schedule
             db.add(SearchSchedule(id=ws, enabled=s.enabled, times=list(s.times), days=sorted(set(s.days)),
