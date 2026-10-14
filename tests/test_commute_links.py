@@ -101,10 +101,88 @@ class StartingPointsTest(Workspaced):
                         [{"place": "Somewhere", "use": "both", "url": "x"}],   # an unknown field
                         [{"place": "x" * 201, "use": "both"}], [{"label": "x" * 81, "place": "y", "use": "both"}],
                         [{"pin_id": 0, "use": "both"}], [{"pin_id": "1; DROP", "use": "both"}],
-                        [{"pin_id": other_pin, "use": "both"}],                # another workspace's pin
-                        [{"pin_id": 987654321, "use": "both"}]):
+                        [{"place": f"Stop {i}", "use": "transit"} for i in range(501)]):  # past the technical bound
                 self.assertEqual(self.put_points(c, bad).status_code, 422, bad)
             self.assertEqual(len(c.get("/api/profile", headers=self.h).json()["starting_points"]), 60)
+            # A pin that isn't one of this search's (another workspace's, a made-up number) is dropped, not stored,
+            # and the rest of the search setup is still saved.
+            r = self.put_points(c, [{"pin_id": other_pin, "use": "both"}, {"pin_id": 987654321, "use": "both"},
+                                    {"place": "Kept", "use": "both"}], titles=["Saved anyway"])
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(r.json()["titles"], ["Saved anyway"])
+            self.assertEqual(r.json()["starting_points"],
+                             [{"label": "", "pin_id": None, "place": "Kept", "use": "both"}])
+            self.assertEqual(len(self.put_points(c, [{"place": f"Stop {i}", "use": "transit"}
+                                                     for i in range(500)]).json()["starting_points"]), 500)
+
+    def test_deleting_a_pin_drops_its_starting_points_and_saving_still_works(self):
+        with helpers.client() as c:
+            keep = c.post("/api/pins", headers=self.h, json={"label": "Kept", "kind": "hybrid", "lat": -33.6,
+                                                             "lng": 151.1}).json()["id"]
+            gone = c.post("/api/pins", headers=self.h, json={"label": "Gone", "kind": "hybrid", "lat": -33.5,
+                                                             "lng": 151.0}).json()["id"]
+            points = [{"label": "", "pin_id": keep, "place": None, "use": "driving"},
+                      {"label": "", "pin_id": gone, "place": None, "use": "both"},
+                      {"label": "Station", "pin_id": None, "place": "Gosford Station NSW", "use": "transit"}]
+            self.assertEqual(self.put_points(c, points).status_code, 200)
+            stale = c.get("/api/profile", headers=self.h).json()  # what an open page holds
+            self.assertEqual(c.delete(f"/api/pins/{gone}", headers=self.h).status_code, 204)
+            self.assertEqual(c.get("/api/profile", headers=self.h).json()["starting_points"],
+                             [points[0], points[2]])
+            # The page still sends the deleted pin's starting point with the next change: the save goes through.
+            r = c.put("/api/profile", headers=self.h, json={**stale, "titles": ["Analyst"]})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual((r.json()["titles"], r.json()["starting_points"]), (["Analyst"], [points[0], points[2]]))
+
+    def test_a_saved_start_whose_pin_is_gone_is_kept_and_does_not_block_saving(self):
+        """A starting point already saved with a pin that is no longer there (as stored before pins took their
+        starting points with them) stays, so the page can show it as deleted, and saving still works."""
+        with helpers.as_admin():
+            db = SessionLocal()
+            db.add(UserProfile(id=self.ws, titles=["Analyst"], starting_points=[
+                {"label": "Old", "pin_id": 987654321, "place": None, "use": "both"}]))
+            db.commit()
+            db.close()
+        with helpers.client() as c:
+            profile = c.get("/api/profile", headers=self.h).json()
+            r = c.put("/api/profile", headers=self.h, json={**profile, "titles": ["Designer"]})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(r.json()["starting_points"], profile["starting_points"])
+            job = self.add_job()
+            out = c.get(f"/api/jobs/{job}/commute", headers=self.h).json()
+            self.assertEqual(out["starts"], [])
+            self.assertTrue(any("deleted" in n for n in out["notes"]))
+
+    def test_a_copied_workspace_starts_from_the_copied_pins(self):
+        with helpers.client() as c:
+            pin = c.post("/api/pins", headers=self.h, json={"label": "Parents", "kind": "home", "lat": -33.4,
+                                                            "lng": 151.3}).json()["id"]
+            other = c.post("/api/pins", headers=self.h, json={"label": "Gym", "kind": "hybrid", "lat": -33.8,
+                                                              "lng": 151.0}).json()["id"]
+            self.put_points(c, [{"label": "Parents by car", "pin_id": pin, "use": "driving"},
+                                {"label": "", "pin_id": other, "use": "transit"},
+                                {"label": "", "pin_id": 987654321, "use": "both"},  # already gone: not copied
+                                {"label": "Station", "place": "Gosford Station NSW", "use": "transit"}])
+            r = c.post("/api/workspaces", json={"name": "Commute copy", "copy_from": self.ws})
+            self.assertEqual(r.status_code, 201, r.text)
+            h2 = {"X-Workspace": str(r.json()["id"])}
+            pins = {p["label"]: p["id"] for p in c.get("/api/pins", headers=h2).json()}
+            self.assertEqual(set(pins), {"Parents", "Gym"})
+            self.assertFalse({pin, other} & set(pins.values()))
+            profile = c.get("/api/profile", headers=h2).json()
+            self.assertEqual([p["pin_id"] for p in profile["starting_points"]], [pins["Parents"], pins["Gym"], None])
+            r = c.put("/api/profile", headers=h2, json={**profile, "titles": ["In the copy"]})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(r.json()["starting_points"], profile["starting_points"])
+            job = self.add_job(workspace_id=int(h2["X-Workspace"]))
+            out = c.get(f"/api/jobs/{job}/commute", headers=h2).json()
+            self.assertEqual(out["starts"], [
+                {"label": "Parents by car", "origin": "-33.400000,151.300000", "modes": ["driving"], "kind": "pin"},
+                {"label": "Gym", "origin": "-33.800000,151.000000", "modes": ["transit"], "kind": "pin"},
+                {"label": "Station", "origin": "Gosford Station NSW", "modes": ["transit"], "kind": "place"}])
+            self.assertFalse(any("deleted" in n for n in out["notes"]))
+            # The source workspace keeps its own.
+            self.assertEqual(c.get("/api/profile", headers=self.h).json()["starting_points"][0]["pin_id"], pin)
 
     def test_the_old_times_are_gone_from_the_search_setup(self):
         with helpers.client() as c:
@@ -173,7 +251,7 @@ class CommuteEndpointTest(Workspaced):
             self.put_points(c, [{"label": "Station", "place": "Gosford Station NSW", "use": "transit"},
                                 {"label": "Flat by car", "pin_id": flat, "use": "driving"},  # takes the home pin's place
                                 {"label": "", "pin_id": gone, "use": "both"}])
-            c.delete(f"/api/pins/{gone}", headers=self.h)
+            c.delete(f"/api/pins/{gone}", headers=self.h)  # takes its starting point with it
             r = c.get(f"/api/jobs/{job}/commute", headers=self.h)
             self.assertEqual(r.status_code, 200, r.text)
             out = r.json()
@@ -183,7 +261,7 @@ class CommuteEndpointTest(Workspaced):
                 {"label": "Home", "origin": "-33.425000,151.341700", "modes": ["driving", "transit"], "kind": "home"},
                 {"label": "Station", "origin": "Gosford Station NSW", "modes": ["transit"], "kind": "place"},
                 {"label": "Flat by car", "origin": "-33.900000,151.200000", "modes": ["driving"], "kind": "pin"}])
-            self.assertTrue(any("deleted" in n for n in out["notes"]))
+            self.assertFalse(any("deleted" in n for n in out["notes"]))
             self.assertFalse({"arrive_by", "leave_at", "transit", "car", "links", "day"} & set(out))
             self.assertIsNotNone(home)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,8 @@ router = APIRouter()
 
 PinKind = Literal["home", "hybrid", "onsite"]
 DEFAULT_PIN_RADIUS_KM = 25.0
+# A technical bound on one PUT, far above any real use (spec §1.16: no product limit on starting points).
+STARTING_POINTS_MAX = 500
 
 
 class StartingPoint(BaseModel):
@@ -55,7 +57,7 @@ class ProfileSchema(BaseModel):
     seek_locations: list[str] = Field(default_factory=list)
     # Where the job page's Google Maps links start (backend.commute), besides the home pins. Left out of a PUT: kept
     # as it is.
-    starting_points: Optional[list[StartingPoint]] = None
+    starting_points: Optional[list[StartingPoint]] = Field(default=None, max_length=STARTING_POINTS_MAX)
 
 
 class DealbreakersSchema(BaseModel):
@@ -132,12 +134,15 @@ def save_profile(db: Session, ws: int, data: ProfileSchema) -> dict[str, Any]:
     row.seek_locations = _clean_tags(data.seek_locations)
     if data.starting_points is not None:
         points = commute.clean_starting_points(p.model_dump() for p in data.starting_points)
+        # A pin start must name one of this workspace's pins (plaintext Pin.id/workspace_id). One whose pin is gone
+        # is kept only if it was already saved, so the page can still show it as deleted; any other pin id (a pin
+        # of another search, a made-up number) is dropped rather than refusing the whole save. Looked up only
+        # within this workspace (commute.starts_for, export), a kept id never reaches another workspace's pin.
         pins = {pin_id for (pin_id,) in db.query(Pin.id).filter(Pin.workspace_id == ws)}
-        if any(p["pin_id"] is not None and p["pin_id"] not in pins for p in points):
-            db.rollback()
-            raise HTTPException(status_code=422, detail="A starting point names a pin that isn't in this search. "
-                                                        "Reload the page and choose the pin again.")
-        row.starting_points = points
+        stored = {p["pin_id"] for p in commute.clean_starting_points(row.starting_points or [])
+                  if p["pin_id"] is not None}
+        row.starting_points = [p for p in points if p["pin_id"] is None or p["pin_id"] in pins
+                               or p["pin_id"] in stored]
         # The older search setup's stations are now starting points, and its times are gone (spec §1.8).
         row.commute_from, row.commute_arrive_by, row.commute_leave_at = None, "", ""
     db.commit()
@@ -222,4 +227,17 @@ def edit_pin(pin_id: int, payload: PinUpdate, db: Session = Depends(get_db),
 def remove_pin(pin_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)) -> None:
     pin = owned(db, Pin, pin_id, ws, "Pin")
     db.delete(pin)
+    forget_pin_starts(db, ws, pin_id)
     db.commit()
+
+
+def forget_pin_starts(db: Session, ws: int, pin_id: int) -> None:
+    """Drop the workspace's starting points that use this pin (decided in Python: the column is sealed). The caller
+    commits, so the pin and its starting points go together."""
+    row = db.get(UserProfile, ws)
+    if row is None or row.starting_points is None:
+        return
+    points = commute.clean_starting_points(row.starting_points)
+    kept = [p for p in points if p["pin_id"] != pin_id]
+    if len(kept) != len(points):
+        row.starting_points = kept

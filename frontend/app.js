@@ -1296,6 +1296,10 @@ function initStarts() {
     e.preventDefault();
     const pinId = Number($('#start-from').value) || null;
     const place = $('#start-place').value.trim();
+    if (!state.profile) { // saveSetup leaves starting points out until the search setup has loaded
+      setFieldError(pinId ? $('#start-from') : $('#start-place'), 'The search setup has not loaded yet. Wait a moment, or reload the page, then add it again.');
+      return;
+    }
     if (!pinId && !place) {
       setFieldError($('#start-place'), 'Type an address, a station or a stop, or choose a pin under From.');
       return;
@@ -2402,6 +2406,8 @@ async function savePin(p, patch) {
 async function deletePin(p) {
   try {
     await api(`/api/pins/${p.id}`, { method: 'DELETE' });
+    // The server dropped the starting points made from this pin along with it.
+    state.startingPoints = state.startingPoints.filter((sp) => sp.pin_id !== p.id);
     await loadPins();
     $('#pin-add-centre').focus(); // the row with the button is gone
     announce(`Deleted the ${p.kind} pin ${p.label}.`);

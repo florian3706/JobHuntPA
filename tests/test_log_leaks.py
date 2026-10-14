@@ -382,8 +382,10 @@ class FullRun(unittest.TestCase):
         profile["starting_points"] = [{"label": "ZQX station", "place": "ZQX Station, Zqxtown NSW", "use": "transit"},
                                       {"label": "ZQX parents", "pin_id": pin, "use": "driving"}]
         self.assertEqual(c.put("/api/profile", json=profile).status_code, 200)
-        bad = {**profile, "starting_points": [{"label": "ZQX nowhere", "pin_id": 987654, "use": "both"}]}
-        self.assertEqual(c.put("/api/profile", json=bad).status_code, 422)
+        stale = {**profile, "starting_points": [*profile["starting_points"],
+                                                {"label": "ZQX nowhere", "pin_id": 987654, "use": "both"}]}
+        r = c.put("/api/profile", json=stale)  # a pin that isn't in this search: dropped, the rest saved
+        self.assertEqual((r.status_code, len(r.json()["starting_points"])), (200, 2))
         bad = {**profile, "starting_points": [{"label": "ZQX both", "pin_id": pin, "place": "ZQX Place", "use": "both"}]}
         self.assertEqual(c.put("/api/profile", json=bad).status_code, 422)
         self.assertEqual(c.put(f"/api/jobs/{self.job_id}/office", json={"office": "1 Zqx Street, Zqxtown NSW"}).status_code,
