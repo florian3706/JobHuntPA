@@ -77,6 +77,7 @@ from backend.db import (
     SearchRun,
     SearchSchedule,
     SessionLocal,
+    SiteMapping,
     User,
     UserKeys,
     UserProfile,
@@ -1058,7 +1059,7 @@ def delete_account(db: Session, user_id: int) -> dict:
     """The one way an account is removed over the web (a person deleting their own, in Settings): the account and
     everything of theirs, in one transaction (their sealed upload files after it): workspaces with every row in them
     (jobs, scores, cover letters, documents, chats, profile, dealbreakers, pins, sources, schedules, runs, merge
-    decisions), sessions, recovery codes and keys (the data key's and the identity key's wraps with them).
+    decisions), the job sites' page layouts (``site_mappings``), sessions, recovery codes and keys (the data key's and the identity key's wraps with them).
     Shared postings, company profiles and the geocode cache stay; so do usage counts (``llm_usage``, no longer tied
     to anyone).
 
@@ -1083,7 +1084,7 @@ def delete_account(db: Session, user_id: int) -> dict:
             _refuse_active_runs(db, ws_ids)
             files = _remove_workspace_data(db, user_id, ws_ids)
             db.execute(update(LlmUsage).where(LlmUsage.user_id == user_id).values(user_id=None))
-            for model in (AuthSession, RecoveryCode, UserKeys):
+            for model in (SiteMapping, AuthSession, RecoveryCode, UserKeys):
                 db.execute(delete(model).where(model.user_id == user_id))
             db.execute(delete(User).where(User.id == user_id))
             db.commit()

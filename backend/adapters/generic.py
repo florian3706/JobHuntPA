@@ -14,6 +14,14 @@ Strategy, in order (the first that yields jobs wins):
 4. If the static HTML has no job links and looks like a JavaScript app,
    render it in headless Chromium and repeat step 3.
 
+A source may carry a **mapping** (backend/mapping_format.py, kind
+"careers"): the page's layout as the AI worked it out from the browser
+extension's outline. When the page itself is read (not a known ATS board
+in step 1a, and never by the specialised adapters), the mapping is tried
+first: its ``list`` selector picks the job entries and, within each, its
+selectors the title, the link and the rest (``parse_mapped``). When it
+finds nothing (the page has changed), the steps above follow as usual.
+
 Every request goes through :class:`PoliteClient` (robots.txt, crawl delay,
 honest User-Agent).
 """
@@ -27,9 +35,11 @@ from urllib.parse import parse_qs, urldefrag, urljoin, urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
+from backend import mapping_format
 from backend.adapters.ats import detect_ats, make_ats_adapter
 from backend.adapters.base import Adapter, Posting, SourceError
-from backend.geo import guess_country, looks_like_location
+from backend.employment import normalise_employment_type
+from backend.geo import classify_work_mode, guess_country, looks_like_location
 from backend.scraping.http import FetchError, PoliteClient, Response
 from backend.scraping.jsonld import find_job_postings, posting_from_jsonld
 from backend.scraping.text import clean, html_to_text
@@ -232,6 +242,63 @@ def parse_listing(html: str, page_url: str, company: str) -> tuple[list[Posting]
     return postings, list(dict.fromkeys(pages))
 
 
+MAPPED_TITLE_MAX = 300
+MAPPED_VALUE_MAX = 200
+
+
+def _mapped_value(entry: Tag, spec: Optional[dict], default_attribute: Optional[str] = None) -> str:
+    """One field of an entry: the element the selector picks inside it (``:scope``: the entry), as its text or the
+    named attribute's value."""
+    if not spec:
+        return ""
+    selector = spec["selector"]
+    try:
+        el = entry if selector == mapping_format.SCOPE else entry.select_one(selector)
+    except Exception:  # (checked when stored; a selector this engine can't run finds nothing)
+        return ""
+    if el is None:
+        return ""
+    attribute = spec.get("attribute") or default_attribute
+    if attribute:
+        value = el.get(attribute)
+        return clean(" ".join(value) if isinstance(value, list) else value or "")
+    return clean(el.get_text(" "))
+
+
+def parse_mapped(html: str, page_url: str, company: str, mapping: dict) -> list[Posting]:
+    """Job-posting stubs from a careers page read with its mapping (kind "careers"): one per entry ``list`` picks
+    that has a title and a link to an http(s) page that isn't on the local network or this computer."""
+    from backend.source_bulk import address_flags
+
+    fields = mapping["fields"]
+    soup = BeautifulSoup(html, "lxml")
+    try:
+        entries = soup.select(fields["list"]["selector"], limit=MAX_POSTINGS)
+    except Exception:
+        return []
+    postings: dict[str, Posting] = {}
+    for entry in entries:
+        title = _mapped_value(entry, fields.get("title"))[:MAPPED_TITLE_MAX]
+        href = _mapped_value(entry, fields.get("link"), default_attribute="href")
+        if not title or not href:
+            continue
+        try:
+            url = urldefrag(urljoin(page_url, href.strip()))[0]
+        except ValueError:
+            continue
+        if urlsplit(url).scheme not in ("http", "https") or address_flags(url).blocked or url in postings:
+            continue
+        location = _mapped_value(entry, fields.get("location"))[:MAPPED_VALUE_MAX]
+        mode = _mapped_value(entry, fields.get("work_mode"))[:MAPPED_VALUE_MAX]
+        postings[url] = Posting(
+            url=url, title=title, company=company, location_text=location, country=guess_country(location),
+            work_mode=classify_work_mode("", mode, "") if mode else "unknown",
+            employment_type=normalise_employment_type(_mapped_value(entry, fields.get("employment_type"))[:100]),
+            salary_text=_mapped_value(entry, fields.get("salary"))[:MAPPED_VALUE_MAX],
+            posted_at=_mapped_value(entry, fields.get("date"))[:40])
+    return list(postings.values())
+
+
 def _title_h1(soup: BeautifulSoup, title: str) -> Optional[Tag]:
     """The page's job-title heading: the <h1> matching the listed title if
     there is one (pages may put a "Job Search" widget heading first)."""
@@ -343,9 +410,10 @@ def parse_detail(html: str, stub: Posting) -> Optional[Posting]:
 
 
 class GenericAdapter(Adapter):
-    def __init__(self, client: PoliteClient, careers_url: str, company: str = ""):
+    def __init__(self, client: PoliteClient, careers_url: str, company: str = "", mapping: Optional[dict] = None):
         self.client = client
         self.careers_url = careers_url.strip()
+        self.mapping = mapping_format.stored(mapping, "careers")
         host = urlsplit(self.careers_url).netloc.lower()
         self.company = company or _site_key(host)
         self.source = f"site:{_site_key(host)}"
@@ -368,6 +436,13 @@ class GenericAdapter(Adapter):
         except FetchError as exc:
             raise SourceError(str(exc)) from exc
 
+        # 0. the page's own mapping, worked out by the AI
+        if self.mapping:
+            got = self._mapped(index)
+            if got:
+                return got
+            self.notes.append("the page layout worked out for this page found no jobs; read it the usual ways")
+
         # 1c. an RSS/Atom job feed
         feed = parse_feed(index.text, self.company)
         if feed:
@@ -389,6 +464,10 @@ class GenericAdapter(Adapter):
         if not postings:
             # 4. JavaScript-rendered listing
             rendered = self.client.render(self.careers_url)
+            if self.mapping:
+                got = self._mapped(rendered, render=True)
+                if got:
+                    return got
             refs = detect_ats(rendered.text)
             if len(refs) == 1:
                 got = self._try_ats(refs, found_on=" (found in rendered page)")
@@ -401,6 +480,35 @@ class GenericAdapter(Adapter):
             detail = "; ".join(self.notes)
             raise SourceError("no job postings found on the careers page" + (f" ({detail})" if detail else ""))
         return postings
+
+    def _mapped(self, page: Response, render: bool = False) -> list[Posting]:
+        postings = parse_mapped(page.text, page.url, self.company, self.mapping)
+        if postings:
+            self.method = f"careers page read with its worked-out layout ({_site_key(urlsplit(page.url).netloc.lower())})"
+            if render:
+                self.render_details = True
+                self.method += ", rendered with headless browser"
+            if len(postings) >= MAX_POSTINGS:
+                self.complete_listing = False
+        return postings
+
+    def mapped_postings(self) -> list[Posting]:
+        """The dry run of a mapping (``backend.mappings``): the page read with the mapping alone, rendered in the
+        headless browser when the plain page gives nothing. Raises SourceError when it finds no jobs."""
+        if not self.mapping:
+            raise SourceError("no page layout to read the page with")
+        try:
+            got = self._mapped(self.client.get(self.careers_url, ttl=LISTING_TTL))
+        except FetchError as exc:
+            raise SourceError(str(exc)) from exc
+        if not got:
+            try:
+                got = self._mapped(self.client.render(self.careers_url), render=True)
+            except FetchError as exc:
+                raise SourceError(f"the page layout found no jobs on the careers page ({exc})") from exc
+        if not got:
+            raise SourceError("the page layout found no jobs on the careers page")
+        return got
 
     def _try_ats(self, refs, found_on: str) -> Optional[list[Posting]]:
         for kind, args in refs:
@@ -452,11 +560,12 @@ class GenericAdapter(Adapter):
         return parse_detail(resp.text, posting)
 
 
-def source_adapter(client: PoliteClient, careers_url: str, company: str = "") -> Adapter:
+def source_adapter(client: PoliteClient, careers_url: str, company: str = "", mapping: Optional[dict] = None) -> Adapter:
     """The adapter for a source URL: APSJobs searches use the APSJobs search
-    call; every other careers page goes through the generic scraper."""
+    call; every other careers page goes through the generic scraper, with the
+    source's mapping when it has one (the specialised adapters never use it)."""
     from backend.adapters.apsjobs import ApsJobsAdapter, is_apsjobs_url
 
     if is_apsjobs_url(careers_url):
         return ApsJobsAdapter(client, careers_url, company=company)
-    return GenericAdapter(client, careers_url, company=company)
+    return GenericAdapter(client, careers_url, company=company, mapping=mapping)

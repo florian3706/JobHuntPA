@@ -85,6 +85,7 @@ OWNED = {
     "cover_letters": f"job_id IN (SELECT id FROM jobs WHERE workspace_id IN ({_WS}))",
     "chat_messages": f"thread_id IN (SELECT id FROM chat_threads WHERE workspace_id IN ({_WS}))",
     "search_profile": "1 = 1",  # legacy, unowned: the first account's
+    "site_mappings": "user_id = :owner",  # (made after encryption came in: always sealed)
 }
 # Caches: their old rows are deleted, not sealed (http_cache is process-keyed).
 CACHES = ("http_cache",)

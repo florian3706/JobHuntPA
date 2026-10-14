@@ -89,7 +89,7 @@ def build_adapters(db: Session, ws: int, client: PoliteClient) -> list[tuple[Opt
                .filter(CompanySource.workspace_id == ws, CompanySource.enabled.is_(True))
                .order_by(CompanySource.id))
     for src in sources:
-        adapters.append((src, source_adapter(client, src.careers_url, company=_labels(src)[0])))
+        adapters.append((src, source_adapter(client, src.careers_url, company=_labels(src)[0], mapping=src.mapping)))
     return adapters
 
 

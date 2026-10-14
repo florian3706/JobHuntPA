@@ -627,6 +627,9 @@ class CompanySource(Base):
     last_count = Column(Integer, nullable=True, default=0)
     last_error = Column(SealedText(), nullable=True, default=None)
     last_method = Column(Text, nullable=True)
+    # The careers page's layout worked out by the AI (backend/mappings.py, kind "careers"): selectors only, applied by
+    # the generic adapter when it reads the page. NULL: none (the usual ways of reading a page).
+    mapping = Column(SealedJSON(), nullable=True, default=None)
     # Legacy columns from an earlier schema; unused but kept for old DBs (some of which made them NOT NULL). The
     # encryption migration empties them; url is still written (the careers URL again).
     company = Column(SealedText(), nullable=True, default="")
@@ -636,6 +639,24 @@ class CompanySource(Base):
     tenant = Column(SealedText(), nullable=True, default="")
     site = Column(SealedText(), nullable=True, default="")
     base_url = Column(SealedText(), nullable=True, default="")
+
+
+class SiteMapping(Base):
+    """A job site's layout as the AI worked it out (backend/mappings.py, kind "job"), for one account: which parts of
+    its job pages hold the title, company, description and the rest, as CSS selectors. The extension applies it with
+    the browser's own selector functions. The site (a host name) and the mapping are sealed; a site is found by
+    ``site_index``, a blind index under the account's key. Accounts don't share mappings."""
+
+    __tablename__ = "site_mappings"
+    __table_args__ = (Index("uq_site_mappings_user_site", "user_id", "site_index", unique=True),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    site_index = Column(LargeBinary, nullable=False)  # crypto.blind_index("site_mapping", site)
+    site = Column(SealedText(), nullable=False)
+    mapping = Column(SealedJSON(), nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow)
 
 
 # ---------------------------------------------------------------------------

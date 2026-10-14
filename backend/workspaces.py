@@ -144,7 +144,7 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
                           skip_holidays=sched.skip_holidays, state=sched.state))
     for s in db.query(CompanySource).filter(CompanySource.workspace_id == src):
         db.add(CompanySource(workspace_id=dst, label=s.label, careers_url=s.careers_url, url=s.careers_url,
-                             source_type=s.source_type, enabled=s.enabled))
+                             source_type=s.source_type, enabled=s.enabled, mapping=s.mapping))
     if documents:
         from backend.docs import read_upload, save_upload
 
