@@ -864,8 +864,10 @@ data many sites embed for search engines, or else follows the links to each ad (
 links), and opens pages that only appear in a real browser in a hidden one. A job feed (RSS)
 can be added by its address, and for government jobs add an APSJobs search (see *Government
 jobs* above). An address on your local network or on this computer, or one that isn't a web link,
-can't be a source, however it is added (one at a time, in bulk, or from an export), and the app never
-follows a page's redirect to one.
+can't be a source, however it is added (one at a time, in bulk, or from an export), and the app doesn't
+follow a page's redirect to one. A page opened in the hidden browser is stopped from loading anything from such
+an address; if something on it is redirected there, the browser has already sent that request, so the app
+throws away the whole reading.
 
 **When the app finds no jobs on a page**, the [browser extension](#browser-extension) can have the AI work
 out where the page lists them: open the careers page in your browser and use the extension's **Add as a

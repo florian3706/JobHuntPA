@@ -333,7 +333,7 @@ class Importer:
             found = mapping_format.stored(item.mapping, "job")
             if site is None or found is None or have >= mappings.MAX_SITE_MAPPINGS:
                 continue
-            if mappings._row(db, self.user_id, site) is not None:
+            if mappings.row_for(db, self.user_id, site) is not None:
                 continue
             row, _ = mappings.save(db, self.user_id, site, found)
             if item.updated_at is not None:

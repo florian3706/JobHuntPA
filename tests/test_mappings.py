@@ -158,13 +158,17 @@ class SelectorTest(unittest.TestCase):
                          "x * *", "div *", "* ~ p", "a b c d", "a ~ b ~ c", "a b > c > d > e > f",
                          ":has(a) b", ":has(> a > b) p", ":has(> a) :has(> b) p", "a:has(b:has(c))",
                          "a:not(:has(b)) c", "a, b, c, d, e", ":is(a, b, c, d, e)", "li:has(a b c)",
-                         "tr:nth-child(2n of .x)", "tr:nth-child(1000000n)", "li:first-child(x)"):
+                         "tr:nth-child(2n of .x)", "tr:nth-child(1000000n)", "li:first-child(x)",
+                         "body:has(:is(span div))", "li.job, body:has(:is(span div))", "div:has(:is(p > span))",
+                         "div:has(:where(p ~ span))", "li:has(~ :is(a b))", "li:has(> :not(a b))",
+                         "li:has(> :scope b)"):
             with self.subTest(selector=selector), self.assertRaises(mf.MappingRefused) as caught:
                 mf.check_selector(selector)
             self.assertIn(caught.exception.reason, ("selector_complexity", "selector_syntax"))
         for selector in ("section div > span.x", "ul.list li + li ~ li", "section:has(> h2) p", "li:has(a.job)",
                          "div:not(:has(+ p)) a", "a, b, c, d", "li:not(:is(.a, .b))", "div > *", "*",
-                         "[class~=\"x\"] [data-x=\"a b c d e\"]", "tr:nth-child( 2n + 1 )"):
+                         "[class~=\"x\"] [data-x=\"a b c d e\"]", "tr:nth-child( 2n + 1 )",
+                         "li:has(:is(a.job, a.role))", "li:has(> :not(.ad))", "div:has(~ p)"):
             with self.subTest(selector=selector):
                 self.assertEqual(mf.check_selector(selector), selector)
 
@@ -816,6 +820,45 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(len(generic.parse_mapped(self.deep_page(75, 20), "https://x.example/", "X",
                                                   self.careers("div > span"))), 20, "a cheap one reads it")
 
+    def test_one_match_of_has_looks_at_a_subtree_once(self):
+        """Inside :has() nothing walks each element's ancestors again (body:has(:is(span div)) is refused), so the
+        costliest single match left, one high on the page, is one pass over the page: the time limit, looked at
+        between elements, holds near its value."""
+        import time
+
+        with self.assertRaises(mf.MappingRefused):
+            self.careers("li.job, body:has(:is(span div))")
+        html = self.deep_page(75, 20000)
+        for selector in ("html:has(:is(p, q, i, b))", "html:not(:has(p))", "div:has(p)"):
+            with self.subTest(selector=selector), mock.patch.object(generic, "MAPPED_SECONDS", 0.5):
+                started = time.monotonic()
+                try:
+                    generic.parse_mapped(html, "https://x.example/", "X", self.careers(selector))
+                except generic.MappedPageRefused:
+                    pass
+                self.assertLess(time.monotonic() - started, 5)
+
+    def test_the_selector_engine_matches_from_the_entry(self):
+        """The matcher drives soupsieve's CSSMatch (not public API) to look at the clock between elements: this
+        fails loudly, rather than every mapped reading quietly finding nothing, if a soupsieve release changes
+        it."""
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup('<ul><li class="j"><a href="/1">One</a><p><a href="/x">Not</a></p></li>'
+                             '<li class="j"><a href="/2">Two</a></li><li class="ad"><a href="/3">Ad</a></li></ul>',
+                             "lxml")
+        matcher = generic._Matcher()
+        entries = matcher.select(soup, "li:not(.ad)", limit=10)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual([a["href"] for a in matcher.select(entries[0], ":scope > a", limit=10)], ["/1"])
+        self.assertEqual([a["href"] for a in matcher.select(entries[0], "a", limit=1)], ["/1"])
+        self.assertEqual(matcher.select(soup, "ul:has(> li.ad)", limit=10), [soup.ul])
+        postings = generic.parse_mapped(str(soup), "https://x.example/", "X", mf.check_mapping(
+            {"kind": "careers", "fields": {"list": {"selector": "li.j"}, "title": {"selector": ":scope > a"},
+                                           "link": {"selector": ":scope > a"}}}, "careers"))
+        self.assertEqual([(p.title, p.url) for p in postings],
+                         [("One", "https://x.example/1"), ("Two", "https://x.example/2")])
+
     def test_a_page_too_big_or_too_deep_isnt_read_with_the_mapping_and_falls_back(self):
         mapping = self.careers("div > span")
         with self.assertRaises(generic.MappedPageRefused):
@@ -911,6 +954,67 @@ class RedirectTest(unittest.TestCase):
         r = route("http://127.0.0.1:8000/api")
         http._guard_requests("http://127.0.0.1:8000/")(r)  # (a page that is itself local isn't a source's)
         r.continue_.assert_called_once()
+
+    def test_a_rendered_pages_redirect_hop_to_a_local_address_fails_the_render(self):
+        """Playwright calls the route handler for a redirect's first address only, so the browser sends the hop
+        before anything can stop it: the page's "request" event sees it, and the render fails, keeping nothing."""
+        from backend import browser as browser_component
+
+        def request(url, redirected_from=None):
+            r = mock.Mock()
+            r.url, r.redirected_from = url, redirected_from
+            return r
+
+        guard = http._guard_requests("https://careers.example.org/jobs")
+        guard.request(request("https://cdn.example.net/a.js"))
+        guard.request(request("https://cdn.example.net/b.js", redirected_from=request("https://cdn.example.net/x")))
+        self.assertFalse(guard.reached_local, "a request, or a redirect on the web, is fine")
+        guard.request(request("http://192.168.0.1/admin", redirected_from=request("https://cdn.example.net/x")))
+        self.assertTrue(guard.reached_local)
+
+        class Page:
+            url = "https://careers.example.org/jobs"
+
+            def __init__(self):
+                self.handlers = {}
+
+            def route(self, pattern, handler):
+                self.route_handler = handler
+
+            def on(self, event, handler):
+                self.handlers[event] = handler
+
+            def goto(self, url, **kw):
+                self.handlers["request"](request("http://127.0.0.1:8000/secret",
+                                                 redirected_from=request("https://cdn.example.net/img")))
+                resp = mock.Mock()
+                resp.status, resp.headers = 200, {}
+                return resp
+
+            def wait_for_timeout(self, ms):
+                pass
+
+            def content(self):
+                return "<html><body><a href='/o/1'>Read from a local address</a></body></html>"
+
+        class Playwright:
+            def __enter__(self):
+                p = mock.Mock()
+                p.chromium.launch.return_value.new_page.return_value = Page()
+                return p
+
+            def __exit__(self, *exc):
+                return False
+
+        client = http.PoliteClient()
+        self.addCleanup(client.close)
+        with mock.patch.object(client, "check_allowed"), mock.patch.object(client, "_throttle"), \
+                mock.patch.object(client, "_interval_for", return_value=0), \
+                mock.patch.object(browser_component, "available", return_value=True), \
+                mock.patch("playwright.sync_api.sync_playwright", Playwright):
+            with self.assertRaises(http.FetchError) as caught:
+                client.render("https://careers.example.org/jobs")
+        self.assertIn("local network", str(caught.exception))
 
 
 if __name__ == "__main__":

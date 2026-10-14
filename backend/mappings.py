@@ -269,7 +269,7 @@ def _site(value: str) -> str:
     return site
 
 
-def _row(db: Session, user_id: int, site: str) -> Optional[SiteMapping]:
+def row_for(db: Session, user_id: int, site: str) -> Optional[SiteMapping]:
     """The account's mapping for ``site``: found by the plaintext owner and the blind index, before anything sealed
     is opened."""
     return (db.query(SiteMapping)
@@ -284,7 +284,7 @@ def _out(row: SiteMapping) -> dict:
 def save(db: Session, user_id: int, site: str, found: dict) -> tuple[SiteMapping, bool]:
     """Saves the account's (checked) mapping for ``site`` (added to ``db``, not committed): (the row, whether it is
     new). 409 ``too_many_mappings`` past ``MAX_SITE_MAPPINGS``."""
-    row = _row(db, user_id, site)
+    row = row_for(db, user_id, site)
     if row is not None:
         row.mapping, row.updated_at = found, utcnow()
         return row, False
@@ -317,7 +317,7 @@ def list_mappings(user: AuthUser = Depends(current_user), db: Session = Depends(
 @router.get("/mappings/{site}")
 def get_mapping(site: str, user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
     """The account's mapping for a site. Signed in (a key or a session)."""
-    row = _row(db, user.id, _site(site))
+    row = row_for(db, user.id, _site(site))
     if row is None:
         raise AuthProblem(404, "not_found", "No layout is saved for this site.")
     return _out(row)
@@ -354,7 +354,7 @@ def put_mapping(site: str, response: Response, data: dict = Depends(put_body), u
 @router.delete("/mappings/{site}")
 def delete_mapping(site: str, user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
     """Forgets the account's mapping for a site. Signed in (a key or a session)."""
-    row = _row(db, user.id, _site(site))
+    row = row_for(db, user.id, _site(site))
     if row is None:
         raise AuthProblem(404, "not_found", "No layout is saved for this site.")
     db.delete(row)

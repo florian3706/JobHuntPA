@@ -2,9 +2,10 @@
 
 - Honest User-Agent (``backend.config.USER_AGENT``); no browser spoofing.
 - robots.txt is checked for every URL (including each redirect hop).
-- A redirect (or, in a rendered page, any request) to an address on the local network or this computer, or to one
-  that isn't a web address, is never followed when the page asked for isn't one itself
-  (``source_bulk.address_flags``, by the address's shape): :class:`FetchError`.
+- A redirect to an address on the local network or this computer, or to one that isn't a web address, is never
+  followed when the page asked for isn't one itself (``source_bulk.address_flags``, by the address's shape):
+  :class:`FetchError`. In a rendered page, requests there are aborted; a redirect hop there (which the browser
+  sends before anything can stop it) fails the render, so nothing it read is kept (:class:`_RenderGuard`).
   Disallowed URLs raise :class:`RobotsBlocked` instead of being fetched.
 - Per-host minimum interval between requests (robots ``Crawl-delay``
   honoured, capped at 30 s).
@@ -85,19 +86,41 @@ def _leaves_the_web(url: str) -> bool:
     return address_flags(url).blocked
 
 
-def _guard_requests(page_url: str):
-    """A Playwright route handler for a rendered page: aborts http(s) requests to the local network or this
-    computer, unless the page itself is there."""
-    page_is_local = _leaves_the_web(page_url)
+class _RenderGuard:
+    """Watches a rendered page's requests when the page asked for isn't on the local network or this computer.
 
-    def guard(route) -> None:
-        url = route.request.url
-        if not page_is_local and url.lower().startswith(("http://", "https://")) and _leaves_the_web(url):
+    As a Playwright route handler (call it with the route) it aborts each http(s) request to such an address. The
+    browser follows a redirect without asking the route handler again (Playwright calls it for the first address
+    only), so a redirect hop can't be stopped before it is sent: :meth:`request` (the page's "request" event, which
+    does see each hop) notes one that leads there, and the render then fails (``reached_local``) so nothing the
+    page read is kept."""
+
+    def __init__(self, page_url: str):
+        self.page_is_local = _leaves_the_web(page_url)
+        self.reached_local = False
+
+    def _refused(self, url: str) -> bool:
+        return not self.page_is_local and url.lower().startswith(("http://", "https://")) and _leaves_the_web(url)
+
+    def __call__(self, route) -> None:
+        if self._refused(route.request.url):
             route.abort()
         else:
             route.continue_()
 
-    return guard
+    def request(self, request) -> None:
+        if request.redirected_from is not None and self._refused(request.url):
+            self.reached_local = True
+
+
+def _guard_requests(page_url: str) -> _RenderGuard:
+    return _RenderGuard(page_url)
+
+
+def _refuse_if_reached_local(guard: _RenderGuard, url: str) -> None:
+    if guard.reached_local:
+        raise FetchError(f"{urlsplit(url).netloc} redirected to an address on the local network or this computer, "
+                         "or one that isn't a web address; JobHuntPA doesn't read that")
 
 
 def _origin(url: str) -> str:
@@ -256,8 +279,11 @@ class PoliteClient:
                 browser = p.chromium.launch(headless=True)
                 try:
                     page = browser.new_page(user_agent=USER_AGENT)
-                    page.route("**/*", _guard_requests(url))
+                    guard = _guard_requests(url)
+                    page.route("**/*", guard)
+                    page.on("request", guard.request)
                     resp = page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                    _refuse_if_reached_local(guard, url)
                     if resp and bot_challenge(resp.status, resp.headers, "" if resp.status == 202 else "x"):
                         raise FetchError(f"{urlsplit(url).netloc} answered with a bot check; JobHuntPA doesn't bypass those",
                                          resp.status)
@@ -265,6 +291,7 @@ class PoliteClient:
                     status = resp.status if resp else 200
                     html = page.content()
                     final_url = page.url
+                    _refuse_if_reached_local(guard, url)
                 finally:
                     browser.close()
         except FetchError:

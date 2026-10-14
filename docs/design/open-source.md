@@ -741,8 +741,9 @@ history; where they differ, this part holds.
 - **The workspace:** `X-Workspace: <id>` (an integer from `status`) on every request that works on one (marked
   *workspace* below). Without it, the account's first workspace is used. A workspace that isn't the account's
   answers 404 `{"detail": "Workspace <id> not found"}` (no `code`): the extension asks the person to pick one again.
-- **A key reaches only these endpoints** (method and path, a trailing slash ignored); anything else answers 403
-  `token_scope`, whatever the key:
+- **A key reaches only these endpoints** (method and path; send each path exactly as written, without a trailing
+  slash: the key check ignores one, but the app then answers 404 or 405); anything else answers 403 `token_scope`,
+  whatever the key:
 
   | Method | Path | Since |
   |---|---|---|
@@ -838,7 +839,9 @@ as for a job. It only adds; the answer: `{"added", "existing", "jobs": [{"url", 
 ## 8.5 Company sources
 
 - `GET /api/sources` (*workspace*): `[{"id", "label", "url", "enabled", "last_run", "last_count", "last_error",
-  "last_method", "mapping"}]`. `mapping` (api 3) is the source's careers mapping (8.7) or null.
+  "last_method", "mapping"}]`. `mapping` (api 3) is the source's careers mapping (8.7) or null. It is also null
+  for a saved layout the app no longer accepts (such as after an update tightened the rules of 8.7): treat it as
+  none (searches then read the page the usual ways) and offer to work the page out again.
 - `POST /api/sources` (*workspace*): `{"url", "label"?, "mapping"?}`. `url` without a scheme gets `https://`. 201
   with the source as listed. A URL the workspace has: 409 (no `code`), unless `mapping` is given: then that source
   gets the mapping and the answer is 200 with the source and `"updated": true`. `mapping` (api 3, optional) is a
@@ -972,7 +975,8 @@ own selector functions. Nothing in it is ever evaluated, inserted as HTML or use
   an ISO date or date-time; else left out), `work_mode` is mapped to the contract's words or left `""`, and
   `description_from` is `site`, `method` is `site`. **Cut each value to the 8.4 limit of the field it fills before
   sending** (`title`, `company`, `location_text`, `salary_text` 500 characters, `employment_type` 100, `description`
-  100,000): a selector that picks a large element would otherwise make preview and save answer 422 `invalid`. A saved mapping "stops working" when it no longer finds a
+  100,000): a selector that picks a large element would otherwise make preview and save answer 413 `too_large`
+  (with `field` naming the value). A saved mapping "stops working" when it no longer finds a
   title: then offer to work the site out again.
 - **`kind: "careers"`** fields: `list`, `title`, `link`, `location`, `salary`, `employment_type`, `work_mode`, `date`.
   `list`, `title` and `link` are required. Applied by the app only: `list` picks every job entry
@@ -980,7 +984,9 @@ own selector functions. Nothing in it is ever evaluated, inserted as HTML or use
   `link`'s value is its `attribute`, `href` when none is given. Entries without a title or a link to an http(s)
   page are skipped, as are links on the local network. `list` never has an attribute. The app reads a page with a
   mapping only when it is at most 3,000,000 characters of HTML and at most 80 elements deep, and stops matching
-  after 10 seconds; then the mapping finds nothing on that page and the usual ways follow (a note says why).
+  after 10 seconds (the clock is looked at between elements; within the cost limits below one element's match is
+  at most one pass over the page, a second or two at these sizes); then the mapping finds nothing on that page and
+  the usual ways follow (a note says why).
 - Each field is `{"selector", "attribute"?}`: no other key. A field that isn't on the page is left out (in the AI's
   answer it may be null). At most the fields listed for the kind; an unknown field refuses the whole mapping.
 - **A selector** is a string of 1 to 300 characters, trimmed, made only of ASCII letters, digits, space and
@@ -1002,9 +1008,11 @@ own selector functions. Nothing in it is ever evaluated, inserted as HTML or use
   - a compound that is only `*` never stands next to a space or `~` (`div *`, `* ~ p` are refused; `div > *` is
     taken);
   - `:not()`, `:is()`, `:where()`, `:has()` at most **2 deep** inside one another;
-  - at most **one `:has()`**, never inside another `:has()`. In a compound that has more of the selector after it
-    (not the element the selector picks), `:has()` must be one `>` or `+` and one compound: `section:has(> h2) p`
-    is taken, `:has(h2) p` and `:has(> div > h2) p` are refused;
+  - at most **one `:has()`**, never inside another `:has()`. Inside it, no combinator but its leading (or implied)
+    one, not even in a nested `:is()`, `:where()` or `:not()`: `li:has(a.job)`, `li:has(> :not(.ad))` and
+    `div:has(~ p)` are taken, `body:has(:is(span div))` and `li:has(> :is(a > b))` are refused. In a compound that
+    has more of the selector after it (not the element the selector picks), `:has()` must be one `>` or `+` and one
+    compound: `section:has(> h2) p` is taken, `:has(h2) p` and `:has(> div > h2) p` are refused;
   - at most **3 commas** in all (between selectors, in the list or inside a pseudo-class);
   - `:nth-*()` take only `odd`, `even`, a number of up to 4 digits or `an+b` with numbers of up to 4 digits (no
     `of S`).
@@ -1025,14 +1033,19 @@ A **site** is a host name, normalised: lower case, IDNA (punycode) for a non-ASC
 `location.hostname`; the app normalises it and answers with the normalised `site`. Each account has its own
 mappings (an older install's accounts don't share them), at most 500, sealed under the account's key.
 
+For `GET`, `PUT` and `DELETE /api/extension/mappings/{site}` alike: a `{site}` that isn't a host name (such as
+`a..b`) is 422 `invalid`, `field: "site"`; with a key, one with a character outside `[A-Za-z0-9.-]` is 403
+`token_scope` before that, so send the punycode form `location.hostname` gives.
+
+A saved `mapping` may come back as null (and its `fields` as `[]` in the list): a saved layout the app no longer
+accepts, such as after an update tightened the rules of 8.7. Treat it as none and offer to work the site out again.
+
 - `GET /api/extension/mappings`: `{"mappings": [{"site", "fields": [<the field names it has>], "updated_at"}],
   "max": 500}`, by site.
 - `GET /api/extension/mappings/{site}`: `{"site", "mapping", "updated_at"}`, or 404 `not_found`.
 - `PUT /api/extension/mappings/{site}` with `{"mapping": <a job mapping>}` (nothing else; a body of at most 16 KB,
   else 413 `too_large`): 201 when new, 200 when it replaced one: `{"site", "mapping", "updated_at", "created"}`. A
-  mapping not in the shape of 8.7 or of another kind: 422 `invalid_mapping`. A `{site}` that isn't a host name: 422
-  `invalid`, `field: "site"` (with a key, one with a character outside `[A-Za-z0-9.-]` is 403 `token_scope` before
-  that: send the punycode form `location.hostname` gives).
+  mapping not in the shape of 8.7 or of another kind: 422 `invalid_mapping`.
 - `DELETE /api/extension/mappings/{site}`: `{"ok": true}`, or 404 `not_found`. The person can also forget one in
   Settings > Browser extension (*Job sites the AI worked out*).
 
@@ -1053,5 +1066,8 @@ outline is built from the page the person has open.
 - `POST /api/sources` refuses an address on the local network or this computer (422 `refused_address`), as the bulk
   add and the import do, before it looks at a mapping.
 - The scraping layer no longer follows a redirect from a page on the web to the local network or this computer
-  (the read fails, as a source's Test then says), and a rendered page's requests there are stopped.
+  (the read fails, as a source's Test then says). A rendered page's requests there are aborted; a redirect hop
+  there, which the browser follows by itself and sends before it can be stopped, fails the whole rendering, so
+  nothing it read is kept. These checks go by the address's shape: a public name that resolves to a local address
+  is not caught.
 - Unchanged: keys, status's other fields, preview, jobs, jobs/batch and the source test.
