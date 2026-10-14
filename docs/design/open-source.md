@@ -647,6 +647,7 @@ plain bytes in the zip, exactly as uploaded.
 | `own` | the names of the `ad` fields that were the workspace's own values (an uploaded full ad, details from a merged copy); all of them for a private job |
 | `status` | `to_review`, `shortlisted`, `applied`, `interviewing`, `rejected` or `not_interested` |
 | `first_seen`, `last_seen`, `closed_at` | when the job was first linked to the workspace, last listed by its search, and when the ad closed |
+| `applied_at` | when the job was last moved to Applied (§1.12), or null when that isn't stored |
 | `hidden` | the person hid it |
 | `excluded_reason` | why the search filters left it out, or null |
 | `location_verdict` | the person's call on the location: `ok`, `too_far` or null |
@@ -679,8 +680,9 @@ values as the research stored them.
   research on it or older research (`researched_at`).
 - Values are checked against the types and limits above (lengths, ranges, the listed words); a file that breaks them
   is refused as damaged, naming only where (`workspaces.0.jobs.12.status`), never the value. Addresses that are not
-  http(s) are dropped from sources and from a chat answer's pages. Everything else is stored as data and shown
-  escaped, like any other job or document.
+  http(s) are dropped wherever a page makes a link of them: a job's address, sources, a chat answer's pages and
+  the links in company research. Everything else is stored as data and shown escaped, like any other job or
+  document.
 - The zip limits: 250 MB packed, the import file at most 120 MB unpacked, the import file and the originals at most
   320 MB unpacked together, and no entry over 1 MB unpacking to more than 200 times its packed size; a zip with an
   entry whose path leaves its folder is refused whole. An upload still arriving after ten minutes plus the time the

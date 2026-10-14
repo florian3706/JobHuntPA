@@ -64,7 +64,15 @@ from backend.db import (
     get_db,
     utcnow,
 )
-from backend.import_file import FILE_NAME, FIRST_APP_VERSION, FORMAT, FORMAT_VERSION, ImportFile, WorkspaceIn
+from backend.import_file import (
+    APPLIED_AT,
+    FILE_NAME,
+    FIRST_APP_VERSION,
+    FORMAT,
+    FORMAT_VERSION,
+    ImportFile,
+    WorkspaceIn,
+)
 from backend.sessions import AuthProblem, AuthUser, current_user, require_recent_auth
 
 log = logging.getLogger(__name__)
@@ -256,6 +264,19 @@ def _web(url: Optional[str]) -> Optional[str]:
     return url if url and re.match(r"^https?://\S+$", url, re.I) else None
 
 
+LINK_KEYS = {"url", "link", "href", "source_url", "glassdoor_url"}
+
+
+def _web_only(value):
+    """A research value (JSON) with every address that isn't http(s) taken out: pages turn these into links."""
+    if isinstance(value, dict):
+        return {k: _web_only(v) for k, v in value.items()
+                if not (k in LINK_KEYS and isinstance(v, str) and _web(v) is None)}
+    if isinstance(value, list):
+        return [_web_only(v) for v in value]
+    return value
+
+
 class Importer:
     """One import, in the importing person's key scope, on one database session."""
 
@@ -345,7 +366,7 @@ class Importer:
 
     def _postings(self, data: WorkspaceIn) -> dict[str, Posting]:
         """The pool's postings for the jobs' addresses (looked up, never written)."""
-        urls = sorted({j.ad.url for j in data.jobs if j.ad.url})
+        urls = sorted({_web(j.ad.url) for j in data.jobs if _web(j.ad.url)})
         found: dict[str, Posting] = {}
         for start in range(0, len(urls), 400):
             for p in self.db.query(Posting).filter(Posting.url.in_(urls[start:start + 400])):
@@ -360,10 +381,11 @@ class Importer:
         urls: set[str] = set()
         now = utcnow()
         for j in data.jobs:
-            if j.ref in rows or (j.ad.url and j.ad.url in urls):
+            url = _web(j.ad.url)  # (pages link a job's address: only a web address is kept)
+            if j.ref in rows or (url and url in urls):
                 continue  # (a job is in a workspace once)
             ad = j.ad
-            posting = postings.get(ad.url) if ad.url else None
+            posting = postings.get(url) if url else None
             job = Job(workspace_id=ws, status=j.status, first_seen=j.first_seen or now, last_seen=j.last_seen or now,
                       hidden=j.hidden, excluded_reason=j.excluded_reason or None, location_verdict=j.location_verdict,
                       lat=j.lat, lng=j.lng, distance_km=j.distance_km, source_id=source_ids.get(j.source))
@@ -372,18 +394,20 @@ class Importer:
                 for name in j.own:  # the workspace's own values on top of the pool's ad
                     setattr(job, name, getattr(ad, name))
             else:
-                job.url, job.origin = ad.url, "private"
+                job.url, job.origin = url, "private"
                 for name in JOB_CONTENT:
                     setattr(job, name, getattr(ad, name))
                 job.closed_at = j.closed_at
+            if j.applied_at is not None and hasattr(Job, APPLIED_AT):
+                setattr(job, APPLIED_AT, j.applied_at)
             if j.office is not None:
                 job.office_text, job.office_source = j.office.text, j.office.source
                 job.office_lat, job.office_lng = j.office.lat, j.office.lng
                 job.office_checked_at = j.office.checked_at
             db.add(job)
             rows[j.ref] = job
-            if ad.url:
-                urls.add(ad.url)
+            if url:
+                urls.add(url)
         db.flush()
         by_ref = {j.ref: j for j in data.jobs}
         for ref, job in rows.items():
@@ -438,13 +462,13 @@ class Importer:
             row.name, row.status = c.name or key, c.status if c.status in ("done", "error", "skipped", "missing") else "done"
             row.official_name, row.is_recruiter = c.official_name, c.is_recruiter
             row.business_model, row.ownership, row.headquarters = c.business_model, c.ownership, c.headquarters
-            row.controversies_json = json.dumps(c.controversies if isinstance(c.controversies, list) else [])
+            row.controversies_json = json.dumps(_web_only(c.controversies) if isinstance(c.controversies, list) else [])
             row.controversy_note, row.news_researched_at = c.controversy_note, c.news_researched_at
-            row.sources_json = json.dumps(c.sources if isinstance(c.sources, list) else [])
+            row.sources_json = json.dumps(_web_only(c.sources) if isinstance(c.sources, list) else [])
             row.employee_count, row.glassdoor_url = c.employee_count, _web(c.glassdoor_url)
-            row.sentiment_json = json.dumps(c.sentiment) if c.sentiment is not None else None
+            row.sentiment_json = json.dumps(_web_only(c.sentiment)) if c.sentiment is not None else None
             row.sentiment_researched_at, row.research_version = c.sentiment_researched_at, c.research_version
-            row.offices_json = json.dumps(c.offices) if isinstance(c.offices, list) else None
+            row.offices_json = json.dumps(_web_only(c.offices)) if isinstance(c.offices, list) else None
             row.offices_checked_at = c.offices_checked_at
             row.offices_cities = json.dumps(c.offices_cities) if isinstance(c.offices_cities, list) else None
             row.unverified_dropped, row.error, row.model = c.unverified_dropped, c.error, c.model

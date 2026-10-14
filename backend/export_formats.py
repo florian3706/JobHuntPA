@@ -108,6 +108,11 @@ def inline(value: str, ext: str) -> list[Run]:
             buf.append(value[i:i + 2])
             i += 2
             continue
+        if c == "`" and value.find("`", i + 1) > i + 1:  # a code span (file names in the README): the text inside
+            close = value.find("`", i + 1)
+            buf.append(value[i + 1:close])
+            i = close + 1
+            continue
         if value.startswith("**", i):
             flush()
             bold = not bold

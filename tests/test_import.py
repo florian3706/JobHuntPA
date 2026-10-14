@@ -49,6 +49,50 @@ class Base(unittest.TestCase):
         self.upload = b"%PDF-1.4 MARK-upload-bytes \x00\xff\x10"
         with helpers.as_account(self.bob):
             test_export.ExportTest.plant(self, self.bob, "bob")
+        self.addCleanup(self.restore_research, self.research_now())
+
+    def add_posting(self, **fields) -> None:
+        """A posting in the shared pool for this test (taken out again after it)."""
+        db = SessionLocal()
+        try:
+            db.add(Posting(detail_status="full", **fields))
+            db.commit()
+        finally:
+            db.close()
+        self.addCleanup(self.drop_posting, fields["url"])
+
+    @staticmethod
+    def drop_posting(url: str) -> None:
+        db = SessionLocal()
+        try:
+            db.query(Posting).filter(Posting.url == url).delete()
+            db.commit()
+        finally:
+            db.close()
+
+    @staticmethod
+    def research_now() -> dict:
+        """The shared company research as it is (an import may change it; other tests read it)."""
+        db = SessionLocal()
+        try:
+            columns = [c.name for c in CompanyProfile.__table__.columns]
+            return {p.key: {c: getattr(p, c) for c in columns} for p in db.query(CompanyProfile)}
+        finally:
+            db.close()
+
+    @staticmethod
+    def restore_research(saved: dict) -> None:
+        db = SessionLocal()
+        try:
+            for p in db.query(CompanyProfile):
+                if p.key not in saved:
+                    db.delete(p)
+                else:
+                    for column, value in saved[p.key].items():
+                        setattr(p, column, value)
+            db.commit()
+        finally:
+            db.close()
 
     def export(self, who=None, formats=None) -> bytes:
         with helpers.client((who or self.bob).email) as c:
@@ -275,11 +319,10 @@ class RoundTripTest(Base):
             self.assertEqual((r.status_code, r.json().get("code")), (422, "import_pick"), bad)
 
     def test_pool_linking_and_never_writing_to_the_pool(self):
+        self.add_posting(url="https://ads.example/bob/main", title="Pool title", company="Acme Corp",
+                         description="the pool's ad")
         db = SessionLocal()
         try:
-            db.add(Posting(url="https://ads.example/bob/main", title="Pool title", company="Acme Corp",
-                           description="the pool's ad", detail_status="full"))
-            db.commit()
             postings = db.query(Posting).count()
         finally:
             db.close()
@@ -305,13 +348,8 @@ class RoundTripTest(Base):
             db.close()
 
     def test_only_the_workspace_s_own_values_go_on_top_of_a_pool_posting(self):
-        db = SessionLocal()
-        try:
-            db.add(Posting(url="https://ads.example/bob/same0", title="Same", company="Same",
-                           description="pool text for same0", detail_status="full"))
-            db.commit()
-        finally:
-            db.close()
+        self.add_posting(url="https://ads.example/bob/same0", title="Same", company="Same",
+                         description="pool text for same0")
         blob = self.export()
         data = self.import_data(blob)
         job = next(j for j in data["workspaces"][0]["jobs"] if j["ad"]["url"] == "https://ads.example/bob/same0")
@@ -386,6 +424,34 @@ class RoundTripTest(Base):
             self.assertEqual((r.status_code, r.json()["code"]), (422, "import_damaged"), change)
             self.assertIn("workspaces.0.jobs.0", r.json()["detail"])
             self.assertNotIn("moon", r.json()["detail"], "the refusal never quotes the file's text")
+
+
+class AddressTest(Base):
+    def test_only_web_addresses_come_in_where_pages_make_links(self):
+        blob = self.export()
+        data = self.import_data(blob)
+        job = next(j for j in data["workspaces"][0]["jobs"] if j["ad"]["url"] == "https://ads.example/bob/hidden")
+        job["ad"]["url"] = "javascript:alert(1)"
+        data["companies"] = [{"key": "hidco", "name": "Hidco", "researched_at": "2026-01-01T00:00:00Z",
+                              "glassdoor_url": "javascript:alert(2)",
+                              "sources": [{"title": "ok", "url": "https://hidco.example/about"},
+                                          {"title": "bad", "url": "javascript:alert(3)"}],
+                              "controversies": [{"headline": "x", "url": "data:text/html,y"}]}]
+        r = self.do_import(self.replace_import_file(blob, data))
+        self.assertEqual(r.status_code, 200, r.text)
+        ws = r.json()["workspaces"][0]["id"]
+        db = SessionLocal()
+        try:
+            with helpers.as_account(self.bob):
+                urls = [j.url for j in db.query(Job).filter(Job.workspace_id == ws)]
+            self.assertNotIn("javascript:alert(1)", urls)
+            self.assertIn(None, urls, "the job came in, without an address")
+            hidco = db.get(CompanyProfile, "hidco").to_dict()
+            self.assertIsNone(hidco["glassdoor_url"])
+            self.assertEqual(hidco["sources"], [{"title": "ok", "url": "https://hidco.example/about"}, {"title": "bad"}])
+            self.assertEqual(hidco["controversies"], [{"headline": "x"}])
+        finally:
+            db.close()
 
 
 class RefusalTest(Base):

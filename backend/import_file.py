@@ -50,6 +50,10 @@ FILE_NAME = "JobHuntPA import file.json"
 FIRST_APP_VERSION = "2.0.0"
 CHUNK = 200
 
+# When a job was last moved to Applied: a sealed column Phase D adds (docs/design/open-source.md §1.12). Read and
+# written only once the column exists, so the format holds the field either way.
+APPLIED_AT = "applied_at"
+
 STATUSES = ("to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested")
 
 
@@ -161,7 +165,8 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tup
                 "ref": job_ref[job.id], "origin": "pool" if job.posting is not None else "private",
                 "ad": _ad(job), "own": _own(job), "status": job.status or "to_review", "hidden": bool(job.hidden),
                 "excluded_reason": job.excluded_reason, "first_seen": iso(job.first_seen), "last_seen": iso(job.last_seen),
-                "closed_at": iso(job.closed_at), "location_verdict": job.location_verdict, "office": office,
+                "closed_at": iso(job.closed_at), "applied_at": iso(getattr(job, APPLIED_AT, None)),
+                "location_verdict": job.location_verdict, "office": office,
                 "lat": job.lat, "lng": job.lng, "distance_km": job.distance_km,
                 "duplicate_of": job_ref.get(job.duplicate_of), "source": source_ref.get(job.source_id),
                 "fit": _fit(fits.get(job.id)), "cover_letter": _letter(letters.get(job.id)),
@@ -386,6 +391,7 @@ class JobIn(_In):
     first_seen: When = None
     last_seen: When = None
     closed_at: When = None
+    applied_at: When = None
     location_verdict: Optional[Literal["ok", "too_far"]] = None
     office: Optional[OfficeIn] = None
     lat: Optional[Lat] = None
