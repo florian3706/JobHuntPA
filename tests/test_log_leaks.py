@@ -377,6 +377,9 @@ class FullRun(unittest.TestCase):
         self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter.docx").status_code, 200)
         r = c.post("/api/companies/research", json={"mode": "all"})
         self.assertEqual(r.status_code, 200, r.text)
+        listed = c.get("/api/tasks")  # the tasks tray, while the research may still run: kinds and ids only
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertNotIn(MARK, listed.text)
         self.assertEqual(self.run_to_end(c, r.json())["state"], "done")
         r = c.post("/api/companies/research", json={"name": "ZQX Corp"})
         self.assertEqual(self.run_to_end(c, r.json())["state"], "done")

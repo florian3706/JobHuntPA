@@ -6,7 +6,7 @@ The UI starts a run, gets its id back immediately, and polls
 The tasks tray (spec §1.13): every piece of AI work registers itself while it runs, with ``track``::
 
     with tasks.track("cover_letter", ws, jobs=[job_id]):
-        text = call_model(...)
+        letter = ...  # the AI call
 
 and ``GET /api/tasks`` lists the signed-in account's (``for_user``). The registry is in memory: it holds kinds,
 ids and numbers (a workspace, job or document id, done/total, the start time), never text: no job title, company

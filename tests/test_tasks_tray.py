@@ -38,8 +38,10 @@ class Gate:
         self.answer = answer
         self.waiting: queue.Queue = queue.Queue()
         self.open = False
+        self.calls: list = []
 
     def __call__(self, *args, **kwargs):
+        self.calls.append(tasks.current_task.get())  # the task this call is made for (None: not in the tray)
         if self.open:
             return self.answer
         call = {"go": threading.Event(), "fail": False}
@@ -79,6 +81,7 @@ class TasksTrayTest(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.addCleanup(self.open_gates)
+        self.addCleanup(self.every_call_was_a_task)
         self.c = helpers.client()
         self.c.__enter__()
         self.addCleanup(self.c.__exit__, None, None, None)
@@ -103,6 +106,10 @@ class TasksTrayTest(unittest.TestCase):
             gate.open = True
             while not gate.waiting.empty():
                 gate.release(gate.waiting.get_nowait())
+
+    def every_call_was_a_task(self):
+        for gate in (self.chat, self.search):
+            self.assertNotIn(None, gate.calls, "every AI call is made inside a task of the tray")
 
     # ---- helpers
 
@@ -338,6 +345,25 @@ class TasksTrayTest(unittest.TestCase):
                 self.assertIn(r.status_code, (404, 405), method)
             self.assertIn(self.c.delete("/api/tasks").status_code, (404, 405))
             self.assertEqual(len(self.listed()["tasks"]), 1)
+
+
+class CallSitesTest(unittest.TestCase):
+    def test_the_modules_that_call_the_ai_are_the_ones_whose_work_is_registered(self):
+        """A new module that calls the AI (Phase I1's mappings, say) must wrap its work in tasks.track, then go on
+        this list (and get a case above)."""
+        import re
+        from pathlib import Path
+
+        backend = Path(__file__).resolve().parent.parent / "backend"
+        calling = {p.name for p in backend.rglob("*.py")
+                   if p.name not in ("llm_providers.py", "llm_anthropic.py")
+                   and re.search(r"\bcall_model\(|llm_providers\.(chat|web_search)\(", p.read_text(encoding="utf-8"))}
+        self.assertEqual(calling, {"cover_letters.py", "docs.py", "job_chat.py", "offices.py", "research.py",
+                                   "scorer.py", "title_suggestions.py"})
+        # scorer.py's own calls: score_one (inside the scoring tasks) and the Settings tab's connection test, which
+        # is a check of the settings, not AI work.
+        scorer = (backend / "scorer.py").read_text(encoding="utf-8")
+        self.assertEqual(len(re.findall(r"\bcall_model\(", scorer)), 3)  # (its definition, score_one, test_connection)
 
 
 class RegistryTest(unittest.TestCase):
