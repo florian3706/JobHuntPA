@@ -523,11 +523,13 @@ limits on searches. The AI features use the provider and key set on the Settings
   things your saved data doesn't cover (news, salaries); the pages it used are listed under the
   answer. Chats are saved per job set; *New chat* starts over.
 - **Duplicate ads**: the same job advertised on several sites (say SEEK and the employer's own
-  careers page) becomes one card, with the other sites under *Also on*. The app merges ads it's
+  careers page) becomes one card, with the other sites under *Also on*. The card shows the fullest
+  ad, and when one of the copies is on the employer's own site, the job's title links there (on the
+  card and the job page). The app merges ads it's
   sure about after each search and lists the doubtful ones under **Duplicates** for you to decide
   (*Same job: merge* / *Different jobs*). Your status, cover letter and score carry over to the
-  merged card. *split* under *Also on* undoes a merge; **Merge as one job** (tick two or more
-  jobs) merges ads the app missed.
+  merged card. *split* (under *Also on*, or beside the employer's site) undoes a merge; **Merge as
+  one job** (tick two or more jobs) merges ads the app missed.
 - **Job page**: *Open ↗* on a job opens it in a new tab: the whole ad, the fit and gaps, a map of
   the office, the company profile, and the commute there and back at peak times (arriving by 9:00,
   leaving at 17:00 on a Tuesday; change these under Search setup > Commute). Public transport is

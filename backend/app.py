@@ -36,7 +36,7 @@ from backend.docs import router as docs_router
 from backend.export import router as export_router
 from backend.commute import router as commute_router
 from backend.commute import status_router as commute_status_router
-from backend.duplicates import router as duplicates_router
+from backend.duplicates import employer_copy, job_boards, router as duplicates_router
 from backend.extension import router as extension_router
 from backend.job_chat import router as chat_router
 from backend.filters import softened_job_ids
@@ -302,11 +302,17 @@ def _soften(out: dict, softened: set[int]) -> dict:
     return out
 
 
-def _with_copies(out: dict, copies: list[Job]) -> dict:
+def _with_copies(out: dict, copies: list[Job], boards: Optional[set[str]] = None) -> dict:
     """Merged duplicates: the same ad on other sites. The job counts as
-    closed only once every copy is."""
+    closed only once every copy is. ``link`` is where the card's and the job
+    page's main link goes: the listed ad, or, when that is on a job board
+    (``boards``: duplicates.job_boards) and a copy is on the employer's own
+    site, that copy (``copy_id``). The others stay under "Also on"."""
     out["also_on"] = [{"id": c.id, "source": c.source, "url": c.url, "title": c.title, "company": c.company,
                        "closed": c.closed_at is not None, "detail_status": c.detail_status} for c in copies]
+    own = employer_copy(out["source"], copies, boards) if copies and boards else None
+    out["link"] = ({"url": own.url, "source": own.source, "copy_id": own.id} if own is not None
+                   else {"url": out["url"], "source": out["source"], "copy_id": None})
     if out["closed"] and any(c.closed_at is None for c in copies):
         out["closed"] = False
     return out
@@ -357,13 +363,14 @@ def list_jobs(office_slack: int = OfficeSlack,
                .filter(Job.workspace_id == ws)}
     profiles = {p.key: p for p in db.query(CompanyProfile).all()}
     signs = ghost.assess_jobs(db, [job for job, _ in listed], profiles)
+    boards = job_boards(db, ws) if copies else set()  # (only merged jobs can link to an employer's copy)
     # Plain JSON values already: skip FastAPI's per-field encoder, which took most of the time for
     # thousands of jobs on a Raspberry Pi.
     return JSONResponse([_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
                                                          recruiter=looks_like_recruiter(job.company or "", profiles),
                                                          signs=signs[job.id]),
                                               softened),
-                                      copies.get(job.id, []))
+                                      copies.get(job.id, []), boards)
                          for job, fit in listed],
                         headers={"X-Omitted-Count": str(omitted_count)})
 
@@ -382,7 +389,8 @@ def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(
                               recruiter=looks_like_recruiter(job.company or "", profiles), signs=signs),
                   softened_job_ids(db, ws, office_slack))
     out["office_candidates"] = candidates(db, job) if out["office_unknown"] or job.office_source == "company" else []
-    return _with_copies(out, db.query(Job).filter(Job.duplicate_of == job_id).all())
+    copies = db.query(Job).filter(Job.duplicate_of == job_id).all()
+    return _with_copies(out, copies, job_boards(db, ws) if copies else set())
 
 
 class StatusUpdate(BaseModel):

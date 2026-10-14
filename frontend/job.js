@@ -30,7 +30,12 @@ function showPageError(msg) {
 /* ---------- header ---------- */
 function renderHead() {
   const mode = modeOf(job);
-  const also = (job.also_on || []).map((c) => `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}${NEW_TAB}</a>`).join(' · ');
+  // The main link goes to the employer's own page when a merged copy is on it; the listed ad is then "also on".
+  const link = mainLink(job);
+  const also = [
+    ...(link.copy_id ? [{ url: job.url, source: job.source }] : []),
+    ...(job.also_on || []).filter((c) => c.id !== link.copy_id),
+  ].map((c) => `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}${NEW_TAB}</a>`).join(' · ');
   const facts = [
     `<span>${esc(job.location_text || 'location unknown')}</span>`,
     `<span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>`,
@@ -46,9 +51,9 @@ function renderHead() {
     <div class="job-top">
       <div class="job-title-row">
         <div class="job-company">${esc(job.company || '—')}</div>
-        <h1 id="job-title" class="job-page-title"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}<span class="visually-hidden">: the ad on ${esc(sourceLabel(job.source))}</span>${NEW_TAB}</a></h1>
+        <h1 id="job-title" class="job-page-title"><a href="${esc(link.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}<span class="visually-hidden">: the ad on ${esc(sourceLabel(link.source))}</span>${NEW_TAB}</a></h1>
         <div class="job-meta">${facts}</div>
-        <div class="job-sub"><span class="muted">${esc(sourceLabel(job.source))}${also ? ` · also on ${also}` : ''}</span></div>
+        <div class="job-sub"><span class="muted">${esc(sourceLabel(link.source))}${also ? ` · also on ${also}` : ''}</span></div>
         ${job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : ''}
       </div>
       ${ratingsHtml(job, '#ghost-title')}

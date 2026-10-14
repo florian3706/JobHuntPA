@@ -1093,6 +1093,28 @@ class DocumentsTabSmallChangesTest(unittest.TestCase):
         self.assertEqual(self.app.count("renderDocsSize();"), 2)
 
 
+class MainLinkPagesTest(unittest.TestCase):
+    """Open-source spec §1.12: the card's and the job page's main link is job.link (the employer's own page when a
+    merged copy is on it); the listed ad then joins "Also on", and the employer's copy can still be split off."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.common, cls.app, cls.job = read("common.js"), read("app.js"), read("job.js")
+
+    def test_cards_and_the_job_page_use_the_main_link(self):
+        self.assertIn("return job.link?.url ? job.link : { url: job.url, source: job.source, copy_id: null };", self.common)
+        card = self.app[self.app.index("function renderJobCard"):self.app.index("card.querySelector('input[type=\"checkbox\"]')")]
+        self.assertIn('<h3 class="job-title" id="${titleId}"><a href="${esc(link.url)}"', card)
+        self.assertIn("(job.also_on || []).filter((c) => c.id !== link.copy_id)", card)
+        self.assertIn("...(link.copy_id ? [`<span class=\"also-item\"><a href=\"${esc(job.url)}\"", card)
+        self.assertIn("link.copy_id ? ` ${split(link.copy_id, link.source)}` : ''", card)
+        self.assertIn('<span class="visually-hidden"> the ${esc(sourceLabel(source))} ad from this card</span>', card)
+        head = self.job[self.job.index("function renderHead"):self.job.index("/* ---------- is this a real vacancy?")]
+        self.assertIn('<a href="${esc(link.url)}" target="_blank" rel="noopener">${esc(job.title || \'—\')}<span class="visually-hidden">: the ad on ${esc(sourceLabel(link.source))}</span>', head)
+        self.assertIn("...(job.also_on || []).filter((c) => c.id !== link.copy_id)", head)
+
+
 class BrowserAuditRegressionsTest(unittest.TestCase):
     """Things the browser audit (tools/a11y_audit.py: axe-core, reflow, text spacing, keyboard) found or watches, kept
     as static checks so they can't creep back without a browser."""

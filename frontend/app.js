@@ -327,8 +327,15 @@ function renderJobCard(job) {
     job.softened_reason ? `<span class="badge soft" title="${esc(`Your saved rule excludes this: ${job.softened_reason}`)}">shown by temporary +${state.officeSlack} office day${state.officeSlack > 1 ? 's' : ''}</span>` : '',
   ].join('');
   const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
-  const also = (job.also_on || []).map((c) => `<span class="also-item"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}</a>${c.closed ? ' <span class="muted">(closed)</span>' : ''}
-    <button class="link split-btn" type="button" data-split="${c.id}" title="Not the same job: show this ad as its own card again">split<span class="visually-hidden"> the ${esc(sourceLabel(c.source))} ad from this card</span></button></span>`).join('');
+  // The main link: the employer's own page when a merged copy is on it (job.link), else the listed ad. The other
+  // copies, and then the listed ad itself, are under "Also on".
+  const link = mainLink(job);
+  const split = (id, source) => `<button class="link split-btn" type="button" data-split="${id}" title="Not the same job: show this ad as its own card again">split<span class="visually-hidden"> the ${esc(sourceLabel(source))} ad from this card</span></button>`;
+  const also = [
+    ...(link.copy_id ? [`<span class="also-item"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(sourceLabel(job.source))}</a></span>`] : []),
+    ...(job.also_on || []).filter((c) => c.id !== link.copy_id).map((c) => `<span class="also-item"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}</a>${c.closed ? ' <span class="muted">(closed)</span>' : ''}
+    ${split(c.id, c.source)}</span>`),
+  ].join('');
   const fitErr = job.fit && job.fit.error ? `<p class="hint err-text">Scoring failed: ${esc(job.fit.error.slice(0, 240))}</p>` : '';
   const titleId = `job-${job.id}-title`;
   const name = `${job.title || 'job'}${job.company ? ` at ${job.company}` : ''}`;
@@ -337,7 +344,7 @@ function renderJobCard(job) {
       <input type="checkbox" data-act="select" aria-label="Select ${esc(name)}" ${state.selected.has(job.id) ? 'checked' : ''} />
       <div class="job-title-row">
         <div class="job-company">${esc(job.company || '—')} ${companyIcon(job)}</div>
-        <h3 class="job-title" id="${titleId}"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
+        <h3 class="job-title" id="${titleId}"><a href="${esc(link.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
         <div class="job-meta">
           <span>${esc(job.location_text || 'location unknown')}</span>
           <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${employmentBadge(job)}${dist}${flags}
@@ -348,7 +355,8 @@ function renderJobCard(job) {
     </div>
     <div class="job-sub">
       ${job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : ''}
-      <span class="muted">${esc(sourceLabel(job.source))}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>
+      <span class="muted">${esc(sourceLabel(link.source))}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>${
+        link.copy_id ? ` ${split(link.copy_id, link.source)}` : ''}
     </div>
     ${officeHtml(job) ? `<div class="job-office">${officeHtml(job)}</div>` : ''}
     ${also ? `<div class="also-on" title="The same job advertised on other sites, merged into this card"><span class="muted">Also on:</span> ${also}</div>` : ''}
@@ -2206,7 +2214,7 @@ function drawJobMarkers() {
       : { radius, weight: 2, color: ink, dashArray: '3 3', fillColor: themeColor('quiet'), fillOpacity: 0.3 });
     const rows = jobs.slice(0, 40).map((j) => `<li><b>${esc(j.title)}</b> · ${esc(j.company || '')}
       ${scoreOf(j) !== null ? ` · <span class="visually-hidden">fit score </span>${scoreOf(j)}` : ''}${j.excluded_reason ? ' <i>(excluded)</i>' : ''}<br>${jobLinkHtml(j)}
-      · <a href="${esc(j.url)}" target="_blank" rel="noopener">ad<span class="visually-hidden"> for ${esc(j.title)}</span>${NEW_TAB}</a></li>`).join('');
+      · <a href="${esc(mainLink(j).url)}" target="_blank" rel="noopener">ad<span class="visually-hidden"> for ${esc(j.title)}</span>${NEW_TAB}</a></li>`).join('');
     const place = esc(jobs[0].location_text || 'This place');
     marker.bindPopup(`<div class="map-popup" role="region" aria-label="Jobs at ${place}"><p class="muted map-popup-head">${place}${n > 1 ? ` · ${n} jobs` : ''}</p>
       <ul>${rows}</ul>${n > 40 ? `<p class="muted">…and ${n - 40} more: see the list under the map.</p>` : ''}</div>`, { maxWidth: 320, maxHeight: 300 });

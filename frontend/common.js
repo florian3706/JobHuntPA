@@ -719,6 +719,12 @@ function sentimentHtml(p) {
     ${sectionResearch('sentiment', p.sentiment_researched_at)}`;
 }
 
+/* Where a job's main link goes (GET /api/jobs: job.link): the employer's own page when a merged copy of the ad is on
+   it and the listed ad is on a job board, else the listed ad. A server from before sends none: the listed ad. */
+function mainLink(job) {
+  return job.link?.url ? job.link : { url: job.url, source: job.source, copy_id: null };
+}
+
 /* ================= SOURCES ================= */
 /* A job at one of SEEK's own addresses, whatever brought it in (a search, a saved page, the browser extension):
    the full ad can be uploaded from a page saved on SEEK (POST /api/jobs/{id}/import-page, which matches the page

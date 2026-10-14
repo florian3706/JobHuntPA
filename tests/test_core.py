@@ -1077,6 +1077,89 @@ class DuplicateMergeTest(unittest.TestCase):
             c.delete(f"/api/workspaces/{ws}")
 
 
+class MainLinkTest(unittest.TestCase):
+    """Open-source spec §1.12: a merged ad's main link (cards, job page) goes to the employer's own page when a copy
+    is on it; which copy is listed doesn't change, and the others stay under "Also on"."""
+
+    def setUp(self):
+        self.client = helpers.client()
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+        self.ws = self.client.post("/api/workspaces", json={"name": "Main link"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{self.ws}"))
+        self.h = {"X-Workspace": str(self.ws)}
+
+    def add(self, name: str, **kw) -> int:
+        from datetime import datetime
+        from backend.db import SessionLocal
+
+        db = SessionLocal()
+        job = _ad_job(**{"title": "Implementation Manager", "location_text": "Sydney NSW", "description": LONG_AD, **kw})
+        job.workspace_id, job.url, job.first_seen = self.ws, f"https://{name}.example/job", datetime.utcnow()
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        db.close()
+        return job_id
+
+    def merge(self, *ids: int) -> int:
+        r = self.client.post("/api/jobs/merge", headers=self.h, json={"ids": list(ids)})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["id"]
+
+    def test_a_board_ad_links_to_the_employers_copy(self):
+        board = self.add("board", source="seek")  # the full ad: listed (Ranking: the full ad first)
+        own = self.add("acme", source="site:acme.com", detail_status="summary")
+        other = self.add("indeed", source="seek", detail_status="summary")
+        listed = self.merge(board, own, other)
+        self.assertEqual(listed, board, "the ranking doesn't change: the fuller ad is listed")
+        card = {j["id"]: j for j in self.client.get("/api/jobs", headers=self.h).json()}[board]
+        self.assertEqual(card["url"], "https://board.example/job")  # (the listed copy's own address is unchanged)
+        self.assertEqual(card["link"], {"url": "https://acme.example/job", "source": "site:acme.com", "copy_id": own})
+        self.assertEqual(sorted(c["id"] for c in card["also_on"]), sorted([own, other]))  # every copy, to split
+        page = self.client.get(f"/api/jobs/{board}", headers=self.h).json()
+        self.assertEqual(page["link"], card["link"])
+
+    def test_an_employers_ad_and_board_only_groups_link_to_the_listed_ad(self):
+        own = self.add("acme", source="site:acme.com")
+        board = self.add("board", source="seek", detail_status="summary")
+        listed = self.merge(own, board)
+        self.assertEqual(listed, own)
+        card = {j["id"]: j for j in self.client.get("/api/jobs", headers=self.h).json()}[own]
+        self.assertEqual(card["link"], {"url": "https://acme.example/job", "source": "site:acme.com", "copy_id": None})
+
+        a = self.add("seekone", source="seek", title="Delivery Lead")
+        b = self.add("seektwo", source="seek", title="Delivery Lead", detail_status="summary")
+        listed = self.merge(a, b)
+        page = self.client.get(f"/api/jobs/{listed}", headers=self.h).json()
+        self.assertEqual(page["link"]["copy_id"], None)
+        self.assertEqual(page["link"]["url"], page["url"])
+
+    def test_a_source_listing_many_employers_is_a_board_not_the_employer(self):
+        from backend.db import SessionLocal
+        from backend.duplicates import employer_copy, job_boards
+
+        for i, company in enumerate(("Alpha", "Beta", "Gamma")):  # one site with three employers' ads: a job board
+            self.add(f"edtech{i}", source="site:edtechjobs.example", company=company, title=f"Role {i}")
+        board = self.add("board", source="seek")
+        copy = self.add("edtech", source="site:edtechjobs.example", detail_status="summary")
+        listed = self.merge(board, copy)
+        page = self.client.get(f"/api/jobs/{listed}", headers=self.h).json()
+        self.assertEqual(page["link"]["copy_id"], None, "a copy on another job board isn't the employer's page")
+        db = SessionLocal()
+        try:
+            self.assertEqual(job_boards(db, self.ws), {"seek", "site:edtechjobs.example"})
+            self.assertIsNone(employer_copy("site:acme.com", [], {"seek"}))
+        finally:
+            db.close()
+
+    def test_signed_out_gets_no_job(self):
+        job = self.add("acme", source="site:acme.com")
+        anonymous = helpers.TestClient(helpers.app)
+        self.assertEqual(anonymous.get(f"/api/jobs/{job}", headers=self.h).status_code, 401)
+        self.assertEqual(anonymous.get("/api/jobs", headers=self.h).status_code, 401)
+
+
 class JobChatTest(unittest.TestCase):
     def test_chat_context_links_history_and_web_search(self):
         from unittest import mock
