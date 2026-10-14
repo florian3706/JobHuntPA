@@ -87,6 +87,14 @@ def get_schedule(db: Session, ws: int) -> ScheduleSchema:
                           skip_holidays=bool(row.skip_holidays), state=row.state or "NSW")
 
 
+def start_off(db: Session, ws: int) -> None:
+    """A new workspace's schedule: the preset times and days, switched off (open-source spec §1.12). A workspace
+    with no row (one from before this) keeps the preset schedule, which is on, so existing workspaces keep theirs."""
+    db.flush()  # (a schedule just copied from another workspace is found)
+    if db.get(SearchSchedule, ws) is None:
+        db.add(SearchSchedule(id=ws, enabled=False, times=list(DEFAULT_TIMES), days=list(DEFAULT_DAYS)))
+
+
 def _row(db: Session, ws: int) -> SearchSchedule:
     row = db.get(SearchSchedule, ws)
     if row is None:

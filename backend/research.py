@@ -36,13 +36,15 @@ from backend.threads import submit
 
 log = logging.getLogger(__name__)
 
-# Profiles are shared by every user (accounts design §14.7). The base profile (business, ownership, offices...)
-# is researched again after BASE_REFRESH; employee sentiment and news/controversies have their own dates, and
-# "research this company" refreshes just those parts once they're older than SECTION_REFRESH.
+# Profiles are shared by every user (accounts design §14.7). Age only decides what a batch of companies ("Fill
+# missing info") researches by itself: a profile whose base (business, ownership, offices...) is older than
+# BASE_REFRESH is researched again. What the user asks for is never held back by age (open-source spec §1.9): the
+# profile's own button researches all of it, and News/Controversies and Employee sentiment each have their own button
+# (and their own date), which researches only that section.
 BASE_REFRESH = timedelta(days=30)
-SECTION_REFRESH = timedelta(days=1)
 REFRESH_AFTER = BASE_REFRESH
 PARTS = ("base", "sentiment", "news")
+SECTIONS = ("sentiment", "news")  # what a section's own button asks for (the rest of PARTS is "base")
 POLL_INTERVAL_S = 3
 MAX_WAIT_S = 600
 NOT_COMPANIES = {"private advertiser", "confidential", "confidential company", "undisclosed", ""}
@@ -108,14 +110,22 @@ def _board_labels(db: Session, ws: int) -> set[str]:
     return out
 
 
-def plan(profile: Optional[CompanyProfile], *, on_request: bool = False,
+def plan(profile: Optional[CompanyProfile], *, request: Optional[str] = None,
          now: Optional[datetime] = None) -> list[str]:
     """Which parts of a company's shared profile to research (PARTS order); [] = the cached profile is fine.
 
-    All three (one full research) when there's no profile, it failed, it's from an older RESEARCH_VERSION, or
-    the base is older than BASE_REFRESH. Otherwise, only when someone asks to research the company
-    (``on_request``): employee sentiment and/or news, if older than SECTION_REFRESH."""
+    ``request`` is what the user asked for, whatever the profile's age: "all" (the profile's own button, or
+    "Research this company") gives every part; "sentiment" or "news" (a section's own button) only that section,
+    or every part when there is no researched profile to add it to (none, failed, not a company, or from an older
+    RESEARCH_VERSION). Without one, a batch decides by itself: every part when there's no profile, it failed, it's
+    from an older RESEARCH_VERSION, or the base is older than BASE_REFRESH; otherwise nothing."""
     now = now or datetime.utcnow()
+    usable = (profile is not None and profile.status == "done"
+              and (profile.research_version or 1) >= RESEARCH_VERSION)
+    if request is not None:
+        if request in SECTIONS and usable:
+            return [request]
+        return list(PARTS)
     if profile is None or profile.status not in ("done", "skipped"):
         return list(PARTS)
     if profile.status == "skipped":  # not a company (e.g. "Private Advertiser")
@@ -123,11 +133,7 @@ def plan(profile: Optional[CompanyProfile], *, on_request: bool = False,
     if (not profile.researched_at or profile.researched_at < now - BASE_REFRESH
             or (profile.research_version or 1) < RESEARCH_VERSION):
         return list(PARTS)
-    if not on_request:
-        return []
-    fresh_after = now - SECTION_REFRESH
-    return [part for part, at in (("sentiment", profile.sentiment_researched_at), ("news", profile.news_researched_at))
-            if not at or at < fresh_after]
+    return []
 
 
 def companies_to_research(db: Session, ws: int, mode: str = "missing",
@@ -165,8 +171,9 @@ def companies_to_research(db: Session, ws: int, mode: str = "missing",
     return sorted(out, key=lambda e: e["name"].lower())
 
 
-def job_context(db: Session, ws: int, name: str) -> dict:
-    """{name, key, jobs, parts} for researching one company on demand: only what ``plan`` says is due."""
+def job_context(db: Session, ws: int, name: str, request: str = "all") -> dict:
+    """{name, key, jobs, parts} for researching one company because the user asked: ``request`` is "all" (the whole
+    profile) or one section ("sentiment", "news"); see ``plan``."""
     from backend.pool import jobs_query
 
     key = company_key(name)
@@ -174,7 +181,7 @@ def job_context(db: Session, ws: int, name: str) -> dict:
             for j in jobs_query(db).filter(Job.workspace_id == ws).order_by(Job.id)
             if company_key(j.company or "") == key][:3]
     return {"name": name.strip(), "key": key, "jobs": jobs,
-            "parts": plan(db.get(CompanyProfile, key), on_request=True)}
+            "parts": plan(db.get(CompanyProfile, key), request=request)}
 
 
 # --------------------------------------------------------------------------

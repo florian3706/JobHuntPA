@@ -458,7 +458,12 @@ def create_account(name: str, password: str, *, created_via: str = "first_run", 
             claimed = db.execute(update(Workspace).where(Workspace.owner_id.is_(None)).values(owner_id=uid)).rowcount
             if not db.query(Workspace.id).filter(Workspace.owner_id == uid).first():
                 with crypto.as_user(uid, account.dek):
-                    db.add(Workspace(name=DEFAULT_WORKSPACE, owner_id=uid))
+                    from backend.schedule import start_off
+
+                    first = Workspace(name=DEFAULT_WORKSPACE, owner_id=uid)
+                    db.add(first)
+                    db.flush()
+                    start_off(db, first.id)  # a new workspace: scheduled searches start off
                     db.flush()
             # The existing data is encrypted with this account's key (backend.migrate_encryption): right away at the
             # first run, or at its next sign-in.

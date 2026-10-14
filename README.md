@@ -434,10 +434,11 @@ can live in their own **workspaces** (switcher at the top right).
 Every feature, the AI ones included, works once you sign in: there are no memberships, payments or
 limits on searches. The AI features use the provider and key set on the Settings tab (AI provider).
 
-- **Scheduled searches** (Settings > Scheduled searches): the search runs by itself at 10:00,
-  12:00, 14:00 and 16:00 Monday to Friday, skipping public holidays, including substitute days
-  (a holiday that falls on a weekend moves to the Monday). Change the times and days, or switch it
-  off, per workspace. Pick your state: it sets which public holidays apply and the time zone of the
+- **Scheduled searches** (Settings > Scheduled searches): tick *Run searches automatically* and the
+  search runs by itself at 10:00, 12:00, 14:00 and 16:00 Monday to Friday, skipping public
+  holidays, including substitute days (a holiday that falls on a weekend moves to the Monday). They
+  are off in a new workspace (a workspace from an earlier version keeps its setting). Change the
+  times and days, or switch it on or off, per workspace. Pick your state: it sets which public holidays apply and the time zone of the
   times. Searches only run while JobHuntPA is running; a search missed because it was closed runs
   if you start it within the hour. Each run scores the new jobs it finds, like **Run search**.
   **Scheduled searches need [background access](#background-access)** (Settings > Background
@@ -476,11 +477,12 @@ limits on searches. The AI features use the provider and key set on the Settings
   summary. Jobs from pages you import (*Search setup → Import saved pages*) are private too,
   unless a search has already found them.
 - **Company info** (ⓘ next to the employer, and the job page): what company research found
-  (business, ownership, offices, employee reviews and news) is shared by all workspaces, so a
-  company is researched once. **Fill missing info** researches companies with no profile yet, or one
-  older than 30 days. **Research again** in a company's profile refreshes the employee reviews and
-  the news when they're more than a day old and keeps the rest; if everything is recent, it shows
-  the saved profile without asking the AI again. A profile older than 30 days is researched in full.
+  (business, ownership, offices, Employee sentiment and News/Controversies) is shared by all
+  workspaces, so a company is researched once. **Fill missing info** researches companies with no
+  profile yet, a failed one, or one older than 30 days. You can research again whenever you like:
+  **Research the whole profile again** at the bottom of a profile researches all of it, and
+  **Research again** under *Employee sentiment* or *News/Controversies* researches only that
+  section (each shows the date it was last researched).
 - **Suggested job titles** (Documents tab): the AI reads your documents and suggests titles to
   search for; add them to the current search or start a new workspace with them.
 - **Notes** (Documents tab): under *Write a note*, give a note a title, type its text, pick a
@@ -575,10 +577,12 @@ rating made from them, and never hides, scores or ranks a job down because of th
 
   Hover over the circle to read the signs that were found. It is a rating from the signs, not a measurement:
   the app puts no number on it.
-- **Why this rating:** open the job. **Is this a real vacancy?** lists every kind of sign and says whether it
-  was found (and how strong it is), not found, or could not be checked (the company hasn't been researched, or
-  the job didn't come from a search and has no listing history), what the colours mean and, for a flagged job,
-  what to ask the employer. These are signs only and can be wrong: it may be a real job.
+- **Why this rating:** open the job. **Is this a real vacancy?** shows the circle and the rating in words, and
+  says what it rests on: it is worked out from your own searches only, and it indicates whether an ad may be a
+  ghost job or a real position; it proves neither. Open **Why this rating** under it for every kind of sign and
+  whether it was found (and how strong it is), not found, or could not be checked (the company hasn't been
+  researched, or the job didn't come from a search and has no listing history), what the colours mean and, for
+  a flagged job, what to ask the employer.
 - **The signs:**
   - the ad has been open for 45 days or more (the longer, the stronger);
   - the same role from the employer was listed before, ended and was listed again;
@@ -589,8 +593,8 @@ rating made from them, and never hides, scores or ranks a job down because of th
   - recent news of job cuts at the company (from company research);
   - the AI's reading of the ad, when it finds wording that says the job isn't a current vacancy (it can be
     wrong, and alone it is never "several signs").
-- **Hiding them:** tick **Hide possible ghost jobs** in the filters (off by default; it hides the yellow and
-  red ones, and the count says how many it hid). The data export lists the signs.
+- **Nothing is hidden for it:** a possible ghost job stays in your list like any other. The data export lists
+  the signs.
 
 ## Adding company careers pages
 

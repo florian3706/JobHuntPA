@@ -578,22 +578,29 @@ def list_companies(db: Session = Depends(get_db), ws: int = Depends(current_work
 class ResearchRequest(BaseModel):
     mode: Literal["missing", "all"] = "missing"
     name: Optional[str] = None           # research just this company
+    # With a name: the whole profile (its own button), or one section's button. Never held back by age.
+    part: Literal["all", "sentiment", "news"] = "all"
     job_ids: Optional[list[int]] = None  # only these jobs' companies (the ticked jobs)
 
 
 @app.post("/api/companies/research")
 def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace)):
+    """Signed in. One company the user asked for (``name``, and ``part``: all of its profile or one section,
+    whatever their age), or a batch ("Fill missing info": the companies of the workspace's jobs, or of
+    ``job_ids``, that ``research.plan`` says are due)."""
     from backend.research import companies_to_research, job_context, research_companies
     from backend.scorer import ScorerError, config_problem
 
+    if payload.part != "all" and not payload.name:
+        raise HTTPException(status_code=422, detail="A section is researched for one company: give its name")
     if config_problem():
         raise HTTPException(status_code=400, detail=config_problem())
 
     def job(progress):
         db = SessionLocal()
         try:
-            if payload.name:  # "research this company": only the parts that are due (research.plan)
-                companies = [job_context(db, ws, payload.name)]
+            if payload.name:  # the user asked: what they asked for, whatever its age (research.plan)
+                companies = [job_context(db, ws, payload.name, payload.part)]
             else:
                 companies = companies_to_research(db, ws, payload.mode, payload.job_ids)
         finally:

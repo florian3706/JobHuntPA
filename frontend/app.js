@@ -11,7 +11,7 @@ const state = {
   loadedOmit: 'excluded,hidden', // what the loaded list left out ("Show excluded"/"Show hidden" fetch them)
   omittedCount: 0, // how many jobs it left out
   details: new Map(), // job id -> full job (with description)
-  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, hideGhost: false, status: 'all', sort: 'score' },
+  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
   selected: new Set(),
   profile: null,
   pins: [],
@@ -195,14 +195,13 @@ async function loadJobs() {
   loadDuplicates();
 }
 
-function visibleJobs(keepGhost = false) {
+function visibleJobs() {
   const f = state.filter;
   const q = f.q.trim().toLowerCase();
   const list = state.jobs.filter((j) => {
     if (!f.showExcluded && j.excluded_reason) return false;
     if (!f.showClosed && j.closed) return false;
     if (!f.showHidden && j.hidden) return false;
-    if (f.hideGhost && !keepGhost && j.ghost?.level) return false;
     if (f.status !== 'all' && j.status !== f.status) return false;
     if (f.minScore > 0 && (scoreOf(j) ?? -1) < f.minScore) return false;
     if (f.mode !== 'all' && modeOf(j) !== f.mode) return false;
@@ -227,8 +226,7 @@ function renderStatusChips() {
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   box.innerHTML = '';
   const base = state.jobs.filter((j) => (state.filter.showExcluded || !j.excluded_reason)
-    && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden)
-    && !(state.filter.hideGhost && j.ghost?.level));
+    && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden));
   [['all', 'all'], ...STATUSES.map((s) => [s, STATUS_LABEL[s]])].forEach(([val, label]) => {
     const n = val === 'all' ? base.length : base.filter((j) => j.status === val).length;
     const b = document.createElement('button');
@@ -303,8 +301,7 @@ function renderJobs() {
   list.innerHTML = '';
   $('#jobs-empty').hidden = jobs.length !== 0;
   const hidden = state.jobs.length - jobs.length + state.omittedCount;
-  const ghosts = state.filter.hideGhost ? visibleJobs(true).length - jobs.length : 0;
-  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters${ghosts ? ` (${ghosts} of them possible ghost job${ghosts === 1 ? '' : 's'})` : ''}` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
+  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
   jobs.forEach((job) => list.appendChild(renderJobCard(job)));
   if (focusBack) (focusBack() || $('#tab-jobs')).focus({ preventScroll: true });
   renderBulkBar();
@@ -536,7 +533,6 @@ function initJobs() {
     state.filter.showHidden = e.target.checked;
     if (e.target.checked && state.loadedOmit.includes('hidden')) loadJobs(); else renderJobs();
   });
-  $('#filter-hide-ghost').addEventListener('change', (e) => { state.filter.hideGhost = e.target.checked; renderJobs(); });
   $('#bulk-hide').addEventListener('click', () => {
     const ids = Array.from(state.selected);
     if (ids.length > 20 && !confirm(`Hide ${ids.length} jobs?`)) return;
@@ -714,24 +710,25 @@ function companyIcon(job) {
   if (p?.status === 'done') {
     const n = p.controversies.length;
     cls = n ? 'warn' : 'ok';
-    title = n ? `${n} controversy item(s) found: click for details` : 'Company profile';
+    title = n ? `${n} News/Controversies item(s) found: click for details` : 'Company profile';
   } else if (p?.status === 'error') { cls = 'err'; title = 'Research failed: click for details'; }
   else if (p?.status === 'skipped') { cls = 'none'; title = 'Not a researchable company'; }
   const n = p?.status === 'done' ? p.controversies.length : 0;
   const count = n ? `<sup>${n}</sup>` : '';
   // The name is hidden text beside the symbol, not an aria-label: the symbol and count ("ⓘ1") would not be part of an
   // aria-label (WCAG 2.5.3 Label in Name). The title says what's known, and is read as the description.
-  const label = `Company info: ${job.company}${n ? `, ${n} controversy ${n === 1 ? 'item' : 'items'}` : ''}`;
+  const label = `Company info: ${job.company}${n ? `, ${n} News/Controversies ${n === 1 ? 'item' : 'items'}` : ''}`;
   return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}"><span aria-hidden="true">ⓘ${count}</span><span class="visually-hidden">${esc(label)}</span></button>`;
 }
 
 function showCompany(job) {
   const p = state.companies[job.company_key];
   openHtmlModal(p?.official_name || job.company, companyProfileHtml(p, job.company));
-  $('#company-research').addEventListener('click', () => {
+  // The profile's button researches all of it, a section's only that section: either at any time.
+  $$('#modal-html [data-research-part]').forEach((b) => b.addEventListener('click', () => {
     closeModal();
-    startRun('/api/companies/research', { name: job.company });
-  });
+    startRun('/api/companies/research', { name: job.company, part: b.dataset.researchPart });
+  }));
 }
 
 function currentWorkspace() { return state.ws; }

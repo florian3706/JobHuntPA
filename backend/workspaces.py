@@ -108,6 +108,9 @@ def create_workspace(payload: WorkspaceCreate, user: AuthUser = Depends(current_
     db.flush()
     if src_id is not None:
         _copy_settings(db, src_id, ws.id, payload.copy_documents)
+    from backend.schedule import start_off
+
+    start_off(db, ws.id)  # scheduled searches start off, unless the workspace's settings were copied from another
     db.commit()
     return _to_dict(ws, db)
 
@@ -120,10 +123,11 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
     dbk = db.get(DealbreakerSet, src)
     if dbk is not None:
         db.add(DealbreakerSet(id=dst, industries=list(dbk.industries or []), keywords=list(dbk.keywords or [])))
-    sched = db.get(SearchSchedule, src)
-    if sched is not None:
-        db.add(SearchSchedule(id=dst, enabled=sched.enabled, times=sched.times, days=sched.days,
-                              skip_holidays=sched.skip_holidays, state=sched.state))
+    from backend.schedule import get_schedule
+
+    sched = get_schedule(db, src)  # what the source has, the preset schedule included: copied as it is
+    db.add(SearchSchedule(id=dst, enabled=sched.enabled, times=sched.times, days=sched.days,
+                          skip_holidays=sched.skip_holidays, state=sched.state))
     for pin in db.query(Pin).filter(Pin.workspace_id == src):
         db.add(Pin(workspace_id=dst, label=pin.label, kind=pin.kind, lat=pin.lat, lng=pin.lng, radius_km=pin.radius_km))
     for s in db.query(CompanySource).filter(CompanySource.workspace_id == src):

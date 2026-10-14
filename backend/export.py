@@ -678,12 +678,18 @@ def _company_md(p: CompanyProfile) -> str:
     for title, value in (("What the company does", d["business_model"]), ("Ownership", d["ownership"])):
         if value:
             out.append(f"\n## {title}\n\n{text(value)}\n")
-    for title, value in (("Offices", d["offices"]), ("Employee sentiment", d["sentiment"]),
-                         ("In the news", d["controversies"]), ("Sources", d["sources"])):
-        if value:
-            out.append(f"\n## {title}\n\n{value_md(value)}\n")
-    if d["controversy_note"]:
-        out.append(f"\n{text(d['controversy_note'])}\n")
+    for title, value, note, at in (("Offices", d["offices"], "", None),
+                                   ("Employee sentiment", d["sentiment"], "", d["sentiment_researched_at"]),
+                                   ("News/Controversies", d["controversies"], d["controversy_note"], d["news_researched_at"]),
+                                   ("Sources", d["sources"], "", None)):
+        if value or note:
+            out.append(f"\n## {title}\n")
+            if note:
+                out.append(f"\n{text(note)}\n")
+            if value:
+                out.append(f"\n{value_md(value)}\n")
+            if at:
+                out.append(f"\nResearched {day(at)}.\n")
     if d["error"] and not (d["business_model"] or d["ownership"]):
         out.append(f"\nResearch didn't finish: {line(d['error'])}\n")
     return "".join(out)

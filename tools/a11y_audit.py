@@ -531,11 +531,6 @@ def sc_jobs(a, w, theme):
             summary.click()
         settle(page, 300)
         a.check(page, "index: Jobs tab, Why? lists open")
-        page.check("#filter-hide-ghost")
-        settle(page, 500)
-        a.check(page, "index: Jobs tab, ghost jobs hidden")
-        page.uncheck("#filter-hide-ghost")
-        settle(page, 300)
     with a.step("index: a job selected (bulk bar)"):
         page.check(".job-card:first-of-type input[type=checkbox]")
         page.wait_for_selector("#bulk-bar:not([hidden])")
@@ -941,9 +936,15 @@ def sc_job(a, w, theme):
         page.goto(f"{app.base}/job.html?id=1&ws={a.fixtures['ws']}")
         page.wait_for_selector("#job-company dl.profile")
         page.wait_for_function("() => !document.querySelector('#job-commute').textContent.includes('Working out')", timeout=60000)
-        page.wait_for_selector("#job-ghost-section:not([hidden]) .ghost-check.found")  # the "Is this a real vacancy?" section (planted signs)
+        # the "Is this a real vacancy?" section (planted signs), its reasons collapsed until asked for
+        page.wait_for_selector("#job-ghost-section:not([hidden]) .ghost-check.found", state="attached")
         settle(page, 600)
         a.check(page, "job.html")
+    with a.step("job.html: why this rating, opened"):
+        page.click("#ghost-why summary")
+        page.wait_for_selector("#job-ghost-section .ghost-check.found")
+        settle(page, 300)
+        a.check(page, "job.html: why this rating open")
     with a.step("job.html: a job that isn't there"):
         page.goto(f"{app.base}/job.html?id=99999&ws={a.fixtures['ws']}")
         page.wait_for_selector("#job-error:not([hidden])")

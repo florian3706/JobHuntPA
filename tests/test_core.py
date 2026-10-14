@@ -1904,7 +1904,8 @@ class ScheduleTest(unittest.TestCase):
             ws = c.post("/api/workspaces", json={"name": "Schedule API"}).json()["id"]
             h = {"X-Workspace": str(ws)}
             out = c.get("/api/schedule", headers=h).json()
-            self.assertTrue(out["enabled"] and out["skip_holidays"])
+            self.assertFalse(out["enabled"])  # a new workspace's scheduled searches start off
+            self.assertTrue(out["skip_holidays"])
             self.assertEqual((out["times"], out["days"], out["state"], out["timezone"]),
                              (["10:00", "12:00", "14:00", "16:00"], [0, 1, 2, 3, 4], "NSW", "Australia/Sydney"))
             self.assertEqual(len(out["states"]), 8)
@@ -1930,9 +1931,83 @@ class ScheduleTest(unittest.TestCase):
                                                 datetime(2026, 10, 2, 0, 0, tzinfo=timezone.utc)))
 
             copy = c.post("/api/workspaces", json={"name": "Schedule copy", "copy_from": ws}).json()["id"]
-            self.assertEqual(c.get("/api/schedule", headers={"X-Workspace": str(copy)}).json()["times"], ["10:00", "16:00"])
+            copied = c.get("/api/schedule", headers={"X-Workspace": str(copy)}).json()
+            self.assertEqual((copied["times"], copied["enabled"]), (["10:00", "16:00"], True))
             for w in (copy, ws):
                 c.delete(f"/api/workspaces/{w}")
+
+    def test_new_workspaces_start_off_and_older_ones_keep_theirs(self):
+        """Open-source spec §1.12: scheduled searches are off for a new workspace; one from before (no schedule row:
+        the preset, which is on) keeps its setting, also when it is copied."""
+        from datetime import datetime, timezone
+        from backend import schedule
+        from backend.db import SearchSchedule, SessionLocal
+
+        with helpers.client() as c:
+            new = c.post("/api/workspaces", json={"name": "New, schedule off"}).json()["id"]
+            self.addCleanup(c.delete, f"/api/workspaces/{new}")
+            out = c.get("/api/schedule", headers={"X-Workspace": str(new)}).json()
+            self.assertFalse(out["enabled"])
+            self.assertIsNone(out["next_run"])
+            self.assertEqual((out["times"], out["days"]), (["10:00", "12:00", "14:00", "16:00"], [0, 1, 2, 3, 4]))
+
+            # A workspace from before: no row, so the preset schedule, which is on, and stays on.
+            old = c.post("/api/workspaces", json={"name": "From before"}).json()["id"]
+            self.addCleanup(c.delete, f"/api/workspaces/{old}")
+            db = SessionLocal()
+            db.delete(db.get(SearchSchedule, old))
+            db.commit()
+            self.assertTrue(schedule.get_schedule(db, old).enabled)
+            db.close()
+            self.assertTrue(c.get("/api/schedule", headers={"X-Workspace": str(old)}).json()["enabled"])
+            # Copying its settings copies the schedule as it is.
+            copy = c.post("/api/workspaces", json={"name": "Copy of before", "copy_from": old}).json()["id"]
+            self.addCleanup(c.delete, f"/api/workspaces/{copy}")
+            self.assertTrue(c.get("/api/schedule", headers={"X-Workspace": str(copy)}).json()["enabled"])
+            copy_off = c.post("/api/workspaces", json={"name": "Copy of new", "copy_from": new}).json()["id"]
+            self.addCleanup(c.delete, f"/api/workspaces/{copy_off}")
+            self.assertFalse(c.get("/api/schedule", headers={"X-Workspace": str(copy_off)}).json()["enabled"])
+
+            # An existing setting is never changed by the update: a workspace switched on stays on.
+            c.put("/api/schedule", headers={"X-Workspace": str(new)}, json={"enabled": True})
+            self.assertTrue(c.get("/api/schedule", headers={"X-Workspace": str(new)}).json()["enabled"])
+
+            # The scheduler passes over a workspace whose schedule is off: no slot is due.
+            db = SessionLocal()
+            try:
+                self.assertIsNone(schedule.due_slot(schedule.get_schedule(db, copy_off),
+                                                    datetime(2026, 10, 2, 0, 30, tzinfo=timezone.utc), None))
+            finally:
+                db.close()
+
+    FRESH_INSTALL = """
+from backend.db import SearchSchedule, SessionLocal, Workspace, init_db
+init_db()
+if os.environ.get("NO_WORKSPACE"):  # the first account then makes its own first workspace
+    db = SessionLocal()
+    db.query(SearchSchedule).delete()
+    db.query(Workspace).delete()
+    db.commit()
+    db.close()
+from backend import users
+users.startup()  # the first account (JOBHUNT_ADMIN_*), as a first run makes it
+db = SessionLocal()
+out["schedules"] = [[r.id, r.enabled] for r in db.query(SearchSchedule)]
+out["workspaces"] = [w for (w,) in db.query(Workspace.id)]
+db.close()
+"""
+
+    def test_a_fresh_installs_first_workspace_starts_off(self):
+        env = {"JOBHUNT_ADMIN_EMAIL": "fresh", "JOBHUNT_ADMIN_PASSWORD": "fresh-install-password"}
+        try:
+            out = helpers.scenario(self.FRESH_INSTALL, env=env)
+            self.assertEqual(out["workspaces"], [1])
+            self.assertEqual(out["schedules"], [[1, False]])
+            out = helpers.scenario(self.FRESH_INSTALL, env={**env, "NO_WORKSPACE": "1"})
+            self.assertEqual(len(out["workspaces"]), 1)
+            self.assertEqual(out["schedules"], [[out["workspaces"][0], False]])
+        finally:
+            helpers.remove_scratch_folders()
 
 
 
