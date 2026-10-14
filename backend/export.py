@@ -370,6 +370,11 @@ def _account_md(db: Session, user: User, workspaces: list[Workspace]) -> str:
     ]))
     out.append("\n## Workspaces\n\n")
     out.append(bullets(w.name for w in workspaces) or "None.\n")
+    from backend.mappings import for_account
+
+    out.append("\n## Job sites with a saved page layout\n\n"
+               "Worked out by the AI for the browser extension (the selectors are in the import file).\n\n")
+    out.append(bullets(r.site for r in for_account(db, user.id)) or "None.\n")
     return "".join(out)
 
 
@@ -441,11 +446,12 @@ def _sources_md(db: Session, ws: Workspace) -> str:
     out = [f"# Sources: {line(ws.name)}\n\n", "Company career pages and feeds searched for this workspace.\n"]
     if not rows:
         return "".join(out + ["\nNone.\n"])
-    out.append("\n| Name | Address | Type | On | Last run | Last result |\n|---|---|---|---|---|---|\n")
+    out.append("\n| Name | Address | Type | On | Page layout | Last run | Last result |\n"
+               "|---|---|---|---|---|---|---|\n")
     for s in rows:
         result = f"error: {s.last_error}" if s.last_error else (f"{s.last_count} jobs" if s.last_run else "")
         out.append(f"| {cell(s.label or s.company)} | {cell(s.careers_url)} | {cell(s.source_type)} | {yes(s.enabled)} "
-                   f"| {when(s.last_run)} | {cell(result)} |\n")
+                   f"| {'worked out by the AI' if s.mapping else ''} | {when(s.last_run)} | {cell(result)} |\n")
     return "".join(out)
 
 
@@ -811,7 +817,7 @@ def build(db: Session, user_id: int, now: Optional[datetime] = None,
             arc.add_text(path, _company_md(profiles[key]))
         arc.add_text("Account.md", _account_md(db, user, workspaces))
         arc.add_text("README.md", _readme(stamp, {"workspaces": len(workspaces), "jobs": jobs_total}, arc.formats))
-        data = import_file.build(db, workspaces, originals, stamp)
+        data = import_file.build(db, workspaces, originals, stamp, user_id)
         arc.add(import_file.FILE_NAME, json.dumps(data, ensure_ascii=False, separators=(",", ":")))
         del data
         count = arc.files

@@ -18,8 +18,9 @@ bounded on the way in (backend/import_file.py) and stored as data; pages show it
 
 **What an import does.** Each picked workspace becomes a new workspace of the signed-in account (nothing is merged
 into an existing one), named as in the file, or with " (imported 2026-10-13)" when the name is taken, then ", 2", ", 3".
-Documents (originals sealed again under this account's key), jobs, chats, the search setup, pins, sources and schedule
-come with it. A job whose address the shared pool already has is linked to that posting, with the workspace's own
+Documents (originals sealed again under this account's key), jobs, chats, the search setup, pins, sources (with their
+page layouts; never one on the local network or this computer) and schedule come with it. The account's saved job-site
+layouts come in for the sites it has none for. A job whose address the shared pool already has is linked to that posting, with the workspace's own
 values on top; any other job is a private job. Nothing is written to the pool. Company research from the file is
 taken for the companies of the imported jobs only where this install has none, or an older one. Everything happens
 in one transaction: a failed import leaves nothing behind (its sealed uploads are deleted again).
@@ -43,7 +44,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from backend import commute, docs, schedule
+from backend import commute, docs, mapping_format, schedule, source_bulk
 from backend.db import (
     JOB_CONTENT,
     ChatMessage,
@@ -318,7 +319,29 @@ class Importer:
             self.db.flush()
             made.append({"id": ws.id, "name": ws.name, **self.workspace(ws.id, ws_in)})
         companies = self.research()
-        return {"workspaces": made, "companies": companies}
+        return {"workspaces": made, "companies": companies, "site_mappings": self.site_mappings()}
+
+    def site_mappings(self) -> int:
+        """The file's saved job-site mappings, for the sites this account has none for (its own are kept), each
+        checked for shape (another shape is left out), up to the account's limit."""
+        from backend import mappings
+
+        db, added = self.db, 0
+        have = len(mappings.for_account(db, self.user_id))
+        for item in self.data.site_mappings:
+            site = mapping_format.site_of(item.site) if isinstance(item.site, str) and "://" not in item.site else None
+            found = mapping_format.stored(item.mapping, "job")
+            if site is None or found is None or have >= mappings.MAX_SITE_MAPPINGS:
+                continue
+            if mappings._row(db, self.user_id, site) is not None:
+                continue
+            row, _ = mappings.save(db, self.user_id, site, found)
+            if item.updated_at is not None:
+                row.updated_at = item.updated_at
+            db.flush()
+            added += 1
+            have += 1
+        return added
 
     def workspace(self, ws: int, data: WorkspaceIn) -> dict:
         """Writes one workspace's rows; returns what it brought in (as ``counts`` names them)."""
@@ -355,11 +378,13 @@ class Importer:
         seen_urls: set[str] = set()
         for s in data.sources:
             url = _web(s.url)
-            if url is None or url in seen_urls:
+            # (a source is read by this install: never one on the local network or this computer, as a single add)
+            if url is None or url in seen_urls or source_bulk.address_flags(url).blocked:
                 continue
             seen_urls.add(url)
             row = CompanySource(workspace_id=ws, label=s.label or "", careers_url=url, url=url,
-                                source_type=s.type or "auto", enabled=s.enabled)
+                                source_type=s.type or "auto", enabled=s.enabled,
+                                mapping=mapping_format.stored(s.mapping, "careers"))
             db.add(row)
             made["sources"] += 1
             if s.ref is not None:
@@ -647,6 +672,6 @@ def run_import(pick: str = Query(..., max_length=4000), upload: tuple[AuthUser, 
         raise
     t = importer.totals
     log.info("user %s imported %d workspace(s): %d jobs, %d documents (%d original files), %d chats, research for %d "
-             "companies", user.id, len(result["workspaces"]), t["jobs"], t["documents"], t["originals"], t["chats"],
-             result["companies"])
+             "companies, %d job sites' layouts", user.id, len(result["workspaces"]), t["jobs"], t["documents"],
+             t["originals"], t["chats"], result["companies"], result["site_mappings"])
     return result

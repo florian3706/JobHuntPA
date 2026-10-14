@@ -34,7 +34,7 @@ from pydantic import (
 )
 from sqlalchemy.orm import Session
 
-from backend import commute, schedule
+from backend import commute, mapping_format, schedule
 from backend.db import (
     JOB_CONTENT,
     PROJECT_ROOT,
@@ -211,7 +211,8 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tup
         "pins": [{"ref": pin_ref[p.id], "label": p.label, "kind": p.kind, "lat": p.lat, "lng": p.lng,
                   "radius_km": p.radius_km} for p in pins],
         "sources": [{"ref": source_ref[s.id], "label": s.label, "url": s.careers_url, "type": s.source_type,
-                     "enabled": bool(s.enabled)} for s in sources],
+                     "enabled": bool(s.enabled), "mapping": mapping_format.stored(s.mapping, "careers")}
+                    for s in sources],
         "schedule": sched.model_dump(),
         "documents": [{
             "ref": doc_ref[d.id], "filename": d.filename, "filetype": d.filetype, "kind": d.kind, "text": d.text,
@@ -243,8 +244,22 @@ def company_data(p: CompanyProfile) -> dict:
     return out
 
 
-def build(db: Session, workspaces: list[Workspace], originals: dict[int, str], stamp: datetime) -> dict:
-    """The whole import file for these workspaces (the exporting person's own)."""
+def site_mappings_data(db: Session, user_id: int) -> list[dict]:
+    """The account's saved job-site mappings (backend/mappings.py): ``[{site, mapping, updated_at}]``, by site."""
+    from backend.mappings import for_account
+
+    out = []
+    for row in for_account(db, user_id):
+        found = mapping_format.stored(row.mapping, "job")
+        if found is not None:
+            out.append({"site": row.site, "mapping": found, "updated_at": iso(row.updated_at)})
+    return out
+
+
+def build(db: Session, workspaces: list[Workspace], originals: dict[int, str], stamp: datetime,
+          user_id: Optional[int] = None) -> dict:
+    """The whole import file for these workspaces (the exporting person's own), with ``user_id``'s saved job-site
+    mappings."""
     data, keys = [], set()
     for ws in workspaces:
         one, companies = workspace_data(db, ws, originals)
@@ -255,7 +270,8 @@ def build(db: Session, workspaces: list[Workspace], originals: dict[int, str], s
                 for p in db.query(CompanyProfile).filter(CompanyProfile.key.in_(ordered[start:start + 400]))]
     return {"format": FORMAT, "format_version": FORMAT_VERSION, "app_version": app_version(),
             "exported_at": iso(stamp), "workspaces": data,
-            "companies": [company_data(p) for p in sorted(profiles, key=lambda p: p.key)]}
+            "companies": [company_data(p) for p in sorted(profiles, key=lambda p: p.key)],
+            "site_mappings": site_mappings_data(db, user_id) if user_id is not None else []}
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +414,7 @@ class SourceIn(_In):
     url: Url
     type: Optional[Annotated[str, StringConstraints(max_length=40)]] = None
     enabled: bool = True
+    mapping: Any = None  # a careers mapping: checked by mapping_format when imported (another shape: none)
 
 
 class ScheduleIn(schedule.ScheduleSchema):
@@ -631,6 +648,14 @@ class CompanyIn(_In):
     researched_at: When = None
 
 
+class SiteMappingIn(_In):
+    """A saved job-site mapping: ``site`` and ``mapping`` are checked by mapping_format when imported (an item of
+    another shape is left out)."""
+    site: Any = None
+    mapping: Any = None
+    updated_at: When = None
+
+
 class ImportFile(_In):
     format: Literal["jobhuntpa-import"]
     format_version: Annotated[int, Field(ge=1)]
@@ -638,3 +663,4 @@ class ImportFile(_In):
     exported_at: When = None
     workspaces: Annotated[list[WorkspaceIn], Field(max_length=1_000)]
     companies: Annotated[list[CompanyIn], Field(max_length=MANY)] = Field(default_factory=list)
+    site_mappings: _kept(SiteMappingIn, 1_000) = Field(default_factory=list)  # (another shape: left out)
