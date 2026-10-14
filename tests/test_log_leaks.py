@@ -318,6 +318,14 @@ class FullRun(unittest.TestCase):
                                                    "radius_km": 20}).status_code, 201)
         self.assertEqual(c.post("/api/sources", json={"url": "https://careers.zqx.example/jobs",
                                                       "label": "ZQX dream employer"}).status_code, 201)
+        # Careers pages in bulk: the preview, the add and the export (then the source goes, so the search skips it).
+        text = '"ZQX bulk, employer",https://careers.zqx-bulk.example/jobs\nZQX local,http://192.168.0.9/zqx\n'
+        rows = c.post("/api/sources/bulk/preview", json={"text": text}).json()["rows"]
+        self.assertEqual([x["status"] for x in rows], ["new", "refused"])
+        r = c.post("/api/sources/bulk", json={"rows": [{"company": x["company"], "url": x["url"]} for x in rows]})
+        self.assertEqual([x["result"] for x in r.json()["results"]], ["added", "refused"], r.text)
+        self.assertIn('"ZQX bulk, employer"', c.get("/api/sources/export").text)
+        self.assertEqual(c.delete(f"/api/sources/{r.json()['results'][0]['id']}").status_code, 200)
         r = c.post("/api/documents/notes", json={"title": "ZQX project notes", "text": "ZQX note: I ran the ZQX launch.",
                                                  "kind": "other"})
         self.assertEqual(r.status_code, 201, r.text)

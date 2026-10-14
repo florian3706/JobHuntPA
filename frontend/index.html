@@ -270,6 +270,11 @@
             <input id="source-label" type="text" placeholder="Company" autocomplete="off" /></label>
           <button id="source-add" class="btn btn-primary" type="submit">Add</button>
         </form>
+        <div class="toolbar-row sources-bulk-row">
+          <button id="sources-bulk-open" class="btn btn-ghost" type="button" aria-haspopup="dialog">Bulk add</button>
+          <button id="sources-export" class="btn btn-ghost" type="button">Export sources</button>
+          <span id="sources-export-status" class="muted" role="status"></span>
+        </div>
         <div id="sources-list" class="docs-list"></div>
         <div id="sources-error" class="error" hidden></div>
       </div>
@@ -640,6 +645,66 @@
     </div>
   </dialog>
 
+  <!-- Careers pages in bulk (sources-bulk.js, open-source spec §1.14): nothing is fetched before "Add". -->
+  <dialog id="srcbulk-dialog" class="modal srcbulk-dialog" aria-labelledby="srcbulk-title">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2 id="srcbulk-title" class="modal-title">Add careers pages in bulk</h2>
+        <button id="srcbulk-close" class="btn btn-ghost btn-sm" type="button"><span aria-hidden="true">✕ </span>Close</button>
+      </div>
+      <div class="srcbulk-body">
+        <section id="srcbulk-step-input" class="srcbulk-step" aria-labelledby="srcbulk-input-heading">
+          <h3 id="srcbulk-input-heading" class="srcbulk-heading" tabindex="-1">1. Paste the list or choose a file</h3>
+          <div id="srcbulk-format" class="hint">
+            <p>One careers page a line: the company's name, a comma, then the address of the page that lists its jobs.
+              A first line <code>company,url</code> is optional, and a name may be left out.</p>
+            <p>Put a name that contains a comma in double quotes, and write a quote inside it twice. A file is CSV text
+              saved as UTF-8 (in a spreadsheet: save as "CSV UTF-8"). <strong>Export sources</strong> makes the same kind
+              of file.</p>
+          </div>
+          <pre class="srcbulk-example" aria-label="An example list">company,url
+"Smith, Jones &amp; Co",https://careers.smithjones.example/jobs
+Acme,https://jobs.lever.co/acme</pre>
+          <div class="field">
+            <label class="field-label" for="srcbulk-text">The list</label>
+            <textarea id="srcbulk-text" class="doc-textarea srcbulk-text" rows="8" spellcheck="false" autocomplete="off" aria-describedby="srcbulk-format"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label" for="srcbulk-file">Or choose a file</label>
+            <input id="srcbulk-file" type="file" accept=".csv,text/csv,text/plain" aria-describedby="srcbulk-file-hint" />
+            <small id="srcbulk-file-hint" class="hint">Its text goes into the box above, for you to check.</small>
+          </div>
+          <p class="hint">Nothing is fetched from these sites yet: the next step shows the list for you to check first.</p>
+          <div class="toolbar-row"><button id="srcbulk-preview" class="btn btn-primary" type="button">Show the list</button></div>
+        </section>
+        <section id="srcbulk-step-review" class="srcbulk-step" aria-labelledby="srcbulk-review-heading" hidden>
+          <h3 id="srcbulk-review-heading" class="srcbulk-heading" tabindex="-1">2. Check the list</h3>
+          <p class="hint">Nothing has been fetched from these sites yet. Untick or remove the pages you don't want, then
+            add the ticked ones.</p>
+          <p id="srcbulk-flag-note" class="callout">A page marked <strong>Unusual</strong> has an address of an unusual
+            shape, and the reason is given. It starts unticked: tick it only if you know the address is right. This judges
+            the shape of the address only; it is not a safety check of the site. An address on your local network or this
+            computer, or one that isn't a web link, can't be added.</p>
+          <p id="srcbulk-count" role="status"></p>
+          <ul id="srcbulk-rows" class="srcbulk-ul" aria-labelledby="srcbulk-review-heading"></ul>
+          <div class="toolbar-row">
+            <button id="srcbulk-back" class="btn btn-ghost" type="button">Back to the text</button>
+            <button id="srcbulk-add" class="btn btn-primary" type="button">Add the ticked pages</button>
+          </div>
+        </section>
+        <section id="srcbulk-step-done" class="srcbulk-step" aria-labelledby="srcbulk-done-heading" hidden>
+          <h3 id="srcbulk-done-heading" class="srcbulk-heading" tabindex="-1">3. Results</h3>
+          <p id="srcbulk-summary"></p>
+          <ul id="srcbulk-results" class="srcbulk-ul" aria-labelledby="srcbulk-done-heading"></ul>
+          <div class="toolbar-row">
+            <button id="srcbulk-again" class="btn btn-ghost" type="button">Add more</button>
+            <button id="srcbulk-done" class="btn btn-primary" type="button">Close</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
   <div id="chat-panel" class="chat-panel" role="complementary" aria-labelledby="chat-title" hidden>
     <div class="chat-head">
       <h2 id="chat-title" class="chat-title">Ask about this job</h2>
@@ -675,5 +740,6 @@
   <script src="./export.js"></script>
   <script src="./background.js"></script>
   <script src="./extension.js"></script>
+  <script src="./sources-bulk.js"></script>
 </body>
 </html>
