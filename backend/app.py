@@ -31,9 +31,13 @@ from backend.auth import router as auth_router
 from backend.security import router as security_router
 from backend.security_headers import install as install_security_headers
 from backend.background import router as background_router
-from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db, scrub_wal
+from backend.browser import router as browser_router
+from backend.browser import use_data_folder as use_downloaded_browser
+from backend.db import (FOLDER_CHOSEN, CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key,
+                        get_db, init_db, scrub_wal)
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
+from backend.data_folder import router as data_folder_router
 from backend.data_import import router as import_router
 from backend.export import router as export_router
 from backend.commute import router as commute_router
@@ -137,7 +141,15 @@ Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejecte
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not FOLDER_CHOSEN:
+        # The first run's step 1 (backend/data_folder.py): nothing is written, not even the database, until the data
+        # folder is chosen; then the process restarts on it.
+        users.folder_step_token()
+        threading.Thread(target=hosts.machine_names, daemon=True).start()
+        yield
+        return
     init_db()
+    use_downloaded_browser()  # the browser for JavaScript-only careers pages, when it was downloaded into the data folder
     app_settings.retire_env_names()  # an upgraded install's old mail and payment settings leave .env
     threading.Thread(target=hosts.machine_names, daemon=True).start()  # this computer's names (it may ask the network)
     # The server key file, then (with no account yet) the account from the environment or the first-run token
@@ -166,6 +178,7 @@ app.add_middleware(NoStoreApi)
 # The Host allowlist and the security headers go around all of it (backend/hosts.py, backend/security_headers.py).
 install_security_headers(app, FRONTEND_DIR)
 app.include_router(auth_router)
+app.include_router(data_folder_router)
 app.include_router(security_router)
 app.include_router(account_router)
 app.include_router(export_router)
@@ -180,6 +193,7 @@ app.include_router(workspaces_router)
 app.include_router(llm_router)
 app.include_router(app_settings_router)
 app.include_router(maintenance_router)
+app.include_router(browser_router)
 app.include_router(cover_letters_router)
 app.include_router(duplicates_router)
 app.include_router(extension_router)

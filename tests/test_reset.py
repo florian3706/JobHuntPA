@@ -1,5 +1,5 @@
 """The reset tool (backend/reset.py; open-source spec §1.2): run on the computer itself, with the app stopped, after
-the word RESET, it deletes the accounts, their encrypted data, the uploads and the key material, and keeps .env, the
+the word RESET (exactly, in capitals), it deletes the accounts, their encrypted data, the uploads and the key material, and keeps .env, the
 pooled job ads and the company research. The next start is a first run. Nothing reachable over HTTP does any of this.
 
 Every test runs the tool in its own process on a throwaway data folder (helpers.scenario), never on the test
@@ -127,9 +127,18 @@ class ResetTest(unittest.TestCase):
         cls.refusals = {
             "no terminal, no word": reset_command(cls.folder),
             "the wrong word": reset_command(cls.folder, "--confirm", "yes"),
+            "the word in small letters": reset_command(cls.folder, "--confirm", "reset"),
             "typed, but not the word": reset_command(cls.folder, stdin="RESET\n"),  # (stdin isn't a terminal)
         }
         cls.after_refusals = scenario(INSPECT, cls.folder)
+        # What a crash can leave (crypto.write_private's temporary files): a half-written sealed upload, and copies of
+        # the key file (the KEK and pepper in plaintext) and of the first-run token beside it.
+        cls.crash_left = [Path(cls.folder) / "uploads" / ".a1b2c3.sealed-x7y8.tmp",
+                          Path(cls.folder) / ".server-keys.json-k3j4.tmp",
+                          Path(cls.folder) / ".server-keys.json.new-m5n6.tmp",
+                          Path(cls.folder) / ".first-run.txt-p7q8.tmp"]
+        for path in cls.crash_left:
+            path.write_bytes(b"left by a crash")
         cls.done = reset_command(cls.folder, "--confirm", "RESET")
         cls.after = scenario(INSPECT, cls.folder)
         cls.left = scenario(f"BLOBS = {cls.before['blobs']!r}\n" + LEFT_IN_FILES, cls.folder)
@@ -171,6 +180,7 @@ class ResetTest(unittest.TestCase):
             self.assertEqual(counts[table], 0, table)
         self.assertEqual(self.after["uploads"], [])
         self.assertFalse(self.after["key_file"])
+        self.assertEqual([p.name for p in self.crash_left if p.exists()], [], "crash-left temporary files")
         self.assertEqual(self.after["usage_owners"], 0, "usage is kept without saying whose it was")
         for key in ("server_keys_fingerprint", "encryption_migration"):
             self.assertNotIn(key, self.after["settings"])
@@ -185,7 +195,7 @@ class ResetTest(unittest.TestCase):
 
     def test_the_next_start_is_a_first_run(self):
         got = self.next_start
-        self.assertEqual(got["state"], {"setup_required": True, "signed_in": False})
+        self.assertEqual(got["state"], {"setup_required": True, "folder_required": False, "signed_in": False})
         self.assertEqual(got["workspaces_signed_out"], 401)
         self.assertIn(got["old_login"], (401, 403))
         self.assertEqual((got["first_run"], got["codes"]), (201, 8))
@@ -262,7 +272,7 @@ from backend.db import SessionLocal, User, init_db
 init_db()
 users.startup()
 users.create_account("Owner", "a long enough password")
-for typed in ("", "reset please", "no"):
+for typed in ("", "reset please", "no", "reset", "Reset"):
     err = io.StringIO()
     out[repr(typed)] = reset.run(ask=lambda prompt, t=typed: t, interactive=True, out=io.StringIO(), err=err)
     out[repr(typed) + " said"] = err.getvalue()
@@ -270,7 +280,7 @@ db = SessionLocal()
 out["accounts_after_refusals"] = db.query(User).count()
 db.close()
 said = io.StringIO()
-out["typed"] = reset.run(ask=lambda prompt: " reset ", interactive=True, out=said)
+out["typed"] = reset.run(ask=lambda prompt: " RESET ", interactive=True, out=said)
 out["said"] = said.getvalue()
 db = SessionLocal()
 out["accounts_after"] = db.query(User).count()
@@ -279,11 +289,11 @@ db.close()
 
     def test_only_the_word_goes_ahead(self):
         got = scenario(self.ASK)
-        for typed in ("''", "'reset please'", "'no'"):
+        for typed in ("''", "'reset please'", "'no'", "'reset'", "'Reset'"):
             self.assertEqual(got[typed], 1, typed)
             self.assertIn("Nothing was changed", got[typed + " said"])
         self.assertEqual(got["accounts_after_refusals"], 1)
-        self.assertEqual(got["typed"], 0)  # (any case, spaces around it)
+        self.assertEqual(got["typed"], 0)  # (exactly the word in capitals; spaces around it are fine)
         self.assertEqual(got["accounts_after"], 0)
         self.assertIn("first run", got["said"])
 

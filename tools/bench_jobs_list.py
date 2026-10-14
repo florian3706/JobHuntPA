@@ -6,8 +6,8 @@
 The target is under 1.5 s for 5,000 jobs on a Raspberry Pi 4; run this on the Pi itself to check it there.
 
 Everything happens in a NEW temporary folder (database, key file, uploads; .env is never read): the app starts there
-with a made-up admin, which encrypts the empty database, and the jobs are written through the app's models under
-that admin's key, as the app writes them. Postings are shared and plaintext; each job is a link with its personal
+with a made-up account, which encrypts the empty database, and the jobs are written through the app's models under
+that account's key, as the app writes them. Postings are shared and plaintext; each job is a link with its personal
 fields sealed (status, hidden, exclusion, placement, office, own content). A fraction ``--listed`` of the jobs pass
 the filters and aren't hidden (the list sends only those unless asked); the rest are excluded or hidden. Listed jobs
 have a fit score. Nothing touches the network.
@@ -59,7 +59,7 @@ AD = ("About the role. You will lead discovery with customers, own the roadmap w
 
 
 def seed(n: int, listed: float) -> int:
-    """N jobs in the admin's workspace, written through the models under the admin's key. Returns the workspace."""
+    """N jobs in the account's workspace, written through the models under its key. Returns the workspace."""
     from backend import crypto, users
     from backend.db import FitResult, Job, Posting, SessionLocal, Workspace
     from backend.scraping.text import description_hash
@@ -153,7 +153,7 @@ def main() -> None:
         from backend.app import app
 
         out = {"jobs": args.jobs, "listed_share": args.listed}
-        # An address as the Host (backend/hosts.py allows any); start-up makes the admin and encrypts the empty database.
+        # An address as the Host (backend/hosts.py allows any); start-up makes the account and encrypts the empty database.
         with TestClient(app, base_url="http://127.0.0.1") as client:
             t0 = time.perf_counter()
             ws = seed(args.jobs, args.listed)

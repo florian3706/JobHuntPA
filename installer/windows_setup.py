@@ -7,7 +7,9 @@ inside. Steps:
   2. download this version of the app from GitHub and unpack it there,
      keeping an existing .env and data folder
   3. find Python 3.10+ or install Python 3.12 for the current user
-  4. run the shared setup (installer/installer.py) with that Python
+  4. run the shared setup (installer/installer.py) with that Python; it asks
+     nothing (where the data lives, the account and the AI provider are the
+     app's first run, in the browser)
   5. put JobHuntPA.exe, JobHuntPA-Uninstall.exe and JobHuntPA-Reset.exe in the
      folder, create Desktop + Start-menu shortcuts (Start menu: JobHuntPA,
      Uninstall JobHuntPA, Reset JobHuntPA) and list the app in Settings > Apps.
@@ -140,7 +142,7 @@ def main() -> None:
     python = find_python() or install_python()
     print(f"  Using: {' '.join(python)}")
 
-    print("\n[3/4] Setting up (packages, browser, LLM settings) ...")
+    print("\n[3/4] Setting up (Python packages) ...")
     subprocess.run(python + [str(target / "installer" / "installer.py")], cwd=target, check=True)
 
     print("\n[4/4] Creating shortcuts ...")
@@ -164,7 +166,8 @@ def main() -> None:
     print("  Added JobHuntPA to your Desktop and Start menu (with an uninstaller and the reset tool),")
     print("  and to Settings > Apps so it can be removed like any other app.")
 
-    print("\nDone.")
+    print("\nDone. The first time JobHuntPA starts, your browser asks where to keep your data (the suggestion is the")
+    print("data folder in the install folder), then for your account and your AI provider.")
     if input("Start JobHuntPA now? [Y/n] ").strip().lower() in ("", "y", "yes"):
         subprocess.Popen([str(launcher)], cwd=target, creationflags=subprocess.CREATE_NEW_CONSOLE)
 

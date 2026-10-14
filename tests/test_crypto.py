@@ -550,7 +550,7 @@ class KeyFileTest(unittest.TestCase):
     def test_missing_with_users_stops(self):
         with self.assertRaises(keys.KeyFileMissing) as caught:
             keys.load_or_create(lambda: True, "0011223344556677", path=self.path)
-        self.assertIn("Restore data/server-keys.json from your backup", str(caught.exception))
+        self.assertIn("Restore server-keys.json (in the data folder) from your backup", str(caught.exception))
         self.assertFalse(self.path.exists())  # never a new file once there are users
 
     def test_fingerprint_mismatch_stops(self):
@@ -613,8 +613,9 @@ class KeyFileTest(unittest.TestCase):
             self.assertTrue(self.path.exists())
         with mock.patch.dict(os.environ, {"JOBHUNT_KEY_FILE": "elsewhere/keys.json"}):
             self.assertEqual(keys.key_file_path(), keys.config.PROJECT_ROOT / "elsewhere" / "keys.json")
-        with mock.patch.dict(os.environ, {"JOBHUNT_KEY_FILE": ""}):
-            self.assertEqual(keys.key_file_path(), keys.config.PROJECT_ROOT / "data" / "server-keys.json")
+        with mock.patch.dict(os.environ, {"JOBHUNT_KEY_FILE": ""}):  # in the data folder (tests: a throwaway one)
+            from backend.db import DATA_DIR
+            self.assertEqual(keys.key_file_path(), DATA_DIR / "server-keys.json")
 
     def test_gitignored(self):
         lines = (keys.config.PROJECT_ROOT / ".gitignore").read_text().splitlines()

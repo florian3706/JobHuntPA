@@ -270,8 +270,11 @@ def forget_user(user_id: int) -> None:
     forget_account(user_id)
 
 
-# The sign-in endpoints (login, first run, sign-up and recover), per client address.
+# The sign-in endpoints (login, first run and recover), per client address.
 AUTH = Limiter([(10, 5 * 60), (60, 60 * 60)])
+
+# The first run's step 1, where the data lives (backend/data_folder.py), per client address: a few folders may be tried.
+FOLDER = Limiter([(30, 5 * 60), (120, 60 * 60)])
 
 # Browser-extension keys that don't work (unknown, revoked, expired, malformed), per client address: past this a key
 # that doesn't work answers 429 instead of 401; one that works still gets in (backend/sessions.py).
@@ -281,6 +284,7 @@ BAD_KEY = Limiter([(20, 5 * 60), (100, 60 * 60)])
 def reset_all() -> None:
     """Forget every count (tests)."""
     AUTH.reset()
+    FOLDER.reset()
     BAD_KEY.reset()
     guesses.reset()
     unknown_guesses.reset()

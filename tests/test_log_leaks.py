@@ -3,7 +3,7 @@
 One account goes through the whole app, end to end, with the network and the AI service mocked: sign-up, the search
 profile, documents, a search (mocked sources returning planted ads), scoring, chat, a cover letter, company research,
 the browser extension, a data export (in every file type) and its import, a scheduled search, and a password reset
-with a recovery code. Every personal field holds a planted marker (``ZQX``), and every secret the run makes
+with a recovery code (and, in a process of its own, the first run's folder step). Every personal field holds a planted marker (``ZQX``), and every secret the run makes
 (passwords, recovery codes, session and CSRF tokens, extension keys) is collected. Logging is captured at DEBUG for every logger, with the
 text of each record formatted the way a log file would show it, tracebacks included, and then none of the markers or
 secrets may be in it. The test also checks that the markers really are in the person's data (so a pass isn't just an
@@ -632,6 +632,38 @@ class StripQueryTest(unittest.TestCase):
             sql.removeHandler(handler)
             sql.setLevel(old)
         self.assertEqual(handler.lines, ["sqlalchemy.engine.Engine WARNING a warning still comes through"])
+
+
+class FolderStepLogTest(unittest.TestCase):
+    """The first run's step 1 takes a folder path, which can hold the person's name (``/home/<name>/...``): no log line
+    may hold it, whether the folder is checked, refused or chosen (backend/data_folder.py logs the kind only). It runs
+    in a process of its own, before any data folder exists (tests/test_data_folder.py has the sandbox)."""
+
+    def test_the_folder_path_never_reaches_a_log(self):
+        from tests.test_data_folder import TOKEN, Sandbox
+
+        box = Sandbox()
+        self.addCleanup(box.remove)
+        folder = box.home / "ZQX Person Name" / "JobHuntPA"
+        busy = box.top / "ZQX busy"
+        busy.mkdir()
+        (busy / "ZQX-private.txt").write_text("mine")
+        got = box.run(f'''
+            import logging
+            logging.getLogger().setLevel(logging.DEBUG)
+            for handler in logging.getLogger().handlers:
+                handler.setLevel(logging.DEBUG)
+            check = "/api/auth/data-folder/check"
+            c.post(check, json={{"token": {TOKEN!r}, "path": {str(folder)!r}}})
+            c.post(check, json={{"token": {TOKEN!r}, "path": "relative ZQX folder"}})
+            c.post(check, json={{"token": {TOKEN!r}, "path": {str(busy)!r}}})
+            c.post("/api/auth/data-folder", json={{"token": {TOKEN!r}, "path": {str(busy)!r}}})
+            r = c.post("/api/auth/data-folder", json={{"token": {TOKEN!r}, "path": {str(folder)!r}}})
+            out["status"] = r.status_code
+        ''')
+        self.assertEqual(got["status"], 200)
+        self.assertIn("data folder is chosen", got["_log"])  # (the log isn't empty)
+        self.assertNotIn(MARK, got["_log"])
 
 
 if __name__ == "__main__":

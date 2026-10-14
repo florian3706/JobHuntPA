@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """JobHuntPA uninstaller (Linux, macOS and Windows).
 
-Run by uninstall.sh / "Uninstall JobHuntPA.command" (Linux/macOS) and
-compiled into JobHuntPA-Uninstall.exe (Windows). Standard library only.
+Run by uninstall.sh / "Uninstall JobHuntPA.command" (Linux/macOS), compiled
+into JobHuntPA-Uninstall.exe (Windows), and run by the AppImage with
+--uninstall. Standard library only.
 
 Steps:
   1. make sure JobHuntPA isn't running
-  2. optionally save a backup zip of your data and settings (data/ + .env)
+  2. optionally save a backup zip of your data and settings: the data folder,
+     wherever it is (the pointer the first run wrote, JOBHUNT_DATA_DIR, the
+     service's, or data/ in the app folder), and an older .env next to the app
   3. remove shortcuts (Linux menu entry; Windows Desktop/Start menu, with
-     the Uninstall and Reset entries, and the "Apps & features" entry)
-  4. optionally remove the Chromium browser setup downloaded (shared by
-     any other app that uses Playwright, so kept by default)
-  5. delete the app folder
+     the Uninstall and Reset entries, and the "Apps & features" entry) and the
+     Linux service that service.sh installs
+  4. optionally remove the Chromium browser an older setup downloaded (shared
+     by any other app that uses Playwright, so kept by default); the one the
+     app downloads lives in the data folder and goes with it
+  5. delete the data folder (when it is outside the app folder), the pointer,
+     and the app folder (the AppImage file, for the AppImage)
 
 Python itself is left installed (other programs may use it).
 
@@ -21,6 +27,8 @@ Options: --yes (no questions: backup yes, browser kept), --no-backup,
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import json
 import os
 import platform
 import shutil
@@ -35,6 +43,7 @@ from pathlib import Path
 IS_WINDOWS = os.name == "nt"
 APP_NAME = "JobHuntPA"
 REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\JobHuntPA"
+SERVICE = "jobhuntpa.service"  # service.sh's systemd user service
 
 
 def say(msg: str = "") -> None:
@@ -73,17 +82,128 @@ def find_app_folder(explicit: str | None) -> Path | None:
     return next((c for c in candidates if is_app_folder(c)), None)
 
 
+def load_paths(folder: Path):
+    """The app's backend/paths.py (where its data folder is), loaded by file path; None for an app folder from before
+    it existed (its data is then in data/)."""
+    name = "_jobhunt_paths"
+    try:
+        spec = importlib.util.spec_from_file_location(name, folder / "backend" / "paths.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(name, None)
+        return module
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def service_unit() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "systemd" / "user" / SERVICE
+
+
+def service_ident(folder: Path) -> str:
+    """What service.sh writes into the unit to say which install it runs: the AppImage file, or the app folder."""
+    return os.environ.get("APPIMAGE") or str(folder)
+
+
+def _unit_words(value: str, exec_line: bool = False) -> list[str]:
+    """The words of a unit-file value as service.sh writes them (systemd quoting: "..." with \\ and \" inside, %%
+    for %, and in ExecStart= $$ for $); unquoted words are split at spaces."""
+    words: list[str] = []
+    i, n = 0, len(value)
+    while i < n:
+        if value[i].isspace():
+            i += 1
+            continue
+        word = []
+        if value[i] == '"':
+            i += 1
+            while i < n and value[i] != '"':
+                if value[i] == "\\" and i + 1 < n:
+                    i += 1
+                word.append(value[i])
+                i += 1
+            i += 1
+        else:
+            while i < n and not value[i].isspace():
+                word.append(value[i])
+                i += 1
+        text = "".join(word).replace("%%", "%")
+        words.append(text.replace("$$", "$") if exec_line else text)
+    return words
+
+
+def _unit_settings(text: str) -> dict[str, list[list[str]]]:
+    """The unit file's settings: name -> the words of each line that sets it."""
+    found: dict[str, list[list[str]]] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", ";", "[")) or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        found.setdefault(name.strip(), []).append(_unit_words(value, exec_line=name.strip().startswith("Exec")))
+    return found
+
+
+def service_is_ours(folder: Path, text: str) -> bool:
+    """Whether the unit runs this install: its WorkingDirectory= is this app folder, or its ExecStart= starts with
+    this AppImage. The whole path is compared, so a unit of /home/u/JobHuntPA-old is not taken for /home/u/JobHuntPA."""
+    settings = _unit_settings(text)
+    candidates = [words[0] for words in settings.get("WorkingDirectory", []) + settings.get("ExecStart", []) if words]
+    ident = Path(service_ident(folder))
+    return any(Path(word).is_absolute() and _same(Path(word), ident) for word in candidates)
+
+
+def service_data_folder(folder: Path) -> Path | None:
+    """The data folder service.sh gave the service of this app folder (its JOBHUNT_DATA_DIR line), if there is one."""
+    try:
+        text = service_unit().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not service_is_ours(folder, text):
+        return None
+    for words in _unit_settings(text).get("Environment", []):
+        for word in words:
+            if word.startswith("JOBHUNT_DATA_DIR="):
+                value = word.split("=", 1)[1]
+                return Path(value) if value and Path(value).is_absolute() else None
+    return None
+
+
+def data_folders(folder: Path) -> list[Path]:
+    """Every data folder of this install: the one the app would use now (JOBHUNT_DATA_DIR, the pointer or data/ next
+    to the app), and the service's."""
+    found: list[Path] = []
+    paths = load_paths(folder)
+    if paths is not None:
+        place = paths.locate(folder)
+        if place.folder is not None:
+            found.append(place.folder)
+    elif (folder / "data").is_dir():
+        found.append(folder / "data")
+    service = service_data_folder(folder)
+    if service is not None:
+        found.append(service)
+    unique: list[Path] = []
+    for path in found:
+        if path.resolve() not in [p.resolve() for p in unique] and path.is_dir():
+            unique.append(path)
+    return unique
+
+
 def running_ports(folder: Path) -> list[int]:
     """Ports where JobHuntPA answers: the one launch.py recorded, plus the default range."""
     candidates = list(range(8000, 8020))
-    try:
-        import json
-
-        recorded = json.loads((folder / "data" / "running.json").read_text()).get("port")
-        if isinstance(recorded, int):
-            candidates.insert(0, recorded)
-    except (OSError, ValueError, AttributeError):
-        pass
+    for data in [folder / "data", *data_folders(folder)]:
+        try:
+            recorded = json.loads((data / "running.json").read_text()).get("port")
+            if isinstance(recorded, int):
+                candidates.insert(0, recorded)
+        except (OSError, ValueError, AttributeError):
+            pass
     ports = []
     for port in dict.fromkeys(candidates):
         try:
@@ -95,38 +215,132 @@ def running_ports(folder: Path) -> list[int]:
     return ports
 
 
-def backup(folder: Path) -> Path | None:
-    items = [p for p in (folder / "data", folder / ".env") if p.exists()]
+def backup(folder: Path, datas: list[Path] | None = None) -> Path | None:
+    """A zip of the data folder(s) (as data/, data-2/ ...) and an older .env next to the app (as .env)."""
+    datas = data_folders(folder) if datas is None else datas
+    items = [(d, "data" if i == 0 else f"data-{i + 1}") for i, d in enumerate(datas)]
+    if (folder / ".env").is_file():
+        items.append((folder / ".env", ".env"))
     if not items:
         say("  Nothing to back up.")
         return None
-    dest_dir = Path.home() / "Documents"
-    if not dest_dir.is_dir():
-        dest_dir = Path.home()
-    dest = dest_dir / f"{APP_NAME}-backup-{datetime.now():%Y%m%d-%H%M%S}.zip"
+    dest = backup_dir() / f"{APP_NAME}-backup-{datetime.now():%Y%m%d-%H%M%S}.zip"
     # Owner-only from the start (0600): it holds the server key file and the API keys. (On Windows the file
     # gets the folder's permissions, which are the user's own in Documents.)
     fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     with os.fdopen(fd, "wb") as raw, zipfile.ZipFile(raw, "w", zipfile.ZIP_DEFLATED) as zf:
-        for item in items:
-            paths = [item] if item.is_file() else [p for p in item.rglob("*") if p.is_file()]
-            for p in paths:
+        for item, name in items:
+            if item.is_file():
+                zf.write(item, name)
+                continue
+            for p in item.rglob("*"):
+                rel = p.relative_to(item)
+                if not p.is_file() or rel.parts[0] == "browsers":  # (a download, not data)
+                    continue
                 if p.name.endswith(("-wal", "-shm")) and p.stat().st_size == 0:
                     continue
                 if p.name in ("first-run.txt", "running.json") or p.name.endswith(".lock"):  # only meaningful while this copy runs
                     continue
-                zf.write(p, p.relative_to(folder))
+                zf.write(p, Path(name) / rel)
     if not IS_WINDOWS:
         os.chmod(dest, 0o600)
     say(f"  Backup saved: {dest}")
-    say("  It contains your encryption key file and API keys; keep it private. Restore by unzipping into a fresh")
-    say("  install: the database and data/server-keys.json must stay together, and you still need your password.")
+    say("  It contains your encryption key file and API keys; keep it private. To restore, unzip its data folder")
+    say("  and choose it at a new install's first run: the database and server-keys.json must stay together,")
+    say("  and you still need your password.")
     return dest
+
+
+def remove_service(folder: Path) -> None:
+    """service.sh's systemd user service, when it runs this app folder: stopped, turned off and removed."""
+    unit = service_unit()
+    try:
+        text = unit.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if not service_is_ours(folder, text):
+        return
+
+    def systemctl(*args: str) -> None:
+        try:
+            subprocess.run(["systemctl", "--user", *args], check=False, capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    systemctl("disable", "--now", SERVICE)
+    unit.unlink(missing_ok=True)
+    systemctl("daemon-reload")
+    say("  Removed the service that started JobHuntPA at boot.")
+
+
+def backup_dir() -> Path:
+    """Where backup() saves its zip: Documents in the home folder, or the home folder itself."""
+    documents = Path.home() / "Documents"
+    return documents if documents.is_dir() else Path.home()
+
+
+def safe_to_delete(data: Path, app: Path) -> bool:
+    """Only a folder that holds JobHuntPA data and nothing else (paths.foreign_entries: the person's own files are
+    never deleted with it, even when JOBHUNT_DATA_DIR or service.sh named a folder of theirs), and never a home folder,
+    a top-level folder, one that holds the app folder or the home folder, or the folder the backup was saved in."""
+    try:
+        data, app, home = data.resolve(), app.resolve(), Path.home().resolve()
+        saved = backup_dir().resolve()
+    except OSError:
+        return False
+    if data in (home, Path(data.anchor)) or data in home.parents or data in app.parents or data == app:
+        return False
+    if len(data.parts) < 3:
+        return False
+    if saved == data or data in saved.parents:  # deleting it would delete the backup just made
+        return False
+    if not ((data / "jobhunt.db").is_file() or (data / "server-keys.json").is_file()):
+        return False
+    paths = load_paths(app)
+    if paths is None or not hasattr(paths, "foreign_entries"):  # no rule to tell JobHuntPA's files apart: keep it
+        return False
+    try:
+        return not paths.foreign_entries(data)
+    except OSError:
+        return False
+
+
+def remove_data_folders(folder: Path, datas: list[Path]) -> None:
+    """The data folders outside the app folder (the one inside goes with it), then the pointer."""
+    for data in datas:
+        try:
+            inside = data.resolve().is_relative_to(folder.resolve())
+        except OSError:
+            inside = False
+        if inside:
+            continue
+        if not safe_to_delete(data, folder):
+            say(f"  Left {data} in place: it holds more than JobHuntPA's data (or your backup). Delete JobHuntPA's "
+                "files in it yourself if you want them gone.")
+            continue
+        shutil.rmtree(data, ignore_errors=True)
+        say(f"  Deleted the data folder {data}")
+    # The pointer is one per user: removed when it names this install's data folder (or a folder that is gone), and
+    # left for another copy of JobHuntPA otherwise.
+    paths = load_paths(folder)
+    pointed = paths.read_pointer() if paths is not None else None
+    if pointed is not None:
+        ours = any(_same(pointed, data) for data in datas)
+        if (ours or not pointed.exists()) and paths.remove_pointer():
+            say("  Removed the note of where the data folder was.")
+
+
+def _same(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
 
 
 def remove_shortcuts(folder: Path) -> None:
     system = platform.system()
     if system == "Linux":
+        remove_service(folder)
         entry = Path.home() / ".local/share/applications/jobhuntpa.desktop"
         if entry.exists() and str(folder) in entry.read_text(encoding="utf-8", errors="replace"):
             entry.unlink()
@@ -185,7 +399,11 @@ def main() -> int:
     if folder is None or not is_app_folder(folder):
         say("Couldn't find a JobHuntPA installation" + (f" in {args.folder}" if args.folder else "") + ".")
         return 1
-    say(f"This removes JobHuntPA from {folder}")
+    appimage = os.environ.get("APPIMAGE", "")
+    datas = data_folders(folder)
+    say(f"This removes JobHuntPA from {appimage or folder}")
+    for data in datas:
+        say(f"and its data folder {data},")
     say("including your jobs, documents, workspaces, settings and API key.")
     if not ask_yes("Continue?", default=True, assume=assume):
         say("Nothing was changed.")
@@ -204,7 +422,7 @@ def main() -> int:
     if args.no_backup or not ask_yes("Save a backup of your jobs, documents and settings first?", True, assume):
         say("  Skipped.")
     else:
-        backup(folder)
+        backup(folder, datas)
 
     say("\n[2/4] Shortcuts")
     remove_shortcuts(folder)
@@ -219,9 +437,17 @@ def main() -> int:
     else:
         say("  Kept.")
 
-    say("\n[4/4] App folder")
-    delete_folder(folder)
-    say("\nJobHuntPA has been uninstalled. Python was left installed.")
+    say("\n[4/4] Data folder and app")
+    remove_data_folders(folder, datas)
+    if appimage:  # the app folder is the AppImage's own, read-only and gone when it stops: the file is what to delete
+        try:
+            Path(appimage).unlink()
+            say(f"  Deleted {appimage}")
+        except OSError:
+            say(f"  Delete {appimage} yourself to finish.")
+    else:
+        delete_folder(folder)
+    say("\nJobHuntPA has been uninstalled." + ("" if appimage else " Python was left installed."))
     return 0
 
 

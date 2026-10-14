@@ -36,6 +36,34 @@
         <ul id="error-summary-list"></ul>
       </div>
 
+      <div id="folder-step" class="auth-step" hidden>
+        <p>First, where JobHuntPA keeps its data on this computer: your jobs, documents, settings and the key that
+          encrypts them. A new or empty folder is best; a folder that already holds JobHuntPA's data is used as it is,
+          and you sign in to it.</p>
+        <form id="folder-form" class="auth-form" novalidate>
+          <div id="folder-token-field" class="auth-field" hidden>
+            <label for="folder-token">Setup code</label>
+            <p id="folder-token-hint" class="hint">JobHuntPA printed a setup link in its window when it started. Open that
+              link, or copy the code after <code>token=</code> and paste it here.</p>
+            <input id="folder-token" name="folder-token" type="text" autocomplete="off" autocapitalize="none"
+                   spellcheck="false" aria-describedby="folder-token-hint" />
+          </div>
+          <div class="auth-field">
+            <label for="data-folder">Data folder</label>
+            <p id="data-folder-hint" class="hint">The whole path of a folder on this computer. JobHuntPA creates it if
+              it isn't there yet. The suggestion is fine for most people; you can't move the folder from inside the app
+              later.</p>
+            <input id="data-folder" name="data-folder" type="text" autocomplete="off" autocapitalize="none"
+                   spellcheck="false" aria-describedby="data-folder-hint data-folder-check" />
+            <p id="data-folder-check" class="hint" role="status"></p>
+          </div>
+          <div class="toolbar-row">
+            <button id="folder-check" class="btn" type="button">Check this folder</button>
+            <button id="folder-submit" class="btn btn-primary auth-submit" type="submit">Use this folder</button>
+          </div>
+        </form>
+      </div>
+
       <div id="setup-step" class="auth-step" hidden>
         <p>JobHuntPA has one account: yours. The jobs, documents, searches and settings already in JobHuntPA move into it.
           Later, Settings &gt; <strong>Download your data</strong> saves a copy of everything: it is your safety net.</p>
@@ -43,7 +71,7 @@
           <div id="token-field" class="auth-field" hidden>
             <label for="token">Setup code</label>
             <p id="token-hint" class="hint">JobHuntPA printed a setup link when it started. Open that link, or copy the
-              code from the file <code>first-run.txt</code> in JobHuntPA's <code>data</code> folder and paste it here.</p>
+              code from the file <code>first-run.txt</code> in JobHuntPA's data folder and paste it here.</p>
             <input id="token" name="token" type="text" autocomplete="off" autocapitalize="none" spellcheck="false"
                    aria-describedby="token-hint" />
           </div>
@@ -116,7 +144,8 @@
       <h2 id="help-title">Trouble signing in?</h2>
       <ul>
         <li>The setup link works only until the first account is made, and only on this server. If it doesn't work,
-          restart JobHuntPA: it shows the link again, and the code is in <code>data/first-run.txt</code>.</li>
+          restart JobHuntPA: it shows the link again, and once the data folder is chosen the code is also in the file
+          <code>first-run.txt</code> in that folder.</li>
         <li>Your password manager can fill in and save both fields, and pasting works too.</li>
         <li>Already set up? <a href="login.html">Sign in</a> instead.</li>
         <li>Forgotten your password? <a href="recover.html">I have a recovery code</a>: it lets you set a new password and keep your data.</li>

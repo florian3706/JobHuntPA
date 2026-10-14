@@ -347,5 +347,45 @@ class UpgradeFromMainTest(unittest.TestCase):
             self.assertIn(kept, self.out["tables"])
 
 
+class LaidOutAsBeforeTest(unittest.TestCase):
+    """Phase H: an install as origin/main laid it out, with the database, key file and uploads in data/ next to the
+    app and .env next to the app, started with today's code and no JOBHUNT_* variable at all (tests/test_data_folder.py
+    has the sandbox: a made-up home, configuration folder and app folder). It isn't asked where the data lives, nothing
+    moves, it signs in, its .env is read and written where it is, and no pointer is written; a second start is the
+    same."""
+
+    def test_used_where_it_is_and_nobody_is_asked(self):
+        from tests.test_data_folder import Sandbox, copy_fixture
+
+        box = Sandbox()
+        self.addCleanup(box.remove)
+        copy_fixture(box.app / "data", env_name="")
+        shutil.copy(FIXTURE / "env.txt", box.app / ".env")
+        code = f'''
+            out["state"] = c.get("/api/auth/state").json()
+            r = c.post("/api/auth/login", json={{"name": {OWNER[0]!r}, "password": {OWNER[1]!r}}})
+            out["login"] = r.status_code
+            c.headers["X-CSRF-Token"] = r.json()["csrf"]
+            out["model"] = c.get("/api/settings/llm").json()["model"]
+            out["jobs"] = len(c.get("/api/jobs").json())
+            out["saved"] = c.put("/api/settings/llm", json={{"model": "another-model"}}).status_code
+        '''
+        first = box.run(code, base="https://jobs.example.invalid")
+        again = box.run(code.replace("another-model", "a-third-model"), base="https://jobs.example.invalid")
+        for got in (first, again):
+            self.assertFalse(got["state"]["folder_required"])
+            self.assertFalse(got["state"]["setup_required"])
+            self.assertEqual(got["login"], 200)
+            self.assertGreater(got["jobs"], 0)
+            self.assertEqual(got["saved"], 200)
+        self.assertEqual(first["model"], "claude-fixture-model")  # read from the .env next to the app
+        self.assertEqual(again["model"], "another-model")
+        self.assertIn("LLM_MODEL=a-third-model", (box.app / ".env").read_text())  # written where it is
+        self.assertFalse((box.app / "data" / ".env").exists())
+        self.assertTrue((box.app / "data" / "server-keys.json").is_file())  # the key file stays with the database
+        self.assertFalse(box.config.exists(), "no pointer: nothing moved, nothing asked")
+        self.assertFalse((box.home / ".local" / "share" / "JobHuntPA").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -807,6 +807,9 @@ a.btn { text-decoration: none; display: inline-block; }
   border-radius: 8px; padding: 8px 12px; font-size: 13.5px;
 }
 .callout[hidden], .llm-form .hint[hidden] { display: none; }
+.browser-offer { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.browser-offer h4 { margin: 0; font-size: 15px; }
+.browser-offer p { margin: 0; }
 .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .key-state { font-size: 13.5px; min-height: 20px; }
 .key-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -963,6 +966,8 @@ summary { cursor: pointer; min-height: 24px; }
 .error-summary h2 { font-size: 16px; color: var(--danger); margin: 0 0 6px; }
 .error-summary ul { margin: 0; padding-left: 20px; }
 .error-summary a { color: var(--danger); font-weight: 600; text-decoration: underline; display: inline-flex; align-items: center; min-height: 28px; }
+/* A long folder path in a message wraps instead of widening the page at 320 px. */
+.error-summary, .field-error, .auth-step { overflow-wrap: anywhere; }
 .auth-help { padding: 0 4px; font-size: 14px; }
 .auth-help h2 { margin: 0 0 6px; font-size: 16px; }
 .auth-help ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
@@ -992,7 +997,8 @@ summary { cursor: pointer; min-height: 24px; }
 .wiz-fieldset > legend + * { clear: both; }
 .wiz-fieldset > legend h2 { margin: 0; font-size: 20px; }
 .wiz-intro { margin: 0; }
-.wiz-form input[type="text"], .wiz-form input[type="number"], .wiz-form select { width: 100%; font-size: 16px; min-height: 44px; }
+.wiz-form input[type="text"], .wiz-form input[type="number"], .wiz-form input[type="password"], .wiz-form select { width: 100%; font-size: 16px; min-height: 44px; }
+.wiz-form .form-group[hidden] { display: none; }
 .wiz-form .tag-input input { min-height: 36px; }
 .wiz-form .form-group > label, .wiz-group > legend { font-size: 15px; }
 .wiz-group { gap: 4px 18px; }

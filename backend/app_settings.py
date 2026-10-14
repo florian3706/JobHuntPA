@@ -6,10 +6,12 @@ address other devices use with the extra host names allowed (open-source spec §
                                    rule that moving to another server needs the key typed again
 
     GET  /api/settings/address     {public_base_url, allowed_hosts: [names]}
-    PUT  /api/settings/address     {"public_base_url"?, "allowed_hosts"?: [names]}: "" or [] clears
+    PUT  /api/settings/address     {"public_base_url"?, "allowed_hosts"?: [names]}: "" or [] clears (recent sign-in)
 
 **Who may call:** signed in, for reading and writing (there are no roles: whoever is signed in may change every
-setting, spec §1.2). Each change is logged by the names of the settings it changed, never a value.
+setting, spec §1.2); saving the address needs a recent sign-in as well (the password entered in the last 15 minutes,
+like replacing the server key), because it widens which origins and host names the app accepts. Each change is
+logged by the names of the settings it changed, never a value.
 
 A saved value takes effect at once (os.environ is updated; backend.scorer.get_config(),
 backend.public_url and backend.hosts read it on every call) and is written to .env (backend.config.ENV_PATH) so it
@@ -46,7 +48,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend import config, hosts, llm_providers, public_url, scorer
-from backend.sessions import current_user
+from backend.sessions import AuthUser, current_user, require_recent_auth
 
 log = logging.getLogger(__name__)
 
@@ -371,11 +373,13 @@ def get_address():
 
 
 @router.put("/address")
-def put_address(body: AddressIn):
+def put_address(body: AddressIn, user: AuthUser = Depends(current_user)):
     """Save the public address (PUBLIC_BASE_URL) and/or the extra host names (JOBHUNT_ALLOWED_HOSTS). ``""`` or
     ``[]`` clears; an omitted (or null) one is unchanged. The address marks the sign-in cookie Secure when it is https,
     is accepted as an Origin and lets its host through the Host allowlist; the names are let through as well. Changing
-    the address may sign this browser out (the cookie's name follows https)."""
+    the address may sign this browser out (the cookie's name follows https). Recent sign-in: it widens the Origin and
+    Host checks (backend/sessions.py, backend/hosts.py), so a stolen session alone can't add an address."""
+    require_recent_auth(user)
     updates: dict[str, str] = {}
     if body.public_base_url is not None:
         value = body.public_base_url.strip().rstrip("/")

@@ -129,7 +129,7 @@ class NoSecondStepTest(AccountTestCase):
         self.assertNotIn("mfa_required", r.json())
         self.assertEqual(c.get("/api/auth/me").status_code, 200)
         state = self.anonymous().get("/api/auth/state").json()
-        self.assertEqual(set(state), {"setup_required", "signed_in"})
+        self.assertEqual(set(state), {"setup_required", "folder_required", "signed_in"})
         self.assertNotIn("mfa_enabled", c.get("/api/auth/security").json())
 
     def test_the_two_step_routes_are_gone_signed_in_or_not(self):

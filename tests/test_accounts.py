@@ -155,7 +155,7 @@ class FirstRunTest(unittest.TestCase):
 
     def test_everything_but_setup_waits_for_the_first_account(self):
         out = self.out
-        self.assertEqual(out["state"], {"setup_required": True, "signed_in": False})
+        self.assertEqual(out["state"], {"setup_required": True, "folder_required": False, "signed_in": False})
         self.assertEqual(out["health"], 200)
         for path, (status, code) in out["before"].items():
             self.assertEqual((status, code), (401, "setup_required"), path)
@@ -285,7 +285,7 @@ class BootstrapAndRestartTest(unittest.TestCase):
         # Without the key file that belongs to this database, start-up stops and says what to do.
         lost = scenario(NO_KEY_FILE, folder=boot["_folder"])
         self.assertIn("KeyFileMissing", lost["error"])
-        self.assertIn("Restore data/server-keys.json from your backup", lost["error"])
+        self.assertIn("Restore server-keys.json (in the data folder) from your backup", lost["error"])
 
     def test_admin_variables_in_dotenv_are_ignored(self):
         folder = scratch_folder()
@@ -326,7 +326,7 @@ class LoginTest(SignInTestCase):
         alice = helpers.make_user(f"Alice Example {os.urandom(3).hex()}", password=PASSWORD)
         c = self.anonymous()
         state = c.get("/api/auth/state").json()
-        self.assertEqual(state, {"setup_required": False, "signed_in": False})  # nothing about signing up
+        self.assertEqual(state, {"setup_required": False, "folder_required": False, "signed_in": False})  # nothing about signing up
         r = c.post("/api/auth/login", json={"name": f"  {alice.email.upper()} ", "password": PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["user"], {"id": alice.id})

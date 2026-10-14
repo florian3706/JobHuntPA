@@ -6,19 +6,22 @@ Run on the computer JobHuntPA is installed on, with the app stopped::
     Start menu > Reset JobHuntPA   (Windows: JobHuntPA-Reset.exe)
     python -m backend.reset [--confirm RESET]
 
-It says what will be lost, asks for the word RESET to be typed (``--confirm RESET`` stands for typing it, for scripts;
-without a terminal and without it, nothing is done), and refuses while the app is running (the app holds the key
-file's lock for as long as it runs, and ``data/running.json`` names the launcher's process: backend/key_rotation.py
-``refuse_while_running``). Then, in **one transaction**, it deletes every account and everything only an account
+It says what will be lost, asks for the word RESET to be typed, exactly, in capitals (``--confirm RESET`` stands for
+typing it, for scripts; without a terminal and without it, nothing is done), and refuses while the app is running (the
+app holds the key file's lock for as long as it runs, and ``running.json`` in the data folder names the launcher's
+process: backend/key_rotation.py ``refuse_while_running``). Then, in **one transaction**, it deletes every account and everything only an account
 could read: the users with their keys, recovery codes, sessions and browser-extension keys, every workspace and what
 is in it (jobs, scores, cover letters, documents, chats, search setup, pins, schedules, runs) and the page cache
 (sealed); usage counts are kept without saying whose they were. After the commit the
 write-ahead log is scrubbed (``db.scrub_wal``), then the files go: the uploads (sealed), the plaintext copies left
-from before encryption (overwritten first), the server key file (its KEK, pepper and signing key) and the first-run
-token. The next start is a first run, with a new key file.
+from before encryption (overwritten first), the server key file (its KEK, pepper and signing key), the first-run
+token, and the temporary files a crash may have left of any of these. The next start is a first run, with a new key
+file, in the same data folder (the reset never asks where the data lives again).
 
-**Kept:** the settings (``.env``: the AI provider, model and key, the public address and host names), the reasoning levels, the shared pool of public job ads with their ghost-job signs, the company research, the
-map lookups and ``data/sources.json``.
+**Kept:** the settings (``.env``: the AI provider, model and key, the public address and host names), the reasoning
+levels, the shared pool of public job ads with their ghost-job signs, the company research, the map lookups, the
+browser for JavaScript-only careers pages (``browsers/``, a download, not data), the data folder's pointer and an old
+``sources.json``.
 
 **No endpoint does any of this**: it is a command run on the computer itself, and nothing the web server serves can
 start it. The uninstaller removes the Start-menu entry that the Windows setup adds for it.
@@ -34,7 +37,7 @@ from typing import Callable, Optional
 from sqlalchemy import inspect, text
 
 from backend import keys
-from backend.db import DB_PATH, UPLOAD_DIR, engine, scrub_wal
+from backend.db import DB_PATH, FOLDER_CHOSEN, UPLOAD_DIR, engine, scrub_wal
 
 log = logging.getLogger(__name__)
 
@@ -122,9 +125,26 @@ def wipe() -> dict[str, int]:
         except OSError as exc:
             log.warning("Could not delete an upload: %s", exc.__class__.__name__)
     key_file = keys.key_file_path()
-    for path in (key_file, key_file.with_name(key_file.name + ".new"), Path(DB_PATH).parent / FIRST_RUN_FILE):
-        path.unlink(missing_ok=True)
+    for path in (key_file, key_file.with_name(key_file.name + ".new"), Path(DB_PATH).parent / FIRST_RUN_FILE,
+                 *_crash_left_files(key_file)):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("Could not delete a file the reset removes: %s", exc.__class__.__name__)
     return {**found, "files": files, "leftovers": leftovers}
+
+
+def _crash_left_files(key_file: Path) -> list[Path]:
+    """Temporary files a crash can leave behind (crypto.write_private writes ``.<name>-XXXX.tmp`` beside the file it
+    replaces, then renames it): sealed uploads half-written in the uploads folder, and copies of the key file (its KEK
+    and pepper, in plaintext) or of the first-run token beside them."""
+    found: list[Path] = []
+    if UPLOAD_DIR.is_dir():
+        found += [p for p in UPLOAD_DIR.glob(".*.tmp") if p.is_file()]
+    for name in (key_file.name, key_file.name + ".new", FIRST_RUN_FILE):
+        found += [p for p in key_file.parent.glob(f".{name}-*.tmp") if p.is_file()]
+        found += [p for p in Path(DB_PATH).parent.glob(f".{name}-*.tmp") if p.is_file()]
+    return sorted(set(found))
 
 
 def run(*, confirm: Optional[str] = None, ask: Optional[Callable[[str], str]] = None, interactive: Optional[bool] = None,
@@ -145,6 +165,9 @@ def run(*, confirm: Optional[str] = None, ask: Optional[Callable[[str], str]] = 
 def _check_and_reset(confirm: Optional[str], ask: Callable[[str], str], interactive: bool, out) -> None:
     from backend import key_rotation
 
+    if not FOLDER_CHOSEN:
+        raise ResetRefused("JobHuntPA's data folder isn't chosen yet (its first run hasn't been done), so there is "
+                           "nothing to reset. Nothing was changed.")
     try:
         key_rotation.refuse_while_running()  # also takes the key file's lock, so the app can't start meanwhile
     except keys.KeyFileError as exc:
@@ -159,7 +182,7 @@ def _check_and_reset(confirm: Optional[str], ask: Callable[[str], str], interact
             confirm = ask(f"\nType {WORD} to delete all of this, or press Enter to stop: ")
         except EOFError:
             confirm = ""
-    if (confirm or "").strip().upper() != WORD:
+    if (confirm or "").strip() != WORD:  # exactly the word, in capitals: it is typed on purpose
         raise ResetRefused("Nothing was changed.")
     removed = wipe()
     log.info("Reset: %d account(s), %d workspace(s), %d upload(s) and %d leftover file(s) removed",

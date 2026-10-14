@@ -206,17 +206,20 @@ async function initFirstRun() {
   readToken();
   const state = await authCall('/api/auth/state');
   if (state.status !== 200) { status(''); showErrors(answerProblem(state, "JobHuntPA isn't answering. Check that it's running, then reload this page.")); return; }
-  if (!state.data.setup_required) {
-    if (!state.data.signed_in) { location.replace('login.html'); return; }
-    // Only the codes of an account that hasn't confirmed saving them are left to show.
-    const me = await authCall('/api/auth/me');
-    if (me.status !== 200 || !me.data.recovery_codes_pending) { forgetRecoveryCodes(); location.replace('./'); return; }
-    const kept = stashedRecoveryCodes(); // (made or shown in this tab)
-    if (kept) { showCodes(kept, me.data.csrf); return; }
-    await askForCodes(me.data.csrf);
+  if (state.data.folder_required) { await showFolderStep(); return; }
+  showAccountStep(state.data);
+}
+
+function showAccountStep(stateData) {
+  if (!stateData.setup_required) {
+    if (!stateData.signed_in) { location.replace('login.html'); return; }
+    showCodesAgain();
     return;
   }
   status('');
+  document.title = 'Create your account · JobHuntPA';
+  setText($('#page-title'), 'Create your account');
+  $('#folder-step').hidden = true;
   $('#setup-step').hidden = false;
   $('#token-field').hidden = Boolean(setupToken);
   (setupToken ? $('#name') : $('#token')).focus();
@@ -226,6 +229,129 @@ async function initFirstRun() {
     readToken();
     if (setupToken) $('#token-field').hidden = true;
   });
+}
+
+/* Only the codes of an account that hasn't confirmed saving them are left to show. */
+async function showCodesAgain() {
+  const me = await authCall('/api/auth/me');
+  if (me.status !== 200 || !me.data.recovery_codes_pending) { forgetRecoveryCodes(); location.replace('./'); return; }
+  const kept = stashedRecoveryCodes(); // (made or shown in this tab)
+  if (kept) { showCodes(kept, me.data.csrf); return; }
+  await askForCodes(me.data.csrf);
+}
+
+/* ---------- step 1: where the data lives (backend/data_folder.py) ----------
+   Only while no data folder is chosen. The setup code comes with the link the launcher opened; the server writes the
+   folder's path only with it. Choosing restarts JobHuntPA on that folder; the page waits for it, then goes on to the
+   account (a new folder) or to signing in (a folder that already holds JobHuntPA's data). */
+const FOLDER_KIND = {
+  existing: 'This folder already holds JobHuntPA data. It will be used as it is, and you sign in with its account.',
+  empty: 'This folder is empty: JobHuntPA will keep its data here.',
+  new: "This folder isn't there yet: JobHuntPA will create it.",
+};
+
+function folderToken() { return setupToken || $('#folder-token').value.trim(); }
+
+async function checkFolder(path) {
+  const body = { token: folderToken() };
+  if (path !== undefined) body.path = path;
+  return authCall('/api/auth/data-folder/check', { method: 'POST', body });
+}
+
+function sayFolder(text) { setText($('#data-folder-check'), text); }
+
+async function showFolderStep() {
+  status('');
+  document.title = 'Where your data lives · JobHuntPA';
+  setText($('#page-title'), 'Where your data lives');
+  $('#folder-step').hidden = false;
+  $('#folder-token-field').hidden = Boolean(setupToken);
+  $('#folder-form').addEventListener('submit', submitFolder);
+  $('#folder-check').addEventListener('click', onCheckFolder);
+  window.addEventListener('hashchange', () => {
+    readToken();
+    if (setupToken) { $('#folder-token-field').hidden = true; offerDefault(); }
+  });
+  if (setupToken) await offerDefault();
+  (setupToken ? $('#data-folder') : $('#folder-token')).focus();
+}
+
+async function offerDefault() {
+  const res = await checkFolder();
+  if (res.status !== 200) {
+    if (res.data.code === 'bad_token') { setupToken = ''; $('#folder-token-field').hidden = false; }
+    else if (res.data.code === 'folder_chosen') { location.reload(); return; }
+    return;
+  }
+  if (!$('#data-folder').value) $('#data-folder').value = res.data.default;
+  if (res.data.previous) {
+    sayFolder(`JobHuntPA used ${res.data.previous} before, and it isn't there any more. If it is on a drive that isn't connected, connect it and reload this page; or choose another folder.`);
+  } else if (res.data.kind) {
+    sayFolder(FOLDER_KIND[res.data.kind]);
+  }
+}
+
+function folderProblems() {
+  const problems = [];
+  if (!folderToken()) problems.push({ field: 'folder-token', message: 'Paste the setup code from the link JobHuntPA printed when it started.' });
+  if (!$('#data-folder').value.trim()) problems.push({ field: 'data-folder', message: 'Enter the folder where JobHuntPA should keep its data.' });
+  return problems;
+}
+
+async function onCheckFolder() {
+  clearErrors();
+  const problems = folderProblems();
+  if (problems.length) { showErrors(problems); return; }
+  const btn = $('#folder-check');
+  setBusy(btn, true);
+  const res = await checkFolder($('#data-folder').value.trim());
+  setBusy(btn, false);
+  if (res.status !== 200) { folderRefused(res); return; }
+  if (res.data.problem) { showErrors([{ field: 'data-folder', message: res.data.problem }]); sayFolder(''); return; }
+  sayFolder(FOLDER_KIND[res.data.kind]);
+}
+
+function folderRefused(res) {
+  if (res.data.code === 'bad_token') { setupToken = ''; $('#folder-token-field').hidden = false; }
+  if (res.data.code === 'folder_chosen') { location.reload(); return; }
+  const errors = answerProblem(res, `That didn't work (error ${res.status}). Try again.`);
+  if (errors[0].field === 'token') errors[0].field = 'folder-token';
+  if (errors[0].field === 'path') errors[0].field = 'data-folder';
+  showErrors(errors);
+}
+
+async function submitFolder(e) {
+  e.preventDefault();
+  clearErrors();
+  const problems = folderProblems();
+  if (problems.length) { showErrors(problems); return; }
+  const btn = $('#folder-submit');
+  setBusy(btn, true);
+  status('Setting up the data folder…');
+  const res = await authCall('/api/auth/data-folder', { method: 'POST', body: { token: folderToken(), path: $('#data-folder').value.trim() } });
+  if (res.status !== 200) { setBusy(btn, false); status(''); folderRefused(res); return; }
+  if (!setupToken) setupToken = folderToken(); // the same code creates the account
+  status('Starting JobHuntPA on that folder… This takes a few seconds.');
+  const state = await waitForRestart();
+  setBusy(btn, false);
+  if (!state) {
+    status('');
+    showErrors([{ field: null, message: "JobHuntPA didn't come back after choosing the folder. If you started it yourself (not with its start script or shortcut), start it again, then reload this page." }]);
+    return;
+  }
+  if (!state.setup_required) { location.replace('login.html'); return; }
+  showAccountStep(state);
+  announce('The data folder is ready. Now create your account.');
+}
+
+/* The app exits and starts again on the chosen folder: the state answers again once it has. */
+async function waitForRestart() {
+  for (let i = 0; i < 90; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const res = await authCall('/api/auth/state');
+    if (res.status === 200 && !res.data.folder_required) return res.data;
+  }
+  return null;
 }
 
 /* Each recovery code opens the data key and can set a new password, so a session alone doesn't get to read them: the

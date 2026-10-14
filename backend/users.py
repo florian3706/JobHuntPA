@@ -27,7 +27,9 @@ was made with is its sign-in name; ``change_name`` replaces it.
     name) and JOBHUNT_ADMIN_PASSWORD, the account is created at once (CI and headless servers);
   * otherwise a one-time token is written to ``first-run.txt`` beside the database (owner-only) and logged as
     ``/first-run.html#token=…``; installer/launch.py opens that address. The token is in the fragment, so it never
-    reaches a server log.
+    reaches a server log. The launcher makes the token itself and hands it over (JOBHUNT_FIRST_RUN_TOKEN), so the
+    same one also works for the step before, choosing the data folder (backend/data_folder.py), when it is kept in
+    memory only.
 ``create_account`` then makes the account and claims every workspace that has no owner (all the data of an install
 from before accounts), in one transaction, and records in ``app_settings["encryption_migration"]`` that this account's
 key encrypts that data (backend.migrate_encryption: at once for the first run and the environment account, otherwise
@@ -98,6 +100,9 @@ CODE_CHARS = 16
 ADMIN_EMAIL_ENV = "JOBHUNT_ADMIN_EMAIL"
 ADMIN_PASSWORD_ENV = "JOBHUNT_ADMIN_PASSWORD"
 FIRST_RUN_FILE = "first-run.txt"
+# The first-run token installer/launch.py makes and hands to the app (process environment only, never .env).
+FIRST_RUN_TOKEN_ENV = "JOBHUNT_FIRST_RUN_TOKEN"
+TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{32,100}")
 DEFAULT_WORKSPACE = "My job search"
 
 _CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
@@ -274,7 +279,7 @@ def known_to_exist() -> bool:
 
 
 def first_run_path() -> Path:
-    """``first-run.txt`` beside the database (data/first-run.txt in an install)."""
+    """``first-run.txt`` beside the database (in the data folder)."""
     return Path(DB_PATH).parent / FIRST_RUN_FILE
 
 
@@ -285,17 +290,39 @@ def check_first_run_token(given: Any) -> bool:
     return hmac.compare_digest(token.encode("ascii"), given.strip().encode("utf-8", "replace"))
 
 
+def _launcher_token() -> Optional[str]:
+    """The token installer/launch.py made and opened the page with (FIRST_RUN_TOKEN_ENV, process environment only)."""
+    token = config.process_env(FIRST_RUN_TOKEN_ENV).strip()
+    return token if TOKEN_RE.fullmatch(token) else None
+
+
+def folder_step_token() -> None:
+    """Before the data folder is chosen (backend/data_folder.py): the launcher's token, or a new one, in memory only
+    (nothing may be written before the choice), shown in this server's own log as the first-run address."""
+    global _first_run_token
+    _first_run_token = _launcher_token() or secrets.token_urlsafe(32)
+    log.warning("First run: choose where JobHuntPA keeps its data, then create your account. Open "
+                "/first-run.html#token=%s on this server.", _first_run_token)
+
+
 def _write_first_run_token() -> None:
-    """Reuse the token in first-run.txt (launch.py may already have opened it), or write a new one."""
+    """The launcher's token (the page it opened carries on with it, also after the folder step's restart), else the
+    one in first-run.txt (launch.py may already have opened it), else a new one; kept in first-run.txt."""
     global _first_run_token
     path = first_run_path()
-    token = None
+    token = _launcher_token()
+    if token is None:
+        try:
+            token = path.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            pass
     try:
-        token = path.read_text(encoding="ascii").strip()
+        on_file = path.read_text(encoding="ascii").strip()
     except (OSError, UnicodeError):
-        pass
-    if not token or not re.fullmatch(r"[A-Za-z0-9_-]{32,100}", token):
+        on_file = None
+    if not token or not TOKEN_RE.fullmatch(token):
         token = secrets.token_urlsafe(32)
+    if token != on_file:
         crypto.write_private(path, (token + "\n").encode("ascii"))
     _first_run_token = token
     # The operator needs this to create the first account; it is only ever written to this server's own log.

@@ -103,7 +103,7 @@ def _process_alive(pid: int) -> bool:
 def refuse_while_running() -> None:
     """KeyFileError when the app is running: these commands replace the key file, and a running app would carry on
     from its own copy of it. The app holds a lock on the key file while it runs (``keys.hold_key_file``, which works
-    however it was started); the launcher's ``data/running.json`` is a second check. Where this returns, the lock is
+    however it was started); the launcher's ``running.json`` in the data folder is a second check. Where this returns, the lock is
     held by this process, so an app can't start under the command either."""
     keys.hold_key_file()
     try:
@@ -112,7 +112,7 @@ def refuse_while_running() -> None:
         return
     if isinstance(pid, int) and pid > 0 and pid != os.getpid() and _process_alive(pid):
         raise keys.KeyFileError("JobHuntPA is running. Stop it first, then run this again. (If it isn't running, "
-                                "delete data/running.json.)")
+                                "delete running.json in its data folder.)")
 
 
 def server_keys_for_cli() -> keys.ServerKeys:

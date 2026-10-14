@@ -27,7 +27,8 @@ signed in". Lifetimes: 24 hours idle and 7 days in all, or 30 days idle and 90 i
      refused (403 ``bad_origin``). A request with neither isn't from a browser page, so no other site can have
      sent it; the CSRF token below still guards a session.
   2. Before the account exists, everything but /api/health, /api/auth/state and /api/auth/first-run answers 401
-     ``setup_required``.
+     ``setup_required``; before the first run has chosen the data folder, everything but /api/health, the state and
+     the folder step (``FOLDER_PATHS``, backend/data_folder.py: JSON only, rate-limited) does, and no session is read.
   3. The sign-in endpoints (PRE_SESSION) take JSON only (415), which a form on another site can't send, and are
      rate-limited per client address (429 with Retry-After).
   4. The cookie's session is loaded, checked (state, expiry, account active) and its DEK unwrapped. Without one,
@@ -77,6 +78,7 @@ from starlette.requests import cookie_parser
 from starlette.responses import JSONResponse, Response
 
 from backend import crypto, public_url, ratelimit, users
+from backend import db as database
 from backend.db import AuthSession, SessionLocal, User, utcnow
 
 log = logging.getLogger(__name__)
@@ -93,10 +95,14 @@ FIRST_RUN = "/api/auth/first-run"
 LOGIN = "/api/auth/login"
 LOGOUT = "/api/auth/logout"
 RECOVER = "/api/auth/recover"       # a forgotten password, reset with a recovery code (the data is kept)
+# The first run's step 1, where the data lives (backend/data_folder.py): open, with the first-run token, and the only
+# endpoints (with health and the state) answered while no data folder is chosen; afterwards they answer 409.
+FOLDER_PATHS = frozenset({"/api/auth/data-folder/check", "/api/auth/data-folder"})
+FOLDER_STEP_PATHS = frozenset({HEALTH, STATE}) | FOLDER_PATHS
 # Answered without a session.
-OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, RECOVER, LOGOUT})
+OPEN_PATHS = frozenset({HEALTH, STATE, FIRST_RUN, LOGIN, RECOVER, LOGOUT}) | FOLDER_PATHS
 # Answered before the account exists.
-SETUP_PATHS = frozenset({HEALTH, STATE, FIRST_RUN})
+SETUP_PATHS = frozenset({HEALTH, STATE, FIRST_RUN}) | FOLDER_PATHS
 # Sign-in endpoints: JSON only and rate-limited per client address; no CSRF token (there may be no session yet).
 PRE_SESSION = frozenset({FIRST_RUN, LOGIN, RECOVER})
 UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -496,6 +502,8 @@ class AuthMiddleware:
             return await self._check_key(scope, path, token)
         if unsafe and not same_site(scope):
             return _deny(403, "bad_origin", "This request came from another website, so it was refused.")
+        if not database.FOLDER_CHOSEN:
+            return _before_folder(scope, path, unsafe, headers)
         if not (users.known_to_exist() or await run_in_threadpool(users.users_exist)) and path not in SETUP_PATHS:
             return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create your account first.")
         if path in PRE_SESSION and unsafe:
@@ -530,7 +538,7 @@ class AuthMiddleware:
         never approves. Keys that don't work are counted per client address (``ratelimit.BAD_KEY``): past its limit
         one answers 429, but a key that works is let in all the same (one address can be many people's: a shared
         network, a proxy), and guessing a key is hopeless (32 random bytes)."""
-        if not (users.known_to_exist() or await run_in_threadpool(users.users_exist)):
+        if not database.FOLDER_CHOSEN or not (users.known_to_exist() or await run_in_threadpool(users.users_exist)):
             return _deny(401, "setup_required", "JobHuntPA isn't set up yet: create your account first.")
         secret = key_secret(token)
         found = await run_in_threadpool(load_key, secret) if secret else None
@@ -548,6 +556,22 @@ class AuthMiddleware:
             if blocked is not None:
                 return blocked
         return found
+
+
+def _before_folder(scope, path: str, unsafe: bool, headers: Headers) -> Optional[JSONResponse]:
+    """Step 2a, before the first run has chosen the data folder (backend/data_folder.py): only health, the state and
+    the folder step answer, without a session (the database is in memory and is never asked). The folder step is JSON
+    only and rate-limited per client address, like the sign-in endpoints."""
+    if path not in FOLDER_STEP_PATHS:
+        return _deny(401, "setup_required", "JobHuntPA isn't set up yet: choose where its data lives first.")
+    if path in FOLDER_PATHS and unsafe:
+        if headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+            return _deny(415, "json_required", "Send this as JSON.")
+        wait = ratelimit.FOLDER.hit(client_address(scope))
+        if wait is not None:
+            return _deny(429, "rate_limited", f"Too many tries from this network. Try again in {ratelimit.wait_text(wait)}.",
+                         {"Retry-After": ratelimit.retry_after(wait)})
+    return None
 
 
 def encryption_open(path: str) -> bool:

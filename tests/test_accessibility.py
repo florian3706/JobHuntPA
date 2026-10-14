@@ -1521,5 +1521,58 @@ class TasksTrayTest(unittest.TestCase):
         self.assertNotRegex(block, r"#[0-9a-fA-F]{3,8}\b", "theme tokens only")
 
 
+class FirstRunStepsTest(unittest.TestCase):
+    """The first run's new steps (open-source spec §1.5): where the data lives (first-run.html), the AI provider
+    (the walkthrough's first step) and the offer of the browser for JavaScript pages."""
+
+    def node(self, page, ident):
+        return next(n for n in page.nodes if n["attrs"].get("id") == ident)
+
+    def test_the_folder_field_is_labelled_with_its_hint_and_its_check_is_announced(self):
+        page = parse("first-run.html")
+        field = self.node(page, "data-folder")
+        self.assertEqual(field["attrs"].get("type"), "text")
+        self.assertIn("data-folder-hint", field["attrs"].get("aria-describedby", ""))
+        self.assertIn("data-folder-check", field["attrs"].get("aria-describedby", ""))
+        self.assertTrue(any(n["tag"] == "label" and n["attrs"].get("for") == "data-folder" for n in page.nodes))
+        self.assertEqual(self.node(page, "data-folder-check")["attrs"].get("role"), "status")  # 4.1.3
+        token = self.node(page, "folder-token")
+        self.assertEqual(token["attrs"].get("aria-describedby"), "folder-token-hint")
+        for button in ("folder-check", "folder-submit"):
+            self.assertIn(self.node(page, button)["attrs"].get("type"), ("button", "submit"))
+
+    def test_the_folder_step_says_problems_in_the_error_summary_and_moves_on_by_itself(self):
+        js = (FRONTEND / "auth.js").read_text(encoding="utf-8")
+        self.assertIn("showErrors([{ field: 'data-folder'", js)  # under the field and in the summary (3.3.1)
+        self.assertIn("announce('The data folder is ready. Now create your account.')", js)
+        self.assertIn("waitForRestart", js)
+
+    def test_the_ai_step_labels_every_field_and_can_be_skipped(self):
+        js = (FRONTEND / "welcome.js").read_text(encoding="utf-8")
+        start = js.index("  ai: {")
+        step = js[start:js.index("  theme: {", start)]
+        for ident, hint in (("wz-ai-provider", "wz-ai-note"), ("wz-ai-url", "wz-ai-url-hint"),
+                            ("wz-ai-model", "wz-ai-model-hint"), ("wz-ai-key", "wz-ai-key-hint")):
+            self.assertIn(f'<label for="{ident}">', step, ident)
+            self.assertIn(f'id="{ident}"', step)
+            self.assertIn(f'aria-describedby="{hint}"', step, ident)
+            self.assertIn(f'id="{hint}"', step, ident)
+        self.assertIn("skippable: true", step)
+        self.assertIn('type="password"', step)
+        self.assertIn('rel="noopener noreferrer"', js)
+
+    def test_the_browser_offer_is_a_headed_region_with_real_buttons(self):
+        page = parse("index.html")
+        offer = self.node(page, "browser-offer")
+        self.assertEqual(offer["tag"], "section")
+        self.assertEqual(offer["attrs"].get("aria-labelledby"), "browser-offer-title")
+        for button in ("browser-offer-yes", "browser-offer-no", "browser-download"):
+            self.assertEqual(self.node(page, button)["attrs"].get("type"), "button")
+        self.assertEqual(self.node(page, "browser-offer-status")["attrs"].get("role"), "status")
+        self.assertEqual(self.node(page, "browser-state")["attrs"].get("role"), "status")
+        js = (FRONTEND / "browser.js").read_text(encoding="utf-8")
+        self.assertIn("$('#source-url')?.focus()", js, "Not now hides the offer: focus goes back to the form (2.4.3)")
+
+
 if __name__ == "__main__":
     unittest.main()

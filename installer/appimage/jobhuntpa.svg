@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>JobHuntPA</title>
+  <rect width="256" height="256" rx="48" fill="#1f2a44"/>
+  <circle cx="128" cy="128" r="84" fill="none" stroke="#7cc4ff" stroke-width="20"/>
+  <circle cx="128" cy="128" r="30" fill="#7cc4ff"/>
+</svg>

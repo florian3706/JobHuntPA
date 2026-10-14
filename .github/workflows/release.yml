@@ -1,5 +1,5 @@
-# Push a tag like v1.2.0 (matching the VERSION file) to publish
-# JobHuntPA-Setup.exe, JobHuntPA.exe, JobHuntPA-Uninstall.exe and JobHuntPA-Reset.exe on the GitHub Releases page.
+# Push a tag like v1.2.0 (matching the VERSION file) to publish JobHuntPA-Setup.exe, JobHuntPA.exe,
+# JobHuntPA-Uninstall.exe, JobHuntPA-Reset.exe and the Linux AppImage on the GitHub Releases page.
 name: Release
 
 on:
@@ -37,4 +37,24 @@ jobs:
             dist/JobHuntPA-Reset.exe
           body: |
             **Windows:** download **JobHuntPA-Setup.exe** and run it (Windows may warn about an unknown publisher: click *More info*, then *Run anyway*). It installs everything and adds a JobHuntPA shortcut. `JobHuntPA.exe` (app launcher), `JobHuntPA-Uninstall.exe` and `JobHuntPA-Reset.exe` (starts over when the password and every recovery code are lost) are installed by setup; to remove JobHuntPA use Settings > Apps or the Start-menu *Uninstall JobHuntPA* shortcut.
-            **Linux / macOS:** download the source code zip below and follow the README.
+            **Linux:** download **JobHuntPA-<version>-x86_64.AppImage**, make it executable (`chmod +x`, or the file's Properties) and run it: it opens in your browser. `--service install` starts it at boot, `--reset` is the reset tool and `--uninstall` removes it (see the README).
+            **macOS:** download the source code zip below and follow the README.
+
+  appimage:
+    # The oldest supported Ubuntu runner: the AppImage then runs on that and every newer Linux.
+    runs-on: ubuntu-22.04
+    # After windows-exe, which makes the release and its text: two jobs publishing at once can race and make two
+    # releases. This one adds the AppImage to that release.
+    needs: windows-exe
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches VERSION
+        run: test "v$(cat VERSION)" = "${GITHUB_REF_NAME}" || { echo "Tag ${GITHUB_REF_NAME} != VERSION $(cat VERSION)"; exit 1; }
+      - name: Build
+        run: |
+          sudo apt-get update && sudo apt-get install -y desktop-file-utils
+          bash installer/appimage.sh
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/JobHuntPA-*-x86_64.AppImage

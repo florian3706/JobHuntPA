@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import shutil
 import stat
 import sys
 import tempfile
@@ -30,108 +32,92 @@ class EnvFileTest(unittest.TestCase):
         self.assertIn("LLM_MODEL=m", text)
         self.assertNotIn("old", text)
 
-    def _configure(self, answers, reconfigure=False):
+    def _configure(self, env: dict, non_interactive: bool = True, root: Path | None = None):
         said = []
-        with mock.patch.object(installer, "ROOT", self.dir), \
-                mock.patch("builtins.input", side_effect=answers), mock.patch.object(installer, "say", side_effect=said.append):
-            installer.configure_llm(interactive=True, reconfigure=reconfigure)
+        clean = {k: v for k, v in os.environ.items() if not k.startswith(("LLM_", "JOBHUNT_DATA_DIR"))}
+        with mock.patch.object(installer, "ROOT", root or self.dir), mock.patch.dict(os.environ, {**clean, **env}, clear=True), \
+                mock.patch.object(installer, "say", side_effect=said.append), \
+                mock.patch("builtins.input", side_effect=AssertionError("setup asks nothing")):
+            installer.configure_llm(non_interactive)
         self.said = "\n".join(said)
-        return installer.read_env(self.env)[1]
 
-    def _number(self, preset_id):
-        return str([p["id"] for p in installer.load_presets()].index(preset_id) + 1)
+    def test_setup_asks_nothing(self):
+        """The AI provider is the first run's step 3, in the browser (spec §1.5): no prompt, and nothing written."""
+        data = self.dir / "data-folder"
+        self._configure({"JOBHUNT_DATA_DIR": str(data)}, non_interactive=False)
+        self.assertIn("asked for in the browser", self.said)
+        self.assertFalse((data / ".env").exists())
+        src = Path(installer.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("input(", src)
+        self.assertFalse(hasattr(installer, "ask"))
 
-    def test_menu_offers_every_provider_of_the_app(self):
+    def test_menu_list_matches_the_app(self):
         from backend.llm_providers import PRESETS
-        self._configure(["s"])
-        for preset in PRESETS:
-            self.assertIn(preset["label"], self.said)
         self.assertEqual([p["id"] for p in installer.load_presets()], [p["id"] for p in PRESETS])
-
-    def test_interactive_preset(self):
-        # The address is filled in, the first suggested model is the default, the key is asked for.
-        values = self._configure([self._number("meta"), "", "secret-key"])
-        self.assertEqual(values["LLM_BASE_URL"], "https://api.meta.ai/v1")
-        self.assertEqual(values["LLM_MODEL"], "muse-spark-1.3")
-        self.assertEqual(values["LLM_API_KEY"], "secret-key")
-        self.assertIn("https://dev.meta.ai/", self.said)
-
-    def test_menu_choice_sets_provider_address_and_model(self):
-        for preset_id, base, model in (("openai", "https://api.openai.com/v1", "gpt-6.1-sol"),
-                                       ("anthropic", "https://api.anthropic.com", "claude-opus-5-5"),
-                                       ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.8-flash"),
-                                       ("groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b"),
-                                       ("openrouter", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-5.5")):
-            self.env.unlink(missing_ok=True)
-            values = self._configure([self._number(preset_id), "", "k-" + preset_id])
-            self.assertEqual((values["LLM_BASE_URL"], values["LLM_MODEL"], values["LLM_API_KEY"]), (base, model, "k-" + preset_id))
-        # Another model can be typed, also for a provider with no suggestions.
-        self.env.unlink()
-        values = self._configure([self._number("mistral"), "mistral-small-latest", "mk"])
-        self.assertEqual((values["LLM_BASE_URL"], values["LLM_MODEL"]), ("https://api.mistral.ai/v1", "mistral-small-latest"))
-
-    def test_custom_asks_for_the_address(self):
-        values = self._configure([self._number("custom"), "https://llm.example.org/v1/", "my-model", "k"])
-        self.assertEqual((values["LLM_BASE_URL"], values["LLM_MODEL"], values["LLM_API_KEY"]), ("https://llm.example.org/v1", "my-model", "k"))
-        self.env.unlink()
-        values = self._configure(["99", "https://x.example/v1", "m", "k"])  # not on the menu: treated as Custom
-        self.assertEqual(values["LLM_BASE_URL"], "https://x.example/v1")
-
-    def test_keyless_provider_is_not_asked_for_a_key(self):
-        values = self._configure([self._number("ollama"), "llama3.2:3b"])  # a third question would run out of answers
-        self.assertEqual((values["LLM_BASE_URL"], values["LLM_MODEL"], values["LLM_API_KEY"]), ("http://localhost:11434/v1", "llama3.2:3b", ""))
-        self.assertIn("No API key is needed", self.said)
-        self._configure([])  # configured: Ollama needs no key, so setup doesn't ask again
-        self.assertIn("already in .env", self.said)
-
-    def test_reconfigure_keeps_the_saved_model_and_key_for_the_same_provider(self):
-        self.env.write_text("LLM_API_KEY=saved-key\nLLM_BASE_URL=https://api.openai.com/v1\nLLM_MODEL=gpt-6-astra\n")
-        values = self._configure([self._number("openai"), "", ""], reconfigure=True)
-        self.assertEqual((values["LLM_MODEL"], values["LLM_API_KEY"]), ("gpt-6-astra", "saved-key"))
-        values = self._configure([self._number("anthropic"), "", ""], reconfigure=True)  # another provider: nothing carried over
-        self.assertEqual((values["LLM_MODEL"], values["LLM_API_KEY"]), ("claude-opus-5-5", ""))
 
     def test_built_in_list_if_the_app_list_cannot_be_read(self):
         with mock.patch.object(installer, "PRESETS_FILE", self.dir / "missing" / "llm_providers.py"):
             presets = installer.load_presets()
             self.assertEqual(presets, installer.FALLBACK_PRESETS)
             self.assertIn("ollama", [p["id"] for p in presets])
-            values = self._configure([str([p["id"] for p in presets].index("anthropic") + 1), "", "k"])
-        self.assertEqual((values["LLM_BASE_URL"], values["LLM_API_KEY"]), ("https://api.anthropic.com", "k"))
         broken = self.dir / "broken.py"
         broken.write_text("PRESETS = [{'label': 'x'}]\n")  # wrong shape
         with mock.patch.object(installer, "PRESETS_FILE", broken):
             self.assertEqual(installer.load_presets(), installer.FALLBACK_PRESETS)
 
-    def test_non_interactive_takes_the_environment(self):  # the path the CI workflow runs
-        env = {"LLM_API_KEY": "test-key", "LLM_BASE_URL": "https://example.invalid/v1", "LLM_MODEL": "test-model"}
+    LLM = {"LLM_API_KEY": "test-key", "LLM_BASE_URL": "https://example.invalid/v1", "LLM_MODEL": "test-model"}
+
+    def test_non_interactive_writes_the_data_folders_env(self):  # the path a scripted install with a service takes
+        data = self.dir / "data-folder"
         admin = {"JOBHUNT_ADMIN_EMAIL": "ci@example.invalid", "JOBHUNT_ADMIN_PASSWORD": "ci-test-password-123"}
-        with mock.patch.object(installer, "ROOT", self.dir), mock.patch.dict("os.environ", {**env, **admin}), \
-                mock.patch.object(installer, "say"), mock.patch("builtins.input", side_effect=AssertionError("no prompts")):
-            installer.configure_llm(interactive=False, reconfigure=False)
-        values = installer.read_env(self.env)[1]
-        self.assertEqual({k: values[k] for k in env}, env)
-        # The first admin's details are for the process environment only, never written to .env.
-        self.assertNotIn("JOBHUNT_ADMIN", self.env.read_text())
+        self._configure({**self.LLM, **admin, "JOBHUNT_DATA_DIR": str(data)})
+        values = installer.read_env(data / ".env")[1]
+        self.assertEqual({k: values[k] for k in self.LLM}, self.LLM)
+        # The account's details are for the process environment only, never written to .env.
+        self.assertNotIn("JOBHUNT_ADMIN", (data / ".env").read_text())
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE((data / ".env").stat().st_mode), 0o600)
+        self.assertFalse((self.dir / ".env").exists())
 
-    def test_existing_settings_kept(self):
-        self.env.write_text("LLM_API_KEY=k\nLLM_BASE_URL=b\nLLM_MODEL=m\n")
-        values = self._configure([])  # must not prompt
-        self.assertEqual(values["LLM_API_KEY"], "k")
+    def test_non_interactive_before_the_folder_is_chosen_writes_nothing(self):
+        """Nothing but the pointer is written before the first run chooses the folder (spec §1.5): the app reads the
+        LLM_* variables from its environment instead."""
+        root = self.dir / "app"
+        (root / "data").mkdir(parents=True)
+        self._configure({**self.LLM, "JOBHUNT_CONFIG_DIR": str(self.dir / "config")}, root=root)
+        self.assertIn("nothing is written", self.said)
+        self.assertEqual([p.name for p in root.rglob("*")], ["data"])
+        self.assertFalse((self.dir / "config").exists())
 
-    def test_skip(self):
-        values = self._configure(["s"])
-        self.assertEqual(values.get("LLM_API_KEY"), "")
+    def test_an_existing_install_keeps_its_env_next_to_the_app(self):
+        root = self.dir / "app"
+        (root / "data").mkdir(parents=True)
+        (root / ".env").write_text("# my note\nLLM_API_KEY=old\n")
+        self._configure({**self.LLM, "JOBHUNT_CONFIG_DIR": str(self.dir / "config")}, root=root)
+        text = (root / ".env").read_text()
+        self.assertIn("# my note", text)
+        self.assertIn("LLM_MODEL=test-model", text)
+        self.assertIn("LLM_API_KEY=test-key", text)
 
     def test_the_commute_keys_are_not_asked_any_more(self):
         """The job page links to Google Maps (spec §1.8): setup asks for no commute key and writes none."""
         self.assertFalse(hasattr(installer, "configure_commute"))
-        values = self._configure(["s"])
-        self.assertNotIn("TFNSW_API_KEY", values)
-        self.assertNotIn("TOMTOM_API_KEY", values)
         src = Path(installer.__file__).read_text(encoding="utf-8")
         for gone in ("TFNSW", "TOMTOM", "commute"):
             self.assertNotIn(gone, src)
+
+    def test_setup_no_longer_downloads_the_browser(self):
+        """The app downloads it into the data folder when a careers page first needs it and the person agrees."""
+        src = Path(installer.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("playwright", src)
+        self.assertFalse(hasattr(installer, "install_browser"))
+
+    def test_the_import_check_never_touches_a_real_data_folder(self):
+        with mock.patch.object(installer, "run") as ran:
+            installer.check_app()
+        env = ran.call_args.kwargs["env"]
+        self.assertIn("jobhuntpa-check-", env["JOBHUNT_DATA_DIR"])
+        self.assertFalse(Path(env["JOBHUNT_DATA_DIR"]).exists())  # (a temporary folder, gone afterwards)
 
 
 if __name__ == "__main__":
@@ -185,6 +171,167 @@ class UninstallerTest(unittest.TestCase):
         if os.name == "posix":  # it holds the server keys and the API keys: owner-only (accounts design §15)
             self.assertEqual(stat.S_IMODE(backups[0].stat().st_mode), 0o600)
 
+    def _run(self, app: Path, home: Path, env: dict, *args: str):
+        clean = {k: v for k, v in os.environ.items() if k not in ("JOBHUNT_DATA_DIR", "APPIMAGE", "XDG_CONFIG_HOME")}
+        with mock.patch.object(sys, "argv", ["uninstaller", "--yes", "--folder", str(app), *args]), \
+                mock.patch.object(uninstaller, "say"), mock.patch.object(uninstaller, "running_ports", return_value=[]), \
+                mock.patch.object(uninstaller, "playwright_cache", return_value=home / "no-cache"), \
+                mock.patch.object(uninstaller.subprocess, "run") as systemctl, \
+                mock.patch.object(Path, "home", return_value=home), mock.patch.dict(os.environ, {**clean, **env}, clear=True):
+            code = uninstaller.main()
+        return code, systemctl
+
+    def _app_with_paths(self) -> Path:
+        app = self._app()
+        shutil.copy(Path(__file__).resolve().parent.parent / "backend" / "paths.py", app / "backend" / "paths.py")
+        return app
+
+    def test_a_data_folder_elsewhere_is_backed_up_and_removed_with_its_pointer(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from backend import paths
+        app = self._app_with_paths()
+        shutil.rmtree(app / "data")
+        top = Path(tempfile.mkdtemp())
+        home, config, data = top / "home", top / "config", top / "elsewhere" / "JobHuntPA"
+        (home / "Documents").mkdir(parents=True)
+        (data / "uploads").mkdir(parents=True)
+        (data / "jobhunt.db").write_bytes(b"db")
+        (data / "server-keys.json").write_text("{}")
+        (data / "uploads" / "cv.pdf").write_text("cv")
+        (data / "browsers" / "chromium-1").mkdir(parents=True)
+        (data / "browsers" / "chromium-1" / "chrome").write_text("big")
+        env = {"JOBHUNT_CONFIG_DIR": str(config)}
+        paths.write_pointer(data, env)
+        code, _ = self._run(app, home, env)
+        self.assertEqual(code, 0)
+        self.assertFalse(data.exists())
+        self.assertFalse(config.exists(), "the pointer (and its folder) is gone")
+        self.assertFalse(app.exists())
+        import zipfile
+        backup = next((home / "Documents").glob("JobHuntPA-backup-*.zip"))
+        self.assertEqual(sorted(zipfile.ZipFile(backup).namelist()),
+                         [".env", "data/jobhunt.db", "data/server-keys.json", "data/uploads/cv.pdf"])
+
+    def test_the_service_and_its_data_folder_go_too(self):
+        app = self._app_with_paths()
+        top = Path(tempfile.mkdtemp())
+        home, data = top / "home", top / "srv" / "jobhunt"
+        (home / "Documents").mkdir(parents=True)
+        data.mkdir(parents=True)
+        (data / "jobhunt.db").write_bytes(b"db")
+        unit = top / "xdg" / "systemd" / "user" / "jobhuntpa.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text(f"[Service]\nWorkingDirectory={app}\nEnvironment=JOBHUNT_DATA_DIR={data}\n"
+                        f"ExecStart={app}/.venv/bin/python -m uvicorn backend.app:app\n")
+        code, systemctl = self._run(app, home, {"XDG_CONFIG_HOME": str(top / "xdg"),
+                                                "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertFalse(unit.exists())
+        self.assertFalse(data.exists())
+        if platform.system() == "Linux":
+            calls = [c.args[0] for c in systemctl.call_args_list]
+            self.assertIn(["systemctl", "--user", "disable", "--now", "jobhuntpa.service"], calls)
+
+    def test_only_a_jobhuntpa_data_folder_is_ever_deleted(self):
+        top = Path(tempfile.mkdtemp())
+        app, home = self._app_with_paths(), top / "home"
+        home.mkdir()
+        mine = top / "mine"
+        mine.mkdir()
+        (mine / "jobhunt.db").write_bytes(b"")
+        (mine / "jobhunt.db.bak-before-encryption").write_bytes(b"")  # JobHuntPA's own backups and temp files
+        (mine / ".server-keys.json-x1.tmp").write_bytes(b"")
+        (mine / "uploads").mkdir()
+        with mock.patch.object(Path, "home", return_value=home):
+            self.assertTrue(uninstaller.safe_to_delete(mine, app))
+            (mine / "photo.jpg").write_text("x")
+            self.assertFalse(uninstaller.safe_to_delete(mine, app))  # the person's own file: the folder stays
+            (mine / "photo.jpg").unlink()
+            (home / "jobhunt.db").write_bytes(b"")
+            self.assertFalse(uninstaller.safe_to_delete(home, app))  # never the home folder, even with data in it
+            self.assertFalse(uninstaller.safe_to_delete(app.parent, app))  # nor one that holds the app
+            # An app folder without backend/paths.py has no rule to tell JobHuntPA's files apart: kept.
+            self.assertFalse(uninstaller.safe_to_delete(mine, self._app()))
+        documents = top / "home2" / "Documents"
+        documents.mkdir(parents=True)
+        (documents / "jobhunt.db").write_bytes(b"")
+        with mock.patch.object(Path, "home", return_value=top / "home2"):
+            self.assertFalse(uninstaller.safe_to_delete(documents, app))  # the backup is saved there
+
+    def test_a_data_folder_that_holds_other_files_is_kept_with_the_backup(self):
+        """JOBHUNT_DATA_DIR (or service.sh --data-dir) named a folder of the person's own files: the uninstaller backs
+        it up and leaves the folder, their files and the backup where they are."""
+        app = self._app_with_paths()
+        shutil.rmtree(app / "data")
+        top = Path(tempfile.mkdtemp())
+        home = top / "home"
+        documents = home / "Documents"
+        (documents / "mystuff").mkdir(parents=True)
+        (documents / "taxes.pdf").write_text("taxes")
+        (documents / "mystuff" / "thesis.txt").write_text("thesis")
+        (documents / "jobhunt.db").write_bytes(b"db")
+        (documents / "server-keys.json").write_text("{}")
+        code, _ = self._run(app, home, {"JOBHUNT_DATA_DIR": str(documents), "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertEqual((documents / "taxes.pdf").read_text(), "taxes")
+        self.assertEqual((documents / "mystuff" / "thesis.txt").read_text(), "thesis")
+        self.assertTrue((documents / "jobhunt.db").exists())
+        self.assertEqual(len(list(documents.glob("JobHuntPA-backup-*.zip"))), 1)
+
+        # The same folder elsewhere (the backup goes to Documents): still kept, for the person's files.
+        app = self._app_with_paths()
+        shutil.rmtree(app / "data")
+        mine = top / "elsewhere"
+        mine.mkdir()
+        (mine / "jobhunt.db").write_bytes(b"db")
+        (mine / "notes.txt").write_text("mine")
+        home2 = top / "home2"
+        (home2 / "Documents").mkdir(parents=True)
+        code, _ = self._run(app, home2, {"JOBHUNT_DATA_DIR": str(mine), "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertEqual((mine / "notes.txt").read_text(), "mine")
+        self.assertEqual(len(list((home2 / "Documents").glob("JobHuntPA-backup-*.zip"))), 1)
+
+    def test_the_service_of_another_install_is_left_alone(self):
+        """The unit names /…/JobHuntPA-old: uninstalling /…/JobHuntPA neither removes it nor takes its data folder."""
+        app = self._app_with_paths()
+        top = Path(tempfile.mkdtemp())
+        other = Path(f"{app}-old")
+        home, data = top / "home", top / "srv" / "jobhunt"
+        (home / "Documents").mkdir(parents=True)
+        data.mkdir(parents=True)
+        (data / "jobhunt.db").write_bytes(b"db")
+        unit = top / "xdg" / "systemd" / "user" / "jobhuntpa.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text(f'# Made by JobHuntPA service.sh for the app in {other}.\n[Service]\n'
+                        f'WorkingDirectory="{other}"\nEnvironment="JOBHUNT_DATA_DIR={data}"\n'
+                        f'ExecStart="{other}/.venv/bin/python" "-m" "uvicorn" "backend.app:app"\n')
+        code, systemctl = self._run(app, home, {"XDG_CONFIG_HOME": str(top / "xdg"),
+                                                "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertTrue(unit.exists())
+        self.assertTrue((data / "jobhunt.db").exists())
+        systemctl.assert_not_called()
+
+    def test_unit_values_are_read_as_service_sh_quotes_them(self):
+        words = uninstaller._unit_words(r'"/a b/\\x\"q\" 100%%/$$HOME" "--port" "8000"', exec_line=True)
+        self.assertEqual(words, [r'/a b/\x"q" 100%/$HOME', "--port", "8000"])
+        self.assertEqual(uninstaller._unit_words('"JOBHUNT_DATA_DIR=/d 100%%/$$x"'), ["JOBHUNT_DATA_DIR=/d 100%/$$x"])
+        self.assertEqual(uninstaller._unit_words("/plain/path"), ["/plain/path"])
+
+    def test_the_appimage_deletes_its_file_not_its_mount(self):
+        app = self._app()
+        top = Path(tempfile.mkdtemp())
+        home = top / "home"
+        (home / "Documents").mkdir(parents=True)
+        image = top / "JobHuntPA-x86_64.AppImage"
+        image.write_text("image")
+        with mock.patch.object(uninstaller, "delete_folder") as deleted:
+            code, _ = self._run(app, home, {"APPIMAGE": str(image), "JOBHUNT_CONFIG_DIR": str(top / "config")})
+        self.assertEqual(code, 0)
+        self.assertFalse(image.exists())
+        deleted.assert_not_called()
+
     def test_refuses_while_running(self):
         app = self._app()
         with mock.patch.object(sys, "argv", ["uninstaller", "--yes", "--folder", str(app)]), \
@@ -220,11 +367,69 @@ class LaunchTest(unittest.TestCase):
             launch.open_app("http://127.0.0.1:8000", no_browser=True)
             opened.assert_not_called()
         (self.dir / "first-run.txt").write_text("not a token\n")
-        self.assertIsNone(launch.first_run_url("http://127.0.0.1:8000"))
-        with mock.patch.dict(os.environ, {"JOBHUNT_DB_PATH": "", "JOBHUNT_DATA_DIR": ""}):
-            self.assertEqual(launch.first_run_file(), launch.ROOT / "data" / "first-run.txt")
+        with mock.patch.object(launch, "setup_required", return_value=False):
+            self.assertIsNone(launch.first_run_url("http://127.0.0.1:8000"))
         with mock.patch.dict(os.environ, {"JOBHUNT_DB_PATH": "", "JOBHUNT_DATA_DIR": str(self.dir / "elsewhere")}):
             self.assertEqual(launch.first_run_file(), self.dir / "elsewhere" / "first-run.txt")
+            self.assertEqual(launch.run_file(), self.dir / "elsewhere" / "running.json")
+
+    def test_before_the_data_folder_is_chosen_nothing_is_read_or_written_and_its_own_token_is_opened(self):
+        """No data folder yet (no JOBHUNT_DATA_DIR, no pointer, no data next to the app): the launcher opens the page
+        with the token it handed to the app, while the app says it isn't set up."""
+        empty = self.dir / "app"
+        (empty / "data").mkdir(parents=True)
+        token = "T" * 43
+        with mock.patch.dict(os.environ, {"JOBHUNT_DB_PATH": "", "JOBHUNT_DATA_DIR": "",
+                                          "JOBHUNT_CONFIG_DIR": str(self.dir / "config")}), \
+                mock.patch.object(launch.paths, "APP_ROOT", empty), \
+                mock.patch.object(launch.paths, "locate", lambda: launch.paths.Place(None, "")):
+            self.assertIsNone(launch.first_run_file())
+            self.assertIsNone(launch.run_file())
+            with mock.patch.object(launch, "setup_required", return_value=True):
+                self.assertEqual(launch.first_run_url("http://127.0.0.1:8000", token),
+                                 f"http://127.0.0.1:8000/first-run.html#token={token}")
+                self.assertIsNone(launch.first_run_url("http://127.0.0.1:8000", "short"))  # not a token
+            with mock.patch.object(launch, "setup_required", return_value=False):
+                self.assertIsNone(launch.first_run_url("http://127.0.0.1:8000", token))
+        self.assertFalse((self.dir / "config").exists())
+
+    def test_the_app_is_started_again_after_the_folder_step(self):
+        """Exit status 3 (backend/data_folder.py RESTART_CODE): started again with the same token, the browser opened
+        once; any other status ends the launcher with it."""
+        self.assertEqual(launch.RESTART_CODE, 3)
+        from backend import data_folder
+        self.assertEqual(data_folder.RESTART_CODE, launch.RESTART_CODE)
+        started = []
+
+        class Server:
+            pid = 4242
+
+            def __init__(self, code):
+                self.code = code
+
+            def wait(self):
+                return self.code
+
+        codes = iter([3, 0])
+
+        def start(port, env):
+            started.append(env["JOBHUNT_FIRST_RUN_TOKEN"])
+            return Server(next(codes))
+
+        with mock.patch.object(sys, "argv", ["launch", "--no-browser", "--port", "8765"]), \
+                mock.patch.object(launch, "healthy", return_value=False), \
+                mock.patch.object(launch, "port_free", return_value=True), \
+                mock.patch.object(launch, "start_server", side_effect=start), \
+                mock.patch.object(launch, "wait_until_up", return_value=None), \
+                mock.patch.object(launch, "write_run_file", return_value=None), \
+                mock.patch.object(launch, "open_app") as opened, mock.patch.object(launch, "print"), \
+                mock.patch.object(launch.signal, "signal"), \
+                mock.patch.dict(os.environ, {"JOBHUNT_FIRST_RUN_TOKEN": ""}):
+            self.assertEqual(launch.main(), 0)
+        self.assertEqual(len(started), 2)
+        self.assertEqual(started[0], started[1])
+        self.assertRegex(started[0], r"^[A-Za-z0-9_-]{32,100}$")
+        opened.assert_called_once()
 
     def test_the_server_trusts_proxy_headers_from_this_computer_only(self):
         source = Path(launch.__file__).read_text(encoding="utf-8")

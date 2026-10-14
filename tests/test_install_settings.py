@@ -44,7 +44,7 @@ ENDPOINTS = (
     ("get", "/api/settings/llm", None, False),
     ("put", "/api/settings/llm", {}, False),
     ("get", "/api/settings/address", None, False),
-    ("put", "/api/settings/address", {}, False),
+    ("put", "/api/settings/address", {"allowed_hosts": ["stale.example.invalid"]}, True),
     ("get", "/api/settings/usage", None, False),
     ("get", "/api/settings/leftovers", None, False),
     ("get", "/api/llm", None, False),
@@ -134,19 +134,24 @@ class WhoMayCallTest(Base):
                                  .status_code, 200)
                 self.assertEqual(c.put("/api/settings/address", json={"allowed_hosts": []}).status_code, 200)
 
-    def test_the_two_that_change_keys_or_delete_files_need_a_recent_password(self):
+    def test_changing_keys_deleting_files_or_widening_the_address_need_a_recent_password(self):
         bob = helpers.make_user(password=PASSWORD)
         c = self.signed_in(bob)
         self.make_stale(c)
+        self.env_file()
         with mock.patch.object(key_rotation, "rotate") as rotate, \
                 mock.patch.object(migrate_encryption, "delete_leftovers", return_value=[]) as delete:
             for method, path, body, recent in ENDPOINTS:
                 if recent:
-                    r = getattr(c, method)(path)
+                    r = getattr(c, method)(path, **({"json": body} if body is not None else {}))
                     self.assertEqual((r.status_code, r.json()["code"]), (403, "reauth_required"), path)
             rotate.assert_not_called()
             delete.assert_not_called()
+            self.assertNotIn("stale.example.invalid", c.get("/api/settings/address").json()["allowed_hosts"])
             self.assertEqual(c.post("/api/auth/reauth", json={"password": PASSWORD}).status_code, 200)
+            r = c.put("/api/settings/address", json={"allowed_hosts": ["fresh.example.invalid"]})
+            self.assertEqual(r.json()["allowed_hosts"], ["fresh.example.invalid"])
+            self.assertEqual(c.put("/api/settings/address", json={"allowed_hosts": []}).status_code, 200)
             rotate.return_value = 0
             self.assertEqual(c.post("/api/settings/server-key/rotate").status_code, 200)
             self.assertEqual(c.post("/api/settings/leftovers/delete").status_code, 200)
