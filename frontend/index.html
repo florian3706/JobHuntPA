@@ -121,7 +121,6 @@
           <label class="field check-field"><input id="filter-show-excluded" type="checkbox" /> <span>Show excluded</span></label>
           <label class="field check-field"><input id="filter-show-closed" type="checkbox" /> <span>Show closed</span></label>
           <label class="field check-field"><input id="filter-show-hidden" type="checkbox" /> <span>Show hidden</span></label>
-          <label class="field check-field"><input id="filter-hide-ghost" type="checkbox" /> <span>Hide possible ghost jobs</span></label>
         </div>
         <div id="soften-note" class="soften-note" hidden></div>
         <div id="dupe-note" class="dupe-note" hidden></div>
@@ -288,8 +287,8 @@
           <select id="upload-kind">
             <option value="resume">Resume / CV</option>
             <option value="cover_letter">Cover letter</option>
-            <option value="preferences">Preferences (private)</option>
-            <option value="other">Other (supporting)</option>
+            <option value="preferences">Preferences</option>
+            <option value="other">Other/supporting</option>
           </select></label>
         <button class="btn btn-primary" type="submit">Upload</button>
         <span id="upload-status" class="muted" role="status" aria-live="polite"></span>
@@ -305,8 +304,8 @@
             <select id="note-kind">
               <option value="resume">Resume / CV</option>
               <option value="cover_letter">Cover letter</option>
-              <option value="preferences">Preferences (private)</option>
-              <option value="other" selected>Other (supporting)</option>
+              <option value="preferences">Preferences</option>
+              <option value="other" selected>Other/supporting</option>
             </select></div>
         </div>
         <div class="field"><label class="field-label" for="note-text">Note</label>
@@ -321,6 +320,7 @@
         <strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
         the chat and title suggestions use them, and cover letters never see them.
         Untick "use for scoring" to keep a document out of every prompt. Changing documents marks existing scores as stale.</p>
+      <div id="docs-size-warning" class="callout docs-size-warning" hidden></div>
       <div class="card form-card summary-card">
         <h3>One summary instead of many documents</h3>
         <p class="hint">Every ticked document goes with every request to the AI, repeats and all. <strong>Create summary</strong> merges the
@@ -413,7 +413,8 @@
         </div>
         <p class="hint">JobHuntPA runs this search by itself at set times while it is running; a search missed because it was closed runs if you start it within the hour.
           Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.
-          Scheduled searches need <strong>background access</strong> (the card further down this tab); without it they are skipped.</p>
+          Scheduled searches need <strong>background access</strong> (the card further down this tab); without it they are skipped.
+          They are off in a new workspace: tick <strong>Run searches automatically</strong> to start them.</p>
         <label class="check sched-enable"><input type="checkbox" id="sched-enabled" /> Run searches automatically</label>
         <div class="form-grid">
           <div class="form-group">

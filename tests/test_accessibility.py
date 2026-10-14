@@ -928,14 +928,39 @@ class GhostJobPagesTest(unittest.TestCase):
         self.assertIn("This may still be a real job", why)
         self.assertIn("${ghostWhy(job)}", self.app)
 
-    def test_filter_is_off_by_default_labelled_and_counted_in_words(self):
-        self.assertIn('<input id="filter-hide-ghost" type="checkbox" /> <span>Hide possible ghost jobs</span>', self.index)
-        self.assertIn("hideGhost: false", self.app)
-        self.assertIn("f.hideGhost && !keepGhost && j.ghost?.level", self.app)
-        # (the ghost jobs are part of the "hidden by filters" number: worded as a share of it, not a second count)
-        self.assertIn("hidden by filters${ghosts ? ` (${ghosts} of them possible ghost job${ghosts === 1 ? '' : 's'})` : ''}", self.app)
-        self.assertNotIn("possible ghost job${ghosts === 1 ? '' : 's'} hidden", self.app)
-        self.assertIn("$('#filter-hide-ghost').addEventListener('change'", self.app)
+    def test_there_is_no_filter_that_hides_possible_ghost_jobs(self):
+        """Open-source spec §1.10: the "Hide possible ghost jobs" filter is removed, with its count text."""
+        for src in (self.index, self.app, self.common, self.job):
+            self.assertNotIn("filter-hide-ghost", src)
+            self.assertNotIn("hideGhost", src)
+            self.assertNotIn("Hide possible ghost jobs", src)
+            self.assertNotIn("of them possible ghost job", src)
+        self.assertIn("hidden by filters` : ''}", self.app)  # the count says only how many the filters hide
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertNotIn("Hide possible ghost jobs", readme)
+
+    def test_job_page_reasons_are_collapsed_under_the_disclaimer(self):
+        """Open-source spec §1.10: the circle and its level stay in view with the disclaimer; the reasons (every
+        check, the colours, what to ask) open on request, in a native disclosure."""
+        fn = self.job[self.job.index("/* ---------- is this a real vacancy?"):self.job.index("function renderFit")]
+        self.assertIn("const GHOST_DISCLAIMER = 'This is worked out from your own searches only. It indicates whether an ad "
+                      "may be a ghost job or a real position; it proves neither.';", fn)
+        verdict = fn.index('<p class="ghost-big">')
+        disclaimer = fn.index('<p class="hint ghost-disclaimer">${GHOST_DISCLAIMER}</p>')
+        details = fn.index('<details id="ghost-why" class="ghost-details">')
+        self.assertLess(verdict, disclaimer)
+        self.assertLess(disclaimer, details)
+        self.assertNotIn('<details id="ghost-why" class="ghost-details" open', fn)  # collapsed
+        self.assertIn("<summary>${g.level ? 'Why this rating, and what to do' : 'Why this rating'}</summary>", fn)
+        for inside in ('id="ghost-why-title"', 'id="ghost-key-title"', "What to do", "A rating from the signs above"):
+            self.assertGreater(fn.index(inside), details, inside)
+        # The header's circle links to the section and opens the reasons.
+        self.assertIn("$('#job-head a.ghost-dot')?.addEventListener('click', () => { const why = $('#ghost-why'); if (why) why.open = true; });", self.job)
+        self.assertRegex(self.css, r"\.ghost-details > summary \{[^}]*cursor: pointer")
+        start = self.css.index("@media (pointer: coarse) {\n")
+        self.assertIn(".ghost-details summary", self.css[start:self.css.index("\n}", start)])
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("it proves neither", readme)
 
     def test_job_page_section_is_named_and_shown_for_every_job(self):
         # (hidden only until the job has loaded)
@@ -998,6 +1023,127 @@ class GhostJobPagesTest(unittest.TestCase):
         self.assertIn(".ghost-checks", self.css)
 
 
+class CompanyResearchButtonsTest(unittest.TestCase):
+    """Open-source spec §1.9: "News/Controversies" wherever shown, and a "Research again" button per section that
+    says which section it is for, beside that section's own date."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.common, cls.app, cls.job, cls.css = read("common.js"), read("app.js"), read("job.js"), read("styles.css")
+
+    def test_the_section_is_called_news_controversies(self):
+        profile = self.common[self.common.index("function companyProfileHtml"):self.common.index("function officeHtml")]
+        self.assertIn("<dt>News/Controversies</dt>", profile)
+        self.assertNotIn("<dt>Controversies</dt>", profile)
+        self.assertIn("news: 'News/Controversies'", self.common)
+        self.assertIn("News/Controversies item(s) found", self.app)
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("News/Controversies", readme)
+
+    def test_each_section_has_its_own_button_and_date(self):
+        helper = self.common[self.common.index("const RESEARCH_SECTION_NAME"):self.common.index("const RESEARCH_PART_LABEL")]
+        # The visible words are the start of the name (WCAG 2.5.3); the hidden rest says which section.
+        self.assertIn('data-research-part="${part}">Research again<span class="visually-hidden">: ${RESEARCH_SECTION_NAME[part]} only</span></button>', helper)
+        self.assertIn("${sectionDateNote(iso)}", helper)
+        self.assertNotRegex(helper, r'style=|\bon[a-z]+=')
+        self.assertIn("sectionResearch('sentiment', p.sentiment_researched_at)", self.common)
+        self.assertIn("sectionResearch('news', p.news_researched_at)", self.common)
+        self.assertIn('data-research-part="all">${p ? \'Research the whole profile again\' : \'Research this company\'}', self.common)
+        self.assertRegex(self.css, r"\.section-research \{[^}]*flex-wrap: wrap")
+
+    def test_both_pages_send_the_part_the_button_is_for(self):
+        self.assertIn("$$('#modal-html [data-research-part]')", self.app)
+        self.assertIn("{ name: job.company, part: b.dataset.researchPart }", self.app)
+        self.assertIn("$$('#job-company [data-research-part]').forEach((b) => b.addEventListener('click', () => researchCompany(b)));", self.job)
+        self.assertIn("JSON.stringify({ name: job.company, part: button.dataset.researchPart })", self.job)
+
+
+class DocumentsTabSmallChangesTest(unittest.TestCase):
+    """Open-source spec §1.11: the two labels, and the warning about long documents that points to Create summary."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.app, cls.index, cls.css = read("app.js"), read("index.html"), read("styles.css")
+
+    def test_the_two_labels_and_the_stored_kinds(self):
+        self.assertIn("['preferences', 'Preferences'], ['other', 'Other/supporting']", self.app)
+        self.assertEqual(self.index.count('<option value="preferences">Preferences</option>'), 2)
+        self.assertIn('<option value="other">Other/supporting</option>', self.index)
+        self.assertIn('<option value="other" selected>Other/supporting</option>', self.index)
+        for old in ("Preferences (private)", "Other (supporting)"):
+            self.assertNotIn(old, self.app + self.index)
+        self.assertIn("cover letters never see them", self.index)  # the hint stays
+
+    def test_the_warning_counts_what_the_ai_gets_of_the_ticked_documents_and_points_to_create_summary(self):
+        self.assertIn("const DOCS_WARN_CHARS = 50000;", self.app)
+        fn = self.app[self.app.index("function renderDocsSize"):self.app.index("function redrawDoc")]
+        self.assertIn("state.docs.list.filter((d) => d.use_for_scoring).reduce((n, d) => n + Number(d.sent_len || 0), 0)", fn)
+        self.assertIn("total > DOCS_WARN_CHARS", fn)
+        self.assertIn("Create summary", fn)
+        self.assertIn("$('#summary-make')", fn)
+        self.assertIn("btn.focus(", fn)
+        self.assertIn("esc(text)", fn)
+        self.assertIn("announce(", fn)  # said once when it appears
+        self.assertNotRegex(fn, r'style=|\bon[a-z]+=')
+        self.assertNotIn("disabled", fn)  # a warning: nothing is blocked
+        # It sits just above the card it points to, and is redrawn whenever the list or a row is.
+        self.assertLess(self.index.index('id="docs-size-warning"'), self.index.index('id="summary-make"'))
+        self.assertEqual(self.app.count("renderDocsSize();"), 2)
+
+
+class MainLinkPagesTest(unittest.TestCase):
+    """Open-source spec §1.12: the card's and the job page's main link is job.link (the employer's own page when a
+    merged copy is on it); the listed ad then joins "Also on", and the employer's copy can still be split off."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.common, cls.app, cls.job = read("common.js"), read("app.js"), read("job.js")
+
+    def test_cards_and_the_job_page_use_the_main_link(self):
+        self.assertIn("return job.link?.url ? job.link : { url: job.url, source: job.source, copy_id: null };", self.common)
+        card = self.app[self.app.index("function renderJobCard"):self.app.index("card.querySelector('input[type=\"checkbox\"]')")]
+        self.assertIn('<h3 class="job-title" id="${titleId}"><a href="${esc(link.url)}"', card)
+        self.assertIn("(job.also_on || []).filter((c) => c.id !== link.copy_id)", card)
+        self.assertIn("...(link.copy_id ? [`<span class=\"also-item\"><a href=\"${esc(job.url)}\"", card)
+        self.assertIn("link.copy_id ? ` ${split(link.copy_id, link.source)}` : ''", card)
+        self.assertIn('<span class="visually-hidden"> the ${esc(sourceLabel(source))} ad from this card</span>', card)
+        head = self.job[self.job.index("function renderHead"):self.job.index("/* ---------- is this a real vacancy?")]
+        self.assertIn('<a href="${esc(link.url)}" target="_blank" rel="noopener">${esc(job.title || \'—\')}<span class="visually-hidden">: the ad on ${esc(sourceLabel(link.source))}</span>', head)
+        self.assertIn("...(job.also_on || []).filter((c) => c.id !== link.copy_id)", head)
+
+
+class AppliedDatePagesTest(unittest.TestCase):
+    """Open-source spec §1.12: the card (and the job page) shows the applied date while the job is in Applied, and
+    nothing when there is none; a status change updates it in place, keeping focus on the status menu."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.common, cls.app, cls.job, cls.css = read("common.js"), read("app.js"), read("job.js"), read("styles.css")
+
+    def test_shown_only_in_applied_with_a_date(self):
+        fn = self.common[self.common.index("function appliedHtml"):]
+        fn = fn[:fn.index("\n}\n") + 2]
+        self.assertIn("job.status === 'applied' && job.applied_at", fn)
+        self.assertIn("Applied ${esc(fmtDate(job.applied_at).split(',')[0])}", fn)
+        self.assertIn(": ''", fn)  # nothing at all otherwise
+        self.assertIn('<span aria-hidden="true">📨 </span>', fn)  # the icon is decoration; the word says it
+        self.assertIn('<span class="applied-slot">${appliedHtml(job)}</span>', self.app)
+        self.assertIn('<span class="applied-slot">${appliedHtml(job)}</span>', self.job)
+        self.assertIn(".applied-slot:empty { display: none; }", self.css)
+
+    def test_a_status_change_updates_it_in_place(self):
+        update = self.app[self.app.index("async function updateJobStatus"):self.app.index("function showUploadAd")]
+        self.assertIn("job.applied_at = res.applied_at ?? job.applied_at ?? null;", update)
+        self.assertIn("slot.innerHTML = appliedHtml(job)", update)
+        bulk = self.app[self.app.index("async function bulkUpdateStatus"):self.app.index("async function rescoreJob")]
+        self.assertIn("j.applied_at = res.applied_at[String(j.id)]", bulk)
+        self.assertIn("$('#job-head .applied-slot').innerHTML = appliedHtml(job);", self.job)
+
+
 class BrowserAuditRegressionsTest(unittest.TestCase):
     """Things the browser audit (tools/a11y_audit.py: axe-core, reflow, text spacing, keyboard) found or watches, kept
     as static checks so they can't creep back without a browser."""
@@ -1015,7 +1161,7 @@ class BrowserAuditRegressionsTest(unittest.TestCase):
         button = re.search(r'return `<button[^`]*`', body).group(0)
         self.assertNotIn("aria-label", button)
         self.assertIn('<span class="visually-hidden">${esc(label)}</span>', button)
-        self.assertIn("controversy ${n === 1 ? 'item' : 'items'}", body)
+        self.assertIn("News/Controversies ${n === 1 ? 'item' : 'items'}", body)
 
     def test_the_jobs_tab_check_boxes_are_full_size_targets_on_a_phone(self):
         """WCAG 2.5.8: Show excluded / closed / hidden wrap into rows close together at 320 px."""

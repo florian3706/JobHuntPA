@@ -570,6 +570,12 @@ function fmtDate(iso) {
 }
 
 function scoreOf(job) { return job.fit && job.fit.status === 'ok' ? job.fit.score : null; }
+/* "Applied <date>" while a job is in Applied and the date it last moved there is known (job.applied_at); nothing
+   otherwise, also for a job that was in Applied before the date was kept. */
+function appliedHtml(job) {
+  return job.status === 'applied' && job.applied_at
+    ? `<span class="applied-on"><span aria-hidden="true">📨 </span>Applied ${esc(fmtDate(job.applied_at).split(',')[0])}</span>` : '';
+}
 const EMPLOYMENT_LABEL = { full_time: 'Full-time', part_time: 'Part-time', contract: 'Contract', casual: 'Casual', temporary: 'Temporary', internship: 'Internship' };
 /* Employment type badge for job facts; nothing when unknown. */
 function employmentBadge(job) {
@@ -688,8 +694,16 @@ function glassdoorLink(p, name) {
 /* "Researched <date>" note inside a profile section (read in context by screen readers). */
 function sectionDateNote(iso) { return iso ? `<div class="muted section-date">Researched ${esc(fmtDate(iso))}</div>` : ''; }
 
+/* A profile section's own date and its "Research again" button, which researches only that section, at any time
+   (POST /api/companies/research with part). The section's name is hidden text, so the three buttons of a profile
+   have different names. Pages wire every [data-research-part] button the same way. */
+const RESEARCH_SECTION_NAME = { sentiment: 'Employee sentiment', news: 'News/Controversies' };
+function sectionResearch(part, iso) {
+  return `<div class="section-research">${sectionDateNote(iso)}<button id="company-research-${part}" class="btn btn-sm" type="button" data-research-part="${part}">Research again<span class="visually-hidden">: ${RESEARCH_SECTION_NAME[part]} only</span></button></div>`;
+}
+
 /* Plain-language result of a research run, from its summary.research ({refreshed, up_to_date}). */
-const RESEARCH_PART_LABEL = { base: 'company profile', sentiment: 'employee sentiment', news: 'news' };
+const RESEARCH_PART_LABEL = { base: 'company profile', sentiment: 'employee sentiment', news: 'news/controversies' };
 function researchRefreshText(rs) {
   const joinAnd = (a) => (a.length > 1 ? `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}` : a[0] || '');
   const parts = Object.entries(rs?.refreshed || {}).map(([name, kinds]) => `${name}: ${joinAnd((kinds || []).map((k) => RESEARCH_PART_LABEL[k] || k))} updated`);
@@ -700,7 +714,7 @@ function researchRefreshText(rs) {
 
 function sentimentHtml(p) {
   const s = p.sentiment;
-  if (!s) return '<span class="muted">Not researched yet: click Research again (or Fill missing info) to add it.</span>';
+  if (!s) return `<span class="muted">Not researched yet.</span>${sectionResearch('sentiment', null)}`;
   const list = (items, cls, mark, label) => (items.length
     ? `<ul class="themes ${cls}" aria-label="${label}">${items.map((t) => `<li><span aria-hidden="true">${mark} </span>${esc(t)}</li>`).join('')}</ul>` : '');
   return `
@@ -708,7 +722,13 @@ function sentimentHtml(p) {
     <div>${esc(s.summary || 'No employee reviews found.')}</div>
     ${list(s.positives, 'pos', '+', 'Positives')}${list(s.negatives, 'neg', '−', 'Negatives')}
     ${s.sources.length ? `<div class="sources">${linkList(s.sources)}</div>` : ''}
-    ${sectionDateNote(p.sentiment_researched_at)}`;
+    ${sectionResearch('sentiment', p.sentiment_researched_at)}`;
+}
+
+/* Where a job's main link goes (GET /api/jobs: job.link): the employer's own page when a merged copy of the ad is on
+   it and the listed ad is on a job board, else the listed ad. A server from before sends none: the listed ad. */
+function mainLink(job) {
+  return job.link?.url ? job.link : { url: job.url, source: job.source, copy_id: null };
 }
 
 /* ================= SOURCES ================= */
@@ -794,10 +814,11 @@ function mdToHtml(text) {
 
 const RESEARCHED = ['done', 'error', 'skipped'];
 
-/* Company profile body (info modal and job page). Has a #company-research button. */
+/* Company profile body (info modal and job page). Has a #company-research button (data-research-part="all": the
+   whole profile, whatever its age) and, on a researched profile, one per section (sectionResearch). */
 function companyProfileHtml(p, name) {
   if (p && !RESEARCHED.includes(p.status)) p = null; // only offices known so far
-  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button">${p ? 'Research again' : 'Research this company'}</button>`;
+  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button" data-research-part="all">${p ? 'Research the whole profile again' : 'Research this company'}</button>`;
   if (!p) {
     return `<p class="modal-links">${glassdoorLink(p, name)}</p>
       <p class="muted">Not researched yet. <strong>Fill missing info</strong> researches every company in your list, or research just this one:</p>${researchBtn}`;
@@ -822,7 +843,7 @@ function companyProfileHtml(p, name) {
       <dt>Employees</dt><dd>${esc(p.employee_count || (p.research_version >= 2 ? 'Unknown' : 'Not researched yet'))}</dd>
       ${offices}
       <dt>Employee sentiment</dt><dd>${sentimentHtml(p)}</dd>
-      <dt>Controversies</dt><dd>${esc(p.controversy_note || (p.controversies.length ? '' : 'None found.'))}${cons}${sectionDateNote(p.news_researched_at)}</dd>
+      <dt>News/Controversies</dt><dd>${esc(p.controversy_note || (p.controversies.length ? '' : 'None found.'))}${cons}${sectionResearch('news', p.news_researched_at)}</dd>
     </dl>
     ${p.sources.length ? `<p class="sources"><span class="muted">Sources:</span> ${linkList(p.sources)}</p>` : ''}
     <p class="muted">Researched ${esc(fmtDate(p.researched_at))}.

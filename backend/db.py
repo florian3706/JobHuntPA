@@ -391,6 +391,10 @@ class Job(Base):
     # vacancy: a JSON list. Not SealedAlways: a column added to a database that is already in strict mode is NULL
     # in every old row. The public ad's is ``Posting.ad_ghost_json`` (backend.pool.share_ad_fact).
     ad_ghost_json = Column(SealedText(), nullable=True)
+    # When the job last moved to Applied (open-source spec §1.12; backend.app.set_status): moved away and back, the
+    # latest move. NULL: never, or before this was kept. Not SealedAlways, for the reason ad_ghost_json isn't: a column
+    # added to a database already in strict mode is NULL in every old row. No server_default (accounts design §2).
+    applied_at = Column(SealedDateTime(), nullable=True)
 
     @python_only
     def url(self) -> Optional[str]:
@@ -1278,6 +1282,12 @@ def init_db() -> None:
     DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     owner_only(DATA_DIR, 0o700)  # (a folder made by an earlier version is 0755)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    # No job yet (a new database, or one the reset tool emptied): a first workspace made now is new. A database from
+    # before workspaces has its jobs, and the workspace made for them keeps the schedule they had.
+    no_jobs = True
+    if inspect(engine).has_table("jobs"):
+        with engine.connect() as conn:
+            no_jobs = conn.execute(text("SELECT 1 FROM jobs LIMIT 1")).first() is None
     _rebuild_legacy_fit_results()
     Base.metadata.tables["users"].create(bind=engine, checkfirst=True)
     Base.metadata.tables["workspaces"].create(bind=engine, checkfirst=True)
@@ -1289,11 +1299,15 @@ def init_db() -> None:
     with engine.begin() as conn:
         # The first workspace, only on a fresh database: the first account claims it (backend.users). Once there
         # are accounts, every workspace is made by and for one of them.
-        conn.execute(text("INSERT OR IGNORE INTO workspaces (id, name, created_at) "
-                          "SELECT 1, 'My job search', CURRENT_TIMESTAMP WHERE NOT EXISTS (SELECT 1 FROM users)"))
+        made = conn.execute(text("INSERT OR IGNORE INTO workspaces (id, name, created_at) "
+                                 "SELECT 1, 'My job search', CURRENT_TIMESTAMP WHERE NOT EXISTS (SELECT 1 FROM users)"
+                                 )).rowcount == 1
     _rebuild_for_workspaces("company_sources")
     _rebuild_for_workspaces("jobs")
     Base.metadata.create_all(bind=engine)
+    if made and no_jobs:  # a new workspace: its scheduled searches start off (an older one keeps its own)
+        with engine.begin() as conn:
+            conn.execute(text("INSERT OR IGNORE INTO search_schedules (id, enabled) VALUES (1, 0)"))
     _add_missing_columns()
     _ensure_indexes()
     _fix_legacy_data()

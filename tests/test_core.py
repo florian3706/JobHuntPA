@@ -1077,6 +1077,215 @@ class DuplicateMergeTest(unittest.TestCase):
             c.delete(f"/api/workspaces/{ws}")
 
 
+class MainLinkTest(unittest.TestCase):
+    """Open-source spec §1.12: a merged ad's main link (cards, job page) goes to the employer's own page when a copy
+    is on it; which copy is listed doesn't change, and the others stay under "Also on"."""
+
+    def setUp(self):
+        self.client = helpers.client()
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+        self.ws = self.client.post("/api/workspaces", json={"name": "Main link"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{self.ws}"))
+        self.h = {"X-Workspace": str(self.ws)}
+
+    def add(self, name: str, **kw) -> int:
+        from datetime import datetime
+        from backend.db import SessionLocal
+
+        db = SessionLocal()
+        job = _ad_job(**{"title": "Implementation Manager", "location_text": "Sydney NSW", "description": LONG_AD, **kw})
+        job.workspace_id, job.url, job.first_seen = self.ws, f"https://{name}.example/job", datetime.utcnow()
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        db.close()
+        return job_id
+
+    def merge(self, *ids: int) -> int:
+        r = self.client.post("/api/jobs/merge", headers=self.h, json={"ids": list(ids)})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["id"]
+
+    def test_a_board_ad_links_to_the_employers_copy(self):
+        board = self.add("board", source="seek")  # the full ad: listed (Ranking: the full ad first)
+        own = self.add("acme", source="site:acme.com", detail_status="summary")
+        other = self.add("indeed", source="seek", detail_status="summary")
+        listed = self.merge(board, own, other)
+        self.assertEqual(listed, board, "the ranking doesn't change: the fuller ad is listed")
+        card = {j["id"]: j for j in self.client.get("/api/jobs", headers=self.h).json()}[board]
+        self.assertEqual(card["url"], "https://board.example/job")  # (the listed copy's own address is unchanged)
+        self.assertEqual(card["link"], {"url": "https://acme.example/job", "source": "site:acme.com", "copy_id": own})
+        self.assertEqual(sorted(c["id"] for c in card["also_on"]), sorted([own, other]))  # every copy, to split
+        page = self.client.get(f"/api/jobs/{board}", headers=self.h).json()
+        self.assertEqual(page["link"], card["link"])
+
+    def test_an_employers_ad_and_board_only_groups_link_to_the_listed_ad(self):
+        own = self.add("acme", source="site:acme.com")
+        board = self.add("board", source="seek", detail_status="summary")
+        listed = self.merge(own, board)
+        self.assertEqual(listed, own)
+        card = {j["id"]: j for j in self.client.get("/api/jobs", headers=self.h).json()}[own]
+        self.assertEqual(card["link"], {"url": "https://acme.example/job", "source": "site:acme.com", "copy_id": None})
+
+        a = self.add("seekone", source="seek", title="Delivery Lead")
+        b = self.add("seektwo", source="seek", title="Delivery Lead", detail_status="summary")
+        listed = self.merge(a, b)
+        page = self.client.get(f"/api/jobs/{listed}", headers=self.h).json()
+        self.assertEqual(page["link"]["copy_id"], None)
+        self.assertEqual(page["link"]["url"], page["url"])
+
+    def test_a_source_listing_many_employers_is_a_board_not_the_employer(self):
+        from backend.db import SessionLocal
+        from backend.duplicates import employer_copy, job_boards
+
+        for i, company in enumerate(("Alpha", "Beta", "Gamma")):  # one site with three employers' ads: a job board
+            self.add(f"edtech{i}", source="site:edtechjobs.example", company=company, title=f"Role {i}")
+        board = self.add("board", source="seek")
+        copy = self.add("edtech", source="site:edtechjobs.example", detail_status="summary")
+        listed = self.merge(board, copy)
+        page = self.client.get(f"/api/jobs/{listed}", headers=self.h).json()
+        self.assertEqual(page["link"]["copy_id"], None, "a copy on another job board isn't the employer's page")
+        db = SessionLocal()
+        try:
+            self.assertEqual(job_boards(db, self.ws), {"seek", "site:edtechjobs.example"})
+            self.assertIsNone(employer_copy("site:acme.com", [], {"seek"}))
+        finally:
+            db.close()
+
+    def test_signed_out_gets_no_job(self):
+        job = self.add("acme", source="site:acme.com")
+        anonymous = helpers.TestClient(helpers.app)
+        self.assertEqual(anonymous.get(f"/api/jobs/{job}", headers=self.h).status_code, 401)
+        self.assertEqual(anonymous.get("/api/jobs", headers=self.h).status_code, 401)
+
+
+class AppliedDateTest(unittest.TestCase):
+    """Open-source spec §1.12: moving a job to Applied stores the date (sealed); moved away and back, it is the
+    latest move; a job with none (one from before) shows none; the export has it."""
+
+    def setUp(self):
+        self.client = helpers.client()
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+        self.ws = self.client.post("/api/workspaces", json={"name": "Applied date"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{self.ws}"))
+        self.h = {"X-Workspace": str(self.ws)}
+
+    def add(self, name: str, ws: int | None = None, **kw) -> int:
+        from backend.db import Job, SessionLocal
+
+        db = SessionLocal()
+        job = Job(workspace_id=ws or self.ws, url=f"https://applied.example/{name}", title=f"Role {name}",
+                  company="Appliedco", status=kw.pop("status", "to_review"), detail_status="full", **kw)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        db.close()
+        return job_id
+
+    def move(self, job_id: int, status: str) -> dict:
+        r = self.client.patch(f"/api/jobs/{job_id}/status", headers=self.h, json={"status": status})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def shown(self, job_id: int) -> dict:
+        return self.client.get(f"/api/jobs/{job_id}", headers=self.h).json()
+
+    def test_moved_away_and_back_it_is_the_latest_move(self):
+        from datetime import datetime, timedelta
+        from unittest import mock
+        import backend.app as app_module
+
+        job = self.add("one")
+        self.assertIsNone(self.shown(job)["applied_at"])
+        first = datetime(2026, 10, 1, 9, 0)
+        with mock.patch.object(app_module, "datetime", wraps=datetime) as dt:
+            dt.utcnow.return_value = first
+            self.assertEqual(self.move(job, "applied")["applied_at"], first.isoformat())
+            dt.utcnow.return_value = first + timedelta(days=1)
+            self.move(job, "applied")  # already there: not a move
+        self.assertEqual(self.shown(job)["applied_at"], first.isoformat())
+        self.move(job, "interviewing")
+        self.assertEqual(self.shown(job)["applied_at"], first.isoformat())  # kept (shown only while in Applied)
+        later = datetime(2026, 10, 9, 14, 30)
+        with mock.patch.object(app_module, "datetime", wraps=datetime) as dt:
+            dt.utcnow.return_value = later
+            self.move(job, "applied")
+        out = self.shown(job)
+        self.assertEqual((out["status"], out["applied_at"]), ("applied", later.isoformat()))
+        listed = {j["id"]: j for j in self.client.get("/api/jobs", headers=self.h).json()}
+        self.assertEqual(listed[job]["applied_at"], later.isoformat())
+
+    def test_a_job_with_none_shows_none(self):
+        job = self.add("before", status="applied")  # in Applied from before the date was kept
+        out = self.shown(job)
+        self.assertEqual((out["status"], out["applied_at"]), ("applied", None))
+        self.assertIsNone({j["id"]: j for j in self.client.get("/api/jobs", headers=self.h).json()}[job]["applied_at"])
+        self.assertIsNone(self.move(job, "applied")["applied_at"])  # already there: no date is made up
+
+    def test_bulk_moves_set_it_for_the_workspaces_own_jobs_only(self):
+        from backend.db import Job, SessionLocal
+
+        a, b = self.add("bulk-a"), self.add("bulk-b", status="applied")
+        other_ws = self.client.post("/api/workspaces", json={"name": "Other applied"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{other_ws}"))
+        theirs = self.add("theirs", ws=other_ws)
+        r = self.client.patch("/api/jobs/status", headers=self.h, json={"ids": [a, b, theirs], "status": "applied"})
+        self.assertEqual(r.status_code, 200, r.text)
+        out = r.json()
+        self.assertEqual(out["updated"], 2)
+        self.assertIsNotNone(out["applied_at"][str(a)])
+        self.assertIsNone(out["applied_at"][str(b)])  # it was already in Applied
+        self.assertNotIn(str(theirs), out["applied_at"])
+        db = SessionLocal()
+        try:
+            other = db.get(Job, theirs)
+            self.assertEqual((other.status, other.applied_at), ("to_review", None))
+        finally:
+            db.close()
+
+    def test_it_is_sealed_and_has_no_server_default(self):
+        from sqlalchemy import inspect as sa_inspect
+        from backend.db import Job, SessionLocal, engine
+
+        job = self.add("sealed")
+        stamp = self.move(job, "applied")["applied_at"]
+        with engine.connect() as conn:
+            raw = conn.exec_driver_sql("SELECT applied_at FROM jobs WHERE id = ?", (job,)).scalar()
+        self.assertIsNotNone(raw)
+        self.assertNotIn(stamp[:10].encode(), bytes(raw) if not isinstance(raw, str) else raw.encode())
+        self.assertIsNone(Job.__table__.c.applied_at.server_default)
+        column = next(c for c in sa_inspect(engine).get_columns("jobs") if c["name"] == "applied_at")
+        self.assertIsNone(column["default"])
+        db = SessionLocal()
+        try:
+            self.assertEqual(db.get(Job, job).applied_at.isoformat(), stamp)
+        finally:
+            db.close()
+
+    def test_a_merge_keeps_the_latest_applied_date(self):
+        from datetime import datetime
+        from backend.db import Job, SessionLocal
+
+        a = self.add("merge-a", status="applied", applied_at=datetime(2026, 9, 1, 8, 0), description=LONG_AD)
+        b = self.add("merge-b", status="applied", applied_at=datetime(2026, 9, 5, 8, 0))
+        r = self.client.post("/api/jobs/merge", headers=self.h, json={"ids": [a, b]})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.shown(r.json()["id"])["applied_at"], datetime(2026, 9, 5, 8, 0).isoformat())
+
+    def test_who_may_move_a_job(self):
+        job = self.add("access")
+        anonymous = helpers.TestClient(helpers.app)
+        self.assertEqual(anonymous.patch(f"/api/jobs/{job}/status", headers=self.h, json={"status": "applied"}).status_code, 401)
+        self.assertEqual(anonymous.patch("/api/jobs/status", headers=self.h, json={"ids": [job], "status": "applied"}).status_code, 401)
+        other_ws = self.client.post("/api/workspaces", json={"name": "Not this one"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{other_ws}"))
+        r = self.client.patch(f"/api/jobs/{job}/status", headers={"X-Workspace": str(other_ws)}, json={"status": "applied"})
+        self.assertEqual(r.status_code, 404)
+        self.assertIsNone(self.shown(job)["applied_at"])
+
+
 class JobChatTest(unittest.TestCase):
     def test_chat_context_links_history_and_web_search(self):
         from unittest import mock
@@ -1904,7 +2113,8 @@ class ScheduleTest(unittest.TestCase):
             ws = c.post("/api/workspaces", json={"name": "Schedule API"}).json()["id"]
             h = {"X-Workspace": str(ws)}
             out = c.get("/api/schedule", headers=h).json()
-            self.assertTrue(out["enabled"] and out["skip_holidays"])
+            self.assertFalse(out["enabled"])  # a new workspace's scheduled searches start off
+            self.assertTrue(out["skip_holidays"])
             self.assertEqual((out["times"], out["days"], out["state"], out["timezone"]),
                              (["10:00", "12:00", "14:00", "16:00"], [0, 1, 2, 3, 4], "NSW", "Australia/Sydney"))
             self.assertEqual(len(out["states"]), 8)
@@ -1930,9 +2140,83 @@ class ScheduleTest(unittest.TestCase):
                                                 datetime(2026, 10, 2, 0, 0, tzinfo=timezone.utc)))
 
             copy = c.post("/api/workspaces", json={"name": "Schedule copy", "copy_from": ws}).json()["id"]
-            self.assertEqual(c.get("/api/schedule", headers={"X-Workspace": str(copy)}).json()["times"], ["10:00", "16:00"])
+            copied = c.get("/api/schedule", headers={"X-Workspace": str(copy)}).json()
+            self.assertEqual((copied["times"], copied["enabled"]), (["10:00", "16:00"], True))
             for w in (copy, ws):
                 c.delete(f"/api/workspaces/{w}")
+
+    def test_new_workspaces_start_off_and_older_ones_keep_theirs(self):
+        """Open-source spec §1.12: scheduled searches are off for a new workspace; one from before (no schedule row:
+        the preset, which is on) keeps its setting, also when it is copied."""
+        from datetime import datetime, timezone
+        from backend import schedule
+        from backend.db import SearchSchedule, SessionLocal
+
+        with helpers.client() as c:
+            new = c.post("/api/workspaces", json={"name": "New, schedule off"}).json()["id"]
+            self.addCleanup(c.delete, f"/api/workspaces/{new}")
+            out = c.get("/api/schedule", headers={"X-Workspace": str(new)}).json()
+            self.assertFalse(out["enabled"])
+            self.assertIsNone(out["next_run"])
+            self.assertEqual((out["times"], out["days"]), (["10:00", "12:00", "14:00", "16:00"], [0, 1, 2, 3, 4]))
+
+            # A workspace from before: no row, so the preset schedule, which is on, and stays on.
+            old = c.post("/api/workspaces", json={"name": "From before"}).json()["id"]
+            self.addCleanup(c.delete, f"/api/workspaces/{old}")
+            db = SessionLocal()
+            db.delete(db.get(SearchSchedule, old))
+            db.commit()
+            self.assertTrue(schedule.get_schedule(db, old).enabled)
+            db.close()
+            self.assertTrue(c.get("/api/schedule", headers={"X-Workspace": str(old)}).json()["enabled"])
+            # Copying its settings copies the schedule as it is.
+            copy = c.post("/api/workspaces", json={"name": "Copy of before", "copy_from": old}).json()["id"]
+            self.addCleanup(c.delete, f"/api/workspaces/{copy}")
+            self.assertTrue(c.get("/api/schedule", headers={"X-Workspace": str(copy)}).json()["enabled"])
+            copy_off = c.post("/api/workspaces", json={"name": "Copy of new", "copy_from": new}).json()["id"]
+            self.addCleanup(c.delete, f"/api/workspaces/{copy_off}")
+            self.assertFalse(c.get("/api/schedule", headers={"X-Workspace": str(copy_off)}).json()["enabled"])
+
+            # An existing setting is never changed by the update: a workspace switched on stays on.
+            c.put("/api/schedule", headers={"X-Workspace": str(new)}, json={"enabled": True})
+            self.assertTrue(c.get("/api/schedule", headers={"X-Workspace": str(new)}).json()["enabled"])
+
+            # The scheduler passes over a workspace whose schedule is off: no slot is due.
+            db = SessionLocal()
+            try:
+                self.assertIsNone(schedule.due_slot(schedule.get_schedule(db, copy_off),
+                                                    datetime(2026, 10, 2, 0, 30, tzinfo=timezone.utc), None))
+            finally:
+                db.close()
+
+    FRESH_INSTALL = """
+from backend.db import SearchSchedule, SessionLocal, Workspace, init_db
+init_db()
+if os.environ.get("NO_WORKSPACE"):  # the first account then makes its own first workspace
+    db = SessionLocal()
+    db.query(SearchSchedule).delete()
+    db.query(Workspace).delete()
+    db.commit()
+    db.close()
+from backend import users
+users.startup()  # the first account (JOBHUNT_ADMIN_*), as a first run makes it
+db = SessionLocal()
+out["schedules"] = [[r.id, r.enabled] for r in db.query(SearchSchedule)]
+out["workspaces"] = [w for (w,) in db.query(Workspace.id)]
+db.close()
+"""
+
+    def test_a_fresh_installs_first_workspace_starts_off(self):
+        env = {"JOBHUNT_ADMIN_EMAIL": "fresh", "JOBHUNT_ADMIN_PASSWORD": "fresh-install-password"}
+        try:
+            out = helpers.scenario(self.FRESH_INSTALL, env=env)
+            self.assertEqual(out["workspaces"], [1])
+            self.assertEqual(out["schedules"], [[1, False]])
+            out = helpers.scenario(self.FRESH_INSTALL, env={**env, "NO_WORKSPACE": "1"})
+            self.assertEqual(len(out["workspaces"]), 1)
+            self.assertEqual(out["schedules"], [[out["workspaces"][0], False]])
+        finally:
+            helpers.remove_scratch_folders()
 
 
 

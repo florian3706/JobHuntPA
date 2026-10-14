@@ -421,9 +421,9 @@ class ClosingRuleTest(PoolTestCase):
 class JobJsonShapeTest(PoolTestCase):
     KEYS = {"id", "source", "company", "company_key", "title", "location_text", "country", "lat", "lng", "work_mode",
             "employment_type", "office_days", "salary_text", "salary_min", "salary_max", "url", "distance_km",
-            "status", "excluded_reason", "detail_status", "posted_at", "first_seen", "last_seen", "closed", "hidden",
+            "status", "applied_at", "excluded_reason", "detail_status", "posted_at", "first_seen", "last_seen", "closed", "hidden",
             "fit", "has_cover_letter", "office_text", "office_source", "office_placed", "office_unknown",
-            "location_verdict", "recruiter", "ghost", "also_on"}
+            "location_verdict", "recruiter", "ghost", "also_on", "link"}
 
     def test_list_jobs_shape_unchanged(self):
         ws = self.workspace()
@@ -693,7 +693,9 @@ class CompanyProfileFreshnessTest(PoolTestCase):
         db.commit()
         db.close()
 
-    def test_base_kept_sections_refreshed_on_request_and_shared(self):
+    def test_a_request_is_never_held_back_by_age_and_a_batch_still_is(self):
+        """Open-source spec §1.9: the profile's button researches all of it and a section's button only that
+        section, whenever they're clicked; only a batch (Fill missing info) goes by age."""
         from backend.research import INSTRUCTIONS
 
         a, b = self.workspace(), self.workspace()
@@ -714,61 +716,108 @@ class CompanyProfileFreshnessTest(PoolTestCase):
         for field in ("researched_at", "sentiment_researched_at", "news_researched_at"):
             self.assertIsNotNone(keyed[field])
         self.assertEqual(keyed["business_model"], "Business call1.")
-        out = self.research(b, name=self.NAME)  # everything is under a day old
-        self.assertEqual(len(self.calls), 1)
-        self.assertEqual((out["refreshed"], out["up_to_date"], out["researched"]), ({}, [self.NAME], 1))
 
-        # Ten days on: bulk "Fill missing info" leaves it (the base is under 30 days old)...
-        self.age(researched_at=10, sentiment_researched_at=10, news_researched_at=10)
+        # Researched a minute ago: a batch leaves it alone...
+        self.age(researched_at=1 / 1440, sentiment_researched_at=1 / 1440, news_researched_at=1 / 1440)
         before = self.profile()
         out = self.research(b, mode="missing")
         self.assertEqual((len(self.calls), out["requested"]), (1, 0))
-        # ...and "research this company" refreshes only sentiment and news, with a narrower request.
+        out = self.research(b, mode="missing", job_ids=[j["id"] for j in self.client.get("/api/jobs", headers=self.h(b)).json()])
+        self.assertEqual((len(self.calls), out["requested"]), (1, 0))
+        # ...but the profile's own button researches all of it again, at once.
         out = self.research(b, name=self.NAME)
         self.assertEqual(len(self.calls), 2)
-        narrow = self.calls[1]["instructions"]
-        self.assertNotEqual(narrow, INSTRUCTIONS)
-        self.assertIn("employee_sentiment", narrow)
-        self.assertIn("controversies", narrow)
-        self.assertNotIn("business_model", narrow)
-        self.assertEqual(out["refreshed"], {self.NAME: ["sentiment", "news"]})
+        self.assertEqual(self.calls[1]["instructions"], INSTRUCTIONS)
+        self.assertEqual(out["refreshed"], {self.NAME: ["base", "sentiment", "news"]})
         p = self.profile()
-        self.assertEqual((p.business_model, p.researched_at), ("Business call1.", before.researched_at))
-        self.assertEqual(json.loads(p.sentiment_json)["summary"], "Sentiment call2.")
-        self.assertEqual(json.loads(p.controversies_json)[0]["title"], "News call2")
-        self.assertGreater(p.sentiment_researched_at, before.sentiment_researched_at)
+        self.assertEqual(p.business_model, "Business call2.")
+        self.assertGreater(p.researched_at, before.researched_at)
+        # (part "all" is the same as no part)
+        self.age(researched_at=1 / 1440, sentiment_researched_at=1 / 1440, news_researched_at=1 / 1440)
+        out = self.research(b, name=self.NAME, part="all")
+        self.assertEqual((len(self.calls), out["refreshed"]), (3, {self.NAME: ["base", "sentiment", "news"]}))
+
+        # A section researched a minute ago: its own button researches only it, with a narrower request.
+        self.age(researched_at=10, sentiment_researched_at=1 / 1440, news_researched_at=1 / 1440)
+        before = self.profile()
+        out = self.research(a, name=self.NAME, part="news")
+        self.assertEqual(len(self.calls), 4)
+        narrow = self.calls[3]["instructions"]
+        self.assertNotEqual(narrow, INSTRUCTIONS)
+        self.assertIn("controversies", narrow)
+        self.assertNotIn("employee_sentiment", narrow)
+        self.assertNotIn("business_model", narrow)
+        self.assertEqual(out["refreshed"], {self.NAME: ["news"]})
+        p = self.profile()
+        self.assertEqual((p.business_model, p.researched_at), ("Business call3.", before.researched_at))
+        self.assertEqual(json.loads(p.controversies_json)[0]["title"], "News call4")
+        self.assertEqual(json.loads(p.sentiment_json)["summary"], "Sentiment call3.")  # left as it was
         self.assertGreater(p.news_researched_at, before.news_researched_at)
+        self.assertEqual(p.sentiment_researched_at, before.sentiment_researched_at)
+
+        out = self.research(b, name=self.NAME, part="sentiment")
+        self.assertEqual(len(self.calls), 5)
+        narrow = self.calls[4]["instructions"]
+        self.assertIn("employee_sentiment", narrow)
+        self.assertNotIn("controversies", narrow)
+        self.assertEqual(out["refreshed"], {self.NAME: ["sentiment"]})
+        p = self.profile()
+        self.assertEqual(json.loads(p.sentiment_json)["summary"], "Sentiment call5.")
+        self.assertEqual(json.loads(p.controversies_json)[0]["title"], "News call4")
+        self.assertEqual(p.researched_at, before.researched_at)
         # A sees B's refresh: the profile is shared.
         self.assertEqual(self.client.get("/api/companies", headers=self.h(a)).json()[company_key(self.NAME)]
-                         ["sentiment"]["summary"], "Sentiment call2.")
+                         ["sentiment"]["summary"], "Sentiment call5.")
 
-        # Only news is stale: only news is asked for.
-        self.age(news_researched_at=2)
-        out = self.research(a, name=self.NAME)
-        self.assertEqual(out["refreshed"], {self.NAME: ["news"]})
-        self.assertNotIn("employee_sentiment", self.calls[2]["instructions"])
-        self.assertEqual(json.loads(self.profile().sentiment_json)["summary"], "Sentiment call2.")
-
-        # The base older than 30 days: a full research again.
+        # The batch still goes by age: a base older than 30 days is researched in full.
         self.age(researched_at=31)
-        out = self.research(a, name=self.NAME)
-        self.assertEqual(self.calls[3]["instructions"], INSTRUCTIONS)
+        out = self.research(a, mode="missing")
+        self.assertEqual(self.calls[5]["instructions"], INSTRUCTIONS)
         self.assertEqual(out["refreshed"], {self.NAME: ["base", "sentiment", "news"]})
-        self.assertEqual(self.profile().business_model, "Business call4.")
+        self.assertEqual(self.profile().business_model, "Business call6.")
+
+    def test_a_section_without_a_profile_to_add_to_is_a_full_research(self):
+        a = self.workspace()
+        search(a, FakeAdapter("workable:freshco", [self.ad(41, url="https://fresh.example/2", company=self.NAME)]))
+        out = self.research(a, name=self.NAME, part="news")
+        self.assertEqual(out["refreshed"], {self.NAME: ["base", "sentiment", "news"]})
+        self.assertEqual(self.profile().status, "done")
+
+    def test_a_section_needs_a_company_and_the_request_a_sign_in(self):
+        a = self.workspace()
+        with mock.patch.dict(os.environ, LLM_ENV):
+            r = self.client.post("/api/companies/research", headers=self.h(a), json={"mode": "missing", "part": "news"})
+            self.assertEqual(r.status_code, 422)
+            r = self.client.post("/api/companies/research", headers=self.h(a), json={"name": self.NAME, "part": "base"})
+            self.assertEqual(r.status_code, 422)
+        signed_out = helpers.TestClient(helpers.app)
+        r = signed_out.post("/api/companies/research", json={"name": self.NAME, "part": "news"})
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(self.calls, [])
 
     def test_plan(self):
         from backend.research import plan
 
         now = datetime.utcnow()
-        fresh = CompanyProfile(status="done", research_version=3, researched_at=now - timedelta(days=29),
-                               sentiment_researched_at=now - timedelta(hours=2), news_researched_at=now - timedelta(days=3))
-        self.assertEqual(plan(fresh), [])
-        self.assertEqual(plan(fresh, on_request=True), ["news"])
+        fresh = CompanyProfile(status="done", research_version=3, researched_at=now - timedelta(minutes=1),
+                               sentiment_researched_at=now - timedelta(minutes=1), news_researched_at=now - timedelta(minutes=1))
+        self.assertEqual(plan(fresh), [])  # a batch: up to date
+        self.assertEqual(plan(fresh, request="all"), ["base", "sentiment", "news"])
+        self.assertEqual(plan(fresh, request="news"), ["news"])
+        self.assertEqual(plan(fresh, request="sentiment"), ["sentiment"])
         self.assertEqual(plan(None), ["base", "sentiment", "news"])
+        self.assertEqual(plan(None, request="news"), ["base", "sentiment", "news"])
         self.assertEqual(plan(CompanyProfile(status="error")), ["base", "sentiment", "news"])
-        self.assertEqual(plan(CompanyProfile(status="skipped"), on_request=True), [])
+        self.assertEqual(plan(CompanyProfile(status="error"), request="sentiment"), ["base", "sentiment", "news"])
+        self.assertEqual(plan(CompanyProfile(status="skipped")), [])
+        self.assertEqual(plan(CompanyProfile(status="skipped"), request="all"), ["base", "sentiment", "news"])
         old = CompanyProfile(status="done", research_version=2, researched_at=now)
         self.assertEqual(plan(old), ["base", "sentiment", "news"])
+        self.assertEqual(plan(old, request="news"), ["base", "sentiment", "news"])
+        month = CompanyProfile(status="done", research_version=3, researched_at=now - timedelta(days=29))
+        self.assertEqual(plan(month), [])
+        month.researched_at = now - timedelta(days=31)
+        self.assertEqual(plan(month), ["base", "sentiment", "news"])
 
     def test_old_profiles_get_section_dates_from_their_research(self):
         from backend.db import _fix_legacy_data

@@ -530,6 +530,7 @@ def _job_md(job: Job, entry: JobEntry, fit: Optional[FitResult], entries: dict[i
     office = line(job.office_text) + (f" (from the {line(job.office_source)})" if job.office_text and job.office_source else "")
     out.append(facts([
         ("Your status", STATUS_FOLDER.get(entry.status, line(entry.status)) + (" (hidden)" if job.hidden else "")),
+        ("Moved to Applied", day(job.applied_at) if job.applied_at else ""),  # the latest move (none: not known)
         ("Fit score", f"{fit.score} out of 100" if fit and fit.status == "ok" and fit.score is not None else ("scoring failed" if fit else "")),
         ("Where", where), ("Work mode", mode),
         ("Distance from home", f"{job.distance_km:.1f} km" if job.distance_km is not None else ""),
@@ -678,12 +679,18 @@ def _company_md(p: CompanyProfile) -> str:
     for title, value in (("What the company does", d["business_model"]), ("Ownership", d["ownership"])):
         if value:
             out.append(f"\n## {title}\n\n{text(value)}\n")
-    for title, value in (("Offices", d["offices"]), ("Employee sentiment", d["sentiment"]),
-                         ("In the news", d["controversies"]), ("Sources", d["sources"])):
-        if value:
-            out.append(f"\n## {title}\n\n{value_md(value)}\n")
-    if d["controversy_note"]:
-        out.append(f"\n{text(d['controversy_note'])}\n")
+    for title, value, note, at in (("Offices", d["offices"], "", None),
+                                   ("Employee sentiment", d["sentiment"], "", d["sentiment_researched_at"]),
+                                   ("News/Controversies", d["controversies"], d["controversy_note"], d["news_researched_at"]),
+                                   ("Sources", d["sources"], "", None)):
+        if value or note:
+            out.append(f"\n## {title}\n")
+            if note:
+                out.append(f"\n{text(note)}\n")
+            if value:
+                out.append(f"\n{value_md(value)}\n")
+            if at:
+                out.append(f"\nResearched {day(at)}.\n")
     if d["error"] and not (d["business_model"] or d["ownership"]):
         out.append(f"\nResearch didn't finish: {line(d['error'])}\n")
     return "".join(out)

@@ -11,7 +11,7 @@ const state = {
   loadedOmit: 'excluded,hidden', // what the loaded list left out ("Show excluded"/"Show hidden" fetch them)
   omittedCount: 0, // how many jobs it left out
   details: new Map(), // job id -> full job (with description)
-  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, hideGhost: false, status: 'all', sort: 'score' },
+  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
   selected: new Set(),
   profile: null,
   pins: [],
@@ -195,14 +195,13 @@ async function loadJobs() {
   loadDuplicates();
 }
 
-function visibleJobs(keepGhost = false) {
+function visibleJobs() {
   const f = state.filter;
   const q = f.q.trim().toLowerCase();
   const list = state.jobs.filter((j) => {
     if (!f.showExcluded && j.excluded_reason) return false;
     if (!f.showClosed && j.closed) return false;
     if (!f.showHidden && j.hidden) return false;
-    if (f.hideGhost && !keepGhost && j.ghost?.level) return false;
     if (f.status !== 'all' && j.status !== f.status) return false;
     if (f.minScore > 0 && (scoreOf(j) ?? -1) < f.minScore) return false;
     if (f.mode !== 'all' && modeOf(j) !== f.mode) return false;
@@ -227,8 +226,7 @@ function renderStatusChips() {
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   box.innerHTML = '';
   const base = state.jobs.filter((j) => (state.filter.showExcluded || !j.excluded_reason)
-    && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden)
-    && !(state.filter.hideGhost && j.ghost?.level));
+    && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden));
   [['all', 'all'], ...STATUSES.map((s) => [s, STATUS_LABEL[s]])].forEach(([val, label]) => {
     const n = val === 'all' ? base.length : base.filter((j) => j.status === val).length;
     const b = document.createElement('button');
@@ -303,8 +301,7 @@ function renderJobs() {
   list.innerHTML = '';
   $('#jobs-empty').hidden = jobs.length !== 0;
   const hidden = state.jobs.length - jobs.length + state.omittedCount;
-  const ghosts = state.filter.hideGhost ? visibleJobs(true).length - jobs.length : 0;
-  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters${ghosts ? ` (${ghosts} of them possible ghost job${ghosts === 1 ? '' : 's'})` : ''}` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
+  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
   jobs.forEach((job) => list.appendChild(renderJobCard(job)));
   if (focusBack) (focusBack() || $('#tab-jobs')).focus({ preventScroll: true });
   renderBulkBar();
@@ -330,8 +327,15 @@ function renderJobCard(job) {
     job.softened_reason ? `<span class="badge soft" title="${esc(`Your saved rule excludes this: ${job.softened_reason}`)}">shown by temporary +${state.officeSlack} office day${state.officeSlack > 1 ? 's' : ''}</span>` : '',
   ].join('');
   const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
-  const also = (job.also_on || []).map((c) => `<span class="also-item"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}</a>${c.closed ? ' <span class="muted">(closed)</span>' : ''}
-    <button class="link split-btn" type="button" data-split="${c.id}" title="Not the same job: show this ad as its own card again">split<span class="visually-hidden"> the ${esc(sourceLabel(c.source))} ad from this card</span></button></span>`).join('');
+  // The main link: the employer's own page when a merged copy is on it (job.link), else the listed ad. The other
+  // copies, and then the listed ad itself, are under "Also on".
+  const link = mainLink(job);
+  const split = (id, source) => `<button class="link split-btn" type="button" data-split="${id}" title="Not the same job: show this ad as its own card again">split<span class="visually-hidden"> the ${esc(sourceLabel(source))} ad from this card</span></button>`;
+  const also = [
+    ...(link.copy_id ? [`<span class="also-item"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(sourceLabel(job.source))}</a></span>`] : []),
+    ...(job.also_on || []).filter((c) => c.id !== link.copy_id).map((c) => `<span class="also-item"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}</a>${c.closed ? ' <span class="muted">(closed)</span>' : ''}
+    ${split(c.id, c.source)}</span>`),
+  ].join('');
   const fitErr = job.fit && job.fit.error ? `<p class="hint err-text">Scoring failed: ${esc(job.fit.error.slice(0, 240))}</p>` : '';
   const titleId = `job-${job.id}-title`;
   const name = `${job.title || 'job'}${job.company ? ` at ${job.company}` : ''}`;
@@ -340,7 +344,7 @@ function renderJobCard(job) {
       <input type="checkbox" data-act="select" aria-label="Select ${esc(name)}" ${state.selected.has(job.id) ? 'checked' : ''} />
       <div class="job-title-row">
         <div class="job-company">${esc(job.company || '—')} ${companyIcon(job)}</div>
-        <h3 class="job-title" id="${titleId}"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
+        <h3 class="job-title" id="${titleId}"><a href="${esc(link.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
         <div class="job-meta">
           <span>${esc(job.location_text || 'location unknown')}</span>
           <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${employmentBadge(job)}${dist}${flags}
@@ -351,7 +355,9 @@ function renderJobCard(job) {
     </div>
     <div class="job-sub">
       ${job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : ''}
-      <span class="muted">${esc(sourceLabel(job.source))}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>
+      <span class="muted">${esc(sourceLabel(link.source))}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>${
+        link.copy_id ? ` ${split(link.copy_id, link.source)}` : ''}
+      <span class="applied-slot">${appliedHtml(job)}</span>
     </div>
     ${officeHtml(job) ? `<div class="job-office">${officeHtml(job)}</div>` : ''}
     ${also ? `<div class="also-on" title="The same job advertised on other sites, merged into this card"><span class="muted">Also on:</span> ${also}</div>` : ''}
@@ -425,8 +431,11 @@ async function updateJobStatus(job, next, selectEl) {
   const prev = job.status;
   job.status = next;
   renderStatusChips();
+  const slot = selectEl.closest('.job-card')?.querySelector('.applied-slot');
   try {
-    await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: next }) });
+    const res = await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: next }) });
+    job.applied_at = res.applied_at ?? job.applied_at ?? null;
+    if (slot) slot.innerHTML = appliedHtml(job); // the card isn't redrawn (focus stays on the select)
   } catch (e) {
     job.status = prev;
     selectEl.value = prev;
@@ -497,8 +506,12 @@ async function bulkUpdateStatus() {
   const ids = Array.from(state.selected);
   const status = $('#bulk-status').value;
   try {
-    await api('/api/jobs/status', { method: 'PATCH', body: JSON.stringify({ ids, status }) });
-    state.jobs.forEach((j) => { if (state.selected.has(j.id)) j.status = status; });
+    const res = await api('/api/jobs/status', { method: 'PATCH', body: JSON.stringify({ ids, status }) });
+    state.jobs.forEach((j) => {
+      if (!state.selected.has(j.id)) return;
+      j.status = status;
+      if (res.applied_at && String(j.id) in res.applied_at) j.applied_at = res.applied_at[String(j.id)];
+    });
     state.selected.clear();
     renderJobs();
     toast(`Updated ${ids.length} job(s)`, 'ok');
@@ -536,7 +549,6 @@ function initJobs() {
     state.filter.showHidden = e.target.checked;
     if (e.target.checked && state.loadedOmit.includes('hidden')) loadJobs(); else renderJobs();
   });
-  $('#filter-hide-ghost').addEventListener('change', (e) => { state.filter.hideGhost = e.target.checked; renderJobs(); });
   $('#bulk-hide').addEventListener('click', () => {
     const ids = Array.from(state.selected);
     if (ids.length > 20 && !confirm(`Hide ${ids.length} jobs?`)) return;
@@ -714,24 +726,25 @@ function companyIcon(job) {
   if (p?.status === 'done') {
     const n = p.controversies.length;
     cls = n ? 'warn' : 'ok';
-    title = n ? `${n} controversy item(s) found: click for details` : 'Company profile';
+    title = n ? `${n} News/Controversies item(s) found: click for details` : 'Company profile';
   } else if (p?.status === 'error') { cls = 'err'; title = 'Research failed: click for details'; }
   else if (p?.status === 'skipped') { cls = 'none'; title = 'Not a researchable company'; }
   const n = p?.status === 'done' ? p.controversies.length : 0;
   const count = n ? `<sup>${n}</sup>` : '';
   // The name is hidden text beside the symbol, not an aria-label: the symbol and count ("ⓘ1") would not be part of an
   // aria-label (WCAG 2.5.3 Label in Name). The title says what's known, and is read as the description.
-  const label = `Company info: ${job.company}${n ? `, ${n} controversy ${n === 1 ? 'item' : 'items'}` : ''}`;
+  const label = `Company info: ${job.company}${n ? `, ${n} News/Controversies ${n === 1 ? 'item' : 'items'}` : ''}`;
   return `<button type="button" class="info-btn ${cls}" data-act="company" title="${esc(title)}"><span aria-hidden="true">ⓘ${count}</span><span class="visually-hidden">${esc(label)}</span></button>`;
 }
 
 function showCompany(job) {
   const p = state.companies[job.company_key];
   openHtmlModal(p?.official_name || job.company, companyProfileHtml(p, job.company));
-  $('#company-research').addEventListener('click', () => {
+  // The profile's button researches all of it, a section's only that section: either at any time.
+  $$('#modal-html [data-research-part]').forEach((b) => b.addEventListener('click', () => {
     closeModal();
-    startRun('/api/companies/research', { name: job.company });
-  });
+    startRun('/api/companies/research', { name: job.company, part: b.dataset.researchPart });
+  }));
 }
 
 function currentWorkspace() { return state.ws; }
@@ -1653,7 +1666,10 @@ async function loadScorerStatus() {
 // the text and its concise version. Unsaved edits live in state.docs.drafts, so a row can be redrawn (after a
 // save, a tick, a new concise version) without losing what's typed in another, and focus returns to the
 // control that had it (data-focus). Status lines are kept in state too and announced through #docs-live.
-const DOC_KINDS = [['resume', 'Resume / CV'], ['cover_letter', 'Cover letter'], ['preferences', 'Preferences (private)'], ['other', 'Other (supporting)']];
+const DOC_KINDS = [['resume', 'Resume / CV'], ['cover_letter', 'Cover letter'], ['preferences', 'Preferences'], ['other', 'Other/supporting']];
+// Ticked documents coming to more than this (the text the AI gets: each one's sent_len, which is
+// Document.text_for_llm) are a lot to send with every request: a warning, never a limit.
+const DOCS_WARN_CHARS = 50000;
 const DOC_SOURCE = { file: 'File', note: 'Note', summary: 'Summary' };
 const KEEP_BOTH_KEY = 'jobhunt.summaryKeepBoth'; // summaries the user chose to keep ticked with their originals
 
@@ -1727,6 +1743,30 @@ function renderDocs() {
   $('#docs-empty').hidden = state.docs.list.length !== 0;
   restoreFocus(list, focus);
   renderSummarySuggestion();
+  renderDocsSize();
+}
+
+/* The warning above Create summary when the ticked documents come to more than DOCS_WARN_CHARS characters, counting
+   the version the AI gets. Said once by screen readers when it appears on the open tab (not on every redraw). */
+function renderDocsSize() {
+  const box = $('#docs-size-warning');
+  const total = state.docs.list.filter((d) => d.use_for_scoring).reduce((n, d) => n + Number(d.sent_len || 0), 0);
+  const over = total > DOCS_WARN_CHARS;
+  if (over) {
+    const text = `Your ticked documents come to ${total.toLocaleString()} characters (the versions the AI gets). That is a lot to send with every request to the AI. Create summary merges them into one shorter document.`;
+    if (box.dataset.text !== text) {
+      box.dataset.text = text;
+      box.innerHTML = `<p><strong>Long documents:</strong> ${esc(text)}</p>
+        <button id="docs-size-go" class="btn btn-sm" type="button">Go to Create summary</button>`;
+      box.querySelector('#docs-size-go').addEventListener('click', () => {
+        const btn = $('#summary-make');
+        btn.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+        btn.focus({ preventScroll: true });
+      });
+    }
+  }
+  if (over && box.hidden && !$('#tab-docs').hidden) announce(`Long documents: your ticked documents come to ${total.toLocaleString()} characters. Create summary can merge them into one shorter document.`);
+  box.hidden = !over;
 }
 
 function redrawDoc(id) {
@@ -1738,6 +1778,7 @@ function redrawDoc(id) {
   old.replaceWith(row);
   restoreFocus(row, focus);
   renderSummarySuggestion();
+  renderDocsSize();
 }
 
 function docRow(doc) {
@@ -2181,7 +2222,7 @@ function drawJobMarkers() {
       : { radius, weight: 2, color: ink, dashArray: '3 3', fillColor: themeColor('quiet'), fillOpacity: 0.3 });
     const rows = jobs.slice(0, 40).map((j) => `<li><b>${esc(j.title)}</b> · ${esc(j.company || '')}
       ${scoreOf(j) !== null ? ` · <span class="visually-hidden">fit score </span>${scoreOf(j)}` : ''}${j.excluded_reason ? ' <i>(excluded)</i>' : ''}<br>${jobLinkHtml(j)}
-      · <a href="${esc(j.url)}" target="_blank" rel="noopener">ad<span class="visually-hidden"> for ${esc(j.title)}</span>${NEW_TAB}</a></li>`).join('');
+      · <a href="${esc(mainLink(j).url)}" target="_blank" rel="noopener">ad<span class="visually-hidden"> for ${esc(j.title)}</span>${NEW_TAB}</a></li>`).join('');
     const place = esc(jobs[0].location_text || 'This place');
     marker.bindPopup(`<div class="map-popup" role="region" aria-label="Jobs at ${place}"><p class="muted map-popup-head">${place}${n > 1 ? ` · ${n} jobs` : ''}</p>
       <ul>${rows}</ul>${n > 40 ? `<p class="muted">…and ${n - 40} more: see the list under the map.</p>` : ''}</div>`, { maxWidth: 320, maxHeight: 300 });

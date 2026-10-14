@@ -46,7 +46,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.db import CoverLetter, FitResult, Job, JobDuplicate, SessionLocal, get_db
+from backend.db import CoverLetter, FitResult, Job, JobDuplicate, Posting, SessionLocal, get_db
 from backend.geo import distance_km, guess_country
 from backend.job_source import site_of
 from backend.workspaces import current_workspace, owned
@@ -268,23 +268,38 @@ _DETAIL_RANK = {"none": 0, "summary": 1, "full": 2}
 STATUS_PROGRESS = {"to_review": 0, "shortlisted": 1, "not_interested": 2, "applied": 3, "interviewing": 4, "rejected": 5}
 
 
+def job_boards(db: Session, ws: int) -> set[str]:
+    """The workspace's sources that are job boards (``site_of``): a source listing several employers (SEEK,
+    EdTechJobs...). Any other source is an employer's own site. Read from a column query: a job's source and company
+    are its own (sealed) value, else its posting's, so they are de-duplicated here, not with DISTINCT."""
+    employers: dict[str, set[str]] = defaultdict(set)
+    rows = (db.query(Job._source, Job._company, Posting.source, Posting.company)
+            .outerjoin(Posting, Posting.id == Job.posting_id).filter(Job.workspace_id == ws))
+    for own_source, own_company, source, company in rows:
+        employers[site_of(own_source or source)].add((own_company or company or "").lower())
+    return {s for s, names in employers.items() if len(names) >= 3} | {"seek"}
+
+
+def employer_copy(source: Optional[str], copies: Iterable[Job], boards: set[str]) -> Optional[Job]:
+    """For a listed job on a job board: the merged copy on the employer's own site that its main link goes to
+    (open-source spec §1.12), an open one first; None when it is on the employer's site itself or no copy is.
+    Which copy is listed (``Ranking``) doesn't change."""
+    if site_of(source) not in boards:
+        return None
+    own = [c for c in copies if c.url and site_of(c.source) not in boards]
+    return min(own, key=lambda c: (c.closed_at is not None, c.id)) if own else None
+
+
 class Ranking:
     """Which copy of an ad is listed: the full ad first, then the employer's
     own site over job boards, then one that passes the filters, is still
     open, has a fit score, was seen first."""
 
     def __init__(self, db: Session, ws: int):
-        from backend.pool import jobs_query
-
         # Decided in Python: a fit's status is sealed (accounts design §14.6).
         self.scored = {j for j, status in db.query(FitResult.job_id, FitResult.status)
                        .join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws) if status == "ok"}
-        employers: dict[str, set[str]] = defaultdict(set)
-        # De-duplicated here, not with DISTINCT: a job's source and company may be its own (sealed) values.
-        for job in jobs_query(db).filter(Job.workspace_id == ws):
-            employers[site_of(job.source)].add((job.company or "").lower())
-        # A source listing several employers is a job board (SEEK, EdTechJobs...).
-        self.boards = {s for s, names in employers.items() if len(names) >= 3} | {"seek"}
+        self.boards = job_boards(db, ws)
 
     def key(self, job: Job) -> tuple:
         first = job.first_seen.timestamp() if job.first_seen else 0
@@ -352,6 +367,10 @@ def merge(db: Session, roots: list[Job], crit=None, ranking: Optional[Ranking] =
     others = sorted((m for m in members.values() if m.id != primary.id), key=ranking.key, reverse=True)
 
     primary.status = max((r.status for r in roots), key=lambda s: STATUS_PROGRESS.get(s, 0))
+    # The applied date goes with the status: the latest of the group's (each copy keeps its own row).
+    applied = [m.applied_at for m in members.values() if m.applied_at is not None]
+    if applied:
+        primary.applied_at = max(applied)
     primary.hidden = all(r.hidden for r in roots)  # still listed if any copy was
     ids = list(members)
     root_ids = {r.id for r in roots}

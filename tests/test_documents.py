@@ -188,6 +188,36 @@ class PreferencesTest(DocsTestCase):
         self.assertIn("SECRET", self.profile()[0])
 
 
+class SizeWarningTest(DocsTestCase):
+    """Open-source spec §1.11: the Documents tab warns when the ticked documents come to more than 50,000 characters,
+    counting the version the AI gets (``sent_len``, which is ``Document.text_for_llm``). A warning, not a limit."""
+
+    def ticked_total(self) -> int:
+        docs = self.client.get("/api/documents", headers=self.h).json()
+        return sum(d["sent_len"] for d in docs if d["use_for_scoring"])  # what frontend/app.js renderDocsSize adds up
+
+    def test_the_count_is_what_the_ai_gets_of_the_ticked_documents(self):
+        long_cv = self.add_doc("cv.pdf", "resume", "R" * 30000, concise_text="C" * 1000)
+        self.add_doc("projects.pdf", "other", "P" * 25000)
+        self.add_doc("old.pdf", "other", "O" * 40000, use_for_scoring=False)  # unticked: not sent, not counted
+        self.assertEqual(self.ticked_total(), 55000)  # over 50,000: the tab warns
+        self.client.patch(f"/api/documents/{long_cv}", headers=self.h, json={"use_concise": True})
+        self.assertEqual(self.ticked_total(), 26000)  # the concise version is what the AI gets now
+        db = SessionLocal()
+        try:
+            ticked = [d for d in db.query(Document).filter(Document.workspace_id == self.ws) if d.use_for_scoring]
+            self.assertEqual(self.ticked_total(), sum(len(d.text_for_llm()) for d in ticked))
+        finally:
+            db.close()
+
+    def test_it_is_only_a_warning(self):
+        self.add_doc("big.pdf", "resume", "B" * 60000)
+        self.assertGreater(self.ticked_total(), 50000)
+        self.assertIn("B" * 60000, self.profile()[0])  # everything ticked is still sent
+        note = self.client.post("/api/documents/notes", headers=self.h, json={"title": "More", "text": "M" * 5000})
+        self.assertEqual(note.status_code, 201)
+
+
 class ConciseTest(DocsTestCase):
     def test_choice_of_version_drives_the_profile_and_its_hash(self):
         c, h = self.client, self.h

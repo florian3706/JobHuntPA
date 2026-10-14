@@ -30,7 +30,12 @@ function showPageError(msg) {
 /* ---------- header ---------- */
 function renderHead() {
   const mode = modeOf(job);
-  const also = (job.also_on || []).map((c) => `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}${NEW_TAB}</a>`).join(' · ');
+  // The main link goes to the employer's own page when a merged copy is on it; the listed ad is then "also on".
+  const link = mainLink(job);
+  const also = [
+    ...(link.copy_id ? [{ url: job.url, source: job.source }] : []),
+    ...(job.also_on || []).filter((c) => c.id !== link.copy_id),
+  ].map((c) => `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}${NEW_TAB}</a>`).join(' · ');
   const facts = [
     `<span>${esc(job.location_text || 'location unknown')}</span>`,
     `<span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>`,
@@ -39,6 +44,7 @@ function renderHead() {
     job.distance_km !== null ? `<span><span aria-hidden="true">📍 </span>${job.distance_km} km<span class="muted"> straight line to your nearest pin</span></span>` : '',
     job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : '',
     job.posted_at ? `<span class="muted">posted ${esc(fmtDate(job.posted_at).split(',')[0])}</span>` : '',
+    `<span class="applied-slot">${appliedHtml(job)}</span>`,
     job.closed ? '<span class="badge flag">closed</span>' : '',
     job.recruiter ? '<span class="badge flag">recruitment agency</span>' : '',
   ].join('');
@@ -46,9 +52,9 @@ function renderHead() {
     <div class="job-top">
       <div class="job-title-row">
         <div class="job-company">${esc(job.company || '—')}</div>
-        <h1 id="job-title" class="job-page-title"><a href="${esc(job.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}<span class="visually-hidden">: the ad on ${esc(sourceLabel(job.source))}</span>${NEW_TAB}</a></h1>
+        <h1 id="job-title" class="job-page-title"><a href="${esc(link.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}<span class="visually-hidden">: the ad on ${esc(sourceLabel(link.source))}</span>${NEW_TAB}</a></h1>
         <div class="job-meta">${facts}</div>
-        <div class="job-sub"><span class="muted">${esc(sourceLabel(job.source))}${also ? ` · also on ${also}` : ''}</span></div>
+        <div class="job-sub"><span class="muted">${esc(sourceLabel(link.source))}${also ? ` · also on ${also}` : ''}</span></div>
         ${job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : ''}
       </div>
       ${ratingsHtml(job, '#ghost-title')}
@@ -60,19 +66,25 @@ function renderHead() {
       <a class="btn btn-ghost btn-sm" href="./#jobs">Back to the dashboard</a>
     </div>`;
   document.title = `${job.title} · ${job.company} · JobHuntPA`;
+  // The circle links to the ghost section; its reasons are collapsed, so following the link opens them.
+  $('#job-head a.ghost-dot')?.addEventListener('click', () => { const why = $('#ghost-why'); if (why) why.open = true; });
   $('#job-status').addEventListener('change', async (e) => {
     try {
-      await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) });
+      const res = await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) });
       job.status = e.target.value;
+      job.applied_at = res.applied_at ?? job.applied_at ?? null;
+      $('#job-head .applied-slot').innerHTML = appliedHtml(job); // (the header isn't redrawn: focus stays)
       toast(`Status saved: ${STATUS_LABEL[job.status]}`, 'ok', 2500);
     } catch (err) { toast(`Status update failed: ${err.message}`, 'err'); e.target.value = job.status; }
   });
 }
 
 /* ---------- is this a real vacancy? ----------
-   Every job has this section: the rating (the same circle as on its card) in words, each kind of sign the app looks
-   for and whether it was found, clear or could not be checked, what the three colours mean, and, for a flagged job,
-   what to ask the employer. */
+   Every job has this section: the rating (the same circle as on its card) in words and what it rests on (the
+   disclaimer), always shown; then, collapsed until asked for (#ghost-why), each kind of sign the app looks for and
+   whether it was found, clear or could not be checked, what the three colours mean, and, for a flagged job, what to
+   ask the employer. */
+const GHOST_DISCLAIMER = 'This is worked out from your own searches only. It indicates whether an ad may be a ghost job or a real position; it proves neither.';
 const GHOST_VERDICT = {
   likely: '<strong>Several signs</strong> suggest this ad may not be a current vacancy (a "ghost job").',
   possible: '<strong>Some signs</strong> suggest this ad may not be a current vacancy (a "ghost job").',
@@ -110,6 +122,8 @@ function renderGhost() {
   $('#job-ghost').innerHTML = `
     <p class="ghost-big"><span class="ghost-big-dot" aria-hidden="true">👻 ${ghostDot(job)}</span> <span>${verdict}${
       unknown ? ` ${unknown === 1 ? 'One check' : `${unknown} checks`} could not be made, so the rating rests on less.` : ''}</span></p>
+    <p class="hint ghost-disclaimer">${GHOST_DISCLAIMER}</p>
+    <details id="ghost-why" class="ghost-details"><summary>${g.level ? 'Why this rating, and what to do' : 'Why this rating'}</summary>
     <h3 class="ghost-sub" id="ghost-why-title">Why this rating</h3>
     <ul class="ghost-checks" aria-labelledby="ghost-why-title">${checks.map((c) => ghostCheckHtml(c, byCode[c.code])).join('')}</ul>
     <h3 class="ghost-sub" id="ghost-key-title">What the colours mean</h3>
@@ -128,7 +142,8 @@ function renderGhost() {
       <li>${signs.some((s) => s.code === 'reposted' || s.code === 'date_refreshed') ? 'Why was the ad posted again?'
         : signs.some((s) => s.code === 'evergreen_wording' || s.code === 'ad_signs') ? 'Is this for a specific team, or are they building a list of candidates?'
         : 'Has the closing date or the number of openings changed?'}</li>
-    </ul>` : ''}`;
+    </ul>` : ''}
+    </details>`;
 }
 
 function renderFit() {
@@ -291,15 +306,16 @@ async function loadCompany() {
   try { p = (await api('/api/companies'))[job.company_key] || null; } catch { p = null; }
   $('#company-title').textContent = p?.official_name || job.company || 'Company';
   $('#job-company').innerHTML = job.company ? companyProfileHtml(p, job.company) : '<p class="muted">No employer named.</p>';
-  $('#company-research')?.addEventListener('click', researchCompany);
+  // The profile's button researches all of it, a section's own button only that section: either at any time.
+  $$('#job-company [data-research-part]').forEach((b) => b.addEventListener('click', () => researchCompany(b)));
 }
 
-async function researchCompany() {
+async function researchCompany(button) {
   const status = $('#company-status');
   try {
-    let run = await api('/api/companies/research', { method: 'POST', body: JSON.stringify({ name: job.company }) });
-    const hadFocus = document.activeElement === $('#company-research');
-    setBusy($('#company-research'), true);
+    let run = await api('/api/companies/research', { method: 'POST', body: JSON.stringify({ name: job.company, part: button.dataset.researchPart }) });
+    const hadFocus = document.activeElement === button;
+    $$('#job-company [data-research-part]').forEach((b) => setBusy(b, true));
     while (run.state === 'queued' || run.state === 'running') {
       status.textContent = `Researching… ${run.stage || ''}`;
       await new Promise((r) => setTimeout(r, 2000));

@@ -193,6 +193,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .score.mid { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
 .score.low { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
 .job-sub { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+/* The applied date (common.js appliedHtml): shown while the job is in Applied, nothing (and no gap) otherwise. */
+.applied-slot:empty { display: none; }
+.applied-on { color: var(--text); }
 .job-sub a { color: var(--accent-text); }
 .job-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .job-actions select { flex: 1 1 160px; }
@@ -256,6 +259,9 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; paddi
 .note-form h3, .summary-card h3 { margin: 0; }
 .note-form .hint, .summary-card .hint { margin: 0; }
 .summary-card { display: flex; flex-direction: column; gap: 10px; }
+/* Documents tab: the ticked documents are long (app.js renderDocsSize). A warning, not a limit. */
+.docs-size-warning { margin: 0 0 14px; }
+.docs-size-warning p { margin: 0 0 8px; }
 .note-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; }
 .note-grid input, .note-grid select { width: 100%; }
 .doc-textarea {
@@ -809,7 +815,7 @@ summary { cursor: pointer; min-height: 24px; }
   .btn, .btn-sm, .tab, .chip, .seg-btn, .chat-job, .toast-close, .chat-close,
   input[type="text"], input[type="search"], input[type="number"], input[type="password"], input[type="url"],
   input[type="email"], input[type="time"], select { min-height: 44px; }
-  .check, .check-field, .run-report summary, .reqs summary, .trip summary, .dupe-side summary, .ghost-why summary { min-height: 44px; }
+  .check, .check-field, .run-report summary, .reqs summary, .trip summary, .dupe-side summary, .ghost-why summary, .ghost-details summary { min-height: 44px; }
   .check input, .check-field input, .job-top input[type="checkbox"], .title-row input { width: 24px; height: 24px; }
   .tag button, .info-btn, .link, .help-link { min-width: 36px; min-height: 36px; }
   a.ghost-dot { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
@@ -825,6 +831,9 @@ summary { cursor: pointer; min-height: 24px; }
   .spinner { border-top-color: var(--accent); }
 }
 .section-date { font-size: 12.5px; margin-top: 4px; }
+/* A profile section's date and its own "Research again" button (common.js sectionResearch); wraps at 320 px. */
+.section-research { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 6px; }
+.section-research .section-date { margin-top: 0; }
 
 /* Notices at the top of a page (common.js pageNotice): recovery codes not saved yet, data being encrypted. On the --card ground with a warn tint, the pair checked for .notice. */
 .page-notice {
@@ -1018,6 +1027,10 @@ a.ghost-dot:hover { border-color: var(--border-strong); }
 .ghost-big-dot { font-size: 20px; white-space: nowrap; flex: none; }
 .ghost-key { list-style: none; padding-left: 0; display: flex; flex-direction: column; gap: 4px; }
 .ghost-sub { margin: 14px 0 6px; font-size: 15px; }
+/* The job page's ghost section: the rating and the disclaimer stay in view, the reasons open on request. */
+.ghost-disclaimer { margin: 8px 0 0; }
+.ghost-details { margin-top: 10px; }
+.ghost-details > summary { cursor: pointer; color: var(--accent-text); font-weight: 600; }
 .ghost-checks { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 10px 20px; }
 .ghost-check { padding: 2px 0 2px 10px; border-left: 3px solid var(--border); overflow-wrap: anywhere; }
 .ghost-state { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted); }

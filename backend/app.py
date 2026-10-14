@@ -8,6 +8,7 @@ import json
 import logging
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -36,7 +37,7 @@ from backend.docs import router as docs_router
 from backend.export import router as export_router
 from backend.commute import router as commute_router
 from backend.commute import status_router as commute_status_router
-from backend.duplicates import router as duplicates_router
+from backend.duplicates import employer_copy, job_boards, router as duplicates_router
 from backend.extension import router as extension_router
 from backend.job_chat import router as chat_router
 from backend.filters import softened_job_ids
@@ -250,6 +251,8 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         "url": job.url,
         "distance_km": job.distance_km,
         "status": job.status,
+        # When it last moved to Applied (None: never, or before this was kept); the card shows it while it's there.
+        "applied_at": job.applied_at.isoformat() if job.applied_at else None,
         "excluded_reason": job.excluded_reason,
         "detail_status": job.detail_status,
         "posted_at": job.posted_at,
@@ -302,11 +305,17 @@ def _soften(out: dict, softened: set[int]) -> dict:
     return out
 
 
-def _with_copies(out: dict, copies: list[Job]) -> dict:
+def _with_copies(out: dict, copies: list[Job], boards: Optional[set[str]] = None) -> dict:
     """Merged duplicates: the same ad on other sites. The job counts as
-    closed only once every copy is."""
+    closed only once every copy is. ``link`` is where the card's and the job
+    page's main link goes: the listed ad, or, when that is on a job board
+    (``boards``: duplicates.job_boards) and a copy is on the employer's own
+    site, that copy (``copy_id``). The others stay under "Also on"."""
     out["also_on"] = [{"id": c.id, "source": c.source, "url": c.url, "title": c.title, "company": c.company,
                        "closed": c.closed_at is not None, "detail_status": c.detail_status} for c in copies]
+    own = employer_copy(out["source"], copies, boards) if copies and boards else None
+    out["link"] = ({"url": own.url, "source": own.source, "copy_id": own.id} if own is not None
+                   else {"url": out["url"], "source": out["source"], "copy_id": None})
     if out["closed"] and any(c.closed_at is None for c in copies):
         out["closed"] = False
     return out
@@ -357,13 +366,14 @@ def list_jobs(office_slack: int = OfficeSlack,
                .filter(Job.workspace_id == ws)}
     profiles = {p.key: p for p in db.query(CompanyProfile).all()}
     signs = ghost.assess_jobs(db, [job for job, _ in listed], profiles)
+    boards = job_boards(db, ws) if copies else set()  # (only merged jobs can link to an employer's copy)
     # Plain JSON values already: skip FastAPI's per-field encoder, which took most of the time for
     # thousands of jobs on a Raspberry Pi.
     return JSONResponse([_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
                                                          recruiter=looks_like_recruiter(job.company or "", profiles),
                                                          signs=signs[job.id]),
                                               softened),
-                                      copies.get(job.id, []))
+                                      copies.get(job.id, []), boards)
                          for job, fit in listed],
                         headers={"X-Omitted-Count": str(omitted_count)})
 
@@ -382,7 +392,8 @@ def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(
                               recruiter=looks_like_recruiter(job.company or "", profiles), signs=signs),
                   softened_job_ids(db, ws, office_slack))
     out["office_candidates"] = candidates(db, job) if out["office_unknown"] or job.office_source == "company" else []
-    return _with_copies(out, db.query(Job).filter(Job.duplicate_of == job_id).all())
+    copies = db.query(Job).filter(Job.duplicate_of == job_id).all()
+    return _with_copies(out, copies, job_boards(db, ws) if copies else set())
 
 
 class StatusUpdate(BaseModel):
@@ -393,13 +404,28 @@ class BulkStatusUpdate(StatusUpdate):
     ids: list[int]
 
 
+def set_status(job: Job, status: str, now: Optional[datetime] = None) -> None:
+    """A job's application status. Moving to Applied stores the date (sealed, like the status): moved away and
+    back, it is the latest move; set to Applied again while already there, it keeps the first."""
+    if status == "applied" and job.status != "applied":
+        job.applied_at = now or datetime.utcnow()
+    job.status = status
+
+
 @app.patch("/api/jobs/status")
 def bulk_update_status(payload: BulkStatusUpdate, db: Session = Depends(get_db),
                        ws: int = Depends(current_workspace)):
-    n = (db.query(Job).filter(Job.workspace_id == ws, Job.id.in_(payload.ids))
-         .update({Job.status: payload.status}, synchronize_session=False))
+    """Signed in: the status of the workspace's jobs among ``ids`` (others are left alone). Decided in Python:
+    the status is sealed. ``applied_at``: each changed job's applied date, for the cards."""
+    from backend.pool import jobs_query
+
+    now = datetime.utcnow()
+    jobs = jobs_query(db).filter(Job.workspace_id == ws, Job.id.in_(payload.ids)).all()
+    for job in jobs:
+        set_status(job, payload.status, now)
     db.commit()
-    return {"ok": True, "updated": n}
+    return {"ok": True, "updated": len(jobs),
+            "applied_at": {str(j.id): j.applied_at.isoformat() if j.applied_at else None for j in jobs}}
 
 
 class HiddenUpdate(BaseModel):
@@ -421,9 +447,10 @@ def set_hidden(payload: HiddenUpdate, db: Session = Depends(get_db), ws: int = D
 def update_status(job_id: int, payload: StatusUpdate, db: Session = Depends(get_db),
                   ws: int = Depends(current_workspace)):
     job = owned(db, Job, job_id, ws, "Job")
-    job.status = payload.status
+    set_status(job, payload.status)
     db.commit()
-    return {"ok": True, "id": job_id, "status": job.status}
+    return {"ok": True, "id": job_id, "status": job.status,
+            "applied_at": job.applied_at.isoformat() if job.applied_at else None}
 
 
 @app.post("/api/jobs/refilter")
@@ -578,22 +605,29 @@ def list_companies(db: Session = Depends(get_db), ws: int = Depends(current_work
 class ResearchRequest(BaseModel):
     mode: Literal["missing", "all"] = "missing"
     name: Optional[str] = None           # research just this company
+    # With a name: the whole profile (its own button), or one section's button. Never held back by age.
+    part: Literal["all", "sentiment", "news"] = "all"
     job_ids: Optional[list[int]] = None  # only these jobs' companies (the ticked jobs)
 
 
 @app.post("/api/companies/research")
 def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace)):
+    """Signed in. One company the user asked for (``name``, and ``part``: all of its profile or one section,
+    whatever their age), or a batch ("Fill missing info": the companies of the workspace's jobs, or of
+    ``job_ids``, that ``research.plan`` says are due)."""
     from backend.research import companies_to_research, job_context, research_companies
     from backend.scorer import ScorerError, config_problem
 
+    if payload.part != "all" and not payload.name:
+        raise HTTPException(status_code=422, detail="A section is researched for one company: give its name")
     if config_problem():
         raise HTTPException(status_code=400, detail=config_problem())
 
     def job(progress):
         db = SessionLocal()
         try:
-            if payload.name:  # "research this company": only the parts that are due (research.plan)
-                companies = [job_context(db, ws, payload.name)]
+            if payload.name:  # the user asked: what they asked for, whatever its age (research.plan)
+                companies = [job_context(db, ws, payload.name, payload.part)]
             else:
                 companies = companies_to_research(db, ws, payload.mode, payload.job_ids)
         finally:
