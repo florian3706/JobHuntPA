@@ -11,7 +11,9 @@ working and be reflected in them**:
   `configure_llm` (or a sibling step) if users must set it.
 - New data folder, startup step, port or entry point → `installer/installer.py`,
   `installer/launch.py`, `setup.sh`, `start.sh`, `Setup.command`, `Start JobHuntPA.command`,
-  `installer/windows_setup.py`, `installer/windows_launch.py`.
+  `installer/windows_setup.py`, `installer/windows_launch.py`. A new table or data file is also either
+  wiped or kept by the reset tool (`backend/reset.py`: `reset.sh`, `Reset JobHuntPA.command`,
+  `installer/windows_reset.py`); `tests/test_reset.py` fails until it is listed.
 - Anything setup creates outside the app folder (shortcuts, registry entries, caches) must also be
   removed by `installer/uninstaller.py` (`uninstall.sh`, `Uninstall JobHuntPA.command`,
   JobHuntPA-Uninstall.exe). Anything users would want to keep belongs in `data/` or `.env`,
@@ -39,10 +41,14 @@ working and be reflected in them**:
   start thread-pool work with `backend.threads.submit` (or `crypto.submit`), never `pool.submit`.
 - Never log user data (emails, names, job text, documents, chats, tokens, keys); log the kind of failure
   and an id. `tests/test_log_leaks.py` gets a step when a feature handles personal text.
-- Anything that adds, replaces or drops a key (recovery codes, background access, admin key, server key)
-  changes everything in one transaction, then calls `db.scrub_wal()` after the commit.
-- Every new endpoint states who may call it (open, signed in, admin, recent sign-in, membership) and gets a
-  test for that access, including the refusal.
+- Anything that adds, replaces or drops a key (recovery codes, background access, server key) changes
+  everything in one transaction, then calls `db.scrub_wal()` after the commit.
+- One account per install (`docs/design/open-source.md` §1.2): only `users.create_account` makes one, and it
+  refuses once any exists. There are no roles: whoever is signed in may change every setting. An older install
+  may still hold several accounts; each keeps its own workspaces. Nothing reachable over HTTP resets or wipes
+  the install: that is the reset tool's (`backend/reset.py`), run on the computer with the app stopped.
+- Every new endpoint states who may call it (open, signed in, recent sign-in) and gets a test for that access,
+  including the refusal.
 - Pages keep the Content-Security-Policy: no inline scripts, event-handler attributes, `<style>` or
   `style="..."` (use classes, `addEventListener`, `element.style`); a new outside script or stylesheet goes
   into `backend/security_headers.py`.
