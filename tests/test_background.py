@@ -175,6 +175,7 @@ class SwitchApiTest(Base):
             self.assertIsNone(users.background_key(db, bob.id))  # the label names alice
             self.assertEqual(users.background_block(db, bob.id), "key_unusable")
         finally:
+            users.disable_background(db, bob.id)  # (a wrap that opens nothing would hold up a later key rotation)
             db.close()
 
     def test_background_access_is_on_the_features_list_the_wizard_reads(self):
