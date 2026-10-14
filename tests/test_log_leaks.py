@@ -2,9 +2,9 @@
 
 One account goes through the whole app, end to end, with the network and the AI service mocked: sign-up, the search
 profile, documents, a search (mocked sources returning planted ads), scoring, chat, a cover letter, company research,
-the browser extension, a data export, a scheduled search, and a password reset with a recovery code. Every personal
-field holds a planted marker (``ZQX``), and every secret the run makes (passwords, recovery codes, session and CSRF
-tokens, extension keys) is collected. Logging is captured at DEBUG for every logger, with the
+the browser extension, a data export (in every file type) and its import, a scheduled search, and a password reset
+with a recovery code. Every personal field holds a planted marker (``ZQX``), and every secret the run makes
+(passwords, recovery codes, session and CSRF tokens, extension keys) is collected. Logging is captured at DEBUG for every logger, with the
 text of each record formatted the way a log file would show it, tracebacks included, and then none of the markers or
 secrets may be in it. The test also checks that the markers really are in the person's data (so a pass isn't just an
 empty run) and that the log isn't empty.
@@ -511,12 +511,39 @@ class FullRun(unittest.TestCase):
             self.assertEqual(r.status_code, 200, r.text)
 
     def export(self, c):
-        r = c.post("/api/account/export")
+        ws = c.get("/api/workspaces").json()[0]["id"]
+        self.assertEqual(c.patch(f"/api/workspaces/{ws}", json={"name": "ZQX dream search"}).status_code, 200)
+        r = c.post("/api/account/export", json={"formats": ["md", "docx", "odt"]})
         self.assertEqual(r.status_code, 200, r.text)
         names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
         text = b"".join(zipfile.ZipFile(io.BytesIO(r.content)).read(n) for n in names)
         self.assertIn(b"ZQX", text, "the export should hold the planted data")
         self.assertIn(b"zqxowner", text.lower())
+        self.import_it_back(c, r.content)
+
+    def import_it_back(self, c, blob):
+        """The export brought back as a new workspace (the names, documents, ads and chats in it are the person's), and
+        an import file that is refused: its refusal names only where the problem is."""
+        headers = {"Content-Type": "application/zip"}
+        r = c.post("/api/account/import/check", content=blob, headers=headers)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("ZQX", json.dumps(r.json()))
+        r = c.post("/api/account/import", content=blob, headers=headers, params={"pick": "0"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertGreater(r.json()["workspaces"][0]["jobs"], 0)
+        z = zipfile.ZipFile(io.BytesIO(blob))
+        files = {n: z.read(n) for n in z.namelist()}
+        name = next(n for n in files if n.endswith("import file.json"))
+        data = json.loads(files[name])
+        data["workspaces"][0]["jobs"][0]["status"] = "ZQX not a status"
+        files[name] = json.dumps(data).encode()
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as bad:
+            for n, b in files.items():
+                bad.writestr(n, b)
+        r = c.post("/api/account/import", content=out.getvalue(), headers=headers, params={"pick": "0"})
+        self.assertEqual(r.status_code, 422, r.text)
+        self.assertNotIn("ZQX", r.text)
 
     def scheduled_search_and_recovery(self, c, notice):
         # Background access (so scheduled runs can open the data), then a scheduled run.
@@ -524,7 +551,7 @@ class FullRun(unittest.TestCase):
         db = SessionLocal()
         try:
             uid = users.find_by_name(db, self.email).id
-            ws = db.query(Workspace.id).filter(Workspace.owner_id == uid).order_by(Workspace.id).scalar()
+            ws = db.query(Workspace.id).filter(Workspace.owner_id == uid).order_by(Workspace.id).first()[0]
         finally:
             db.close()
         acct = helpers.Account(uid, self.email, PASSWORD, ws)

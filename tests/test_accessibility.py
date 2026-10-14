@@ -240,7 +240,7 @@ class GeneratedMarkupTest(unittest.TestCase):
     def test_templates_label_their_controls(self):
         problems = []
         for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js", "account.js", "server-settings.js",
-                     "export.js", "background.js", "extension.js"):
+                     "export.js", "restore.js", "background.js", "extension.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
 
@@ -563,7 +563,7 @@ class SignInPagesBehaviourTest(unittest.TestCase):
         self.assertIn("/api/auth/name", guarded)
         self.assertIn("/api/auth/recovery-codes", guarded)
         self.assertIn("/api/extension/keys", guarded)
-        for name in ("app.js", "job.js", "welcome.js", "account.js", "common.js", "export.js",
+        for name in ("app.js", "job.js", "welcome.js", "account.js", "common.js", "export.js", "restore.js",
                      "background.js", "extension.js", "server-settings.js"):
             for number, line in enumerate((FRONTEND / name).read_text(encoding="utf-8").splitlines(), 1):
                 for path in guarded:
@@ -700,7 +700,7 @@ class ExportCardTest(unittest.TestCase):
     def test_a_post_through_withRecentAuth_and_a_blob(self):
         self.assertIn("method: 'POST'", self.js)
         self.assertIn("X-CSRF-Token", self.js)
-        self.assertIn("withRecentAuth(fetchExport)", self.js)
+        self.assertIn("withRecentAuth(() => fetchExport(formats))", self.js)
         self.assertIn("URL.createObjectURL(blob)", self.js)
 
     def test_busy_ends_and_every_outcome_is_said_in_the_status_region(self):
@@ -709,6 +709,89 @@ class ExportCardTest(unittest.TestCase):
             self.assertIn(said, self.js)
         self.assertIn("Keep it somewhere safe", self.js)
         self.assertIn("e.status === 413", self.js, "a refusal says what to do (the server's own text)")
+
+
+class ExportFileTypesTest(unittest.TestCase):
+    """The file types on the "Download your data" card (Phase E)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = (FRONTEND / "export.js").read_text(encoding="utf-8")
+
+    def test_a_labelled_group_of_three_checkboxes_markdown_ticked(self):
+        self.assertIn('<fieldset class="form-group export-types" aria-describedby="export-types-hint">', self.js)
+        self.assertIn("<legend>File types</legend>", self.js)
+        self.assertIn("""[['md', 'Markdown (.md)'], ['docx', 'Word (.docx)'], ['odt', 'OpenDocument (.odt)']]""", self.js)
+        self.assertIn('<label class="check"><input type="checkbox" id="export-type-${value}"', self.js,
+                      "each box sits inside its label")
+        self.assertIn("n === 0 ? ' checked' : ''", self.js)
+
+    def test_none_ticked_is_an_error_said_next_to_the_group_and_announced(self):
+        self.assertIn("Tick at least one file type.", self.js)
+        self.assertIn("announce('Tick at least one file type.', true)", self.js)
+        self.assertIn("fieldset.setAttribute('aria-invalid', 'true')", self.js)
+        self.assertIn("'export-types-error export-types-hint'", self.js)
+        self.assertIn("boxes[0].focus()", self.js)
+        self.assertIn("body: JSON.stringify({ formats })", self.js)
+
+
+class RestoreCardTest(unittest.TestCase):
+    """The "Import from an export" card (Settings tab, filled by restore.js)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = (FRONTEND / "restore.js").read_text(encoding="utf-8")
+        cls.src = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        cls.index = parse("index.html")
+
+    def test_the_card_fills_its_own_slot_after_the_export_and_loads_after_common_js(self):
+        ids = [n["attrs"].get("id") for n in self.index.nodes]
+        self.assertIn("account-import-slot", ids)
+        self.assertLess(ids.index("account-export-slot"), ids.index("account-import-slot"))
+        self.assertLess(self.src.index("common.js"), self.src.index("restore.js"))
+        self.assertIn("getElementById('account-import-slot')", self.js)
+
+    def test_heading_labelled_file_field_and_a_live_status(self):
+        self.assertIn('<h3 id="restore-title">Import from an export</h3>', self.js)
+        self.assertIn('<label for="restore-file">Export file (.zip)</label>', self.js)
+        self.assertIn('<input id="restore-file" type="file" accept=".zip,application/zip" />', self.js)
+        self.assertIn('<span id="restore-status" class="muted" role="status"></span>', self.js)
+        self.assertIn("setFieldError(input, 'Choose the .zip file", self.js)
+        self.assertIn('<legend id="restore-legend">Workspaces in this export</legend>', self.js)
+
+    def test_both_steps_post_the_zip_through_withRecentAuth(self):
+        self.assertIn("withRecentAuth(() => postZip('/api/account/import/check', file))", self.js)
+        self.assertIn("withRecentAuth(() => postZip(`/api/account/import?pick=", self.js)
+        self.assertIn("'X-CSRF-Token': csrf", self.js)
+        self.assertIn("method: 'POST'", self.js)
+        for said in ("Nothing was ${what}: confirm your password", "Tick at least one workspace to import.",
+                     "Imported ${plural("):
+            self.assertIn(said, self.js)
+        self.assertEqual(self.js.count("setBusy(check, true)"), 1)
+        self.assertEqual(self.js.count("setBusy(go, false)"), 1)
+
+    def test_ticking_no_workspace_is_a_field_error_on_the_list(self):
+        """As on the export card's file types: a visible error tied to the fieldset, said at once (WCAG 3.3.1)."""
+        self.assertIn('<p id="restore-pick-error" class="field-error" hidden></p>', self.js)
+        self.assertIn("fieldset.setAttribute('aria-invalid', 'true')", self.js)
+        self.assertIn("fieldset.setAttribute('aria-describedby', 'restore-pick-error')", self.js)
+        self.assertIn("announce(text, true)", self.js)
+        self.assertIn("pickInvalid('Tick at least one workspace to import.')", self.js)
+        self.assertIn("fieldset.removeAttribute('aria-invalid')", self.js)
+        self.assertIn("options.addEventListener('change'", self.js)
+
+    def test_what_the_file_holds_goes_in_escaped(self):
+        self.assertIn("${esc(w.name)}", self.js)
+        self.assertIn("${esc(restoreCounts(w))}", self.js)
+        self.assertIn("${Number(w.index)}", self.js)
+        # every other ${...} in its HTML is the app's own text
+        for expr in re.findall(r"\$\{([^}]+)\}", self.js[self.js.index("options.innerHTML = found"):self.js.index("pick.hidden = false")]):
+            self.assertTrue(expr.startswith(("esc(", "Number(")), expr)
+
+    def test_phones_and_controls_are_big_enough(self):
+        css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('#restore-card input[type="file"] { max-width: 100%; font-size: 16px; }', css)
+        self.assertIn(".restore-option { align-items: flex-start; overflow-wrap: anywhere; }", css)
 
 
 class WelcomePageTest(unittest.TestCase):

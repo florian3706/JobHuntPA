@@ -34,6 +34,7 @@ from backend.background import router as background_router
 from backend.db import CompanyProfile, CoverLetter, FitResult, Job, SearchRun, SessionLocal, company_key, get_db, init_db, scrub_wal
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
+from backend.data_import import router as import_router
 from backend.export import router as export_router
 from backend.commute import router as commute_router
 from backend.duplicates import employer_copy, job_boards, router as duplicates_router
@@ -168,6 +169,7 @@ app.include_router(auth_router)
 app.include_router(security_router)
 app.include_router(account_router)
 app.include_router(export_router)
+app.include_router(import_router)
 app.include_router(background_router)
 app.include_router(geo_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}

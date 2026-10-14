@@ -1,6 +1,12 @@
-"""Download your data: a zip of folders of Markdown files, made for people to read.
+"""Download your data: a zip of folders of text files made for people to read, and the import file.
 
-    POST /api/account/export     recent password; answers application/zip (JobHuntPA-export-YYYY-MM-DD.zip)
+    POST /api/account/export     {formats?: ["md", "docx", "odt"]}  recent password; answers application/zip
+                                 (JobHuntPA-export-YYYY-MM-DD.zip)
+
+Each text file is written once per file type the person chose (any of Markdown, DOCX and ODT, at least one; Markdown
+when the request names none): the Markdown is made first and backend/export_formats.py turns it into the others.
+Uploaded originals are included once, as they were uploaded. Every export also holds ``import_file.FILE_NAME``, the
+machine-readable file an import brings the data back from (backend/import_file.py, docs/design/open-source.md Part 7).
 
 A POST with the CSRF token (a link or a prefetch must never start an export), and the password entered in the last
 15 minutes. The zip is built in memory inside the request's key scope: no plaintext touches the disk (no temporary
@@ -21,6 +27,9 @@ Layout (names are made safe for Windows, macOS and Linux: ``safe_name``)::
         Documents/<title>.md  Documents/Original files/<upload>
         Jobs/Jobs.md  Jobs/Filtered out.md  Jobs/<Status>/<Company - Title>.md (+ " - Cover letter.md")
         Chats/<date title>.md
+      JobHuntPA import file.json                 everything above, for an import (backend/data_import.py)
+
+(and the same names ending in .docx and .odt for the other file types chosen)
 
 Ads and AI answers are other people's text: ``text`` and ``line`` escape raw HTML, images and link syntax so a
 Markdown viewer shows them as text, and only addresses starting with http:// or https:// become links. Links between
@@ -39,15 +48,16 @@ import time
 import unicodedata
 import zipfile
 from datetime import date, datetime
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Literal, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 
-from backend import account, commute, crypto, docs, ghost, schedule, users
+from backend import account, commute, crypto, docs, export_formats, ghost, import_file, schedule, users
 from backend.db import (
     UPLOAD_DIR,
     ChatMessage,
@@ -112,10 +122,15 @@ def safe_name(value: Any, fallback: str = "Untitled", ext: str = "") -> str:
     text = text.lstrip(" .") or fallback
     if text.split(".")[0].upper() in RESERVED:
         text = f"_{text}"
-    room = max(1, MAX_PART - len(ext))
-    size = MAX_PART_BYTES - len(ext.encode("utf-8"))
+    room = max(1, MAX_PART - _room(ext))
+    size = MAX_PART_BYTES - _room(ext)
     text = _clip(text, room, size).rstrip(" .") or _clip(fallback, room, size)
     return text + ext
+
+
+def _room(ext: str) -> int:
+    """The room a name keeps for its ending: a text file's ``.md`` may become ``.docx`` or ``.odt``."""
+    return max(len(ext.encode("utf-8")), export_formats.LONGEST_EXT if ext == ".md" else 0)
 
 
 class Folder:
@@ -132,8 +147,8 @@ class Folder:
         while candidate.casefold() in self.used:
             n += 1
             tail = f" ({n})"
-            stem = _clip(stem, max(1, MAX_PART - len(ext) - len(tail)),
-                         MAX_PART_BYTES - len((ext + tail).encode("utf-8"))).rstrip(" .")
+            stem = _clip(stem, max(1, MAX_PART - _room(ext) - len(tail)),
+                         MAX_PART_BYTES - _room(ext) - len(tail.encode("utf-8"))).rstrip(" .")
             candidate = f"{stem}{tail}{ext}"
         self.used.add(candidate.casefold())
         return candidate
@@ -239,10 +254,12 @@ def value_md(value: Any, depth: int = 0) -> str:
 # ---------------------------------------------------------------------------
 
 class Archive:
-    """A zip in memory. Paths use forward slashes and UTF-8; ``add`` refuses anything that could leave the folder."""
+    """A zip in memory. Paths use forward slashes and UTF-8; ``add`` refuses anything that could leave the folder.
+    ``add_text`` writes a text file (its path ends in ``.md``) once for each of ``formats``."""
 
-    def __init__(self, root: str, stamp: datetime) -> None:
+    def __init__(self, root: str, stamp: datetime, formats: Iterable[str] = ("md",)) -> None:
         self.root, self.stamp = root, stamp
+        self.formats = tuple(f for f in export_formats.FORMATS if f in set(formats)) or ("md",)
         self.buffer = io.BytesIO()
         self.zip = zipfile.ZipFile(self.buffer, "w", zipfile.ZIP_DEFLATED)
         self.files = 0
@@ -262,6 +279,14 @@ class Archive:
         info.external_attr = 0o644 << 16
         self.zip.writestr(info, data)
         self.files += 1
+        return path
+
+    def add_text(self, path: str, markdown: str) -> str:
+        """A text file, from its Markdown, in every chosen file type. Returns its Markdown path (links use those)."""
+        if not path.endswith(".md"):
+            raise ValueError("a text file's path ends in .md")
+        for fmt in self.formats:
+            self.add(path[:-3] + export_formats.EXTENSIONS[fmt], export_formats.convert(markdown, fmt))
         return path
 
     def abort(self) -> None:
@@ -286,16 +311,26 @@ def too_large() -> AuthProblem:
                                                 "you no longer need and try again.")
 
 
-def _readme(stamp: datetime, counts: dict[str, int]) -> str:
+KIND_NAMES = {"md": "Markdown files end in .md", "docx": "Word documents in .docx",
+              "odt": "OpenDocument text in .odt"}
+
+
+def _readme(stamp: datetime, counts: dict[str, int], formats: Iterable[str] = ("md",)) -> str:
+    kinds = "; ".join(KIND_NAMES[f] for f in formats)
     return f"""# Your JobHuntPA data
 
-Made on {when(stamp)}. This is a copy of everything JobHuntPA keeps for your account, as plain text you can read
-in any editor or Markdown viewer. Open this folder's files in any order; links between them work offline.
+Made on {when(stamp)}. This is a copy of everything JobHuntPA keeps for your account, as text files you can read
+in any editor ({kinds}). Open this folder's files in any order; links between them work offline.
+
+`{import_file.FILE_NAME}` holds the same data for a computer: **Settings > Import from an export** in JobHuntPA
+reads it to bring your workspaces back, on this JobHuntPA or another one. Keep it with the rest of the folder.
 
 **This folder is not encrypted.** In JobHuntPA your data is encrypted, but these files are not: keep them somewhere
 safe and delete them when you no longer need them.
 
 ## What is where
+
+The names below end in `.md`; each text file is there once for every file type chosen for this export.
 
 - `Account.md`: your sign-in name, sign-in settings and theme.
 - `Workspaces/`: one folder for each of your {counts['workspaces']} workspace(s):
@@ -306,11 +341,12 @@ safe and delete them when you no longer need them.
   - `Chats/`: your conversations about jobs.
   - `Search history.md`: each search run and how it went.
 - `Companies/`: the company research (shared with other people who use this JobHuntPA) for the companies of those jobs.
+- `{import_file.FILE_NAME}`: all of it in one file, for an import.
 
 ## What is not included
 
 - Your password, recovery codes and encryption keys: they can't and shouldn't be exported.
-- Sign-in sessions, caches and logs.
+- Sign-in sessions, browser extension keys, the AI key, caches and logs.
 - A job that is another copy of the same ad is not a file of its own: it is listed under "Also advertised at" in the main job's file (or in `Filtered out.md`, when the main job is there).
 - A job the search filters left out and you never touched is only in `Filtered out.md`.
 - Anyone else's data: an install from before the open-source version may have other accounts, and each exports only its own.
@@ -440,7 +476,9 @@ def _history_md(db: Session, ws: Workspace) -> str:
 
 # ----- documents -----
 
-def _documents(db: Session, ws: Workspace, base: str, arc: Archive) -> None:
+def _documents(db: Session, ws: Workspace, base: str, arc: Archive) -> dict[int, str]:
+    """Writes the workspace's documents; returns each original file's path in the zip, by document id."""
+    paths: dict[int, str] = {}
     documents = db.query(Document).filter(Document.workspace_id == ws.id).order_by(Document.id).all()
     folder, originals = Folder(), Folder()
     names = {d.id: d for d in documents}
@@ -458,6 +496,7 @@ def _documents(db: Session, ws: Workspace, base: str, arc: Archive) -> None:
                 ext = posixpath.splitext(d.filename or "")[1]
                 ext = ext if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", ext) else ""
                 orig_path = arc.add(f"{base}/Documents/Original files/{originals.name(posixpath.splitext(d.filename or '')[0], 'File', ext)}", data)
+                paths[d.id] = orig_path
                 original = f"The original file: {rel_link(d.filename, md_path, orig_path)}"
         concise = (d.concise_text or "").strip()
         out = [f"# {line(d.filename) or 'Document'}\n\n", facts([
@@ -470,7 +509,8 @@ def _documents(db: Session, ws: Workspace, base: str, arc: Archive) -> None:
         out.append(f"\n## Text\n\n{text(d.text) if (d.text or '').strip() else '(no text)'}\n")
         if concise:
             out.append(f"\n## Concise version\n\n{text(concise)}\n")
-        arc.add(md_path, "".join(out))
+        arc.add_text(md_path, "".join(out))
+    return paths
 
 
 # ----- jobs -----
@@ -614,13 +654,13 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
         for job in jobs_query(db, descriptions=True).filter(Job.workspace_id == ws.id, Job.id.in_(ids)).order_by(Job.id):
             entry = entries[job.id]
             letter = letters.get(job.id)
-            arc.add(entry.path, _job_md(job, entry, fits.get(job.id), entries, companies))
+            arc.add_text(entry.path, _job_md(job, entry, fits.get(job.id), entries, companies))
             if letter is not None and entry.letter_path:
                 head = f"# Cover letter: {line(_job_label(entry))}\n\n"
                 head += facts([("Job", rel_link(_job_label(entry), entry.letter_path, entry.path)), ("Written", when(letter.created_at)),
                                ("Last changed", when(letter.updated_at)), ("Edited by you", yes(letter.edited)),
                                ("Instructions you gave", line(letter.instructions))])
-                arc.add(entry.letter_path, f"{head}\n---\n\n{text(letter.text)}\n")
+                arc.add_text(entry.letter_path, f"{head}\n---\n\n{text(letter.text)}\n")
     # the index
     index = f"{base}/Jobs/Jobs.md"
     out = ["# Jobs\n", f"\n{len(with_files)} job(s) with a file of their own.\n"]
@@ -636,7 +676,7 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
             status = folder(e)
             name = rel_link(e.title or "Job", index, e.path)
             out.append(f"| {esc_pipe(name)} | {cell(e.company)} | {cell(status)} | {cell(e.fit)} | {'yes' if e.closed else ''} | {e.ghost['level'].capitalize() if e.ghost else ''} |\n")
-    arc.add(index, "".join(out))
+    arc.add_text(index, "".join(out))
     out = ["# Filtered out\n", "\nJobs the search filters left out. They have no file of their own.\n"]
     if filtered:
         out.append("\n| Job | Company | Why | Link | Also advertised at |\n|---|---|---|---|---|\n")
@@ -645,7 +685,7 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
             out.append(f"| {cell(e.title)} | {cell(e.company)} | {cell(e.reason)} | {link('Original ad', e.url)} | {esc_pipe(same)} |\n")
     else:
         out.append("\nNone.\n")
-    arc.add(f"{base}/Jobs/Filtered out.md", "".join(out))
+    arc.add_text(f"{base}/Jobs/Filtered out.md", "".join(out))
 
 
 # ----- chats -----
@@ -685,7 +725,7 @@ def _chats(db: Session, ws: Workspace, base: str, arc: Archive, entries: dict[in
             pages = [link(s.get("title") or s.get("url"), s.get("url")) for s in sources if isinstance(s, dict) and web_address(s.get("url"))]
             if pages:
                 out.append("\nPages used:\n\n" + "".join(f"- {p}\n" for p in pages))
-        arc.add(path, "".join(out))
+        arc.add_text(path, "".join(out))
 
 
 # ----- company research -----
@@ -721,10 +761,11 @@ def _company_md(p: CompanyProfile) -> str:
 # Putting it together
 # ---------------------------------------------------------------------------
 
-def build(db: Session, user_id: int, now: Optional[datetime] = None) -> tuple[io.BytesIO, int, str]:
-    """The zip (an in-memory file), how many files it holds and its file name, for ``user_id``'s own data. Must run
-    in that person's key scope; reads only their own workspaces. Refuses (413) before opening any upload when
-    the uploads alone are over ``MAX_EXPORT_BYTES``."""
+def build(db: Session, user_id: int, now: Optional[datetime] = None,
+          formats: Iterable[str] = ("md",)) -> tuple[io.BytesIO, int, str]:
+    """The zip (an in-memory file), how many files it holds and its file name, for ``user_id``'s own data, with its
+    text files in each of ``formats`` and the import file. Must run in that person's key scope; reads only their own
+    workspaces. Refuses (413) before opening any upload when the uploads alone are over ``MAX_EXPORT_BYTES``."""
     stamp = now or datetime.utcnow()
     user = db.get(User, user_id)
     root = f"JobHuntPA export {stamp.strftime('%Y-%m-%d')}"
@@ -737,7 +778,7 @@ def build(db: Session, user_id: int, now: Optional[datetime] = None) -> tuple[io
             pass
     if stored > MAX_EXPORT_BYTES:
         raise too_large()
-    arc = Archive(root, stamp)  # (after the size check: a refused export builds nothing)
+    arc = Archive(root, stamp, formats)  # (after the size check: a refused export builds nothing)
     try:
         ws_names = Folder()
         plans = []
@@ -757,18 +798,22 @@ def build(db: Session, user_id: int, now: Optional[datetime] = None) -> tuple[io
         for key, p in sorted(profiles.items()):
             companies[key] = f"Companies/{folder.name(p.official_name or p.name, 'Company', '.md')}"
         jobs_total = 0
+        originals: dict[int, str] = {}
         for ws, base, entries, filtered in plans:
-            arc.add(f"{base}/Search setup.md", _setup_md(db, ws))
-            arc.add(f"{base}/Sources.md", _sources_md(db, ws))
-            _documents(db, ws, base, arc)
+            arc.add_text(f"{base}/Search setup.md", _setup_md(db, ws))
+            arc.add_text(f"{base}/Sources.md", _sources_md(db, ws))
+            originals.update(_documents(db, ws, base, arc))
             _jobs(db, ws, base, arc, companies, entries, filtered)
             jobs_total += sum(1 for e in entries.values() if e.path)
             _chats(db, ws, base, arc, entries)
-            arc.add(f"{base}/Search history.md", _history_md(db, ws))
+            arc.add_text(f"{base}/Search history.md", _history_md(db, ws))
         for key, path in companies.items():
-            arc.add(path, _company_md(profiles[key]))
-        arc.add("Account.md", _account_md(db, user, workspaces))
-        arc.add("README.md", _readme(stamp, {"workspaces": len(workspaces), "jobs": jobs_total}))
+            arc.add_text(path, _company_md(profiles[key]))
+        arc.add_text("Account.md", _account_md(db, user, workspaces))
+        arc.add_text("README.md", _readme(stamp, {"workspaces": len(workspaces), "jobs": jobs_total}, arc.formats))
+        data = import_file.build(db, workspaces, originals, stamp)
+        arc.add(import_file.FILE_NAME, json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+        del data
         count = arc.files
     except BaseException:
         arc.abort()
@@ -846,11 +891,18 @@ def _chunks(buffer: io.BytesIO, hold: Optional[_Hold] = None, seconds: Optional[
             hold.release()
 
 
+class ExportIn(BaseModel):
+    formats: list[Literal["md", "docx", "odt"]] = Field(default_factory=lambda: ["md"], min_length=1, max_length=3)
+
+
 @router.post("/export")
-def export_data(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
-    """The account's data as a zip of Markdown files. Recent password required; one at a time per account, and the
-    place is kept until the download has finished (the zip stays in memory until then)."""
+def export_data(user: AuthUser = Depends(current_user), db: Session = Depends(get_db),
+                payload: Optional[ExportIn] = None):
+    """The account's data as a zip of text files (in the chosen file types) and the import file. Signed in, with the
+    password entered recently; one at a time per account, and the place is kept until the download has finished (the
+    zip stays in memory until then)."""
     require_recent_auth(user)
+    formats = (payload or ExportIn()).formats
     with _lock:
         if user.id in _running:
             raise AuthProblem(429, "export_running", "Your export is still being made. Wait for it to finish.")
@@ -861,7 +913,7 @@ def export_data(user: AuthUser = Depends(current_user), db: Session = Depends(ge
         raise AuthProblem(503, "export_busy", "Other exports are being made. Try again in a minute.")
     hold = _Hold(user.id)
     try:
-        buffer, files, name = build(db, user.id)
+        buffer, files, name = build(db, user.id, formats=formats)
         hold.buffer = buffer
         size = buffer.seek(0, os.SEEK_END)
         buffer.seek(0)

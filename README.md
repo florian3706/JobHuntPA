@@ -45,7 +45,7 @@ underneath.
 **Settings**: the theme, scheduled searches (by themselves at set times on workdays, skipping public
 holidays), the AI provider with the Rescore buttons and the AI usage, and the public
 address ([settings for this JobHuntPA](#settings-for-this-jobhuntpa)), and [your account](#your-account)
-(name, password, recovery codes, background access, download your data).
+(name, password, recovery codes, background access, download your data, import from an export).
 
 ![The Settings tab: scheduled searches, the AI status and the Rescore buttons](docs/screenshots/settings.png)
 
@@ -133,7 +133,7 @@ the window, press Enter, then run `./setup.sh` once and `./start.sh` to start.
 JobHuntPA has one account: yours. It signs in with a name and a password, and once it exists nobody
 can make another, so someone who can reach your copy can't sign up and spend your AI key. Your account's
 cards are on the **Settings** tab, below the theme, schedule and AI cards: your name, password,
-recovery codes and signed-in devices, background access, then download your data.
+recovery codes and signed-in devices, background access, then download your data and import from an export.
 
 <img src="docs/screenshots/settings-account.png" alt="The Settings tab's account cards: password, recovery codes, signed-in devices and background access" width="760">
 
@@ -225,21 +225,45 @@ recovery codes and signed-in devices, background access, then download your data
 ### Download your data
 
 **Settings > Download your data** makes a zip file with everything JobHuntPA keeps for your account, as
-Markdown files in folders made for people. It is your safety net: keep a recent copy somewhere safe.
+files in folders made for people. Tick the file types you want, any of **Markdown** (`.md`), **Word**
+(`.docx`) and **OpenDocument** (`.odt`; at least one): each text file comes once in every type you tick. It is
+your safety net: keep a recent copy somewhere safe.
 
 - `Account.md`;
 - for each workspace: its search setup, sources, documents (with the original files you uploaded, byte
   for byte), jobs sorted into folders by your status (each with its fit score, description, cover
   letter, the signs of a possible ghost job and the other sites that advertised it), jobs the filters
   left out, your chats and search history;
-- the company research behind your jobs.
+- the company research behind your jobs;
+- `JobHuntPA import file.json`: the same data in one file for a computer, which **Import from an export**
+  (below) reads. Its format is in `docs/design/open-source.md`, Part 7.
 
 Links between the files work offline. It asks for your password again if you haven't entered it in the
 last 15 minutes. The zip is made in memory, so nothing is written to disk on the server. An export is
 refused above 200 MB of files, and the server makes only a couple at a time: try again in a minute. An
 export keeps its place until your download has ended, so a slow or abandoned download holds it for up to
 10 minutes, plus the time the zip needs at 100 KB/s. **The zip is not encrypted**: keep it somewhere
-safe. It holds only your own data, and never your password, recovery codes or keys.
+safe. It holds only your own data, and never your password, recovery codes, keys, sign-in sessions,
+browser extension keys or the AI key.
+
+### Import from an export
+
+**Settings > Import from an export** brings workspaces back from a zip that Download your data made, on the
+same JobHuntPA or another one (a new computer, say). Choose the zip and press **Look inside**: the card lists
+the workspaces in it with their jobs, documents and chats. Tick the ones you want and press **Import the
+ticked workspaces**.
+
+- Each one becomes a **new workspace**: nothing is merged into the workspaces you have. If you already have one
+  with that name, the new one is called "My job search (imported 2026-10-13)" (with that day's date), then
+  "(imported 2026-10-13, 2)" and so on.
+- It brings the search setup, places, sources, search schedule, documents (with the files you uploaded),
+  jobs (with your status, what you hid, the filters' reasons, offices, fit scores and cover letters) and chats.
+  A job this JobHuntPA already has from another search is linked to it; any other job is kept as your own.
+- The company research in the file is only used where this JobHuntPA has none, or older.
+- It asks for your password again if you haven't entered it in the last 15 minutes. The zip is read in memory
+  and never unpacked on the server; only the import file and the uploaded files it names are read from it.
+- Exports made before JobHuntPA 2.0.0 have no import file and can't be imported (the card says so); an export
+  from a newer JobHuntPA than this one is refused too: update JobHuntPA first.
 
 ### How your data is protected
 
@@ -866,6 +890,11 @@ install JobHuntPA again and unzip the backup into the new app folder: the databa
 - **"Download your data" is refused:** over 200 MB the zip is too big to make in one go (delete uploaded files you
   no longer need), "other exports are being made" means try again in a minute, and "still being made" means your
   last request hasn't finished or its download is still going: wait for it (a download that has not finished after 10 minutes, plus the time the zip needs at 100 KB/s, is cut off).
+- **"Import from an export" is refused:** "has no import file" means the export was made by a JobHuntPA older
+  than 2.0.0 (make a new export there, then import that); "made by a newer JobHuntPA" means update this one
+  first; "isn't a JobHuntPA export", "damaged" or "leads out of its folder" mean the zip isn't one Download your
+  data saved, or was changed since (import the zip exactly as it was saved); "too large" or "more than 200,000"
+  means it holds more than an export can. Only one import runs at a time.
 - **"JobHuntPA is waiting for the account that owns the earlier data to sign in":** the one-time
   encryption after an update needs that account's password; it carries on when it signs in.
 - **"Encrypting your data stopped (...)":** JobHuntPA tries again a minute later and whenever that
@@ -971,12 +1000,14 @@ sessions), `backend/app_settings.py` (the settings kept in `.env`: AI provider, 
 and host names), `backend/maintenance.py` (AI usage, leftover plaintext files, replacing the server key),
 `backend/reset.py` (the reset tool), `backend/key_rotation.py` (the server key),
 `backend/background.py` (background access), `backend/key_recovery.py` (the `recover-lost` command),
-`backend/export.py` (data export), `backend/account.py` (preferences, the walkthrough step, deleting
+`backend/export.py` (data export; `backend/export_formats.py` makes its Word and OpenDocument files,
+`backend/import_file.py` its import file), `backend/data_import.py` (import from an export), `backend/account.py` (preferences, the walkthrough step, deleting
 an account), `backend/extension.py` (the browser extensions' API and keys; the extensions read the page themselves and
 send only the job, or the jobs listed on a page of search results), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
 and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
 (account cards), `background.js`, `extension.js` (Settings > Browser extension),
-`export.js` and `server-settings.js` (the Settings tab's cards for this JobHuntPA).
+`export.js`, `restore.js` (import from an export) and `server-settings.js` (the Settings tab's cards for this
+JobHuntPA).
 
 **Hardening** (design §2.5 and §18): `backend/hosts.py` (the Host allowlist: 400 before anything else runs) and
 `backend/security_headers.py` (the Content-Security-Policy, built at start-up from the pages, with a hash for each

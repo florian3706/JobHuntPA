@@ -212,6 +212,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .form-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .form-group > label, fieldset > legend { font-size: 13.5px; font-weight: 600; }
 fieldset.form-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 0; display: flex; gap: 12px; flex-wrap: wrap; }
+/* Download your data: the file types; Import from an export: the workspaces in the file (export.js, restore.js) */
+.export-types, .restore-list { margin: 4px 0 8px; }
+.restore-options { display: flex; flex-direction: column; gap: 10px; width: 100%; min-width: 0; }
+.restore-option { align-items: flex-start; overflow-wrap: anywhere; }
+.restore-option input { margin-top: 2px; }
+#restore-card .field { margin-bottom: 8px; }
+#restore-card input[type="file"] { max-width: 100%; font-size: 16px; }
 .tag-input {
   display: flex; flex-direction: column; gap: 8px;
   background: var(--field); border: 1px solid var(--border-strong);
