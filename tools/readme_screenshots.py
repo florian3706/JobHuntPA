@@ -18,7 +18,7 @@ What it does:
 Needs the app's requirements plus Playwright's Chromium (setup installs both) and Pillow
 (``pip install pillow``; a developer tool only, so it is not in requirements.txt). The browser
 fetches Leaflet (unpkg.com), map tiles (openstreetmap.org) and, for the Dyslexia theme, a font
-(Google Fonts); the server asks OSRM's public server for the driving route on the job page.
+(Google Fonts).
 
 Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide):
     jobs, run-report, job-page, map (light theme), search-setup, company-sources, settings, search-schedule
