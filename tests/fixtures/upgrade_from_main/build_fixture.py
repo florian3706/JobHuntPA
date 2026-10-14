@@ -65,7 +65,7 @@ def enrol(c):
 def add_jobs(email, password, ws):
     db = SessionLocal()
     try:
-        user = users.find_by_email(db, email)
+        user = users.find_by_name(db, email)
         account = users.unlock(db, user, password)
         from backend import crypto
         with crypto.as_user(user.id, account.dek):

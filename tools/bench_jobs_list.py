@@ -66,7 +66,7 @@ def seed(n: int, listed: float) -> int:
 
     db = SessionLocal()
     try:
-        user = users.find_by_email(db, EMAIL)
+        user = users.find_by_name(db, EMAIL)
         dek = users.unlock_with_password(db, user, PASSWORD)
         ws = db.query(Workspace.id).filter(Workspace.owner_id == user.id).scalar()
         with crypto.as_user(user.id, dek):

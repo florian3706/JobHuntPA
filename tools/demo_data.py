@@ -797,7 +797,7 @@ def build(db_path: Path) -> None:
     users.startup()
     db = SessionLocal()
     try:
-        admin = users.find_by_email(db, DEMO_EMAIL)
+        admin = users.find_by_name(db, DEMO_EMAIL)
         key = users.unlock_with_password(db, admin, DEMO_PASSWORD)
     finally:
         db.close()

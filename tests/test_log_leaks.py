@@ -229,26 +229,48 @@ class FullRun(unittest.TestCase):
 
     # -- the person ---------------------------------------------------------------------------------------------
 
-    @staticmethod
-    def restore_signup():
-        with helpers.client() as admin:
-            admin.put("/api/admin/signup", json={"mode": "invite"})
-
     def signed_up(self):
-        admin = self.signed_in()
-        self.assertEqual(admin.put("/api/admin/signup", json={"mode": "open"}).status_code, 200)
-        self.addCleanup(self.restore_signup)
-        email = "zqxowner.private@example.invalid"
+        """An account whose sign-in name is personal text (the app makes no second account itself: tests/helpers.py
+        writes it as an older install's would be), signed in through the app."""
+        email = "Zqx Quillon zqxowner.private@example.invalid"
+        account = helpers.extra_account(email, PASSWORD)
         c = self.anonymous()
-        r = c.post("/api/auth/signup", json={"email": email, "password": PASSWORD, "name": "Zqx Quillon"})
-        self.assertEqual(r.status_code, 201, r.text)
+        r = c.post("/api/auth/login", json={"name": email, "password": PASSWORD})
+        self.assertEqual(r.status_code, 200, r.text)
         c.headers["X-CSRF-Token"] = r.json()["csrf"]
         self.secrets.update(password=PASSWORD, csrf=r.json()["csrf"], session=c.cookies.get("jh_session") or "",
                             device=c.cookies.get("jh_device") or "",
-                            **{f"recovery_code_{i}": code for i, code in enumerate(r.json()["recovery_codes"])})
-        helpers._passwords[email] = PASSWORD
+                            **{f"recovery_code_{i}": code for i, code in enumerate(account.recovery_codes)})
         self.email = email
         return c
+
+    def the_install_settings_and_a_new_name(self, c):
+        """The name changed in Settings, and the AI key, the commute key and the public address saved there: none of
+        these values may reach the log (only the names of the settings that changed)."""
+        from backend import config
+        env_file = config.ENV_PATH
+        saved = env_file.read_text() if env_file.exists() else None
+        self.addCleanup(lambda: env_file.write_text(saved) if saved is not None else env_file.unlink(missing_ok=True))
+        new_name = "Zqx Quillon Renamed zqxowner"
+        r = c.put("/api/auth/name", json={"name": new_name})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.email = new_name
+        helpers._passwords[new_name] = PASSWORD
+        llm = {k: os.environ.get(k) for k in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")}
+        key = "sk-zqx-secret-ai-key-000111"
+        r = c.put("/api/settings/llm", json={"base_url": "https://zqx-llm.example/v1", "model": "zqx-model",
+                                              "api_key": key})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(c.put("/api/settings/keys", json={"tomtom": "zqxtomtomkey123"}).status_code, 200)
+        self.assertEqual(c.put("/api/settings/address", json={"public_base_url": "https://zqx-host.example",
+                                                               "allowed_hosts": ["zqx-alias.example"]}).status_code, 200)
+        self.assertEqual(c.put("/api/settings/address", json={"public_base_url": "", "allowed_hosts": []}).status_code,
+                         200)
+        self.assertEqual(c.put("/api/settings/keys", json={"tomtom": ""}).status_code, 200)
+        r = c.put("/api/settings/llm", json={"base_url": llm["LLM_BASE_URL"] or "", "model": llm["LLM_MODEL"] or "",
+                                              "api_key": llm["LLM_API_KEY"] or ""})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.secrets.update(ai_key=key, tomtom_key="zqxtomtomkey123", host="zqx-host", alias="zqx-alias")
 
     def run_to_end(self, c, run: dict) -> dict:
         for _ in range(600):
@@ -263,6 +285,7 @@ class FullRun(unittest.TestCase):
         with capture_all() as (log, printed):
             logging.getLogger("test").info("the capture works")
             c = self.signed_up()
+            self.the_install_settings_and_a_new_name(c)
             self.sign_up_and_set_up(c)
             ads = self.search_and_score(c)
             self.talk_to_the_ai(c, ads)
@@ -481,7 +504,7 @@ class FullRun(unittest.TestCase):
         self.assertEqual(c.post("/api/account/background", json={"enabled": True}).status_code, 200)
         db = SessionLocal()
         try:
-            uid = users.find_by_email(db, self.email).id
+            uid = users.find_by_name(db, self.email).id
             ws = db.query(Workspace.id).filter(Workspace.owner_id == uid).order_by(Workspace.id).scalar()
         finally:
             db.close()
@@ -494,14 +517,14 @@ class FullRun(unittest.TestCase):
 
         # A forgotten password, reset with a recovery code (a wrong one first): the data is kept.
         anon = self.anonymous()
-        r = anon.post("/api/auth/recover", json={"email": self.email, "recovery_code": "ZQXQ-ZQXQ-ZQXQ-ZQXQ",
+        r = anon.post("/api/auth/recover", json={"name": self.email, "recovery_code": "ZQXQ-ZQXQ-ZQXQ-ZQXQ",
                                                  "new_password": NEW_PASSWORD})
         self.assertEqual(r.status_code, 401, r.text)
-        r = anon.post("/api/auth/recover", json={"email": self.email, "recovery_code": self.secrets["recovery_code_0"],
+        r = anon.post("/api/auth/recover", json={"name": self.email, "recovery_code": self.secrets["recovery_code_0"],
                                                  "new_password": NEW_PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
         self.secrets.update(new_password=NEW_PASSWORD, recovered_csrf=r.json()["csrf"])
-        self.assertEqual(anon.post("/api/auth/login", json={"email": self.email, "password": "zqx wrong password"}
+        self.assertEqual(anon.post("/api/auth/login", json={"name": self.email, "password": "zqx wrong password"}
                                    ).status_code, 401)
         notice.append(True)
 
@@ -544,7 +567,7 @@ class StripQueryTest(unittest.TestCase):
         try:
             db = SessionLocal()
             try:
-                self.assertTrue(db.query(User.id, User.role).all())
+                self.assertTrue(db.query(User.id, User.status).all())
             finally:
                 db.close()
             sql.warning("a warning still comes through")

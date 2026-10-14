@@ -1,23 +1,28 @@
 """Signed-in test clients and accounts (accounts design, section 5.7).
 
 tests/__init__.py sets the environment first: throwaway database, .env and key file, ``JOBHUNT_TESTING=1`` with
-the quick ``test`` password key derivation, and the first admin (ADMIN_EMAIL / ADMIN_PASSWORD), whom the app creates
-from the environment when it starts.
+the quick ``test`` password key derivation, and the install's account (its name ADMIN_EMAIL, an email-like name as an
+older install's would be, and ADMIN_PASSWORD), which the app creates from the environment when it starts. The
+``admin`` in the helpers' names is that first account: there are no roles.
 
     from tests import helpers
 
-    with helpers.client() as c:              # the admin, signed in; POST/PUT/PATCH/DELETE carry the CSRF token
+    with helpers.client() as c:              # the first account, signed in; POST/PUT/PATCH/DELETE carry the CSRF token
         c.get("/api/jobs")
-    bob = helpers.make_user()                # an ordinary account with its own workspace (bob.workspace_id)
-    with helpers.client(bob.email) as c:     # signed in as bob
+    bob = helpers.make_user()                # another account with its own workspace (bob.workspace_id), as an older
+    with helpers.client(bob.email) as c:     # install may hold; signed in as bob (``email`` is the sign-in name)
         ...
-    with helpers.as_admin():                 # the admin's key scope, to write rows directly
+    with helpers.as_admin():                 # the first account's key scope, to write rows directly
         ...
     helpers.use_admin_scope(self)            # ... or for the rest of a test (setUp or the test itself)
 
 Columns are sealed under their owner's key (backend/crypto.py, docs/design/accounts.md §2.2): reading or writing
 them outside a key scope raises ``crypto.Locked``. The encryption migration ran when the admin was created, so
 strict mode is on: plaintext planted in a sealed column with raw SQL is refused when read.
+
+The app itself never makes a second account (backend/users.py ``create_account`` refuses once one exists); ``make_user``
+writes one straight into the database with the same code, to stand in for the extra accounts of an install made before
+the open-source version, which keep working.
 
 A client also works without ``with``: call ``c.__enter__()`` and ``addCleanup(c.__exit__, None, None, None)``.
 """
@@ -74,7 +79,7 @@ class SignedInClient(TestClient):
 
     def sign_in(self) -> dict:
         ratelimit.AUTH.reset()  # every test signs in from the same address
-        r = self.post("/api/auth/login", json={"email": self.email, "password": self.password,
+        r = self.post("/api/auth/login", json={"name": self.email, "password": self.password,
                                                 "remember": self.remember})
         if r.status_code != 200:
             raise AssertionError(f"signing in as {self.email} failed: {r.status_code} {r.text}")
@@ -83,13 +88,13 @@ class SignedInClient(TestClient):
 
 
 def client(email: str = ADMIN_EMAIL, password: Optional[str] = None, **kwargs) -> SignedInClient:
-    """A client signed in as ``email`` (the admin by default) once started."""
+    """A client signed in as ``email`` (the sign-in name; the first account by default) once started."""
     return SignedInClient(email, password or _passwords[email], **kwargs)
 
 
 def show_codes(c, password: Optional[str] = None, **fields):
     """The answer of ``POST /api/auth/recovery-codes/show`` for ``c`` (the unsaved recovery codes need the password
-    again, and a code with two-step sign-in on)."""
+    again)."""
     return c.post("/api/auth/recovery-codes/show", json={"password": password or getattr(c, "password", USER_PASSWORD),
                                                          **fields})
 
@@ -117,12 +122,13 @@ class Account:
     workspace_id: int
 
 
-def make_user(email: Optional[str] = None, password: str = USER_PASSWORD, *, role: str = "user",
-              name: str = "") -> Account:
-    """A new account with a "My job search" workspace of its own."""
+def make_user(email: Optional[str] = None, password: str = USER_PASSWORD) -> Account:
+    """Another account with a "My job search" workspace of its own, written straight into the database as an older
+    install's extra account would be (the app can't make one: ``users.create_account`` refuses once an account
+    exists). ``email`` is its sign-in name (an older install's names are addresses)."""
     started()
     email = email or f"user{next(_numbers)}-{os.getpid()}@example.invalid"
-    account = users.create_user(email, password, name=name, role=role, created_via="open")
+    account = extra_account(email, password)
     _passwords[email] = password
     _keys[email] = (account.user_id, account.dek)
     _iks[email] = account.ik
@@ -134,12 +140,32 @@ def make_user(email: Optional[str] = None, password: str = USER_PASSWORD, *, rol
     return Account(account.user_id, email, password, ws)
 
 
+def extra_account(name: str, password: str, created_via: str = "open", *, background: bool = False
+                  ) -> users.NewAccount:
+    """The account rows ``users._insert_account`` makes, and its workspace, committed (what an older install's sign-up
+    left). Test-only: no route or command of the app reaches it. ``background``: with background access."""
+    started()
+    name, password = users.clean_name(name), users.check_password(password)
+    db = SessionLocal()
+    try:
+        with users._wrapping_if(background):
+            account = users._insert_account(db, name=name, password=password, created_via=created_via,
+                                            background=background)
+            with crypto.as_user(account.user_id, account.dek):
+                db.add(Workspace(name=users.DEFAULT_WORKSPACE, owner_id=account.user_id))
+                db.commit()
+        _passwords[name] = password
+        return account
+    finally:
+        db.close()
+
+
 def unlock(email: str = ADMIN_EMAIL, password: Optional[str] = None) -> tuple[int, bytes]:
     """(user id, data key) of an account, as signing in finds them."""
     started()
     db = SessionLocal()
     try:
-        user = users.find_by_email(db, email)
+        user = users.find_by_name(db, email)
         dek = users.unlock_with_password(db, user, password or _passwords[email])
         return user.id, dek
     finally:
@@ -150,7 +176,7 @@ def admin_id() -> int:
     started()
     db = SessionLocal()
     try:
-        return users.find_by_email(db, ADMIN_EMAIL).id
+        return users.find_by_name(db, ADMIN_EMAIL).id
     finally:
         db.close()
 
@@ -172,7 +198,7 @@ def ik_of(email: str = ADMIN_EMAIL) -> bytes:
         started()
         db = SessionLocal()
         try:
-            _iks[email] = users.unlock(db, users.find_by_email(db, email), _passwords[email]).ik
+            _iks[email] = users.unlock(db, users.find_by_name(db, email), _passwords[email]).ik
         finally:
             db.close()
     return _iks[email]
@@ -180,8 +206,8 @@ def ik_of(email: str = ADMIN_EMAIL) -> bytes:
 
 @contextlib.contextmanager
 def as_admin() -> Iterator[crypto.Scope]:
-    """The admin's key scope, for writing and reading rows (sealed columns) directly in a test. Like a signed-in
-    request's, it can open the identity key (so ``admin_key.open_apk`` works); a background run's can't."""
+    """The first account's key scope, for writing and reading rows (sealed columns) directly in a test. Like a
+    signed-in request's, it can open the identity key; a background run's can't."""
     uid, dek = key_of()
     with crypto.as_user(uid, dek, lambda: ik_of()) as scope:
         yield scope
@@ -209,8 +235,8 @@ _module_scopes: list = []
 
 
 def enter_admin_scope() -> None:
-    """The admin's key scope for a whole test module (``setUpModule``): its tests write and read rows directly and
-    call background code (searches, scoring, research) as the admin's own runs would. Requests made with a test
+    """The first account's key scope for a whole test module (``setUpModule``): its tests write and read rows directly
+    and call background code (searches, scoring, research) as the account's own runs would. Requests made with a test
     client still run in the scope of whoever signed in (backend/sessions.py)."""
     scope = as_admin()
     scope.__enter__()
@@ -223,15 +249,15 @@ def exit_admin_scope() -> None:
 
 
 def use_admin_scope(test) -> None:
-    """The admin's key scope for the rest of ``test`` (call it in setUp or the test): code the test calls
-    directly, as a background run or the scheduler would, then acts as the admin."""
+    """The first account's key scope for the rest of ``test`` (call it in setUp or the test): code the test calls
+    directly, as a background run or the scheduler would, then acts as that account."""
     scope = as_admin()
     scope.__enter__()
     test.addCleanup(scope.__exit__, None, None, None)
 
 
 def new_workspace(name: str, owner: Optional[int] = None) -> int:
-    """A workspace made directly in the database, owned by ``owner`` (the admin by default)."""
+    """A workspace made directly in the database, owned by ``owner`` (the first account by default)."""
     owner = admin_id() if owner is None else owner
     db = SessionLocal()
     try:
@@ -281,7 +307,7 @@ def scenario(code: str, folder: Optional[str] = None, env: Optional[dict] = None
              returncode: Optional[int] = 0) -> dict:
     """Run ``code`` in a fresh Python process on a throwaway data folder, database, .env and key file in
     ``folder`` (a new one by default; pass the same folder again to "restart"). ``code`` sets ``out``, which comes
-    back as a dict. The admin variables from tests/__init__.py are left out unless ``env`` sets them.
+    back as a dict. The account variables from tests/__init__.py are left out unless ``env`` sets them.
     ``returncode``: the exit status expected (None: any, for a process that is made to crash)."""
     folder = folder or scratch_folder()
     run_env = scenario_env(folder, env)

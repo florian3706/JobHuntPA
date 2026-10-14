@@ -122,11 +122,11 @@ with engine.begin() as c:
 out["planted"] = {"link": link, "private": private}
 '''
 
-# The admin is made the way the first run makes them; the run is then started by hand (and made to crash).
+# The account is made the way the first run makes it; the run is then started by hand (and made to crash).
 MAKE_ADMIN = '''
 from backend import users
 users.startup()
-account = users.create_first_admin("owner@example.com", "correct horse battery", name="Pat Owner")
+account = users.create_account("owner@example.com", "correct horse battery")
 out["user_id"] = account.user_id
 '''
 
@@ -138,7 +138,7 @@ users.startup()
 migrate_encryption.at_startup()
 out["state_after_restart"] = migrate_encryption.state().get("state")
 db = SessionLocal()
-user = users.find_by_email(db, "owner@example.com")
+user = users.find_by_name(db, "owner@example.com")
 dek = users.unlock_with_password(db, user, "correct horse battery")
 db.close()
 '''
@@ -168,11 +168,11 @@ with TestClient(app) as c:
     job_ids = {j["url"]: j["id"] for j in out["api"]["jobs"]}
     out["api"]["letter"] = c.get(f"/api/jobs/{job_ids['https://jobs.example/public/1']}/cover-letter").json()
     out["status"] = c.get("/api/encryption/status").json()
-    out["delete_without_csrf"] = c.post("/api/admin/plaintext-files/delete").status_code
+    out["delete_without_csrf"] = c.post("/api/settings/leftovers/delete").status_code
     out["old_route"] = c.post("/api/encryption/leftovers/delete", headers={"X-CSRF-Token": csrf}).status_code
-    deleted = c.post("/api/admin/plaintext-files/delete", headers={"X-CSRF-Token": csrf})
+    out["admin_route"] = c.post("/api/admin/plaintext-files/delete", headers={"X-CSRF-Token": csrf}).status_code
+    deleted = c.post("/api/settings/leftovers/delete", headers={"X-CSRF-Token": csrf})
     out["deleted"] = deleted.json()
-    out["audit_actions"] = [e["action"] for e in c.get("/api/admin/audit").json()["entries"]]
 '''
 
 
@@ -286,9 +286,9 @@ with engine.connect() as conn:
                          ["cache/old.html", "jobhunt.db.bak-before-encryption", "jobhunt.db.bak-before-job-pool"])
         self.assertEqual(self.read["deleted"]["leftovers"], [])
         self.assertEqual(self.read["delete_without_csrf"], 403)
-        # One way to delete them, the admin panel's, and it leaves a trace in the audit log.
+        # One way to delete them, the Settings tab's (recent sign-in: the owner just signed in).
         self.assertIn(self.read["old_route"], (404, 405))
-        self.assertIn("plaintext_files_deleted", self.read["audit_actions"])
+        self.assertIn(self.read["admin_route"], (404, 405))
 
     def test_everything_reads_back_through_the_api(self):
         api = self.read["api"]
@@ -340,10 +340,10 @@ with TestClient(app) as c:
     out["me_while"] = c.get("/api/auth/me").status_code
     from backend import users
     try:
-        users.create_user("newcomer@example.com", "a long enough password")
+        users.create_account("newcomer@example.com", "a long enough password")
         out["signup_while"] = "allowed"
-    except users.AccountError as exc:
-        out["signup_while"] = exc.message
+    except users.AlreadySetUp:
+        out["signup_while"] = "refused: there is an account"
     gate.set()
     for _ in range(300):
         if c.get("/api/encryption/status").json()["state"] == "done":
@@ -364,7 +364,7 @@ class ProgressWhileEncryptingTest(unittest.TestCase):
         self.assertGreater(body["total"], 10)
         self.assertEqual(out["status_while"]["state"], "running")
         self.assertEqual(out["me_while"], 200)  # signing in and out keep working
-        self.assertIn("encrypting", out["signup_while"])  # new accounts wait
+        self.assertEqual(out["signup_while"], "refused: there is an account")  # one account per install
         self.assertEqual(out["after"], [200, 2])
 
 

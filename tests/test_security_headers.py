@@ -50,7 +50,7 @@ def directive(policy: str, name: str) -> list[str]:
 
 class Policy(unittest.TestCase):
     def test_there_are_pages(self):
-        self.assertGreaterEqual(len(PAGES), 8)
+        self.assertGreaterEqual(len(PAGES), 6)
         self.assertIn("login.html", [p.name for p in PAGES])
 
     def test_every_inline_script_has_its_hash(self):
@@ -379,7 +379,7 @@ class Guard(unittest.TestCase):
         for i in range(14):
             headers = {"Origin": "http://evil.example:8123", "X-Forwarded-For": f"203.0.113.{i}"}
             for path, payload in (("/api/auth/login", body), ("/api/auth/recover", {**body, "recovery_code": "x"}),
-                                  ("/api/auth/signup", body), ("/api/auth/first-run", {"token": "x", **body})):
+                                  ("/api/auth/first-run", {"token": "x", **body})):
                 r = c.post(path, json=payload, headers=headers)
                 self.assertEqual(r.status_code, 400, (path, i, r.text))
         self.assertEqual(ratelimit.AUTH.hit("testclient"), None)  # nothing was counted for anyone

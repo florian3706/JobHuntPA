@@ -1,5 +1,5 @@
 """The sign-up walkthrough (accounts design 6.1, Phase K): progress in ``users.onboarding_step``, the sealed theme in
-``users.prefs_enc``, the places lookup, the routing rule in common.js, and the first admin's short path.
+``users.prefs_enc``, the places lookup, the routing rule in common.js, and the first account's short path.
 
 Run:  python3 -m unittest discover -s tests -t .
 """
@@ -18,7 +18,7 @@ from sqlalchemy import text
 
 from tests import helpers  # noqa: E402  (sets the environment first)
 
-from backend import account, geo, users  # noqa: E402
+from backend import account, geo  # noqa: E402
 from backend.db import SessionLocal, engine  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -155,12 +155,11 @@ class PrefsTest(unittest.TestCase):
 
 
 class FirstAdminShortPathTest(unittest.TestCase):
-    """The first admin's existing search settings moved into the account: theme, then keep or review."""
+    """The first account's existing search settings moved into it: theme, then keep or review."""
 
     def make(self, created_via: str, titles: list[str]):
         email = f"{created_via}-{len(titles)}-{os.urandom(3).hex()}@example.invalid"
-        acct = users.create_user(email, helpers.USER_PASSWORD, role="user", created_via=created_via)
-        helpers._passwords[email] = helpers.USER_PASSWORD
+        helpers.extra_account(email, helpers.USER_PASSWORD, created_via=created_via)
         c = helpers.client(email)
         c.__enter__()
         self.addCleanup(c.__exit__, None, None, None)
@@ -168,11 +167,11 @@ class FirstAdminShortPathTest(unittest.TestCase):
             c.put("/api/profile", json={**c.get("/api/profile").json(), "titles": titles})
         return c
 
-    def test_the_first_admin_with_a_search_gets_the_short_path(self):
+    def test_the_first_account_with_a_search_gets_the_short_path(self):
         c = self.make("first_run", ["Product Manager"])
         self.assertEqual(c.get("/api/account/onboarding").json()["path"], "short")
 
-    def test_the_bootstrap_admin_gets_it_too(self):
+    def test_the_bootstrap_account_gets_it_too(self):
         c = self.make("bootstrap", ["Analyst"])
         self.assertEqual(c.get("/api/account/onboarding").json()["path"], "short")
 

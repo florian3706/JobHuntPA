@@ -335,17 +335,30 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from backend import crypto, keys, users
 from backend.app import app
-from backend.db import DB_PATH, AppSetting, SessionLocal, User, UserKeys, init_db
+from backend.db import DB_PATH, AppSetting, SessionLocal, User, UserKeys, Workspace, init_db
 
 ADMIN_PW = "root-password-123"
 init_db()
-users.startup()                                   # the admin, from the environment
-alice = users.create_user("alice@example.invalid", "alice-password-1", name="Alice", background=True)
-bob = users.create_user("bob@example.invalid", "bob-password-12", name="Bob")
-carol = users.create_user("carol@example.invalid", "carol-password-1", name="Carol")
+users.startup()                                   # the account, from the environment
+
+
+def extra(name, password, background=False):      # the extra accounts an older install may hold
+    db = SessionLocal()
+    try:
+        with users._wrapping_if(background):
+            acct = users._insert_account(db, name=name, password=password, created_via="open", background=background)
+            with crypto.as_user(acct.user_id, acct.dek):
+                db.add(Workspace(name="My job search", owner_id=acct.user_id))
+                db.commit()
+        return acct
+    finally:
+        db.close()
+
+
+alice = extra("alice@example.invalid", "alice-password-1", background=True)
+bob = extra("bob@example.invalid", "bob-password-12")
+carol = extra("carol@example.invalid", "carol-password-1")       # not named in the recovery: she stays unfound
 db = SessionLocal()
-db.query(User).filter(User.id == carol.user_id).update({User.pii_admin: None})   # her details can't be worked out
-db.commit()
 old_hash = {u.id: bytes(u.email_hash) for u in db.query(User)}
 old_fp = db.get(AppSetting, "server_keys_fingerprint").value_json
 old_blob = bytes(db.get(UserKeys, alice.user_id).server_wrapped_dek)
@@ -354,10 +367,15 @@ key_path = Path(FOLDER) / "server-keys.json"
 old_file = key_path.read_bytes()
 
 
-def recover(email, password):
+def recover(*pairs):
+    """recover-lost with --name for each (name, password) pair, the passwords typed in turn."""
     out_, err_ = io.StringIO(), io.StringIO()
+    argv = ["recover-lost"]
+    for name, _ in pairs:
+        argv += ["--name", name]
+    typed = iter(password for _, password in pairs)
     with redirect_stdout(out_), redirect_stderr(err_):
-        status = keys.main(["recover-lost", "--admin-email", email], ask_password=lambda prompt: password)
+        status = keys.main(argv, ask_password=lambda prompt: next(typed))
     return {"status": status, "out": out_.getvalue(), "err": err_.getvalue()}
 
 
@@ -371,32 +389,34 @@ def state():
 
 
 before = state()
-out["with_file"] = recover("root@example.invalid", ADMIN_PW)            # a key file exists: refused
+out["with_file"] = recover(("root@example.invalid", ADMIN_PW))            # a key file exists: refused
 out["file_kept"] = key_path.read_bytes() == old_file
 key_path.unlink()
 run_file = Path(FOLDER) / "running.json"                                # the app is running (a live process)
 run_file.write_text(json.dumps({"port": 8000, "pid": os.getppid()}))
-out["while_running"] = recover("root@example.invalid", ADMIN_PW)
+out["while_running"] = recover(("root@example.invalid", ADMIN_PW))
 out["still_no_file"] = not key_path.exists() and not (key_path.parent / "server-keys.json.new").exists()
 run_file.unlink()
 db = SessionLocal()
-db.query(User).filter(User.id == 1).update({User.status: "disabled"})   # a turned-off admin, right password
+db.query(User).filter(User.id == 1).update({User.status: "disabled"})   # a turned-off account, right password
 db.commit()
 db.close()
-out["disabled_admin"] = recover("root@example.invalid", ADMIN_PW)
+out["disabled_admin"] = recover(("root@example.invalid", ADMIN_PW))
 out["after_disabled"] = state() == before and not key_path.exists()
 db = SessionLocal()
 db.query(User).filter(User.id == 1).update({User.status: "active"})
 db.commit()
 db.close()
-out["wrong_password"] = recover("root@example.invalid", "not the password")
-out["wrong_email"] = recover("nobody@example.invalid", ADMIN_PW)
-out["empty_password"] = recover("root@example.invalid", "")
-non_admin = recover("alice@example.invalid", "alice-password-1")      # right password, but not an admin
-out["not_admin"] = non_admin
+out["wrong_password"] = recover(("root@example.invalid", "not the password"))
+out["wrong_email"] = recover(("nobody@example.invalid", ADMIN_PW))
+out["empty_password"] = recover(("root@example.invalid", ""))
+out["not_admin"] = recover(("bob@example.invalid", "alice-password-1"))  # another account's password
+# one good pair and one bad: the whole run is refused, nothing is written
+out["half_right"] = recover(("root@example.invalid", ADMIN_PW), ("bob@example.invalid", "not bob's"))
 out["nothing_changed"] = state() == before and not key_path.exists() and not (key_path.parent / "server-keys.json.new").exists()
 
-out["recover"] = recover("Root@Example.invalid", ADMIN_PW)              # the email is matched whatever its case
+out["recover"] = recover(("Root@Example.invalid", ADMIN_PW),           # the name is matched whatever its case
+                         ("alice@example.invalid", "alice-password-1"), ("bob@example.invalid", "bob-password-12"))
 out["file_exists"] = key_path.exists()
 db_files = [Path(str(DB_PATH) + suffix) for suffix in ("", "-wal")]
 out["old_copies_left"] = [f.name for f in db_files if f.exists() and old_blob in f.read_bytes()]
@@ -410,7 +430,7 @@ out["fingerprint_changed"] = fp != old_fp
 
 users.startup()                                                           # a restart: the new file matches the database
 db = SessionLocal()
-found = {name: users.find_by_email(db, f"{name}@example.invalid") for name in ("root", "alice", "bob", "carol")}
+found = {name: users.find_by_name(db, f"{name}@example.invalid") for name in ("root", "alice", "bob", "carol")}
 out["found"] = {name: (u.id if u else None) for name, u in found.items()}
 out["ids"] = {"root": 1, "alice": alice.user_id, "bob": bob.user_id, "carol": carol.user_id}
 out["hash_changed"] = {name: (bytes(u.email_hash) != old_hash[u.id]) for name, u in found.items() if u}
@@ -423,7 +443,7 @@ with crypto.as_user(alice.user_id, alice.dek):
 db.close()
 
 with TestClient(app) as c:
-    r = c.post("/api/auth/login", json={"email": "alice@example.invalid", "password": "alice-password-1"})
+    r = c.post("/api/auth/login", json={"name": "alice@example.invalid", "password": "alice-password-1"})
     out["alice_login"] = r.status_code
     out["alice_background_state"] = c.get("/api/account/background").json()
     # and background access can be turned on again with the new key file
@@ -442,10 +462,10 @@ class RecoverLostKeyFileTest(unittest.TestCase):
         self.assertEqual(out["with_file"]["status"], 1)
         self.assertIn("A key file already exists", out["with_file"]["err"])
         self.assertTrue(out["file_kept"])
-        for case in ("wrong_password", "wrong_email", "not_admin"):
+        for case in ("wrong_password", "wrong_email", "not_admin", "half_right"):
             with self.subTest(case=case):
                 self.assertEqual(out[case]["status"], 1)
-                self.assertIn("No admin account matches that email address and password", out[case]["err"])
+                self.assertIn("No account matches that name and password", out[case]["err"])
         self.assertEqual(out["empty_password"]["status"], 1)
         self.assertIn("No password was entered", out["empty_password"]["err"])
         self.assertTrue(out["nothing_changed"], "no key file, no half-written file, no row changed")
@@ -456,10 +476,10 @@ class RecoverLostKeyFileTest(unittest.TestCase):
         self.assertIn("JobHuntPA is running", out["while_running"]["err"])
         self.assertTrue(out["still_no_file"])
 
-    def test_it_refuses_a_turned_off_admin_without_saying_why(self):
+    def test_it_refuses_a_turned_off_account_without_saying_why(self):
         out = self.out
         self.assertEqual(out["disabled_admin"]["status"], 1)
-        self.assertIn("No admin account matches that email address and password", out["disabled_admin"]["err"])
+        self.assertIn("No account matches that name and password", out["disabled_admin"]["err"])
         self.assertTrue(out["after_disabled"], "no key file and nothing changed")
 
     def test_it_writes_a_new_private_key_file_and_nothing_is_left_over(self):
@@ -472,30 +492,30 @@ class RecoverLostKeyFileTest(unittest.TestCase):
         self.assertEqual(out["leftover"], [])
         self.assertTrue(out["fingerprint_changed"])
 
-    def test_every_email_is_found_again_with_the_new_pepper(self):
+    def test_every_named_account_is_found_again_with_the_new_pepper(self):
         out = self.out
         for name in ("root", "alice", "bob"):
             self.assertEqual(out["found"][name], out["ids"][name], name)
-            self.assertTrue(out["hash_changed"][name], f"{name}'s email hash was recomputed")
-        # carol's details couldn't be opened: her old hash stays, no email address finds her any more
+            self.assertTrue(out["hash_changed"][name], f"{name}'s look-up hash was recomputed")
+        # carol wasn't named (her name is sealed under her own key): her old hash stays, and no name finds her
         self.assertIsNone(out["found"]["carol"])
         self.assertTrue(out["carol_hash_kept"])
-        self.assertIn("1 could not be worked out", out["recover"]["out"])
-        self.assertIn("Email lookup was rebuilt for 3 account(s)", out["recover"]["out"])
+        self.assertIn("1 other account(s) were not named", out["recover"]["out"])
+        self.assertIn("Signing in was restored for 3 account(s)", out["recover"]["out"])
 
     def test_background_access_is_switched_off(self):
         out = self.out
         self.assertEqual(out["background_left"], [])
         self.assertEqual(out["old_copies_left"], [], "the deleted key copies are in neither the database nor its log")
         self.assertTrue(out["alice_background_key"])
-        self.assertIn("Background access was switched off for 2 account(s): each person turns it on again",
+        self.assertIn("Background access was switched off for 2 account(s): turn it on again",
                       out["recover"]["out"])
 
     def test_nobodys_data_is_lost_and_nobody_is_named(self):
         out = self.out
         self.assertTrue(out["alice_dek_same"])
         self.assertTrue(out["root_signs_in"])
-        self.assertEqual(out["alice_details"], {"email": "alice@example.invalid", "name": "Alice"})
+        self.assertEqual(out["alice_details"], {"name": "alice@example.invalid"})
         self.assertEqual(out["alice_login"], 200)
         self.assertEqual(out["alice_background_state"], {"enabled": False, "since": None})
         self.assertTrue(out["turn_on_again"])
@@ -506,11 +526,12 @@ class RecoverLostKeyFileTest(unittest.TestCase):
 class RecoverLostCommandLineTest(unittest.TestCase):
     def test_the_command_is_wired_into_the_cli_and_asks_for_a_password(self):
         from backend import keys
+        helpers.started()  # (the test environment's database and key file)
         prompts: list[str] = []
         err = io.StringIO()
         # A key file exists in the test environment, so it is refused before any password is asked for.
         with redirect_stderr(err), redirect_stdout(io.StringIO()):
-            status = keys.main(["recover-lost", "--admin-email", "a@b.c"],
+            status = keys.main(["recover-lost", "--name", "a@b.c"],
                                ask_password=lambda prompt: prompts.append(prompt) or "x")
         self.assertEqual(status, 1)
         self.assertEqual(prompts, [])

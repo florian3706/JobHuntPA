@@ -23,7 +23,7 @@ from backend import keys, migrate_encryption, users
 from backend.db import init_db
 init_db()
 users.startup()
-account = users.create_first_admin("owner@example.com", "correct horse battery", name="Pat Owner")
+account = users.create_account("owner@example.com", "correct horse battery")
 out["user_id"] = account.user_id
 migrate_encryption.run(account.user_id, account.dek)
 '''
@@ -44,7 +44,7 @@ class StrictModeTest(unittest.TestCase):
         return helpers.scenario(RESTART + '''
 PLANTED = "PLANTED-PLAINTEXT-NAME"
 db = SessionLocal()
-user = users.find_by_email(db, "owner@example.com")
+user = users.find_by_name(db, "owner@example.com")
 dek = users.unlock_with_password(db, user, "correct horse battery")
 db.close()
 with engine.begin() as conn:  # what someone with write access to the database does
@@ -300,7 +300,7 @@ class KeyFileLockTest(unittest.TestCase):
         before = (Path(folder) / "server-keys.json").read_bytes()
         app = self.start_app(folder)
         self.assertFalse((Path(folder) / "running.json").exists())     # (the launcher's file isn't there)
-        for args in (("rotate-kek",), ("new-admin-key", "--email", "owner@example.com")):
+        for args in (("rotate-kek",),):
             done = self.command(folder, *args)
             self.assertEqual(done.returncode, 2, (args, done.stdout, done.stderr))
             self.assertIn("using the key file", done.stderr)

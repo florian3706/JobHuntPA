@@ -368,9 +368,12 @@ class KeyAuthTest(Base):
         r = self.key_client(made["key"]).get("/api/extension/status")
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
-        self.assertEqual({k: body[k] for k in ("ok", "api", "label", "expires_at", "default_workspace")},
-                         {"ok": True, "api": 2, "label": "Firefox on laptop", "expires_at": made["expires_at"],
-                          "default_workspace": acct.workspace_id})
+        self.assertEqual({k: body[k] for k in ("ok", "api", "label", "default_workspace")},
+                         {"ok": True, "api": 2, "label": "Firefox on laptop", "default_workspace": acct.workspace_id})
+        # Using the key moves its idle expiry on, so the two can be a second apart: compare within 2 seconds.
+        from datetime import datetime
+        when = lambda iso: datetime.fromisoformat(iso.replace("Z", "+00:00"))  # noqa: E731
+        self.assertLessEqual(abs((when(body["expires_at"]) - when(made["expires_at"])).total_seconds()), 2)
         self.assertEqual(body["workspaces"], [{"id": acct.workspace_id, "name": "My job search"},
                                               {"id": second, "name": "Plan B"}])  # sealed names: the key opens them
         self.assertRegex(body["app_version"], r"^\d+\.\d+\.\d+$")
@@ -424,7 +427,7 @@ class KeyAuthTest(Base):
                                    ("delete", f"/api/sources/{source}", None), ("get", "/api/health", None),
                                    ("post", "/api/account/background", {"enabled": True}),
                                    ("get", "/api/account/export", None), ("post", "/api/import/page", None),
-                                   ("get", "/api/admin/users", None), ("get", "/api/extension/status/x", None),
+                                   ("get", "/api/settings/llm", None), ("get", "/api/extension/status/x", None),
                                    ("get", "/api/extension/jobs/batch", None),
                                    ("post", "/api/extension/jobs/batch/x", {}),
                                    ("post", "/api/extension/jobs/other", {})):
@@ -433,12 +436,18 @@ class KeyAuthTest(Base):
         self.assertEqual(len(c.get("/api/sources").json()), 1)
         self.assertEqual(len(self.rows(acct.id)), 1)
 
-    def test_the_admins_key_is_refused_by_admin_endpoints_too(self):
-        with helpers.client() as admin:
-            made = self.connect(admin, "Admin laptop")
-            r = self.key_client(made["key"]).get("/api/admin/users")
-            self.assertEqual((r.status_code, r.json()["code"]), (403, "token_scope"))
-            admin.delete(f"/api/extension/keys/{made['id']}")
+    def test_a_key_never_reaches_the_install_settings_or_the_name(self):
+        """Whoever is signed in may change every setting, but an extension key is not a sign-in."""
+        with helpers.client() as first:
+            made = self.connect(first, "Laptop")
+            k = self.key_client(made["key"])
+            for method, path, body in (("put", "/api/settings/llm", {"model": "x"}), ("get", "/api/settings/usage", None),
+                                       ("put", "/api/settings/address", {"public_base_url": ""}),
+                                       ("post", "/api/settings/server-key/rotate", None),
+                                       ("put", "/api/auth/name", {"name": "taken over"})):
+                r = getattr(k, method)(path, **({"json": body} if body is not None else {}))
+                self.assertEqual((r.status_code, r.json()["code"]), (403, "token_scope"), path)
+            first.delete(f"/api/extension/keys/{made['id']}")
 
     def test_a_bad_key_is_401_and_the_cookie_is_never_used_instead(self):
         acct, c = self.account()
@@ -490,7 +499,7 @@ class KeyAuthTest(Base):
         self.assertGreater(row.idle_expires_at, utcnow() + timedelta(days=59))
 
     def test_a_key_never_counts_as_a_recent_sign_in(self):
-        auth = sessions.AuthUser(id=1, role="admin", session_id="x", persistent=False, reauth_at=utcnow(), csrf="",
+        auth = sessions.AuthUser(id=1, session_id="x", persistent=False, reauth_at=utcnow(), csrf="",
                                  key=True)
         self.assertFalse(sessions.has_recent_auth(auth))
         with self.assertRaises(sessions.AuthProblem):
@@ -615,15 +624,22 @@ class RevokedTogetherTest(Base):
         self.assertEqual(self.status(key), 401)
         self.assertEqual(c.get("/api/auth/me").status_code, 200)
 
-    def test_an_admin_turning_the_account_off(self):
+    def test_an_account_that_is_turned_off(self):
+        """An older install's admin may have turned an account off (there is no admin now to turn it on again): its
+        keys stop working, as its sessions do."""
+        from backend.db import User
         acct, c = self.account()
         key = self.connect(c)["key"]
-        with helpers.client() as admin:
-            self.assertEqual(admin.post(f"/api/admin/users/{acct.id}/disable").status_code, 200)
+        db = SessionLocal()
+        try:
+            db.query(User).filter(User.id == acct.id).update({User.status: "disabled"})
+            db.commit()
             self.assertEqual(self.status(key), 401)
-            self.assertEqual(self.rows(acct.id), [])
-            self.assertEqual(admin.post(f"/api/admin/users/{acct.id}/enable").status_code, 200)
-        self.assertEqual(self.status(key), 401, "turning it on again doesn't bring the key back")
+            db.query(User).filter(User.id == acct.id).update({User.status: "active"})
+            db.commit()
+        finally:
+            db.close()
+        self.assertEqual(self.status(key), 200, "the key itself was never revoked")
 
 
 class SavingBase(Base):

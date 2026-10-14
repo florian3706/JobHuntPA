@@ -5,7 +5,7 @@ when a module that sorts early (test_accessibility, test_accounts, ...) imports 
 paths. backend.db and backend.config read these variables once, at import: setting them later has no effect.
 
 The server key file and the first-run token file (which sits beside the database) are throwaway too, and the app
-signs in its first admin from the environment (tests/helpers.py has the details and the signed-in clients).
+makes its account from the environment (tests/helpers.py has the details and the signed-in clients).
 """
 import os
 import tempfile
@@ -19,7 +19,7 @@ os.environ.pop("DATABASE_URL", None)  # would override JOBHUNT_DB_PATH
 os.environ["JOBHUNT_ENV_PATH"] = os.path.join(_TMP, "test.env")  # never read or write the real .env
 os.environ["JOBHUNT_SCHEDULER"] = "off"  # tests drive backend.schedule.tick() themselves
 os.environ["JOBHUNT_KEY_FILE"] = os.path.join(_TMP, "server-keys.json")  # never data/server-keys.json
-# Accounts: the quick password key derivation (only honoured with JOBHUNT_TESTING=1) and the first admin, created
+# Accounts: the quick password key derivation (only honoured with JOBHUNT_TESTING=1) and the account, created
 # from the environment when the app starts (tests/helpers.py ADMIN_EMAIL / ADMIN_PASSWORD).
 os.environ["JOBHUNT_TESTING"] = "1"
 os.environ["JOBHUNT_KDF_PROFILE"] = "test"

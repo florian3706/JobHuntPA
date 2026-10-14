@@ -24,13 +24,14 @@ FRONTEND = ROOT / "frontend"
 sys.path.insert(0, str(ROOT / "tools"))
 import theme_contrast  # noqa: E402
 
-PAGES = ("index.html", "job.html", "login.html", "first-run.html", "recover.html", "welcome.html", "admin.html",
-         "signup.html")
-AUTH_PAGES = ("login.html", "first-run.html", "recover.html", "signup.html")
+PAGES = ("index.html", "job.html", "login.html", "first-run.html", "recover.html", "welcome.html")
+AUTH_PAGES = ("login.html", "first-run.html", "recover.html")
 # Pages and scripts of the features taken out (docs/design/open-source.md §1.3): they must stay gone.
 REMOVED_FILES = ("billing.html", "billing.js", "stripe-settings.js", "free-searches.js", "digest.js", "email-settings.js",
                  "account-email.js", "forgot.js", "reset-password.html", "reset-password.js", "verify-email.html",
-                 "verify-email.js")
+                 "verify-email.js",
+                 # the admin panel and sign-up for further accounts (Phase B)
+                 "admin.html", "admin.js", "dialogs.js", "signup.html", "signup.js")
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 FOCUSABLE = {"a", "button", "input", "select", "textarea", "summary"}
 
@@ -238,8 +239,8 @@ class GeneratedMarkupTest(unittest.TestCase):
 
     def test_templates_label_their_controls(self):
         problems = []
-        for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js", "account.js", "admin.js", "dialogs.js",
-                     "signup.js", "server-settings.js", "export.js", "background.js", "extension.js"):
+        for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js", "account.js", "server-settings.js",
+                     "export.js", "background.js", "extension.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
 
@@ -253,12 +254,10 @@ class AuthPagesTest(unittest.TestCase):
 
     def test_fields_say_what_they_are_for_password_managers(self):
         expected = {
-            "login.html": {"email": ("email", "username"), "password": ("password", "current-password")},
-            "first-run.html": {"email": ("email", "username"), "password": ("password", "new-password"),
-                               "name": ("text", "name")},
-            "recover.html": {"email": ("email", "username"), "password": ("password", "new-password")},
-            "signup.html": {"email": ("email", "username"), "password": ("password", "new-password"),
-                            "name": ("text", "name")},
+            # A name, not an address: a text field that password managers take for the username.
+            "login.html": {"name": ("text", "username"), "password": ("password", "current-password")},
+            "first-run.html": {"name": ("text", "username"), "password": ("password", "new-password")},
+            "recover.html": {"name": ("text", "username"), "password": ("password", "new-password")},
         }
         for name, fields in expected.items():
             inputs = self.inputs(parse(name))
@@ -272,7 +271,7 @@ class AuthPagesTest(unittest.TestCase):
                              f"{name}: one password field, no 'confirm password' (3.3.7)")
 
     def test_paste_and_password_managers_are_never_blocked(self):
-        for name in AUTH_PAGES + ("auth.js", "signup.js", "common.js", "account.js"):
+        for name in AUTH_PAGES + ("auth.js", "common.js", "account.js"):
             src = (FRONTEND / name).read_text(encoding="utf-8")
             with self.subTest(file=name):
                 self.assertNotRegex(src, r"on(paste|copy|cut|drop)\s*=", "no handlers that block pasting")
@@ -280,7 +279,7 @@ class AuthPagesTest(unittest.TestCase):
                 self.assertNotIn("captcha", src.lower())
         for name in AUTH_PAGES:
             for attrs in self.inputs(parse(name)).values():
-                if attrs.get("type") in ("email", "password"):
+                if attrs.get("type") == "password" or attrs.get("id") == "name":
                     self.assertNotEqual(attrs.get("autocomplete"), "off", f"{name}: autocomplete=off on a sign-in field")
                     self.assertNotIn("data-lpignore", attrs)
                     self.assertNotIn("data-1p-ignore", attrs)
@@ -317,13 +316,17 @@ class AuthPagesTest(unittest.TestCase):
         self.assertIn("min-height: 44px", rule.group(1))
 
     def test_the_dashboard_pages_have_the_account_menu(self):
-        for name in ("index.html", "job.html", "admin.html"):
+        for name in ("index.html", "job.html"):
             page = parse(name)
             btn = next(n for n in page.nodes if n["attrs"].get("id") == "account-btn")
             with self.subTest(page=name):
                 self.assertEqual(btn["attrs"].get("aria-expanded"), "false")
                 self.assertEqual(btn["attrs"].get("aria-controls"), "account-panel")
                 self.assertTrue(any(n["attrs"].get("id") == "account-signout" for n in page.nodes))
+                self.assertTrue(any(n["attrs"].get("id") == "account-name" for n in page.nodes))
+                links = [n["attrs"].get("href") for n in page.nodes if n["tag"] == "a"]
+                self.assertIn("./#settings", links, "the menu leads to Settings")
+                self.assertNotIn("admin.html", links)
 
 
 class SignInAndRecoveryTest(unittest.TestCase):
@@ -395,14 +398,13 @@ class ConfirmPasswordDialogTest(unittest.TestCase):
         self.assertIn('<h2 id="confirm-pw-title">Confirm your password</h2>', self.body)
         self.assertIn("showModal()", self.body)
 
-    def test_its_ids_do_not_clash_with_the_admin_pages_own_dialog(self):
-        # admin.html has a static confirm dialog (confirm-title, confirm-cancel, confirm-text): a duplicate id would
-        # give this dialog the wrong accessible name
-        admin = (FRONTEND / "admin.html").read_text(encoding="utf-8")
+    def test_its_ids_do_not_clash_with_the_dashboards_own(self):
+        # a duplicate id would give this dialog the wrong accessible name
+        index = (FRONTEND / "index.html").read_text(encoding="utf-8")
         ids = set(re.findall(r'\bid="(confirm-[\w-]+)"', self.body))
         self.assertTrue({"confirm-pw-title", "confirm-pw-intro", "confirm-pw-cancel", "confirm-pw-status"} <= ids)
         for name in ids:
-            self.assertNotIn(f'id="{name}"', admin, f"{name} is also on admin.html")
+            self.assertNotIn(f'id="{name}"', index, f"{name} is also on index.html")
 
     def test_focus_goes_in_and_comes_back_and_escape_cancels(self):
         self.assertIn("const opener = document.activeElement", self.body)
@@ -415,7 +417,7 @@ class ConfirmPasswordDialogTest(unittest.TestCase):
     def test_fields_for_password_managers_and_the_show_button(self):
         self.assertIn('autocomplete="current-password"', self.body)
         self.assertRegex(self.body, r'name="username" autocomplete="username"')
-        self.assertIn("aria-hidden=\"true\" aria-label=\"Email address\" value=\"${esc(email)}\"", self.body)
+        self.assertIn("aria-hidden=\"true\" aria-label=\"Name\" value=\"${esc(name)}\"", self.body)
         self.assertIn('class="btn pw-toggle" type="button" aria-controls="confirm-password" aria-pressed="false">Show password', self.body)
         self.assertNotRegex(self.body, r"addEventListener\(\s*['\"](paste|copy|cut|drop)['\"]")
 
@@ -486,7 +488,7 @@ class AccountCardsTest(unittest.TestCase):
             line = next(l for l in self.js.splitlines() if path in l and "post(" in l)
             self.assertTrue("withRecentAuth" in line or "recentWith" in line, f"{path} must go through withRecentAuth")
         self.assertIn("withRecentAuth(fn)", self.js)
-        delete = next(l for l in self.js.splitlines() if "/api/account/delete" in l)
+        delete = next(l for l in self.js.splitlines() if "post('/api/account/delete'" in l)
         self.assertIn("recentWith", delete)
 
     def test_new_recovery_codes_reuse_the_first_run_step(self):
@@ -518,7 +520,6 @@ class SignInPagesBehaviourTest(unittest.TestCase):
         cls.common = (FRONTEND / "common.js").read_text(encoding="utf-8")
         cls.account = (FRONTEND / "account.js").read_text(encoding="utf-8")
         cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
-        cls.signup = (FRONTEND / "signup.js").read_text(encoding="utf-8")
 
     @unittest.skipUnless(shutil.which("node"), "Node is needed to run nextPage()")
     def test_next_stays_on_this_site_whatever_the_url_parser_does_with_it(self):
@@ -537,12 +538,11 @@ class SignInPagesBehaviourTest(unittest.TestCase):
             self.assertEqual(out[bad], "./", repr(bad))
         self.assertEqual(out["/job.html?id=3#notes"], "/job.html?id=3#notes")
         self.assertEqual(out["/"], "/")
-        for page in ("/first-run.html", "/signup.html?invite=x"):
-            self.assertEqual(out[page], "./", page)
+        self.assertEqual(out["/first-run.html"], "./")
 
     def test_every_signed_in_page_shows_the_sign_in_notice_and_the_codes_reminder(self):
         """A sign-in can return to any page (?next=), and the notice is shown once, by the first page that asks."""
-        for name in ("app.js", "job.js", "admin.js"):
+        for name in ("app.js", "job.js"):
             src = (FRONTEND / name).read_text(encoding="utf-8")
             self.assertIn("showSignInNotice()", src, name)
             self.assertIn("remindRecoveryCodes(me)", src, name)
@@ -558,10 +558,12 @@ class SignInPagesBehaviourTest(unittest.TestCase):
             for here, nxt in zip(routes, routes[1:] + [None]):
                 if "require_recent_auth(" in src[here.end():nxt.start() if nxt else len(src)]:
                     guarded.add((prefix.group(1) if prefix else "") + here.group(1))
-        self.assertIn("/api/admin/plaintext-files/delete", guarded)
+        self.assertIn("/api/settings/leftovers/delete", guarded)
+        self.assertIn("/api/settings/server-key/rotate", guarded)
+        self.assertIn("/api/auth/name", guarded)
         self.assertIn("/api/auth/recovery-codes", guarded)
         self.assertIn("/api/extension/keys", guarded)
-        for name in ("app.js", "job.js", "welcome.js", "account.js", "common.js", "admin.js", "export.js",
+        for name in ("app.js", "job.js", "welcome.js", "account.js", "common.js", "export.js",
                      "background.js", "extension.js", "server-settings.js"):
             for number, line in enumerate((FRONTEND / name).read_text(encoding="utf-8").splitlines(), 1):
                 for path in guarded:
@@ -578,7 +580,7 @@ class SignInPagesBehaviourTest(unittest.TestCase):
         self.assertIn("stashedRecoveryCodes()", shown)
         self.assertIn("askForCodes(", shown)
         self.assertIn("'/api/auth/recovery-codes/show'", shown)
-        self.assertNotIn("authCall('/api/auth/recovery-codes')", self.auth + self.signup)
+        self.assertNotIn("authCall('/api/auth/recovery-codes')", self.auth)
         self.assertIn("stashRecoveryCodes(made.recovery_codes)", self.account)
 
     def test_results_on_the_account_cards_are_announced_through_the_permanent_live_region(self):
@@ -596,139 +598,79 @@ class SignInPagesBehaviourTest(unittest.TestCase):
         self.assertIn("pwField('acct-rc-password', 'Your password', 'current-password')", card)
 
 
-class SignupPageTest(unittest.TestCase):
-    """signup.html + signup.js: open sign-up and invitation links, then the recovery codes (WCAG 2.2 as for the other
-    sign-in pages)."""
+class InstallSettingsCardsTest(unittest.TestCase):
+    """The Settings tab's cards for the whole of this JobHuntPA (index.html + server-settings.js; they were in the
+    admin panel): static checks that need no browser. The usage tables are written by script, so the checks read the
+    templates in server-settings.js."""
 
     @classmethod
     def setUpClass(cls):
-        cls.html = parse("signup.html")
-        cls.js = (FRONTEND / "signup.js").read_text(encoding="utf-8")
-        cls.src = (FRONTEND / "signup.html").read_text(encoding="utf-8")
+        cls.html = parse("index.html")
+        cls.src = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        cls.js = (FRONTEND / "server-settings.js").read_text(encoding="utf-8")
+        cls.ids = {n["attrs"].get("id"): n for n in cls.html.nodes if n["attrs"].get("id")}
 
-    def by_id(self, ident):
-        return next(n for n in self.html.nodes if n["attrs"].get("id") == ident)
+    def test_the_moved_settings_are_on_the_settings_tab(self):
+        for ident in ("llm-card", "llm-form", "llm-provider", "llm-model", "llm-base-url", "llm-key", "detect-levels",
+                      "score-test", "usage-card", "usage-tiles", "commute-keys-card", "keys-test", "address-card",
+                      "public-url", "allowed-hosts", "address-save", "rotate-key", "plain-card", "plain-delete"):
+            self.assertIn(ident, self.ids, ident)
+        settings = self.src[self.src.index('id="tab-settings"'):self.src.index("</main>")]
+        for ident in ("llm-card", "usage-card", "address-card", "commute-keys-card", "rotate-card"):
+            self.assertIn(f'id="{ident}"', settings, f"{ident} is on the Settings tab")
+        self.assertNotIn("data-admin-only", self.src)
+        self.assertNotIn("admin.html", self.src)
 
-    def test_scripts_load_in_order_and_the_invite_link_is_not_leaked(self):
-        self.assertLess(self.src.index("common.js"), self.src.index("auth.js"))
-        self.assertLess(self.src.index("auth.js"), self.src.index("signup.js"))
-        meta = [n["attrs"] for n in self.html.nodes if n["tag"] == "meta" and n["attrs"].get("name") == "referrer"]
-        self.assertEqual(meta[0].get("content"), "no-referrer", "the link carries a secret: no Referer to other sites")
+    def test_scripts_load_in_order(self):
+        self.assertLess(self.src.index("./common.js"), self.src.index("./app.js"))
+        self.assertLess(self.src.index("./app.js"), self.src.index("./server-settings.js"))
 
-    def test_the_form_is_a_native_form_with_our_own_messages(self):
-        self.assertIn("novalidate", self.by_id("signup-form")["attrs"])
-        self.assertEqual(self.by_id("signup-submit")["attrs"].get("type"), "submit")
-        self.assertIn("autocomplete", self.by_id("email")["attrs"])
+    def test_every_card_has_a_heading_that_says_it_is_for_the_whole_install(self):
+        for ident in ("llm-card", "usage-card", "commute-keys-card", "address-card", "rotate-card", "plain-card"):
+            start = self.src.index(f'id="{ident}"')
+            card = self.src[start:start + 600]
+            with self.subTest(card=ident):
+                self.assertRegex(card, r"<h3[^>]*>[^<]+<span class=\"scope-tag\">This JobHuntPA</span></h3>")
 
-    def test_every_refusal_has_a_plain_message_and_the_codes_step_follows(self):
-        for code in ("signup_closed", "invite_needed", "invite_invalid", "email_taken"):
-            self.assertIn(code, self.js)
-        self.assertIn("showCodes(res.data.recovery_codes, res.data.csrf)", self.js)
-        self.assertIn("'/api/auth/signup'", self.js)
-        self.assertIn("$('#page-title').focus()", self.js, "a refusal takes focus, so it is read out")
+    def test_the_address_fields_are_labelled_and_described(self):
+        for ident, hint in (("public-url", "public-url-hint"), ("allowed-hosts", "allowed-hosts-hint")):
+            field = self.ids[ident]["attrs"]
+            self.assertEqual(field.get("aria-describedby"), hint)
+            self.assertIn(hint, self.ids)
+            self.assertIn(f'<label class="field-label" for="{ident}">', self.src)
+        self.assertEqual(self.ids["address-error"]["attrs"].get("role"), "alert")
+        self.assertEqual(self.ids["address-status"]["attrs"].get("role"), "status")
+        self.assertIn("setFieldError($('#public-url')", self.js)
+        self.assertIn("setFieldError($('#allowed-hosts')", self.js)
 
-    def test_closed_step_and_codes_step_are_in_the_page(self):
-        for ident in ("closed-step", "closed-text", "setup-step", "codes-step", "codes-list", "codes-continue", "codes-saved"):
-            self.by_id(ident)
-
-
-class AdminPageTest(unittest.TestCase):
-    """admin.html + admin.js: static checks that need no browser. The tables and dialogs are written by script, so
-    the checks read the templates in admin.js."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.html = parse("admin.html")
-        cls.js = (FRONTEND / "admin.js").read_text(encoding="utf-8")
-        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
-        cls.src = (FRONTEND / "admin.html").read_text(encoding="utf-8")
-
-    def by_id(self, ident):
-        return next(n for n in self.html.nodes if n["attrs"].get("id") == ident)
-
-    def test_every_section_has_a_heading_and_the_nav_points_at_them(self):
-        nav = self.by_id("main")
-        self.assertEqual(nav["tag"], "main")
-        links = [n["attrs"]["href"] for n in self.html.nodes if n["tag"] == "a" and "admin-nav" in
-                 self.html.nodes[n["parent"]]["attrs"].get("class", "")]
-        self.assertEqual(links, ["#usage", "#users", "#signup", "#server", "#audit"])
-        for target in links:
-            section = self.by_id(target[1:])
-            self.assertEqual(section["tag"], "section")
-            self.assertTrue(section["attrs"].get("aria-labelledby"), f"{target} is named by its heading")
-
-    def test_dialogs_are_native_and_named(self):
-        for ident in ("confirm-dialog",):
-            dialog = self.by_id(ident)
-            self.assertEqual(dialog["tag"], "dialog")
-            self.assertTrue(dialog["attrs"].get("aria-labelledby"))
-        dialogs = (FRONTEND / "dialogs.js").read_text(encoding="utf-8")
-        self.assertIn("showModal()", dialogs)
-        self.assertIn(".modal-title').focus()", dialogs, "focus moves to the dialog's heading")
-        self.assertIn("openers.get(dlg.id)", dialogs, "focus goes back to the button that opened it")
-        self.assertLess(self.src.index("./dialogs.js"), self.src.index("./server-settings.js"))
-        self.assertLess(self.src.index("./dialogs.js"), self.src.index("./admin.js"))
-        settings = (FRONTEND / "server-settings.js").read_text(encoding="utf-8")
-        self.assertNotRegex(settings + self.js, r"(?<![\w.])confirm\(", "confirmations use the focus-managed dialog")
-
-    def test_tables_have_captions_and_header_scopes(self):
+    def test_the_usage_tables_have_captions_and_header_scopes_and_stack_on_phones(self):
         self.assertIn('<caption class="visually-hidden">${esc(caption)}</caption>', self.js)
         self.assertIn('scope="col"', self.js)
         self.assertIn('scope="row"', self.js)
-        self.assertIn('aria-sort="${dir}"', self.js)
-        self.assertIn("'ascending' : 'descending'", self.js)
-        self.assertEqual(self.js.count("role=\"table\""), 1, "one table builder, so every table is built the same way")
-
-    def test_action_buttons_name_their_person(self):
-        for phrase in ("Make admin: ${l}", "Disable ${l}", "Enable ${l}", "Share the admin key again: ${l}",
-                       "Make regular user: ${l}", "Delete the account of ${l}", "Unlock ${l}"):
-            self.assertIn(phrase, self.js)
-        self.assertIn('aria-label="${esc(name)}"', self.js, "names go through esc()")
-
-    def test_visible_text_is_inside_the_accessible_name(self):
-        """WCAG 2.5.3 (Label in Name; axe's label-content-name-mismatch): a button's visible words are in its aria-label,
-        in that order, so speech control ("click Make admin") finds it. Checks the admin panel's row buttons."""
-        calls = re.findall(r"btn\('[\w-]+', '([^']+)', `([^`]+)`", self.js)
-        self.assertGreaterEqual(len(calls), 7)
-        for visible, name in calls:
-            self.assertIn(visible.lower(), name.lower(), f"the button '{visible}' is named '{name}'")
-
-    def test_other_peoples_text_only_goes_in_escaped(self):
-        # Names and emails are chosen by their owners: never into innerHTML except through esc().
-        for field in ("u.email", "u.name", "p.email", "p.name", "i.email", "r.who", "f.path"):
-            for m in re.finditer(re.escape(field), self.js):
-                line = self.js[self.js.rfind("\n", 0, m.start()) + 1:self.js.find("\n", m.end())]
-                self.assertRegex(line, r"esc\(|label\(|=== |\|\||\?|&&|\.value =|textContent|\.slice|if \(|\.startsWith|\.includes",
-                                 f"{field} written without esc(): {line.strip()}")
-        self.assertNotIn("document.write", self.js)
-
-    def test_cards_on_narrow_screens_and_a_sort_menu(self):
-        self.assertIn("stack-table admin-table", self.js)
-        self.assertRegex(self.css, r"@media \(max-width: 640px\) \{\s*\.sort-select \{ display: flex; \}")
-        self.assertIn('id="users-sort"', self.js)
-        self.assertIn('<label for="users-sort">Sort by</label>', self.js)
-
-    def test_the_moved_settings_are_here_and_gone_from_the_dashboard(self):
-        ids = {n["attrs"].get("id") for n in self.html.nodes}
-        for ident in ("llm-form", "llm-provider", "llm-model", "llm-key", "detect-levels", "score-test", "keys-test",
-                      "rotate-key", "plain-delete", "audit-more", "signup-form", "invite-form"):
-            self.assertIn(ident, ids)
-        index = parse("index.html")
-        index_ids = {n["attrs"].get("id") for n in index.nodes}
-        for ident in ("llm-form", "llm-provider", "llm-key", "commute-keys-card", "keys-test", "score-test", "detect-levels"):
-            self.assertNotIn(ident, index_ids, f"{ident} moved to the admin panel")
-        self.assertFalse(any("data-admin-only" in n["attrs"] and n["tag"] == "form" for n in index.nodes))
+        self.assertIn("report stack-table usage-table", self.js)
+        self.assertIn('data-label="${esc(heads[i + 1])}"', self.js)
+        self.assertEqual(self.ids["usage-status"]["attrs"].get("role"), "status")
+        self.assertEqual(self.ids["usage-tiles"]["tag"], "dl")
 
     def test_actions_that_need_the_password_go_through_withRecentAuth(self):
-        for call in ("/role", "/regrant", "/keys/rotate", "/plaintext-files/delete"):
-            line = next(l for l in self.js.splitlines() if call in l and "post(" in l)
-            self.assertIn("reauth(", line, call)
-        self.assertIn("withRecentAuth(fn)", self.js)
+        for call in ("/api/settings/server-key/rotate", "/api/settings/leftovers/delete"):
+            line = next(l for l in self.js.splitlines() if call in l)
+            self.assertIn("withRecentAuth(", line, call)
 
-    def test_warnings_for_one_admin_and_a_missing_key(self):
-        self.assertIn("only_one_admin", self.js)
-        self.assertIn("admin_key_available", self.js)
-        self.assertIn("You are the only admin", self.js)
+    def test_what_the_server_sends_only_goes_in_escaped(self):
+        for field in ("f.path", "r.name", "preset.note", "st.key.hint"):
+            for m in re.finditer(re.escape(field), self.js):
+                line = self.js[self.js.rfind("\n", 0, m.start()) + 1:self.js.find("\n", m.end())]
+                self.assertIn("esc(", line, f"{field} written without esc(): {line.strip()}")
+        self.assertNotIn("document.write", self.js)
+        self.assertNotRegex(self.js, r"\son(click|submit|change)\s*=", "no handler attributes (CSP)")
+
+    def test_the_name_card_needs_a_recent_sign_in(self):
+        js = (FRONTEND / "account.js").read_text(encoding="utf-8")
+        self.assertIn("card('acct-name', 'Your name'", js)
+        line = next(l for l in js.splitlines() if "/api/auth/name" in l)
+        self.assertIn("withRecentAuth(", line)
+        self.assertIn('autocomplete="username"', js)
 
 
 class ExportCardTest(unittest.TestCase):
@@ -1125,7 +1067,7 @@ class BrowserAuditRegressionsTest(unittest.TestCase):
         self.assertNotIn("axe", requirements, "axe-core is a developer-only npm install, not an app dependency")
         done = subprocess.run([sys.executable, str(tool), "--list"], capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
-        for group in ("index", "auth", "wizard", "job", "admin", "settings", "keyboard"):
+        for group in ("index", "auth", "wizard", "job", "settings", "keyboard"):
             self.assertIn(group + ":", done.stdout)
         source = tool.read_text(encoding="utf-8")
         # the audit must reach the ghost-job pages (it fails a run that can't), and ignore a visually hidden clip

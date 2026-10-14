@@ -122,8 +122,8 @@ class ExportTest(unittest.TestCase):
         helpers.started()
 
     def setUp(self):
-        self.bob = helpers.make_user(name="MARK-name-bob")
-        self.alice = helpers.make_user(name="MARK-name-alice")
+        self.bob = helpers.make_user(f"MARK-name-bob-{os.urandom(4).hex()}")
+        self.alice = helpers.make_user(f"MARK-name-alice-{os.urandom(4).hex()}")
         self.upload = b"%PDF-1.4 MARK-upload-bytes \x00\xff\x10"
         with helpers.as_account(self.alice):
             self.plant(self.alice, "alice")
@@ -528,9 +528,9 @@ class ExportTest(unittest.TestCase):
         z = self.open_zip(self.export())
         root = z.namelist()[0].split("/")[0]
         account = z.read(f"{root}/Account.md").decode()
-        for expected in ("(background access): on", "since: 2026-03-04", "Theme"):
+        for expected in ("(background access): on", "since: 2026-03-04", "Theme", f"Sign-in name: {self.bob.email}"):
             self.assertIn(expected, account)
-        for gone in ("Membership", "Two-step", "digest", "Email address confirmed", "Free searches"):
+        for gone in ("Membership", "Two-step", "digest", "Email address confirmed", "Free searches", "Role"):
             self.assertNotIn(gone, account, "features that were taken out")
         blob = b"".join(z.read(n) for n in z.namelist())
         self.assertNotIn(b"MARK-wrapped-secret", blob)
@@ -541,22 +541,11 @@ class ExportTest(unittest.TestCase):
         with engine.begin() as conn:
             conn.execute(sql("UPDATE user_keys SET server_wrapped_dek = NULL, background_since = NULL WHERE user_id = :u"), {"u": self.bob.id})
 
-    def demote(self, user_id):
-        from sqlalchemy import text as sql
-        from backend.db import engine
-        with engine.begin() as conn:
-            conn.execute(sql("UPDATE users SET role = 'user' WHERE id = :u"), {"u": user_id})
-
-    def test_an_admin_exports_only_their_own_data(self):
-        from sqlalchemy import text as sql
-        from backend.db import engine
-        admin = helpers.make_user(name="MARK-name-admin")
-        with engine.begin() as conn:
-            conn.execute(sql("UPDATE users SET role = 'admin' WHERE id = :u"), {"u": admin.id})
-        self.addCleanup(self.demote, admin.id)
-        z = self.open_zip(self.export(admin))
+    def test_another_account_exports_only_its_own_data(self):
+        other = helpers.make_user(f"MARK-name-other-{os.urandom(4).hex()}")
+        z = self.open_zip(self.export(other))
         blob = b"".join(z.read(n) for n in z.namelist()) + "\n".join(z.namelist()).encode()
-        self.assertIn(b"MARK-name-admin", blob)
+        self.assertIn(b"MARK-name-other", blob)
         self.assertNotIn(b"-bob", blob)
         self.assertNotIn(b"-alice", blob)
 

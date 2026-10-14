@@ -121,16 +121,13 @@ class EmailAndDigestRoutesGoneTest(unittest.TestCase):
                 self.assertEqual(c.get(path).status_code, 404, path)
             self.assertIn(c.post(f"/api/admin/users/{helpers.admin_id()}/reset-email").status_code, (404, 405))
 
-    def test_an_invitation_is_a_link_to_copy_and_never_emailed(self):
+    def test_there_are_no_invitations_to_send_or_copy(self):
+        """Invitations went with sign-up (Phase B): one account per install (tests/test_one_account.py)."""
         with helpers.client() as c:
-            r = c.post("/api/admin/invites", json={"email": "someone@example.invalid", "send": True})
-            self.assertEqual(r.status_code, 422, "there is nothing to send it with")
-            r = c.post("/api/admin/invites", json={"email": "someone@example.invalid"})
-            self.assertEqual(r.status_code, 201, r.text)
-            self.assertIn("/signup.html?invite=", r.json()["link"])
-            self.assertFalse({"emailed", "email_status"} & set(r.json()))
-        with helpers.client(helpers.make_user().email) as b:  # admins only
-            self.assertEqual(b.post("/api/admin/invites", json={}).status_code, 403)
+            self.assertIn(c.post("/api/admin/invites", json={"email": "someone@example.invalid"}).status_code,
+                          (404, 405))
+            self.assertEqual(c.get("/api/admin/invites").status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

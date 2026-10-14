@@ -1,9 +1,10 @@
-"""The identity key (IK): the admin details key is separate from background access (accounts design §1.2, §1.4, §2.5).
+"""The identity key (IK) is separate from background access (accounts design §1.2, §2.5).
 
-The IK protects only the X25519 private key, which opens an admin's grant of the admin details key (APK). It is
-wrapped under the password, each recovery code and each session's cookie, never under the server KEK. So someone with
-the database, the key file and the server KEK (which opens a background-access account's data key) still can't open
-the APK; an admin who is signed in can.
+The IK keeps the recovery codes not yet confirmed as saved, and the X25519 private key that checks a key is the
+account's IK. (It once also opened the admin details key, removed with the admin panel.) It is wrapped under the
+password, each recovery code and each session's cookie, never under the server KEK. So someone with the database, the
+key file and the server KEK (which opens a background-access account's data key) still can't read those codes; the
+account's owner, signed in, can.
 
 Everything here runs through the app's own endpoints on the shared test database, or in a throwaway process
 (``helpers.scenario``) for the command-line tool.
@@ -20,12 +21,10 @@ from tests import helpers  # noqa: E402  (sets the test environment first)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from backend import admin_key, crypto, ratelimit, tasks, users  # noqa: E402
+from backend import crypto, ratelimit, tasks, users  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import (  # noqa: E402
     DB_PATH,
-    AdminAudit,
-    AdminKeyGrant,
     AuthSession,
     RecoveryCode,
     SessionLocal,
@@ -83,7 +82,7 @@ class Case(unittest.TestCase):
     def login(self, email: str, password: str) -> TestClient:
         ratelimit.AUTH.reset()
         c = self.anonymous()
-        r = c.post("/api/auth/login", json={"email": email, "password": password})
+        r = c.post("/api/auth/login", json={"name": email, "password": password})
         self.assertEqual(r.status_code, 200, r.text)
         if "csrf" in r.json():
             c.headers["X-CSRF-Token"] = r.json()["csrf"]
@@ -91,29 +90,12 @@ class Case(unittest.TestCase):
 
     # -- accounts --------------------------------------------------------------------------------------------------
 
-    def make_admin(self, password: str = PASSWORD) -> helpers.Account:
-        """A new admin (promoted by the first admin, who holds the key), demoted again when the test ends."""
-        account = helpers.make_user(password=password)
-        self.assertEqual(self.signed_in().post(f"/api/admin/users/{account.id}/role", json={"role": "admin"})
-                         .status_code, 200)
-        self.addCleanup(self.demote, account.id)
-        return account
-
-    def demote(self, user_id: int) -> None:
-        with helpers.client() as first:
-            first.post(f"/api/admin/users/{user_id}/role", json={"role": "user"})
-
-    def sees_details(self, client) -> bool:
-        r = client.get("/api/admin/users")
-        self.assertEqual(r.status_code, 200, r.text)
-        return bool(r.json()["admin_key_available"])
-
     def assert_identity(self, email: str, password: str, codes=()) -> bytes:
         """The password opens the IK, which opens the account's private key (the one its public key belongs to), and
         each of ``codes`` opens the same IK. Returns the IK."""
         db = SessionLocal()
         try:
-            user = users.find_by_email(db, email)
+            user = users.find_by_name(db, email)
             unlocked = users.unlock(db, user, password)
             self.assertIsNotNone(unlocked)
             self.assertIsNotNone(unlocked.ik, "the account has an identity key")
@@ -165,16 +147,16 @@ class Case(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class ServerKeyTest(Case):
-    def test_the_server_key_and_the_database_do_not_open_the_admin_key(self):
+    def test_the_server_key_and_the_database_do_not_open_the_identity_key(self):
         """A copy of data/ (the database and server-keys.json) is enough to open a background-access account's data key.
-        It must not be enough to open the admin details key."""
+        It must not be enough to open the identity key or what it keeps."""
         uid, dek = helpers.key_of()
         ik = helpers.ik_of()
         server = users.server_keys()
         db = SessionLocal()
         try:
             row = db.get(UserKeys, uid)
-            self.assertIsNotNone(row.server_wrapped_dek, "the first admin has background access")
+            self.assertIsNotNone(row.server_wrapped_dek, "the first account has background access")
             stolen = server.kek_unwrap(bytes(row.server_wrapped_dek), f"srv|{uid}")  # all the operator needs
             self.assertEqual(stolen, dek)
             # The old route: the private key sealed under the data key.
@@ -185,15 +167,10 @@ class ServerKeyTest(Case):
                 with self.assertRaises(crypto.CryptoError):
                     users.open_private_key(row, uid, key)
             self.assertEqual(users.open_private_key(row, uid, ik) is not None, True)  # (the IK does)
-            grant = db.get(AdminKeyGrant, uid)
-            self.assertIsNotNone(grant)
-            # What a background run can do: act with the data key. The chain to the admin key needs the IK.
+            # What a background run can do: act with the data key. It has no IK.
             with crypto.as_user(uid, stolen):
                 with self.assertRaises(crypto.NoIdentityKey):
                     crypto.open_ik()
-                with self.assertRaises(admin_key.ApkUnavailable) as caught:
-                    admin_key.open_apk(db, uid)
-                self.assertTrue(caught.exception.sign_in_again)
         finally:
             db.close()
 
@@ -260,7 +237,7 @@ class ServerKeyTest(Case):
             self.assertNotIn(key, raw)
         priv = rows(lambda s: users.open_private_key(s.get(UserKeys, uid), uid, helpers.ik_of(admin)))
         self.assertNotIn(priv, raw)
-        # ... and no column of the admin's rows or sessions opens as an identity key under the server key.
+        # ... and no column of the account's rows or sessions opens as an identity key under the server key.
         row = rows(lambda s: s.get(UserKeys, uid))
         blobs = [row.pw_wrapped_ik, row.x25519_priv_enc, row.pending_codes_enc]
         blobs += [r.wrapped_ik for r in rows(lambda s: s.query(RecoveryCode).filter(RecoveryCode.user_id == uid).all())]
@@ -268,30 +245,14 @@ class ServerKeyTest(Case):
         for blob in filter(None, blobs):
             self.assertIsNone(server.kek_id_of(bytes(blob)), "not wrapped under any server key")
 
-    def test_an_admin_who_is_signed_in_still_reads_every_detail(self):
-        bob = helpers.make_user(password=PASSWORD, name="Bob Reader")
-        c = self.signed_in()
-        r = c.get("/api/admin/users")
-        self.assertTrue(r.json()["admin_key_available"])
-        row = next(u for u in r.json()["users"] if u["id"] == bob.id)
-        self.assertEqual((row["email"], row["name"]), (bob.email, "Bob Reader"))
-        self.assert_session_has_ik(c)
-
-    def test_a_background_run_cannot_open_the_admin_key_but_the_request_can(self):
+    def test_a_background_run_has_no_identity_key_but_the_request_has(self):
         uid, dek = helpers.key_of()
-        db = SessionLocal()
-        try:
-            with crypto.as_user(uid, dek):  # what scheduled work runs with
-                with self.assertRaises(admin_key.ApkUnavailable):
-                    admin_key.open_apk(db, uid)
-            with crypto.as_user(uid, dek, lambda: helpers.ik_of()):  # a signed-in request
-                self.assertEqual(admin_key.open_apk(db, uid).version, admin_key.current_public(db)[1])
-            other = helpers.make_user(password=PASSWORD)
-            with crypto.as_user(other.id, helpers.key_of(other.email)[1], lambda: helpers.ik_of(other.email)):
-                with self.assertRaises(admin_key.ApkUnavailable):  # someone else's request can't use the admin's grant
-                    admin_key.open_apk(db, uid)
-        finally:
-            db.close()
+        with crypto.as_user(uid, dek):  # what scheduled work runs with
+            self.assertFalse(crypto.has_ik())
+            with self.assertRaises(crypto.NoIdentityKey):
+                crypto.open_ik()
+        with crypto.as_user(uid, dek, lambda: helpers.ik_of()):  # a signed-in request
+            self.assertEqual(crypto.open_ik(), helpers.ik_of())
 
     def test_a_queued_run_does_not_inherit_the_requests_identity_key_opener(self):
         uid, dek = helpers.key_of()
@@ -319,13 +280,9 @@ class ServerKeyTest(Case):
             return helpers.ik_of()
 
         uid, dek = helpers.key_of()
-        db = SessionLocal()
-        try:
-            with crypto.as_user(uid, dek, opener):
-                admin_key.open_apk(db, uid)
-                admin_key.open_apk(db, uid)
-        finally:
-            db.close()
+        with crypto.as_user(uid, dek, opener):
+            crypto.open_ik()
+            crypto.open_ik()
         self.assertEqual(len(calls), 2, "opened afresh each time")
 
 
@@ -336,7 +293,7 @@ class ServerKeyTest(Case):
 class FlowsTest(Case):
     def test_account_creation_wraps_the_ik_under_the_password_the_codes_and_the_session_only(self):
         email = f"flows-new-{os.urandom(4).hex()}@example.invalid"
-        account = users.create_user(email, PASSWORD, background=True)
+        account = helpers.extra_account(email, PASSWORD, background=True)
         row = rows(lambda s: s.get(UserKeys, account.user_id))
         self.assertIsNotNone(row.server_wrapped_dek)  # background access on ...
         self.assertIsNotNone(row.pw_wrapped_ik)       # ... and the IK is under the password
@@ -347,39 +304,13 @@ class FlowsTest(Case):
                                                                      RecoveryCode.wrapped_ik.isnot(None)).count()), 8)
         self.assertEqual(self.assert_identity(email, PASSWORD, account.recovery_codes), account.ik)
 
-    def test_sign_up_by_invitation_leaves_a_working_ik(self):
-        first = self.signed_in()
-        self.addCleanup(self.set_mode, "invite")
-        token = first.post("/api/admin/invites", json={}).json()["link"].split("invite=")[1]
-        email = f"flows-invite-{os.urandom(4).hex()}@example.invalid"
-        anon = self.anonymous()
-        r = anon.post("/api/auth/signup", json={"email": email, "password": PASSWORD, "invite": token})
-        self.assertEqual(r.status_code, 201, r.text)
-        self.assert_session_has_ik(anon)
-        self.assert_identity(email, PASSWORD, r.json()["recovery_codes"])
-
-    def test_open_sign_up_leaves_a_working_ik(self):
-        self.signed_in().put("/api/admin/signup", json={"mode": "open"})
-        self.addCleanup(self.set_mode, "invite")
-        email = f"flows-open-{os.urandom(4).hex()}@example.invalid"
-        anon = self.anonymous()
-        r = anon.post("/api/auth/signup", json={"email": email, "password": PASSWORD})
-        self.assertEqual(r.status_code, 201, r.text)
-        self.assert_session_has_ik(anon)
-        self.assert_identity(email, PASSWORD, r.json()["recovery_codes"])
-
-    def set_mode(self, mode: str) -> None:
-        with helpers.client() as c:
-            c.put("/api/admin/signup", json={"mode": mode})
-
-    def test_the_bootstrap_admin_has_a_working_ik_and_a_session_that_opens_the_admin_key(self):
+    def test_the_bootstrap_account_has_a_working_ik_and_a_session_that_carries_it(self):
         self.assert_identity(helpers.ADMIN_EMAIL, helpers.ADMIN_PASSWORD)
         c = self.signed_in()
-        self.assertTrue(self.sees_details(c))
         self.assert_session_has_ik(c)
 
     def test_a_password_change_wraps_the_ik_under_the_new_password(self):
-        admin = self.make_admin()
+        admin = helpers.make_user(password=PASSWORD)
         c = self.signed_in(admin)
         before = self.assert_identity(admin.email, PASSWORD)
         r = c.post("/api/auth/password", json={"current_password": PASSWORD, "new_password": NEW_PASSWORD})
@@ -388,14 +319,14 @@ class FlowsTest(Case):
         self.assertEqual(self.assert_identity(admin.email, NEW_PASSWORD), before)  # the same IK, nothing re-made
         db = SessionLocal()
         try:
-            self.assertIsNone(users.unlock(db, users.find_by_email(db, admin.email), PASSWORD))
+            self.assertIsNone(users.unlock(db, users.find_by_name(db, admin.email), PASSWORD))
         finally:
             db.close()
-        self.assertTrue(self.sees_details(c))  # the signed-in session carries on
-        self.assertTrue(self.sees_details(self.login(admin.email, NEW_PASSWORD)))
+        self.assert_session_has_ik(c)  # the signed-in session carries on
+        self.assert_session_has_ik(self.login(admin.email, NEW_PASSWORD))
 
     def test_new_recovery_codes_carry_the_ik_and_the_old_ones_go(self):
-        admin = self.make_admin()
+        admin = helpers.make_user(password=PASSWORD)
         old = helpers.pending_codes(admin)
         c = self.signed_in(admin)
         r = c.post("/api/auth/recovery-codes", json={"password": PASSWORD})
@@ -417,8 +348,8 @@ class FlowsTest(Case):
         shown = c.post("/api/auth/recovery-codes/show", json={"password": PASSWORD})
         self.assertEqual(shown.json()["codes"], codes)
 
-    def test_a_reset_with_a_recovery_code_keeps_the_ik_and_the_admin_key(self):
-        admin = self.make_admin()
+    def test_a_reset_with_a_recovery_code_keeps_the_ik(self):
+        admin = helpers.make_user(password=PASSWORD)
         codes = helpers.pending_codes(admin)
         before = self.assert_identity(admin.email, PASSWORD, codes)
         anon = self.anonymous()
@@ -426,13 +357,11 @@ class FlowsTest(Case):
         r = anon.post("/api/auth/recover", json={"email": admin.email, "recovery_code": codes[0],
                                                  "new_password": NEW_PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertFalse(r.json()["admin_key_lost"])
+        self.assertNotIn("admin_key_lost", r.json())
         helpers._passwords[admin.email] = NEW_PASSWORD
         anon.headers["X-CSRF-Token"] = r.json()["csrf"]
-        self.assertTrue(self.sees_details(anon))  # the new session holds the IK the code opened
-        self.assert_session_has_ik(anon)
+        self.assert_session_has_ik(anon)  # the new session holds the IK the code opened
         self.assertEqual(self.assert_identity(admin.email, NEW_PASSWORD, codes[1:]), before)
-        self.assertIsNotNone(rows(lambda s: s.get(AdminKeyGrant, admin.id)))
 
     def test_the_wrong_ik_cannot_be_used_to_change_a_password_or_make_codes(self):
         bob = helpers.make_user(password=PASSWORD)
@@ -478,7 +407,7 @@ class FlowsTest(Case):
 
 class MigrationTest(Case):
     def test_the_next_password_sign_in_moves_the_private_key_to_a_new_ik_and_removes_the_old_copy(self):
-        admin = self.make_admin()
+        admin = helpers.make_user(password=PASSWORD)
         codes = helpers.pending_codes(admin)
         self.make_legacy(admin)
         uid, dek = helpers.key_of(admin.email)
@@ -499,11 +428,9 @@ class MigrationTest(Case):
         raw = raw_database_bytes()
         self.assertNotIn(old, raw, "the DEK-sealed copy is gone from the database file and its log")
         self.assertNotIn(old_pending, raw)
-        # the new session opens the admin key, and so does every later one; the grant was kept
-        self.assertTrue(self.sees_details(c))
+        # the new session carries the IK, and so does every later one
         self.assert_session_has_ik(c)
-        self.assertIsNotNone(rows(lambda s: s.get(AdminKeyGrant, uid)))
-        self.assertTrue(self.sees_details(self.login(admin.email, PASSWORD)))
+        self.assert_session_has_ik(self.login(admin.email, PASSWORD))
         # signing in again doesn't make another IK
         self.assertEqual(self.assert_identity(admin.email, PASSWORD), ik)
 
@@ -519,56 +446,30 @@ class MigrationTest(Case):
         self.assert_identity(bob.email, NEW_PASSWORD)
         db = SessionLocal()
         try:
-            self.assertIsNone(users.unlock(db, users.find_by_email(db, bob.email), PASSWORD))
+            self.assertIsNone(users.unlock(db, users.find_by_name(db, bob.email), PASSWORD))
         finally:
             db.close()
 
     def test_confirming_the_password_gives_a_session_from_before_the_ik_its_key(self):
-        admin = self.make_admin()
+        admin = helpers.make_user(password=PASSWORD)
         c = self.signed_in(admin)
         self.make_legacy(admin, keep_sessions=True)  # the account and its session have no IK
-        self.assertTrue(c.get("/api/admin/users").json()["admin_key_needs_sign_in"])
         self.assertEqual(c.post("/api/auth/reauth", json={"password": PASSWORD}).status_code, 200)  # migrates it
-        self.assert_session_has_ik(c)
+        self.assert_session_has_ik(c)  # no new sign-in needed
         helpers._iks.pop(admin.email, None)
-        self.assertTrue(self.sees_details(c))  # no new sign-in needed
 
     def test_confirming_the_password_gives_a_session_that_lacks_the_ik_of_an_account_that_has_one_its_key(self):
-        admin = self.make_admin()
+        admin = helpers.make_user(password=PASSWORD)
         c = self.signed_in(admin)
         sid = crypto.session_id(crypto.b64d(c.cookies.get("jh_session")))
         rows(lambda s: (s.query(AuthSession).filter(AuthSession.id == sid).update({AuthSession.wrapped_ik: None}),
                         s.commit()))
-        self.assertFalse(self.sees_details(c))
+        self.assertIsNone(rows(lambda s: s.get(AuthSession, sid).wrapped_ik))
         self.assertEqual(c.post("/api/auth/reauth", json={"password": PASSWORD}).status_code, 200)
         self.assert_session_has_ik(c)
-        self.assertTrue(self.sees_details(c))
 
-    def test_a_session_from_before_the_change_asks_to_sign_in_again(self):
-        admin = self.make_admin()
-        c = self.signed_in(admin)
-        self.assertTrue(self.sees_details(c))
-        sid = crypto.session_id(crypto.b64d(c.cookies.get("jh_session")))
-        db = SessionLocal()
-        try:
-            db.query(AuthSession).filter(AuthSession.id == sid).update({AuthSession.wrapped_ik: None})
-            db.commit()
-        finally:
-            db.close()
-        r = c.get("/api/admin/users")  # the panel still answers, saying what to do
-        self.assertEqual(r.status_code, 200)
-        self.assertFalse(r.json()["admin_key_available"])
-        self.assertTrue(r.json()["admin_key_needs_sign_in"])
-        self.assertTrue(all(u["email"] is None for u in r.json()["users"]))
-        other = helpers.make_user(password=PASSWORD)
-        r = c.post(f"/api/admin/users/{other.id}/role", json={"role": "admin"})
-        self.assertEqual((r.status_code, r.json()["code"]), (409, "admin_key_missing"))
-        self.assertEqual(r.json()["detail"], "Sign in again to open people's details.")
-        self.assertEqual(c.get("/api/auth/me").status_code, 200)  # everything else works
-        self.assertTrue(self.sees_details(self.login(admin.email, PASSWORD)))  # signing in again fixes it
-
-    def test_a_reset_with_a_code_from_before_the_change_keeps_the_data_and_asks_for_the_key_again(self):
-        admin = self.make_admin()
+    def test_a_reset_with_a_code_from_before_the_change_keeps_the_data_and_makes_a_new_ik(self):
+        admin = helpers.make_user(password=PASSWORD)
         c = self.signed_in(admin)
         profile = c.get("/api/profile").json()
         self.assertEqual(c.put("/api/profile", json={**profile, "titles": ["Kept Through Old Codes"]}).status_code, 200)
@@ -577,8 +478,6 @@ class MigrationTest(Case):
         self.make_legacy(admin)
         self.login(admin.email, PASSWORD)  # migrates the account; the codes were made before and stay without an IK
         helpers._iks.pop(admin.email, None)
-        sec = self.signed_in(admin).get("/api/auth/security").json()
-        self.assertTrue(sec["recovery_codes_old"])  # Settings suggests making new codes
         self.assertEqual(rows(lambda s: users.recovery_codes_without_ik(s, admin.id)), 8)
         old_pub = rows(lambda s: bytes(s.get(UserKeys, admin.id).x25519_pub))
         anon = self.anonymous()
@@ -586,107 +485,57 @@ class MigrationTest(Case):
         r = anon.post("/api/auth/recover", json={"email": admin.email, "recovery_code": codes[0],
                                                  "new_password": NEW_PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(r.json()["admin_key_lost"])
         helpers._passwords[admin.email] = NEW_PASSWORD
         anon.headers["X-CSRF-Token"] = r.json()["csrf"]
         self.assertEqual(anon.get("/api/profile").json()["titles"], ["Kept Through Old Codes"])  # the data is kept
         self.assertNotEqual(rows(lambda s: bytes(s.get(UserKeys, admin.id).x25519_pub)), old_pub)
-        self.assertIsNone(rows(lambda s: s.get(AdminKeyGrant, admin.id)))
-        self.assertFalse(self.sees_details(anon))
-        self.assertIn("admin_key_lost", [a for (a,) in rows(lambda s: s.query(AdminAudit.action).all())])
+        self.assert_session_has_ik(anon)
         # the other old codes can't be taken for the new IK; they still reset (the same way)
         ik = self.assert_identity(admin.email, NEW_PASSWORD)
         self.assertEqual(rows(lambda s: s.query(RecoveryCode).filter(RecoveryCode.user_id == admin.id,
                                                                      RecoveryCode.wrapped_ik.isnot(None)).count()), 0)
         self.assertIsNotNone(ik)
-        with helpers.client() as first:  # another admin shares the key again
-            self.assertEqual(first.post(f"/api/admin/users/{admin.id}/regrant").status_code, 200)
-        self.assertTrue(self.sees_details(anon))
-        # new codes carry the IK, and the suggestion goes away
+        # new codes carry the IK
         d = self.signed_in(admin, NEW_PASSWORD)
         self.assertEqual(d.post("/api/auth/recovery-codes", json={"password": NEW_PASSWORD}).status_code, 200)
-        self.assertFalse(d.get("/api/auth/security").json()["recovery_codes_old"])
+        self.assertEqual(rows(lambda s: users.recovery_codes_without_ik(s, admin.id)), 0)
 
-    def test_the_migration_makes_a_new_key_pair_and_replaces_the_admin_key(self):
+    def test_the_migration_makes_a_new_key_pair(self):
         """A copy of the database from before the migration (or the DEK-sealed private key in a backup) must not open
-        the grant the admin has now, nor anything sealed to the admin key from then on."""
-        admin = self.make_admin()
+        anything under the account's identity key."""
+        admin = helpers.make_user(password=PASSWORD)
         self.make_legacy(admin)
         uid, dek = helpers.key_of(admin.email)
-        before = rows(lambda s: (bytes(s.get(UserKeys, uid).x25519_priv_enc), bytes(s.get(UserKeys, uid).x25519_pub),
-                                 bytes(s.get(AdminKeyGrant, uid).sealed_priv), s.get(AdminKeyGrant, uid).apk_version))
-        old_blob, old_pub, old_grant, old_version = before
-        self.login(admin.email, PASSWORD)  # migrates (and replaces the admin key)
+        old_blob, old_pub = rows(lambda s: (bytes(s.get(UserKeys, uid).x25519_priv_enc), bytes(s.get(UserKeys, uid).x25519_pub)))
+        self.login(admin.email, PASSWORD)  # migrates
         helpers._iks.pop(admin.email, None)
         row = rows(lambda s: s.get(UserKeys, uid))
         self.assertNotEqual(bytes(row.x25519_pub), old_pub, "a new key pair, not the old private key re-wrapped")
         ik = self.assert_identity(admin.email, PASSWORD)
         self.assertEqual(crypto.public_key_of(users.open_private_key(row, uid, ik)), bytes(row.x25519_pub))
-        current = rows(lambda s: admin_key.current_public(s))
-        self.assertGreater(current[1], old_version)
-        grant = rows(lambda s: s.get(AdminKeyGrant, uid))
-        self.assertEqual(grant.apk_version, current[1])
-        self.assertIn("admin_key_replaced", [a for (a,) in rows(lambda s: s.query(AdminAudit.action).all())])
-        # everyone who held the key still does, and the migrated admin reads details through the new grant
-        self.assertTrue(self.sees_details(self.login(admin.email, PASSWORD)))
-        self.assertTrue(self.sees_details(self.signed_in()))
-        # the attack: the DEK (from the server key) opens the old blob, which gives the old private key ...
-        with crypto.as_user(uid, dek):
+        with crypto.as_user(uid, dek):  # the DEK (from the server key) opens the old blob ...
             old_priv = crypto.unseal(old_blob, f"user_keys.x25519_priv|{uid}")
-        with self.assertRaises(crypto.CryptoError):  # ... and that opens nothing of today
-            crypto.open_sealed(old_priv, grant.sealed_priv, admin_key.grant_label(uid, grant.apk_version))
-        # the old grant (in the backup) still opens the old key, which opens nothing written to the current one
-        old_apk = admin_key.Apk(crypto.open_sealed(old_priv, old_grant, admin_key.grant_label(uid, old_version)),
-                                b"", old_version)
-        newcomer = helpers.make_user(password=PASSWORD)
-        pii = rows(lambda s: s.get(User, newcomer.id).pii_admin)
-        self.assertIsNone(admin_key.open_json(old_apk, pii, admin_key.pii_label(newcomer.id)))
-        self.assertIsNotNone(admin_key.open_json(self.current_apk(), pii, admin_key.pii_label(newcomer.id)))
+        self.assertNotEqual(crypto.public_key_of(old_priv), bytes(row.x25519_pub))  # ... a key of nothing current
 
-    def current_apk(self) -> "admin_key.Apk":
-        uid, dek = helpers.key_of()
-        db = SessionLocal()
-        try:
-            with crypto.as_user(uid, dek, lambda: helpers.ik_of()):
-                return admin_key.open_apk(db, uid)
-        finally:
-            db.close()
-
-    def test_a_grant_that_does_not_open_is_deleted_by_the_migration(self):
-        admin = self.make_admin()
-        self.make_legacy(admin)
-        db = SessionLocal()
-        try:
-            db.get(AdminKeyGrant, admin.id).sealed_priv = os.urandom(120)
-            db.commit()
-        finally:
-            db.close()
-        self.login(admin.email, PASSWORD)
-        self.assertIsNone(rows(lambda s: s.get(AdminKeyGrant, admin.id)))
-        self.assertIn("admin_key_lost", [a for (a,) in rows(lambda s: s.query(AdminAudit.action).all())])
-        self.assert_identity(admin.email, PASSWORD)
-
-    def test_unconfirmed_codes_get_the_ik_in_the_migration_and_keep_the_admin_key_in_a_reset(self):
-        admin = self.make_admin()
+    def test_unconfirmed_codes_get_the_ik_in_the_migration_and_keep_it_in_a_reset(self):
+        admin = helpers.make_user(password=PASSWORD)
         codes = helpers.pending_codes(admin)
         self.make_legacy(admin)
         self.login(admin.email, PASSWORD)  # migrates: the codes' text is in hand, so they carry the IK too
         helpers._iks.pop(admin.email, None)
         self.assertEqual(rows(lambda s: users.recovery_codes_without_ik(s, admin.id)), 0)
         self.assert_identity(admin.email, PASSWORD, codes)
-        self.assertFalse(self.signed_in(admin).get("/api/auth/security").json()["recovery_codes_old"])
         anon = self.anonymous()
         ratelimit.AUTH.reset()
         r = anon.post("/api/auth/recover", json={"email": admin.email, "recovery_code": codes[0],
                                                  "new_password": NEW_PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertFalse(r.json()["admin_key_lost"])
         helpers._passwords[admin.email] = NEW_PASSWORD
         anon.headers["X-CSRF-Token"] = r.json()["csrf"]
-        self.assertTrue(self.sees_details(anon))
+        self.assert_session_has_ik(anon)
 
     def test_unconfirmed_codes_the_server_key_could_read_do_not_get_the_ik(self):
-        admin = self.make_admin()
+        admin = helpers.make_user(password=PASSWORD)
         codes = helpers.pending_codes(admin)
         self.assertEqual(self.signed_in(admin).post("/api/account/background", json={"enabled": True}).status_code, 200)
         self.make_legacy(admin)
@@ -698,7 +547,7 @@ class MigrationTest(Case):
         self.assertEqual(rows(lambda s: users.pending_recovery_codes(s, admin.id, ik)), codes)  # still shown to them
 
     def test_a_reset_with_a_code_without_an_ik_drops_the_unconfirmed_codes_it_cannot_show(self):
-        admin = self.make_admin()
+        admin = helpers.make_user(password=PASSWORD)
         codes = helpers.pending_codes(admin)
         c = self.signed_in(admin)
         self.assertTrue(c.get("/api/auth/security").json()["recovery_codes_pending"])
@@ -713,7 +562,6 @@ class MigrationTest(Case):
         r = anon.post("/api/auth/recover", json={"email": admin.email, "recovery_code": codes[0],
                                                  "new_password": NEW_PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(r.json()["admin_key_lost"])
         helpers._passwords[admin.email] = NEW_PASSWORD
         helpers._iks.pop(admin.email, None)
         anon.headers["X-CSRF-Token"] = r.json()["csrf"]
@@ -721,10 +569,10 @@ class MigrationTest(Case):
         self.assertIsNone(rows(lambda s: s.get(UserKeys, admin.id).pending_codes_enc))
         self.assert_identity(admin.email, NEW_PASSWORD)
 
-    def test_a_reset_with_an_old_code_before_any_sign_in_keeps_the_key(self):
+    def test_a_reset_with_an_old_code_before_any_sign_in_gives_it_an_ik(self):
         """The account has no IK yet, so the code (which opens the data key, which opens the private key) can still give
         it one: nothing is lost."""
-        admin = self.make_admin()
+        admin = helpers.make_user(password=PASSWORD)
         codes = helpers.pending_codes(admin)
         self.make_legacy(admin)
         old_pub = rows(lambda s: bytes(s.get(UserKeys, admin.id).x25519_pub))
@@ -733,16 +581,15 @@ class MigrationTest(Case):
         r = anon.post("/api/auth/recover", json={"email": admin.email, "recovery_code": codes[0],
                                                  "new_password": NEW_PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertFalse(r.json()["admin_key_lost"])
         helpers._passwords[admin.email] = NEW_PASSWORD
         helpers._iks.pop(admin.email, None)
         anon.headers["X-CSRF-Token"] = r.json()["csrf"]
-        self.assertTrue(self.sees_details(anon))  # the grant was carried to the new key pair
+        self.assert_session_has_ik(anon)
         self.assertNotEqual(rows(lambda s: bytes(s.get(UserKeys, admin.id).x25519_pub)), old_pub)
         self.assert_identity(admin.email, NEW_PASSWORD)
 
-    def test_a_reset_with_a_current_code_after_the_migration_keeps_the_key(self):
-        admin = self.make_admin()
+    def test_a_reset_with_a_current_code_after_the_migration_keeps_the_ik(self):
+        admin = helpers.make_user(password=PASSWORD)
         self.make_legacy(admin)
         self.login(admin.email, PASSWORD)  # migrated
         helpers._iks.pop(admin.email, None)
@@ -752,52 +599,16 @@ class MigrationTest(Case):
         ratelimit.AUTH.reset()
         r = anon.post("/api/auth/recover", json={"email": admin.email, "recovery_code": codes[0],
                                                  "new_password": NEW_PASSWORD})
-        self.assertEqual((r.status_code, r.json()["admin_key_lost"]), (200, False))
+        self.assertEqual(r.status_code, 200)
         helpers._passwords[admin.email] = NEW_PASSWORD
         anon.headers["X-CSRF-Token"] = r.json()["csrf"]
-        self.assertTrue(self.sees_details(anon))
+        self.assert_session_has_ik(anon)
         self.assertEqual(rows(lambda s: users.recovery_codes_without_ik(s, admin.id)), 0)
 
 
-class LegacyGrantTest(Case):
-    """An account with background access that hasn't signed in with its password since the update still has its private
-    key under the data key, which the server key opens: a grant sealed to it would not be protected from the key file."""
-
-    def legacy_user(self, *, background: bool = True) -> helpers.Account:
-        user = helpers.make_user(password=PASSWORD)
-        if background:
-            self.assertEqual(self.signed_in(user).post("/api/account/background", json={"enabled": True}).status_code,
-                             200)
-            self.assertIsNotNone(rows(lambda s: s.get(UserKeys, user.id).server_wrapped_dek))
-        self.make_legacy(user)
-        return user
-
-    def actions(self) -> list:
-        return [a for (a,) in rows(lambda s: s.query(AdminAudit.action).all())]
-
-    def test_promoting_such_an_account_asks_them_to_sign_in_first(self):
-        user = self.legacy_user()
-        with helpers.client() as first:
-            r = first.post(f"/api/admin/users/{user.id}/role", json={"role": "admin"})
-            self.assertEqual((r.status_code, r.json()["code"]), (409, "needs_sign_in"))
-            self.assertEqual(r.json()["detail"], "Ask them to sign in once first, then share the key.")
-            self.assertEqual(rows(lambda s: s.get(User, user.id).role), "user")
-            self.assertIsNone(rows(lambda s: s.get(AdminKeyGrant, user.id)))
-            self.login(user.email, PASSWORD)  # their next sign-in gives them an identity key
-            self.addCleanup(self.demote, user.id)
-            self.assertEqual(first.post(f"/api/admin/users/{user.id}/role", json={"role": "admin"}).status_code, 200)
-        self.assertTrue(self.sees_details(self.login(user.email, PASSWORD)))
-
-    def test_promoting_such_an_account_without_background_access_waits_too(self):
-        """Nothing says whether it once had background access (an old copy of data/ may open its data key)."""
-        user = self.legacy_user(background=False)
-        with helpers.client() as first:
-            r = first.post(f"/api/admin/users/{user.id}/role", json={"role": "admin"})
-            self.assertEqual((r.status_code, r.json()["code"]), (409, "needs_sign_in"))
-            self.assertEqual(rows(lambda s: s.get(User, user.id).role), "user")
-            self.login(user.email, PASSWORD)
-            self.addCleanup(self.demote, user.id)
-            self.assertEqual(first.post(f"/api/admin/users/{user.id}/role", json={"role": "admin"}).status_code, 200)
+class LegacyBackgroundTest(Case):
+    """An account that hasn't entered its password since the identity key came in still has its private key and its
+    unconfirmed codes under the data key, which the server key would open: background access waits for the IK."""
 
     def test_background_access_waits_for_the_identity_key(self):
         """A session from before the update, with the password entered a moment ago but no password step since the
@@ -813,35 +624,6 @@ class LegacyGrantTest(Case):
         self.assertEqual(c.post("/api/account/background", json={"enabled": True}).status_code, 200)
         self.assertEqual(self.anonymous().post("/api/account/background", json={"enabled": True}).status_code, 401)
 
-    def test_sharing_the_key_again_with_such_an_admin_waits_for_their_sign_in(self):
-        admin = self.make_admin()
-        self.assertEqual(self.signed_in(admin).post("/api/account/background", json={"enabled": True}).status_code, 200)
-        self.make_legacy(admin)
-        grant = rows(lambda s: bytes(s.get(AdminKeyGrant, admin.id).sealed_priv))
-        with helpers.client() as first:
-            r = first.post(f"/api/admin/users/{admin.id}/regrant")
-            self.assertEqual((r.status_code, r.json()["code"]), (409, "needs_sign_in"))
-            self.assertEqual(rows(lambda s: bytes(s.get(AdminKeyGrant, admin.id).sealed_priv)), grant)  # untouched
-            self.login(admin.email, PASSWORD)
-            self.assertEqual(first.post(f"/api/admin/users/{admin.id}/regrant").status_code, 200)
-
-    def test_a_new_admin_key_skips_such_an_admin_until_they_have_signed_in(self):
-        admin = self.make_admin()
-        self.assertEqual(self.signed_in(admin).post("/api/account/background", json={"enabled": True}).status_code, 200)
-        self.make_legacy(admin)
-        other = self.make_admin()
-        with helpers.client() as first:  # demoting someone replaces the key
-            version = rows(lambda s: admin_key.current_public(s)[1])
-            self.assertEqual(first.post(f"/api/admin/users/{other.id}/role", json={"role": "user"}).status_code, 200)
-            self.assertGreater(rows(lambda s: admin_key.current_public(s)[1]), version)
-            self.assertIsNone(rows(lambda s: s.get(AdminKeyGrant, admin.id)), "not given the new key")
-            self.assertIn("admin_key_not_shared", self.actions())
-            self.assertTrue(self.sees_details(first))  # everyone else got it
-            c = self.login(admin.email, PASSWORD)  # signing in gives them an identity key, but no grant
-            self.assertFalse(self.sees_details(c))
-            self.assertEqual(first.post(f"/api/admin/users/{admin.id}/regrant").status_code, 200)
-        self.assertTrue(self.sees_details(self.login(admin.email, PASSWORD)))
-
 
 LEGACY_RECOVER = '''
 import io
@@ -852,9 +634,9 @@ from backend.db import SessionLocal, User, UserKeys, init_db
 
 ADMIN_PW = "root-password-123"
 init_db()
-users.startup()                                   # the admin, from the environment (it has an identity key)
+users.startup()                                   # the account, from the environment (it has an identity key)
 db = SessionLocal()
-admin = users.find_by_email(db, "root@example.invalid")
+admin = users.find_by_name(db, "root@example.invalid")
 unlocked = users.unlock(db, admin, ADMIN_PW)
 row = db.get(UserKeys, admin.id)
 priv = users.open_private_key(row, admin.id, unlocked.ik)
@@ -870,7 +652,7 @@ key_path.unlink()
 def recover(email, password):
     out_, err_ = io.StringIO(), io.StringIO()
     with redirect_stdout(out_), redirect_stderr(err_):
-        status = keys.main(["recover-lost", "--admin-email", email], ask_password=lambda prompt: password)
+        status = keys.main(["recover-lost", "--name", email], ask_password=lambda prompt: password)
     return {"status": status, "out": out_.getvalue(), "err": err_.getvalue()}
 
 
@@ -878,15 +660,15 @@ out["legacy"] = recover("root@example.invalid", ADMIN_PW)
 out["file"] = key_path.exists()
 users.startup()                                   # a restart: the new file matches the database
 db = SessionLocal()
-out["found"] = users.find_by_email(db, "root@example.invalid") is not None
+out["found"] = users.find_by_name(db, "root@example.invalid") is not None
 db.close()
 '''
 
 
 class RecoverLostTest(Case):
-    def test_recover_lost_opens_the_admin_key_through_the_password_and_the_ik(self):
+    def test_recover_lost_works_for_an_account_from_before_the_ik(self):
         """The ``recover-lost`` scenario in tests/test_background.py runs it on an account with an IK; this one on an
-        admin who hasn't signed in since the IK was introduced (the private key is still under the data key)."""
+        account that hasn't signed in since the IK was introduced (the private key is still under the data key)."""
         out = helpers.scenario(LEGACY_RECOVER, env={"JOBHUNT_ADMIN_EMAIL": "root@example.invalid",
                                                     "JOBHUNT_ADMIN_PASSWORD": "root-password-123"})
         self.assertEqual(out["legacy"]["status"], 0, out["legacy"])

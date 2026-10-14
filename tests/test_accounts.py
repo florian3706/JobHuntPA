@@ -1,10 +1,10 @@
 """Accounts and sessions (accounts design, Phase C): first run, the environment bootstrap, sign-in and lockout,
-sessions across a restart, CSRF and same-site checks, workspace ownership, admin-only global settings, recovery
-codes and the request's key scope.
+sessions across a restart, CSRF and same-site checks, workspace ownership, the install's settings (any signed-in
+account's), recovery codes and the request's key scope.
 
 The first-run, bootstrap and restart cases need a database with no account, or a fresh process, so they run in a
 subprocess with throwaway paths of their own (``scenario``). Everything else uses the shared test database, where
-the admin from tests/__init__.py exists.
+the account from tests/__init__.py exists (and the extra accounts tests/helpers.py writes, as an older install has).
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ with engine.begin() as conn:
 from fastapi.testclient import TestClient
 from backend import crypto, users
 from backend.app import app
-from backend.db import AdminKeyGrant, AppSetting, RecoveryCode, User, UserKeys
+from backend.db import AppSetting, RecoveryCode, User, UserKeys
 from sqlalchemy import inspect
 
 with TestClient(app) as c:
@@ -74,12 +74,14 @@ with TestClient(app) as c:
     token_file = Path(FOLDER) / "first-run.txt"
     token = token_file.read_text().strip()
     out["token_file_mode"] = oct(token_file.stat().st_mode & 0o777)
-    good = {"email": "Owner@Example.com", "password": "correct horse battery", "name": "Pat Owner"}
+    good = {"name": "Pat Owner", "password": "correct horse battery"}
     out["no_token"] = c.post("/api/auth/first-run", json=good).json()
     out["wrong_token"] = c.post("/api/auth/first-run", json={**good, "token": "x" * 43}).status_code
     out["form_post"] = c.post("/api/auth/first-run", data={**good, "token": token}).status_code
     out["short_password"] = c.post("/api/auth/first-run", json={**good, "token": token, "password": "short"}).json()
-    out["bad_email"] = c.post("/api/auth/first-run", json={**good, "token": token, "email": "nope"}).json()
+    out["bad_name"] = c.post("/api/auth/first-run", json={**good, "token": token, "name": "two\\nlines"}).json()
+    out["no_name"] = c.post("/api/auth/first-run", json={**good, "token": token, "name": "  "}).json()
+    out["old_fields"] = c.post("/api/auth/first-run", json={**good, "token": token, "email": "a@b.example"}).status_code
     r = c.post("/api/auth/first-run", json={**good, "token": token, "background": True})
     out["created"] = r.status_code
     out["cookie"] = r.headers.get("set-cookie", "")
@@ -88,33 +90,38 @@ with TestClient(app) as c:
     csrf = body["csrf"]
     out["token_file_left"] = token_file.exists()
     out["again"] = c.post("/api/auth/first-run", json={**good, "token": token}).status_code
+    out["again_other"] = c.post("/api/auth/first-run", json={"token": token, "name": "Someone Else",
+                                                             "password": "another password 123"}).status_code
     out["workspaces"] = sorted(w["name"] for w in c.get("/api/workspaces").json())
     jobs = []
     for w in c.get("/api/workspaces").json():
         jobs += [j["title"] for j in c.get("/api/jobs", headers={"X-Workspace": str(w["id"])}).json()]
     out["jobs"] = sorted(jobs)
     out["me"] = c.get("/api/auth/me").json()
-    out["admin_key_open"] = c.get("/api/admin/users").json()["admin_key_available"]  # the session carries the IK
     out["settings"] = c.get("/api/settings/llm").status_code
     out["ack"] = c.post("/api/auth/recovery-codes/ack", headers={"X-CSRF-Token": csrf}).status_code
     out["pending_after_ack"] = c.get("/api/auth/me").json()["recovery_codes_pending"]
     c.post("/api/auth/logout", headers={"X-CSRF-Token": csrf})
-    out["login"] = c.post("/api/auth/login", json={"email": "owner@example.com", "password": good["password"]}).status_code
+    out["login"] = c.post("/api/auth/login", json={"name": "  pat OWNER ", "password": good["password"]}).status_code
+    from backend import ratelimit
+    ratelimit.AUTH.reset()  # (the tries above count against this address)
+    out["login_other"] = c.post("/api/auth/login", json={"name": "Someone Else",
+                                                          "password": "another password 123"}).status_code
 
 db = SessionLocal()
 user = db.query(User).one()
 keys_row = db.get(UserKeys, user.id)
-out["user"] = {"role": user.role, "created_via": user.created_via, "pii_admin": user.pii_admin is not None,
-               "pii_admin_version": user.pii_admin_version, "background": keys_row.server_wrapped_dek is not None}
-out["grant"] = db.query(AdminKeyGrant).filter(AdminKeyGrant.user_id == user.id).count()
+out["user"] = {"created_via": user.created_via, "background": keys_row.server_wrapped_dek is not None}
+out["accounts"] = db.query(User).count()
 out["tables"] = sorted(inspect(db.get_bind()).get_table_names())
+out["user_columns"] = sorted(c["name"] for c in inspect(db.get_bind()).get_columns("users"))
 out["migration"] = db.get(AppSetting, "encryption_migration").value_json
 out["owners"] = sorted({o for (o,) in db.query(Workspace.owner_id)})
-with engine.connect() as conn:  # the old rows are sealed now (the first run encrypted them with the admin's key)
+with engine.connect() as conn:  # the old rows are sealed now (the first run encrypted them with the account's key)
     out["stored"] = [list(r) for r in conn.execute(text("SELECT typeof(name) FROM workspaces"))] + \
                     [list(r) for r in conn.execute(text("SELECT typeof(status), typeof(hidden), url FROM jobs"))]
 out["user_id"] = user.id
-# Every recovery code opens the same data key as the password, and so does the admin's grant of the APK.
+# Every recovery code opens the same data key as the password.
 unlocked = users.unlock(db, user, "correct horse battery")
 dek, ik = unlocked.dek, unlocked.ik
 opened, opened_ik = [], []
@@ -133,9 +140,8 @@ try:
     out["priv_needs_ik"] = False
 except crypto.CryptoError:
     pass
-grant = db.query(AdminKeyGrant).one()
-apk_priv = crypto.open_sealed(priv, grant.sealed_priv, f"grant|{user.id}|{grant.apk_version}")
-out["pii_admin"] = json.loads(crypto.open_sealed(apk_priv, user.pii_admin, f"users.pii_admin|{user.id}"))
+with crypto.as_user(user.id, dek):
+    out["pii_self"] = json.loads(crypto.unseal(user.pii_self, f"users.pii_self|{user.id}"))
 db.close()
 '''
 
@@ -162,30 +168,35 @@ class FirstRunTest(unittest.TestCase):
         self.assertEqual(out["form_post"], 415)  # a form on another site can't send JSON
         self.assertFalse(out["token_file_left"])
         self.assertEqual(out["again"], 409)  # a second first run is refused, token or not
+        self.assertEqual(out["again_other"], 409)  # ... whoever it is for: one account per install
+        self.assertEqual(out["login_other"], 401)
+        self.assertEqual(out["accounts"], 1)
 
     def test_values_are_checked_field_by_field(self):
         self.assertEqual(self.out["short_password"]["field"], "password")
         self.assertIn("10 characters", self.out["short_password"]["detail"])
-        self.assertEqual(self.out["bad_email"]["field"], "email")
+        self.assertEqual(self.out["bad_name"]["field"], "name")
+        self.assertEqual(self.out["no_name"]["field"], "name")
+        self.assertEqual(self.out["old_fields"], 422)  # (no email address is asked for any more)
 
-    def test_the_first_account_is_an_admin_with_every_key(self):
+    def test_the_first_account_has_a_name_every_key_and_no_role(self):
         out = self.out
         self.assertEqual(out["created"], 201)
         self.assertIn("jh_session=", out["cookie"])
         self.assertIn("HttpOnly", out["cookie"])
-        self.assertEqual(out["user"], {"role": "admin", "created_via": "first_run", "pii_admin": True,
-                                       "pii_admin_version": 1, "background": True})
-        self.assertEqual(out["grant"], 1)
-        for gone in ("memberships", "membership_grants", "email_prefs"):  # removed features make no tables
+        self.assertEqual(out["user"], {"created_via": "first_run", "background": True})
+        for gone in ("memberships", "membership_grants", "email_prefs", "admin_key_grants", "admin_audit",
+                     "auth_tokens"):  # removed features make no tables
             self.assertNotIn(gone, out["tables"])
+        for gone in ("role", "pii_admin", "pii_admin_version"):  # ... and a new database no such columns
+            self.assertNotIn(gone, out["user_columns"])
         migration = json.loads(out["migration"])  # a small database is encrypted within the first-run request
         self.assertEqual((migration["state"], migration["owner"]), ("done", out["user_id"]))
         self.assertEqual(out["stored"], [["blob"], ["blob"], ["blob", "blob", None], ["blob", "blob", None]])
-        self.assertEqual(out["pii_admin"], {"email": "Owner@Example.com", "name": "Pat Owner"})
-        self.assertEqual(out["me"]["user"]["role"], "admin")
-        self.assertEqual(out["me"]["user"]["email"], "Owner@Example.com")
+        self.assertEqual(out["pii_self"], {"name": "Pat Owner"})
+        self.assertEqual(out["me"]["user"], {"id": out["user_id"], "name": "Pat Owner"})
         self.assertEqual(out["settings"], 200)
-        self.assertEqual(out["login"], 200)  # the email address is matched whatever its case
+        self.assertEqual(out["login"], 200)  # the name is matched whatever its case and the spaces around it
 
     def test_existing_workspaces_and_jobs_are_claimed(self):
         out = self.out
@@ -202,7 +213,6 @@ class FirstRunTest(unittest.TestCase):
         self.assertEqual(out["codes_open_dek"], [True] * 8)
         self.assertEqual(out["codes_open_ik"], [True] * 8)  # a code opens the identity key too
         self.assertTrue(out["priv_needs_ik"])  # the data key alone doesn't open the private key
-        self.assertTrue(out["admin_key_open"])  # the first-run session opens the admin details key (it holds the IK)
         self.assertTrue(out["me"]["recovery_codes_pending"])
         self.assertEqual(out["ack"], 200)
         self.assertFalse(out["pending_after_ack"])
@@ -217,7 +227,7 @@ from pathlib import Path
 with TestClient(app) as c:
     out["state"] = c.get("/api/auth/state").json()
     out["token_file"] = (Path(FOLDER) / "first-run.txt").exists()
-    r = c.post("/api/auth/login", json={"email": "ci@example.invalid", "password": "ci-test-password-123",
+    r = c.post("/api/auth/login", json={"name": "ci@example.invalid", "password": "ci-test-password-123",
                                         "remember": True})
     out["login"] = r.status_code
     if r.status_code == 200:
@@ -226,7 +236,7 @@ with TestClient(app) as c:
         out["workspaces"] = [w["name"] for w in c.get("/api/workspaces").json()]
         out["me"] = c.get("/api/auth/me").json()
 db = SessionLocal()
-out["users"] = [(u.role, u.created_via) for u in db.query(User)]
+out["users"] = [u.created_via for u in db.query(User)]
 db.close()
 '''
 
@@ -264,10 +274,10 @@ class BootstrapAndRestartTest(unittest.TestCase):
                          {"setup_required": False, "signed_in": False})
         self.assertFalse(boot["token_file"])
         self.assertEqual(boot["login"], 200)
-        self.assertEqual(boot["users"], [["admin", "bootstrap"]])
+        self.assertEqual(boot["users"], ["bootstrap"])
         self.assertEqual(boot["workspaces"], ["My job search"])
         self.assertTrue(boot["me"]["recovery_codes_pending"])  # shown at the first sign-in instead
-        # A new process (no admin variables now): the cookie from before still works, CSRF token included.
+        # A new process (no account variables now): the cookie from before still works, CSRF token included.
         again = scenario(RESTARTED, folder=boot["_folder"],
                          env={"SESSION_COOKIE": boot["cookie"], "SESSION_CSRF": boot["csrf"]})
         self.assertEqual((again["me"], again["write"]), (200, 201))
@@ -313,19 +323,19 @@ class SignInTestCase(unittest.TestCase):
 
 class LoginTest(SignInTestCase):
     def test_sign_in_me_and_sign_out(self):
-        alice = helpers.make_user(name="Alice Example", password=PASSWORD)
+        alice = helpers.make_user(f"Alice Example {os.urandom(3).hex()}", password=PASSWORD)
         c = self.anonymous()
         state = c.get("/api/auth/state").json()
-        self.assertEqual((state["setup_required"], state["signed_in"]), (False, False))
-        self.assertEqual(state["signup"]["mode"], "invite")  # (sign-up: tests/test_admin.py)
-        r = c.post("/api/auth/login", json={"email": f"  {alice.email.upper()} ", "password": PASSWORD})
+        self.assertEqual(state, {"setup_required": False, "signed_in": False})  # nothing about signing up
+        r = c.post("/api/auth/login", json={"name": f"  {alice.email.upper()} ", "password": PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["user"], {"id": alice.id})
         csrf = r.json()["csrf"]
         me = c.get("/api/auth/me").json()
-        self.assertEqual(me["user"], {"id": alice.id, "email": alice.email, "name": "Alice Example", "role": "user"})
+        self.assertEqual(me["user"], {"id": alice.id, "name": alice.email})
         self.assertEqual(me["csrf"], csrf)
         self.assertEqual(me["workspaces"], [alice.workspace_id])
-        self.assertFalse(me["features"]["admin_panel"])
+        self.assertEqual(me["features"], {"scheduled_searches": True})
         self.assertTrue(c.get("/api/auth/state").json()["signed_in"])
         out = c.post("/api/auth/logout", headers={"X-CSRF-Token": csrf})
         self.assertEqual(out.headers["clear-site-data"], '"cache"')
@@ -841,44 +851,36 @@ class OwnershipTest(SignInTestCase):
         self.assertEqual(admin.get("/api/jobs", headers={"X-Workspace": str(alice.workspace_id)}).status_code, 404)
 
 
-class AdminOnlySettingsTest(SignInTestCase):
+class InstallSettingsTest(SignInTestCase):
+    """The settings that serve the whole install: any signed-in account reads and changes them (there are no roles);
+    tests/test_install_settings.py has the rest."""
     LLM_ENV = {"LLM_API_KEY": "sk-secret-key-1234", "LLM_BASE_URL": "https://llm.example.com/v1",
                "LLM_MODEL": "model-name-xyz"}
 
-    def test_global_settings_are_refused_to_users(self):
-        user = self.signed_in(helpers.make_user())
-        env_before = config.ENV_PATH.read_text() if config.ENV_PATH.exists() else None
-        for method, path, body in (("get", "/api/settings/llm", None), ("put", "/api/settings/llm", {"model": "x"}),
-                                   ("get", "/api/settings/keys", None), ("put", "/api/settings/keys", {"tomtom": "abcdefgh1"}),
-                                   ("post", "/api/settings/keys/test", None), ("get", "/api/llm", None),
-                                   ("put", "/api/llm/reasoning", {"scoring": "high"}),
-                                   ("post", "/api/llm/detect-levels", None), ("post", "/api/score/test", None)):
-            r = getattr(user, method)(path, **({"json": body} if body else {}))
-            self.assertEqual(r.status_code, 403, f"{method} {path}")
-        self.assertEqual(config.ENV_PATH.read_text() if config.ENV_PATH.exists() else None, env_before)
-        admin = self.signed_in()
+    def test_any_signed_in_account_reads_them_and_signed_out_nobody_does(self):
+        other = self.signed_in(helpers.make_user())
+        first = self.signed_in()
+        anonymous = self.anonymous()
         with mock.patch.dict(os.environ, self.LLM_ENV):
-            self.assertEqual(admin.get("/api/settings/llm").json()["model"], "model-name-xyz")
-            self.assertEqual(admin.get("/api/llm").status_code, 200)
-            self.assertEqual(admin.get("/api/settings/keys").status_code, 200)
+            for c in (first, other):
+                self.assertEqual(c.get("/api/settings/llm").json()["model"], "model-name-xyz")
+                self.assertNotIn("sk-secret-key-1234", c.get("/api/settings/llm").text)
+                self.assertEqual(c.get("/api/llm").status_code, 200)
+                self.assertEqual(c.get("/api/settings/keys").status_code, 200)
+            for path in ("/api/settings/llm", "/api/llm", "/api/settings/keys"):
+                self.assertEqual(anonymous.get(path).status_code, 401, path)
 
-    def test_score_status_shows_users_no_model_or_address(self):
-        user = self.signed_in(helpers.make_user())
-        admin = self.signed_in()
+    def test_score_status_shows_the_setup_but_never_the_key(self):
+        other = self.signed_in(helpers.make_user())
         with mock.patch.dict(os.environ, self.LLM_ENV):
-            mine = user.get("/api/score/status")
-            self.assertEqual(mine.status_code, 200)
-            out = mine.json()
-            for hidden in ("base_url", "model", "provider", "reasoning_effort"):
-                self.assertNotIn(hidden, out)
-            self.assertEqual(out["capabilities"], {"web_search": True})
-            self.assertTrue(out["configured"])
-            for text in ("model-name-xyz", "llm.example.com", "custom"):
-                self.assertNotIn(text, mine.text)
-            self.assertEqual(admin.get("/api/score/status").json()["model"], "model-name-xyz")
+            out = other.get("/api/score/status")
+            self.assertEqual(out.status_code, 200)
+            self.assertEqual((out.json()["model"], out.json()["base_url"]), ("model-name-xyz", "https://llm.example.com/v1"))
+            self.assertNotIn("sk-secret", out.text)
         with mock.patch.dict(os.environ, {"LLM_MODEL": "", "LLM_BASE_URL": "", "LLM_API_KEY": ""}):
-            out = user.get("/api/score/status").json()
-            self.assertEqual((out["configured"], out["problem"]), (False, "AI features aren't set up yet. Ask your admin."))
+            out = other.get("/api/score/status").json()
+            self.assertFalse(out["configured"])
+            self.assertIn("in Settings (AI provider)", out["problem"])
 
     def test_commute_status_says_only_what_is_available(self):
         user = self.signed_in(helpers.make_user())
@@ -890,7 +892,7 @@ class AdminOnlySettingsTest(SignInTestCase):
 
 class RecoveryCodeTest(SignInTestCase):
     def test_codes_open_the_data_key_however_they_are_typed(self):
-        account = users.create_user(f"codes-{os.getpid()}@example.invalid", PASSWORD)
+        account = helpers.extra_account(f"codes-{os.getpid()}@example.invalid", PASSWORD)
         db = SessionLocal()
         salt = db.get(UserKeys, account.user_id).recovery_salt
         rows = db.query(RecoveryCode).filter(RecoveryCode.user_id == account.user_id).order_by(RecoveryCode.id).all()
@@ -905,7 +907,7 @@ class RecoveryCodeTest(SignInTestCase):
 
     def test_pending_codes_until_acknowledged(self):
         email = f"pending-{os.getpid()}@example.invalid"
-        account = users.create_user(email, PASSWORD)
+        account = helpers.extra_account(email, PASSWORD)
         c = helpers.client(email, PASSWORD)
         c.__enter__()
         self.addCleanup(c.__exit__, None, None, None)
@@ -960,8 +962,8 @@ class KeyScopeTest(SignInTestCase):
         self.assertFalse(crypto.has_scope())  # nothing leaks into the test's own context
 
     def test_me_opens_sealed_details_in_a_sync_endpoint(self):
-        alice = helpers.make_user(name="Scoped Name")
-        self.assertEqual(self.signed_in(alice).get("/api/auth/me").json()["user"]["name"], "Scoped Name")
+        alice = helpers.make_user(f"Scoped Name {os.urandom(3).hex()}")
+        self.assertEqual(self.signed_in(alice).get("/api/auth/me").json()["user"]["name"], alice.email)
 
 
 class StartupAndSchedulerTest(SignInTestCase):
