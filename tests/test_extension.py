@@ -1256,7 +1256,7 @@ class PagesSayWhereAJobCameFromTest(unittest.TestCase):
             self.assertIn(f"'{host}': '{name}'", self.common, "the pages and the emails name the same sites")
 
     def test_a_summary_only_job_at_seeks_address_offers_the_full_ad_upload(self):
-        self.assertIn("${isSeekJob(job) && job.detail_status === 'summary' ? `<button class=\"btn btn-sm\" "
+        self.assertIn("${isSeekJob(job) && job.detail_status === 'summary' ? `<button class=\"p-button is-dense\" "
                       "type=\"button\" data-act=\"upload-ad\"", self.app)
         self.assertNotIn("job.source === 'seek' && job.detail_status === 'summary'", self.app)
         rule = self.common[self.common.index("function isSeekJob(job)"):]

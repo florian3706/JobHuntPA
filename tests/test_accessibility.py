@@ -1935,3 +1935,116 @@ class JobPageTabsTest(unittest.TestCase):
             self.assertNotRegex(src, r"""\son[a-z]+\s*=\s*["']""", name)
         self.assertIn("}Location OK</button>", self.js)  # the calls on the location are words
         self.assertIn("✓ </span>' : ''}Location OK", self.js)  # and the pressed one carries a tick in its text
+class JobsTabViewsTest(unittest.TestCase):
+    """The Jobs tab's Cards | Table | Board views, its Filters panel and the markup app.js writes for the table and
+    the board (the design boards RecTable, RecBoard, RecPhoneList, RecPhoneBoard)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.index = parse("index.html")
+        cls.src = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        cls.ids = {n["attrs"].get("id"): n for n in cls.index.nodes if n["attrs"].get("id")}
+
+    def test_the_view_toggle_is_a_group_of_pressed_buttons_remembered_per_browser(self):
+        group = self.ids["view-toggle"]
+        self.assertEqual(group["attrs"].get("role"), "group")
+        self.assertEqual(group["attrs"].get("aria-label"), "View")
+        buttons = [n for n in self.index.nodes if n["parent"] == group["i"] and n["tag"] == "button"]
+        self.assertEqual([b["attrs"].get("data-view") for b in buttons], ["cards", "table", "board"])
+        self.assertEqual([b["attrs"].get("aria-pressed") for b in buttons], ["true", "false", "false"])
+        self.assertEqual([b["text"].strip() for b in buttons], ["Cards", "Table", "Board"])
+        self.assertIn("const VIEW_KEY = 'jobhunt.jobsView';", self.app)
+        self.assertIn("localStorage.setItem(VIEW_KEY, view)", self.app)
+        self.assertIn("b.textContent = 'List'", self.app, "on a phone the toggle reads List | Board")
+        self.assertIn("window.matchMedia('(max-width: 720px)')", self.app)
+
+    def test_the_filters_button_is_a_disclosure_with_a_count_and_the_old_filters_keep_their_ids(self):
+        btn = self.ids["filters-toggle"]
+        self.assertEqual(btn["attrs"].get("aria-expanded"), "false")
+        self.assertEqual(btn["attrs"].get("aria-controls"), "filters-panel")
+        panel = self.ids["filters-panel"]
+        self.assertEqual(panel["tag"], "section")
+        self.assertIn("hidden", panel["attrs"])
+        self.assertEqual(panel["attrs"].get("aria-labelledby"), "filters-heading")
+        for ident in ("filter-min-score", "score-output", "filter-mode", "filter-max-dist", "office-slack", "soften-field",
+                      "filter-show-excluded", "filter-show-closed", "filter-show-hidden", "filters-clear", "filters-done"):
+            with self.subTest(control=ident):
+                self.assertIn("filters-panel", self.ancestor_ids(self.ids[ident]), f"{ident} sits in the Filters panel")
+        for ident in ("filter-search", "sort-by", "status-chips", "select-all-shown", "jobs-count", "bulk-bar"):
+            self.assertNotIn("filters-panel", self.ancestor_ids(self.ids[ident]), f"{ident} stays outside the panel")
+        self.assertEqual(self.ids["filters-count"]["attrs"].get("class"), "p-status-label p-status-label--information")
+        self.assertEqual(self.ids["filter-chips"]["attrs"].get("role"), "group")
+        self.assertIn('class="p-chip p-chip--dismiss"', self.app)
+        self.assertIn('aria-label="Remove the ${esc(a.name)} filter"', self.app)
+        self.assertIn("function resetFilter(key)", self.app)
+
+    def ancestor_ids(self, node):
+        return [a["attrs"]["id"] for a in self.index.ancestors(node) if a["attrs"].get("id")]
+
+    def test_the_run_strip_keeps_its_controls_and_the_three_views_have_a_box_each(self):
+        for ident in ("search-run", "score-pending", "fill-info", "dupes-open", "run-status", "next-scheduled", "run-progress", "run-report",
+                      "jobs-list", "jobs-table", "jobs-board", "jobs-empty", "jobs-error"):
+            self.assertIn(ident, self.ids, ident)
+        self.assertEqual(self.ids["run-status"]["attrs"].get("role"), "status")
+        self.assertEqual(self.ids["jobs-count"]["attrs"].get("role"), "status")
+        self.assertEqual(self.ids["run-progress"]["attrs"].get("role"), "progressbar")
+        self.assertIn("hidden", self.ids["jobs-table"]["attrs"])
+        self.assertIn("hidden", self.ids["jobs-board"]["attrs"])
+        self.assertIn("p-table-wrap", self.ids["jobs-table"]["attrs"].get("class", ""), "the table scrolls sideways in its box, never the page")
+
+    def test_the_table_is_a_real_table_with_a_caption_headers_and_sortable_columns(self):
+        table = self.app[self.app.index("function renderTable"):self.app.index("function tableRowHtml")]
+        self.assertIn('<table class="p-table jobs-table">', table)
+        self.assertIn('<caption class="visually-hidden">Jobs, sorted by ${SORT_WORDS[state.filter.sort]', table)
+        self.assertIn('<th scope="col"', table)
+        self.assertIn('aria-sort="${dir}"', table)
+        self.assertIn("$('#sort-by').value = b.dataset.sort", table, "the Sort menu stays in step with the column buttons")
+        for col in ("Job", "Fit", "Mode", "Distance", "Salary", "Posted", "Status"):
+            self.assertIn(f"'{col}'", table)
+        row = self.app[self.app.index("function tableRowHtml"):self.app.index("function detailHtml")]
+        self.assertIn('data-act="expand" aria-expanded="${open}" aria-controls="${moreId}"', row)
+        self.assertIn('<tr id="${moreId}" class="jobs-table__detail', row, "the summary row is in the table, after its job")
+        self.assertIn('<label class="visually-hidden" for="job-${job.id}-status">Application status of ${esc(name)}</label>', row)
+        self.assertIn('href="./job.html?id=${job.id}&ws=${state.ws}"', row)
+        detail = self.app[self.app.index("function detailHtml"):self.app.index("function toggleExpanded")]
+        gaps, matched = detail.index("(fit.gaps || [])"), detail.index("filter((r) => r.matched)")
+        self.assertLess(gaps, matched, "gaps come before matches")
+        self.assertIn('aria-label="Requirements: gaps first, then matches"', detail)
+
+    def test_the_board_has_a_column_a_status_with_a_heading_and_a_move_to_menu_on_every_card(self):
+        board = self.app[self.app.index("function renderBoard"):self.app.index("async function moveJob")]
+        self.assertIn("const BOARD_COLS = ['to_review', 'shortlisted', 'applied', 'interviewing'];", self.app)
+        self.assertIn("const CLOSED_STATUSES = ['rejected', 'not_interested'];", self.app)
+        self.assertIn('<section id="board-col-${s}" class="board-col', board)
+        self.assertIn('<h3 id="board-col-${s}-h" class="board-col__head">', board)
+        self.assertIn('data-act="closed-toggle" aria-expanded="${state.boardClosedOpen}" aria-controls="board-closed-list"', board)
+        self.assertIn('<label class="visually-hidden" for="job-${job.id}-move">Move ${esc(name)} to</label>', board)
+        self.assertIn('<select id="job-${job.id}-move" class="p-select" data-act="move">', board)
+        self.assertIn('role="tablist" aria-label="Status columns"', board)
+        self.assertIn("ArrowRight: i + 1", board)
+        self.assertNotIn("draggable", board, "no drag and drop: Move to is the way")
+        self.assertNotIn("dragstart", self.app)
+        self.assertIn("$('#status-chips').hidden = board;", self.app, "the board's columns are the statuses")
+        self.assertIn("board ? 'Order in columns' : 'Sort'", self.app)
+
+    def test_the_header_folds_behind_a_menu_button_on_a_phone(self):
+        btn = self.ids["header-menu-btn"]
+        self.assertEqual(btn["attrs"].get("aria-expanded"), "false")
+        self.assertEqual(btn["attrs"].get("aria-controls"), "header-meta")
+        for ident in ("ws-select", "ws-new", "ws-rename", "ws-delete", "tasks-btn", "account-btn"):
+            self.assertIn("header-meta", self.ancestor_ids(self.ids[ident]), ident)
+        phone = self.css[self.css.index("@media (max-width: 720px) {", self.css.index("Phones (720 px and under)")):]
+        self.assertIn(".header-menu-btn { display: inline-flex; }", phone[:phone.index("\n}\n")])
+        self.assertIn(".header-meta.is-open { display: flex; }", phone[:phone.index("\n}\n")])
+        self.assertIn(".header-menu-btn { display: none; }", self.css)
+
+    def test_the_bulk_bar_docks_at_the_bottom_on_a_phone_and_the_table_stacks(self):
+        phone = self.css[self.css.index("@media (max-width: 720px) {", self.css.index("Phones (720 px and under)")):]
+        phone = phone[:phone.index("\n}\n")]
+        self.assertIn(".bulk-bar { position: fixed; left: 0; right: 0; bottom: 0;", phone)
+        self.assertIn(".jobs-table, .jobs-table tbody, .jobs-table tr, .jobs-table td { display: block; }", phone)
+        self.assertIn(".board-col:not(.is-current) { display: none; }", phone)
+        self.assertNotIn("inline", self.src[self.src.index('id="tab-jobs"'):self.src.index('id="tab-search"')].replace("inline-", ""))
+        self.assertNotRegex(self.src, r'\sstyle="', "no style attributes (CSP)")

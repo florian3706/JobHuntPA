@@ -28,7 +28,8 @@
           <p class="subtitle">Personal job-hunt dashboard</p>
         </div>
       </div>
-      <div class="header-meta">
+      <button id="header-menu-btn" class="p-button p-button--base header-menu-btn" type="button" aria-expanded="false" aria-controls="header-meta">Menu <span aria-hidden="true">☰</span></button>
+      <div id="header-meta" class="header-meta">
         <div class="workspace-bar">
           <label for="ws-select" class="muted">Workspace</label>
           <select id="ws-select"></select>
@@ -73,74 +74,106 @@
     <!-- ============ JOBS ============ -->
     <section id="tab-jobs" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-jobs" tabindex="0">
       <h2 class="visually-hidden">Jobs</h2>
-      <div class="card run-card">
-        <div class="toolbar-row">
-          <button id="search-run" class="btn btn-primary" type="button">Run search</button>
-          <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
-          <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
-          <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
-          <span id="run-status" class="muted" role="status"></span>
+      <!-- The run strip: Run search, the last run and the next scheduled one on one line, the per-source results, and
+           the other runs to the right. -->
+      <section class="p-card p-card--highlighted run-card" aria-labelledby="run-heading">
+        <h3 id="run-heading" class="visually-hidden">Search runs</h3>
+        <div class="run-strip">
+          <button id="search-run" class="p-button p-button--positive" type="button">Run search</button>
+          <span class="run-strip__status">
+            <span id="run-status" class="u-small" role="status"></span>
+            <span id="next-scheduled" class="u-small u-muted" hidden></span>
+            <details id="run-report" class="p-details run-report" hidden>
+              <summary>Per-source results</summary>
+              <div id="run-report-body"></div>
+            </details>
+          </span>
+          <span class="run-strip__tools">
+            <button id="dupes-open" class="p-button is-dense" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
+            <button id="score-pending" class="p-button is-dense" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
+            <button id="fill-info" class="p-button is-dense" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
+          </span>
         </div>
-        <div id="next-scheduled" class="muted" hidden></div>
-        <div id="run-progress" class="progress" role="progressbar" aria-label="Progress of the run" aria-valuemin="0" aria-valuemax="100" hidden><div class="progress-bar"></div></div>
-        <details id="run-report" class="run-report" hidden>
-          <summary>Last run: per-source results</summary>
-          <div id="run-report-body"></div>
-        </details>
-      </div>
+        <div id="run-progress" class="p-progress progress" role="progressbar" aria-label="Progress of the run" aria-valuemin="0" aria-valuemax="100" hidden><div class="p-progress__bar progress-bar"></div></div>
+      </section>
+      <div id="dupe-note" class="p-notification p-notification--information dupe-note" role="note" hidden></div>
 
       <div class="jobs-toolbar">
-        <div class="toolbar-row">
-          <label class="field search-field">
-            <span class="field-label">Search</span>
-            <input id="filter-search" type="search" placeholder="company, title, location…" autocomplete="off" enterkeyhint="search" />
-          </label>
-          <label class="field">
-            <span class="field-label">Min score: <output id="score-output" for="filter-min-score">0</output></span>
-            <input id="filter-min-score" type="range" min="0" max="100" step="5" value="0" />
-          </label>
-          <label class="field">
-            <span class="field-label">Work mode</span>
-            <select id="filter-mode">
-              <option value="all">All modes</option>
-              <option value="remote">Remote</option>
-              <option value="hybrid">Hybrid</option>
-              <option value="onsite">Onsite</option>
-              <option value="unknown">Unknown</option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="field-label">Max distance (km)</span>
-            <input id="filter-max-dist" type="number" min="0" step="1" inputmode="numeric" placeholder="Any" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span class="field-label">Sort</span>
-            <select id="sort-by">
-              <option value="score">Score</option>
-              <option value="newest">Newest first</option>
-              <option value="distance">Distance</option>
-            </select>
-          </label>
-          <label class="field" id="soften-field" hidden
-                 title="What-if: temporarily allow more office days a week than your saved hybrid rule. Nothing is saved; reloading the page resets it.">
-            <span class="field-label">Office days (temporary)</span>
-            <select id="office-slack"></select>
-          </label>
-          <label class="field check-field"><input id="filter-show-excluded" type="checkbox" /> <span>Show excluded</span></label>
-          <label class="field check-field"><input id="filter-show-closed" type="checkbox" /> <span>Show closed</span></label>
-          <label class="field check-field"><input id="filter-show-hidden" type="checkbox" /> <span>Show hidden</span></label>
+        <div class="jobs-toolbar__row">
+          <div class="jobs-toolbar__main">
+            <div class="p-field jobs-search">
+              <label class="p-label visually-hidden" for="filter-search">Search</label>
+              <input id="filter-search" class="p-input" type="search" placeholder="Search jobs: company, title, location…" autocomplete="off" enterkeyhint="search" />
+            </div>
+            <button id="filters-toggle" class="p-button filters-toggle" type="button" aria-expanded="false" aria-controls="filters-panel">Filters <span id="filters-count" class="p-status-label p-status-label--information" hidden>0</span><span class="visually-hidden" id="filters-count-words"></span></button>
+            <div class="p-field jobs-sort">
+              <label class="p-label" for="sort-by" id="sort-label">Sort</label>
+              <select id="sort-by" class="p-select">
+                <option value="score">Fit, highest first</option>
+                <option value="newest">Newest first</option>
+                <option value="distance">Distance</option>
+              </select>
+            </div>
+          </div>
+          <div id="view-toggle" class="view-toggle" role="group" aria-label="View">
+            <button class="p-button is-dense view-toggle__btn" type="button" data-view="cards" aria-pressed="true">Cards</button>
+            <button class="p-button is-dense view-toggle__btn" type="button" data-view="table" aria-pressed="false">Table</button>
+            <button class="p-button is-dense view-toggle__btn" type="button" data-view="board" aria-pressed="false">Board</button>
+          </div>
         </div>
-        <div id="soften-note" class="soften-note" hidden></div>
-        <div id="dupe-note" class="dupe-note" hidden></div>
+
+        <!-- The Filters panel: everything the old toolbar held, in the same words. -->
+        <section id="filters-panel" class="p-card filters-panel" aria-labelledby="filters-heading" hidden>
+          <div class="p-card__head filters-panel__head">
+            <h3 id="filters-heading" class="filters-heading">Filters</h3>
+            <span class="u-small u-muted">The count on the Filters button says how many are set; each one is also a chip under the toolbar.</span>
+          </div>
+          <div class="filters-grid">
+            <div class="p-field">
+              <label class="p-label" for="filter-min-score">Min score: <output id="score-output" for="filter-min-score">0</output></label>
+              <input id="filter-min-score" class="p-range" type="range" min="0" max="100" step="5" value="0" />
+            </div>
+            <div class="p-field">
+              <label class="p-label" for="filter-mode">Work mode</label>
+              <select id="filter-mode" class="p-select">
+                <option value="all">All modes</option>
+                <option value="remote">Remote</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="onsite">Onsite</option>
+                <option value="unknown">Unknown</option>
+              </select>
+            </div>
+            <div class="p-field">
+              <label class="p-label" for="filter-max-dist">Max distance (km)</label>
+              <input id="filter-max-dist" class="p-input" type="number" min="0" step="1" inputmode="numeric" placeholder="Any" autocomplete="off" />
+            </div>
+            <div class="p-field" id="soften-field" hidden
+                 title="What-if: temporarily allow more office days a week than your saved hybrid rule. Nothing is saved; reloading the page resets it.">
+              <label class="p-label" for="office-slack">Office days (temporary)</label>
+              <select id="office-slack" class="p-select"></select>
+            </div>
+          </div>
+          <div class="filters-checks">
+            <label class="field check-field"><input id="filter-show-excluded" type="checkbox" /> <span>Show excluded</span></label>
+            <label class="field check-field"><input id="filter-show-closed" type="checkbox" /> <span>Show closed</span></label>
+            <label class="field check-field"><input id="filter-show-hidden" type="checkbox" /> <span>Show hidden</span></label>
+            <span class="filters-actions">
+              <button id="filters-clear" class="p-button p-button--base is-dense" type="button">Clear all</button>
+              <button id="filters-done" class="p-button is-dense" type="button">Done</button>
+            </span>
+          </div>
+        </section>
+        <div id="filter-chips" class="filter-chips" role="group" aria-label="Filters set" hidden></div>
+        <div id="soften-note" class="p-notification p-notification--caution soften-note" hidden></div>
         <div class="toolbar-row chips-row">
           <div id="status-chips" class="chips" role="group" aria-label="Show jobs with the status"></div>
           <label class="check select-all-shown" title="Select every job the current filters show (for bulk status changes, hiding or Fill missing info)">
-            <input id="select-all-shown" type="checkbox" /> <span>Select all shown</span></label>
-          <span id="jobs-count" class="muted" role="status"></span>
+            <input id="select-all-shown" class="p-checkbox" type="checkbox" /> <span>Select all shown</span></label>
+          <span id="jobs-count" class="u-small u-muted" role="status"></span>
         </div>
-        <div id="bulk-bar" class="bulk-bar" role="group" aria-label="Actions for the selected jobs" hidden>
-          <label class="bulk-select-all"><input id="bulk-select-all" type="checkbox" /> <span id="bulk-count">0 selected</span></label>
-          <select id="bulk-status" aria-label="New status for the selected jobs">
+        <div id="bulk-bar" class="p-notification p-notification--information bulk-bar" role="group" aria-label="Actions for the selected jobs" hidden>
+          <label class="bulk-select-all"><input id="bulk-select-all" class="p-checkbox" type="checkbox" /> <strong id="bulk-count">0 selected</strong></label>
+          <select id="bulk-status" class="p-select" aria-label="New status for the selected jobs">
             <option value="to_review">to review</option>
             <option value="shortlisted">shortlisted</option>
             <option value="applied">applied</option>
@@ -148,15 +181,18 @@
             <option value="rejected">rejected</option>
             <option value="not_interested">not interested</option>
           </select>
-          <button id="bulk-apply" class="btn btn-primary btn-sm" type="button">Set status</button>
-          <button id="bulk-hide" class="btn btn-sm" type="button" title="Hide the selected job ads. They stay hidden even if the source lists them again, and aren't scored or researched.">Hide selected</button>
-          <button id="bulk-unhide" class="btn btn-ghost btn-sm" type="button" hidden>Unhide selected</button>
-          <button id="bulk-chat" class="btn btn-sm" type="button" title="Open a chat about the selected jobs (up to 12) to ask questions or compare them">Chat about selected</button>
-          <button id="bulk-merge" class="btn btn-sm" type="button" hidden title="The selected ads are the same job on different sites: show them as one card">Merge as one job</button>
-          <button id="bulk-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
+          <button id="bulk-apply" class="p-button p-button--positive is-dense" type="button">Set status</button>
+          <button id="bulk-hide" class="p-button is-dense" type="button" title="Hide the selected job ads. They stay hidden even if the source lists them again, and aren't scored or researched.">Hide selected</button>
+          <button id="bulk-unhide" class="p-button p-button--base is-dense" type="button" hidden>Unhide selected</button>
+          <button id="bulk-chat" class="p-button is-dense" type="button" title="Open a chat about the selected jobs (up to 12) to ask questions or compare them">Chat about selected</button>
+          <button id="bulk-merge" class="p-button is-dense" type="button" hidden title="The selected ads are the same job on different sites: show them as one card">Merge as one job</button>
+          <button id="bulk-clear" class="p-button p-button--base is-dense" type="button">Clear</button>
         </div>
       </div>
+      <!-- One of the three is shown, by the view toggle (app.js renderJobs). -->
       <div id="jobs-list" class="jobs-grid"></div>
+      <div id="jobs-table" class="p-table-wrap jobs-table-wrap" hidden></div>
+      <div id="jobs-board" class="jobs-board" hidden></div>
       <div id="jobs-empty" class="empty" hidden>No jobs match the current filters. Clear the search, lower the minimum score or pick another status to see more.</div>
       <div id="jobs-error" class="error" hidden></div>
     </section>

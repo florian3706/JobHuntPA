@@ -34,6 +34,10 @@ const state = {
   titleSuggestions: [],
   officeSlack: 0, // temporary extra office days allowed on the Jobs tab (never saved)
   dupes: { suggested: [], auto_merged: [] }, // duplicate ads to check
+  // The Jobs tab's views (renderJobs): which one is on, the last of the two list views (for a phone's List button),
+  // the table rows whose fit summary is open, the board's column on a phone, its folded Closed column and the
+  // columns showing every card, and whether the Filters panel is open.
+  view: 'cards', listView: 'cards', expanded: new Set(), boardTab: 'to_review', boardClosedOpen: false, boardMore: new Set(), filtersOpen: false,
   // Documents tab: the list, which rows are open, their texts, unsaved edits ("id:field"), status lines
   // ("id:area") and actions under way ("id:act"), all for workspace `ws`.
   docs: { ws: null, list: [], open: new Set(), text: new Map(), drafts: new Map(), status: new Map(), busy: new Set() },
@@ -53,7 +57,7 @@ function focusFinder(el) {
   return () => {
     if (el.isConnected && !el.closest('[hidden]')) return el;
     if (id && document.getElementById(id)) return document.getElementById(id);
-    if (act && jobId) return document.querySelector(`.job-card[data-job-id="${jobId}"] [data-act="${act}"]`);
+    if (act && jobId) return document.querySelector(`[data-job-id="${jobId}"] [data-act="${act}"]`);
     return null;
   };
 }
@@ -222,10 +226,55 @@ async function loadJobs() {
   state.jobsRefreshing = false;
   const ids = new Set(state.jobs.map((j) => j.id));
   state.selected.forEach((id) => { if (!ids.has(id)) state.selected.delete(id); });
+  state.expanded.forEach((id) => { if (!ids.has(id)) state.expanded.delete(id); });
   state.details.clear();
   $('#jobs-error').hidden = true;
   renderJobs();
   loadDuplicates();
+}
+
+/* ---------- the three views: Cards | Table | Board ----------
+   The choice is kept per browser (localStorage jobhunt.jobsView). On a phone (720 px and under) the toggle reads
+   List | Board: the cards and the table both read as one list there, and List brings back whichever of the two was
+   last used. The board ignores the status chips (its columns are the statuses) and has no tick boxes, so the bulk
+   bar is for the cards and the table. */
+const VIEW_KEY = 'jobhunt.jobsView';
+const VIEWS = ['cards', 'table', 'board'];
+const phoneMedia = window.matchMedia('(max-width: 720px)');
+const isPhone = () => phoneMedia.matches;
+
+function storedView() {
+  try { const v = localStorage.getItem(VIEW_KEY); return VIEWS.includes(v) ? v : 'cards'; } catch { return 'cards'; }
+}
+
+function setView(view) {
+  if (!VIEWS.includes(view)) view = 'cards';
+  state.view = view;
+  if (view !== 'board') state.listView = view;
+  try { localStorage.setItem(VIEW_KEY, view); } catch { /* private mode: this page keeps it */ }
+  if (view === 'board') state.selected.clear(); // the board has no tick boxes
+  renderJobs();
+}
+
+function renderViewToggle() {
+  const phone = isPhone();
+  $$('#view-toggle .view-toggle__btn').forEach((b) => {
+    const v = b.dataset.view;
+    if (phone) { // List | Board: the List button stands for the cards and the table
+      b.hidden = v === 'table';
+      if (v === 'cards') b.textContent = 'List';
+      b.setAttribute('aria-pressed', String(v === 'board' ? state.view === 'board' : state.view !== 'board'));
+    } else {
+      b.hidden = false;
+      if (v === 'cards') b.textContent = 'Cards';
+      b.setAttribute('aria-pressed', String(state.view === v));
+    }
+  });
+  const board = state.view === 'board';
+  setText($('#sort-label'), board ? 'Order in columns' : 'Sort');
+  $('#status-chips').hidden = board;
+  $('.select-all-shown').hidden = board;
+  $('#tab-jobs').dataset.view = state.view;
 }
 
 function visibleJobs() {
@@ -235,7 +284,7 @@ function visibleJobs() {
     if (!f.showExcluded && j.excluded_reason) return false;
     if (!f.showClosed && j.closed) return false;
     if (!f.showHidden && j.hidden) return false;
-    if (f.status !== 'all' && j.status !== f.status) return false;
+    if (state.view !== 'board' && f.status !== 'all' && j.status !== f.status) return false; // the board's columns are the statuses
     if (f.minScore > 0 && (scoreOf(j) ?? -1) < f.minScore) return false;
     if (f.mode !== 'all' && modeOf(j) !== f.mode) return false;
     if (f.maxDist !== null && (j.distance_km === null || j.distance_km > f.maxDist)) return false;
@@ -260,19 +309,107 @@ function renderStatusChips() {
   box.innerHTML = '';
   const base = state.jobs.filter((j) => (state.filter.showExcluded || !j.excluded_reason)
     && (state.filter.showClosed || !j.closed) && (state.filter.showHidden || !j.hidden));
-  [['all', 'all'], ...STATUSES.map((s) => [s, STATUS_LABEL[s]])].forEach(([val, label]) => {
+  [['all', 'All'], ...STATUSES.map((s) => [s, STATUS_LABEL[s]])].forEach(([val, label]) => {
     const n = val === 'all' ? base.length : base.filter((j) => j.status === val).length;
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = `chip${state.filter.status === val ? ' active' : ''}`;
+    b.className = 'p-chip';
     b.dataset.status = val;
     b.setAttribute('aria-pressed', String(state.filter.status === val));
-    b.innerHTML = state.jobsStatus === 'ready' ? `${esc(label)} <span class="n">${n}</span>` : esc(label); // no "0" while loading
+    const text = val === 'all' ? `<span class="p-chip__lead">${label}</span>` : esc(label);
+    b.innerHTML = state.jobsStatus === 'ready' ? `${text} <span class="p-chip__n">${n}</span>` : text; // no "0" while loading
     b.addEventListener('click', () => { state.filter.status = val; renderJobs(); });
     box.appendChild(b);
   });
   // The chips are redrawn: keep keyboard focus on the same one.
   if (focused?.dataset.status) box.querySelector(`[data-status="${focused.dataset.status}"]`)?.focus();
+}
+
+/* ---------- filters: the panel behind the Filters button, and the chips under the toolbar ---------- */
+const FILTER_CONTROL = {
+  minScore: '#filter-min-score', mode: '#filter-mode', maxDist: '#filter-max-dist',
+  showExcluded: '#filter-show-excluded', showClosed: '#filter-show-closed', showHidden: '#filter-show-hidden',
+};
+const FILTER_DEFAULT = { minScore: '0', mode: 'all', maxDist: '', showExcluded: false, showClosed: false, showHidden: false };
+const WORK_MODE_LABEL = { remote: 'Remote', hybrid: 'Hybrid', onsite: 'Onsite', unknown: 'Unknown' };
+
+// The control's value into state.filter (nothing drawn).
+function readFilter(key) {
+  const el = $(FILTER_CONTROL[key]);
+  const f = state.filter;
+  if (key === 'minScore') { f.minScore = Number(el.value); $('#score-output').textContent = el.value; }
+  else if (key === 'mode') f.mode = el.value;
+  else if (key === 'maxDist') { const v = el.value === '' ? null : Number(el.value); f.maxDist = Number.isFinite(v) ? v : null; }
+  else f[key] = el.checked;
+}
+
+// A filter control changed: excluded and hidden jobs are fetched on demand (see loadJobs), the rest is a redraw.
+function filterChanged(key) {
+  readFilter(key);
+  const f = state.filter;
+  const fetch = (key === 'showExcluded' && f.showExcluded && state.loadedOmit.includes('excluded'))
+    || (key === 'showHidden' && f.showHidden && state.loadedOmit.includes('hidden'));
+  if (fetch) loadJobs(); else renderJobs();
+}
+
+function resetFilter(key) {
+  if (key === 'slack') { setOfficeSlack(0); return; }
+  const el = $(FILTER_CONTROL[key]);
+  if (el.type === 'checkbox') el.checked = FILTER_DEFAULT[key]; else el.value = FILTER_DEFAULT[key];
+  filterChanged(key);
+}
+
+function clearFilters() {
+  Object.keys(FILTER_CONTROL).forEach((key) => {
+    const el = $(FILTER_CONTROL[key]);
+    if (el.type === 'checkbox') el.checked = FILTER_DEFAULT[key]; else el.value = FILTER_DEFAULT[key];
+    readFilter(key);
+  });
+  if (state.officeSlack) setOfficeSlack(0); else renderJobs(); // setOfficeSlack reloads (and redraws)
+  announce('All filters cleared.');
+}
+
+// The filters that differ from their defaults: the count on the Filters button and the chips under the toolbar.
+function activeFilters() {
+  const f = state.filter;
+  const out = [];
+  if (f.minScore > 0) out.push({ key: 'minScore', lead: 'Min score', value: String(f.minScore), name: 'min score' });
+  if (f.mode !== 'all') out.push({ key: 'mode', lead: 'Mode', value: WORK_MODE_LABEL[f.mode] || f.mode, name: 'work mode' });
+  if (f.maxDist !== null) out.push({ key: 'maxDist', lead: 'Max distance', value: `${f.maxDist} km`, name: 'max distance' });
+  if (state.officeSlack) out.push({ key: 'slack', lead: 'Office days', value: `+${state.officeSlack}`, name: 'temporary office days' });
+  if (f.showExcluded) out.push({ key: 'showExcluded', lead: 'Showing', value: 'excluded', name: 'show excluded' });
+  if (f.showClosed) out.push({ key: 'showClosed', lead: 'Showing', value: 'closed', name: 'show closed' });
+  if (f.showHidden) out.push({ key: 'showHidden', lead: 'Showing', value: 'hidden', name: 'show hidden' });
+  return out;
+}
+
+const CHIP_X = '<svg aria-hidden="true" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4l8 8M12 4l-8 8"></path></svg>';
+
+function renderFilterChips() {
+  const active = activeFilters();
+  const count = $('#filters-count');
+  count.hidden = !active.length;
+  setText(count, String(active.length));
+  setText($('#filters-count-words'), active.length ? ` ${active.length === 1 ? 'filter' : 'filters'} set` : '');
+  $('#filters-toggle').classList.toggle('is-active', active.length > 0);
+  const box = $('#filter-chips');
+  const focused = box.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+  box.hidden = !active.length;
+  box.innerHTML = active.length ? `<span class="u-small u-muted">Filters set:</span>${active.map((a) => `<span class="p-chip p-chip--dismiss">
+    <span class="p-chip__lead">${esc(a.lead)}</span> ${esc(a.value)}
+    <button class="p-chip__x" type="button" data-key="${a.key}" aria-label="Remove the ${esc(a.name)} filter">${CHIP_X}</button></span>`).join('')}` : '';
+  box.querySelectorAll('[data-key]').forEach((b) => b.addEventListener('click', () => {
+    resetFilter(b.dataset.key);
+    announce(`${b.getAttribute('aria-label').replace(/^Remove the /, '').replace(/ filter$/, '')} filter removed.`);
+  }));
+  // A chip that was removed had the focus: it goes to the next chip, or back to the Filters button.
+  if (focused) (box.querySelector(`[data-key="${focused}"]`) || box.querySelector('[data-key]') || $('#filters-toggle')).focus();
+}
+
+function setFiltersOpen(open) {
+  state.filtersOpen = open;
+  $('#filters-panel').hidden = !open;
+  $('#filters-toggle').setAttribute('aria-expanded', String(open));
 }
 
 function renderSoftenControl() {
@@ -295,10 +432,10 @@ function renderSoftenNote() {
   const extra = state.jobs.filter((j) => j.softened_reason && !j.closed && !j.hidden);
   const unscored = extra.filter((j) => (!j.fit || j.fit.status === 'error') && j.detail_status !== 'none').length;
   const max = base + state.officeSlack;
-  note.innerHTML = `<span>Temporarily allowing hybrid roles with up to <strong>${max}</strong> office days a week
+  note.innerHTML = `<div class="p-notification__body soften-note__body"><span>Temporarily allowing hybrid roles with up to <strong>${max}</strong> office days a week
     (your saved rule: ${base}). <strong>${extra.length}</strong> more job${extra.length === 1 ? '' : 's'} shown${unscored ? `, ${unscored} not scored yet` : ''}.</span>
-    ${unscored ? '<button class="btn btn-primary btn-sm" type="button" data-act="score-softened">Score them</button>' : ''}
-    <button class="btn btn-ghost btn-sm" type="button" data-act="reset-softened">Back to my rule</button>`;
+    ${unscored ? '<button class="p-button p-button--positive is-dense" type="button" data-act="score-softened">Score them</button>' : ''}
+    <button class="p-button p-button--base is-dense" type="button" data-act="reset-softened">Back to my rule</button></div>`;
   note.hidden = false;
   note.querySelector('[data-act="score-softened"]')?.addEventListener('click', () => startRun('/api/score/run', { mode: 'pending', office_slack: state.officeSlack }));
   note.querySelector('[data-act="reset-softened"]').addEventListener('click', () => setOfficeSlack(0));
@@ -315,10 +452,15 @@ const LOADING_JOBS = '<div class="jobs-loading" role="status"><span class="spinn
 function renderJobs() {
   renderStatusChips();
   renderSoftenNote();
-  const list = $('#jobs-list');
-  list.setAttribute('aria-busy', String(state.jobsStatus === 'loading' || state.jobsRefreshing));
+  renderFilterChips();
+  renderViewToggle();
+  const view = state.view;
+  const boxes = { cards: $('#jobs-list'), table: $('#jobs-table'), board: $('#jobs-board') };
+  Object.entries(boxes).forEach(([k, el]) => { el.hidden = k !== view; if (k !== view) el.innerHTML = ''; });
+  const box = boxes[view];
+  box.setAttribute('aria-busy', String(state.jobsStatus === 'loading' || state.jobsRefreshing));
   if (state.jobsStatus !== 'ready') {
-    list.innerHTML = state.jobsStatus === 'loading' ? LOADING_JOBS : '';
+    box.innerHTML = state.jobsStatus === 'loading' ? LOADING_JOBS : '';
     $('#jobs-empty').hidden = true;
     setText($('#jobs-count'), state.jobsStatus === 'loading' ? 'Loading…' : '');
     renderBulkBar();
@@ -329,36 +471,106 @@ function renderJobs() {
   // Bulk actions only ever apply to jobs on screen: drop selections the filters now hide.
   const shown = new Set(jobs.map((j) => j.id));
   state.selected.forEach((id) => { if (!shown.has(id)) state.selected.delete(id); });
-  // Cards are redrawn: keep keyboard focus on the same control of the same card.
-  const focusBack = list.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
-  list.innerHTML = '';
+  // The view is redrawn: keep keyboard focus on the same control of the same job.
+  const focusBack = box.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
   $('#jobs-empty').hidden = jobs.length !== 0;
   const hidden = state.jobs.length - jobs.length + state.omittedCount;
   setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
-  jobs.forEach((job) => list.appendChild(renderJobCard(job)));
+  if (view === 'cards') {
+    box.innerHTML = '';
+    jobs.forEach((job) => box.appendChild(renderJobCard(job)));
+  } else if (view === 'table') {
+    renderTable(box, jobs);
+  } else {
+    renderBoard(box, jobs);
+  }
   if (focusBack) (focusBack() || $('#tab-jobs')).focus({ preventScroll: true });
   renderBulkBar();
   drawJobMarkers();
 }
 
+/* ---------- pieces shared by the views ---------- */
+const jobName = (job) => `${job.title || 'job'}${job.company ? ` at ${job.company}` : ''}`;
+const shortDate = (iso) => fmtDate(iso).split(',')[0];
+const statusOptions = (current) => STATUSES.map((s) => `<option value="${s}" ${current === s ? 'selected' : ''}>${STATUS_LABEL[s]}</option>`).join('');
+const OPEN_TITLE = 'Full page in a new tab: the whole ad, the office with commute links, and company details';
+
+// The fit score as a status label (the cards keep the 🎯 score with the ghost-job circle under it: ratingsHtml).
+function fitLabel(job) {
+  const fit = job.fit;
+  if (!fit) return '<span class="p-status-label" title="Not scored yet">Not scored</span>';
+  if (fit.status === 'error') return `<span class="p-status-label p-status-label--negative" title="${esc(fit.error || 'Scoring failed')}">Scoring failed</span>`;
+  const tone = fit.score >= 75 ? 'positive' : fit.score >= 45 ? 'caution' : 'negative';
+  const title = fit.stale ? 'Scored against older documents' : `Scored ${fmtDate(fit.scored_at)}`;
+  return `<span class="p-status-label p-status-label--${tone}" title="${esc(title)}"><span class="visually-hidden">Fit score </span>${fit.score}${
+    fit.stale ? '<span aria-hidden="true">*</span><span class="visually-hidden"> of 100, scored against older documents</span>' : '<span class="visually-hidden"> of 100</span>'}</span>`;
+}
+
+const MODE_TONE = { remote: 'positive', hybrid: 'caution', onsite: 'information', unknown: '' };
+function modeLabel(job) {
+  const m = modeOf(job);
+  return `<span class="p-status-label${MODE_TONE[m] ? ` p-status-label--${MODE_TONE[m]}` : ''}"><span class="visually-hidden">Work mode: </span>${m}</span>`;
+}
+
+// What else a job's line says, as status labels (each carries a word: never colour alone).
+function flagLabels(job, { excluded = true } = {}) {
+  return [
+    job.detail_status === 'summary' ? '<span class="p-status-label p-status-label--information" title="Only the job board listing summary is available">summary only</span>' : '',
+    job.detail_status === 'none' ? '<span class="p-status-label" title="Description not fetched yet">no description</span>' : '',
+    job.closed ? '<span class="p-status-label">closed</span>' : '',
+    job.hidden ? '<span class="p-status-label">hidden</span>' : '',
+    excluded && job.excluded_reason ? `<span class="p-status-label" title="${esc(`Excluded: ${job.excluded_reason}`)}">excluded</span>` : '',
+    job.office_days ? `<span class="p-status-label" title="Days per week in the office, from the ad">${job.office_days} day${job.office_days > 1 ? 's' : ''} in office</span>` : '',
+    job.office_unknown ? `<span class="p-status-label p-status-label--caution" title="${esc(job.recruiter
+      ? "A recruiter's ad naming only a city: the client's office isn't known. Open the job to set it, or mark the location OK or too far."
+      : 'The ad names only a city, so the location filter assumes the city centre. Fill missing info looks for the office, or open the job to set it.')}">office unknown${job.recruiter ? ' · recruiter' : ''}</span>` : '',
+    job.softened_reason ? `<span class="p-status-label p-status-label--caution" title="${esc(`Your saved rule excludes this: ${job.softened_reason}`)}">temporary +${state.officeSlack} office day${state.officeSlack > 1 ? 's' : ''}</span>` : '',
+    job.ghost?.level ? `<span class="p-status-label p-status-label--caution" title="${esc(ghostHover(job))}">Ghost signs<span class="visually-hidden">: ${esc(ghostWords(job))}</span></span>` : '',
+  ].join('');
+}
+
+// The other sites the same job is on (links only: splitting a merged ad is on the cards and the job page).
+function alsoOnLinks(job) {
+  const link = mainLink(job);
+  const items = [
+    ...(link.copy_id ? [{ url: job.url, source: job.source }] : []),
+    ...(job.also_on || []).filter((c) => c.id !== link.copy_id),
+  ];
+  if (!items.length) return '';
+  return ` Also on ${items.map((c) => `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(sourceLabel(c.source))}${NEW_TAB}</a>`).join(', ')}.`;
+}
+
+// Wires every [data-act] control under `root` to its job (the table's rows and detail rows, the board's cards).
+function wireJobControls(root, job) {
+  const on = (sel, ev, fn) => root.querySelectorAll(sel).forEach((el) => el.addEventListener(ev, fn));
+  on('[data-act="select"]', 'change', (e) => setSelected(job.id, e.target.checked));
+  on('select[data-act="status"]', 'change', (e) => updateJobStatus(job, e.target.value, e.target));
+  on('select[data-act="move"]', 'change', (e) => { if (e.target.value) moveJob(job, e.target.value, e.target); });
+  on('[data-act="expand"]', 'click', () => toggleExpanded(job.id));
+  on('[data-act="rescore"]', 'click', (e) => rescoreJob(job, e.currentTarget));
+  on('[data-act="desc"]', 'click', () => showDescription(job));
+  on('[data-act="letter"]', 'click', () => showCoverLetter(job));
+  on('[data-act="chat"]', 'click', () => openChat([job.id]));
+  on('[data-act="hide"]', 'click', () => setHidden([job.id], !job.hidden));
+  on('[data-act="upload-ad"]', 'click', () => showUploadAd(job));
+  on('[data-act="company"]', 'click', () => showCompany(job));
+  on('details[data-section="fit"]', 'toggle', (e) => { if (e.target.open) e.target.querySelector('.fit-body').innerHTML = fitHtml(job); });
+}
+
+function setSelected(id, on) {
+  if (on) state.selected.add(id); else state.selected.delete(id);
+  $$(`[data-job-id="${id}"]`).forEach((el) => el.classList.toggle('is-selected', on));
+  renderBulkBar();
+}
+
+/* ---------- the cards ---------- */
 function renderJobCard(job) {
   const card = document.createElement('article');
   card.dataset.jobId = job.id;
-  card.className = `card job-card${job.excluded_reason ? ' is-excluded' : ''}${state.selected.has(job.id) ? ' is-selected' : ''}`;
+  card.className = `card p-card job-card${job.excluded_reason ? ' is-excluded' : ''}${state.selected.has(job.id) ? ' is-selected' : ''}`;
   card.setAttribute('aria-labelledby', `job-${job.id}-title`);
-  const mode = modeOf(job);
   const dist = job.distance_km === null ? '' : `<span><span aria-hidden="true">📍 </span><span class="visually-hidden">Distance: </span>${job.distance_km} km</span>`;
-  const flags = [
-    job.detail_status === 'summary' ? '<span class="badge flag" title="Only the job board listing summary is available">summary only</span>' : '',
-    job.detail_status === 'none' ? '<span class="badge flag" title="Description not fetched yet">no description</span>' : '',
-    job.closed ? '<span class="badge flag">closed</span>' : '',
-    job.hidden ? '<span class="badge flag">hidden</span>' : '',
-    job.office_days ? `<span class="badge flag" title="Days per week in the office, from the ad">${job.office_days} day${job.office_days > 1 ? 's' : ''} in office</span>` : '',
-    job.office_unknown ? `<span class="badge soft" title="${esc(job.recruiter
-      ? "A recruiter's ad naming only a city: the client's office isn't known. Open the job to set it, or mark the location OK or too far."
-      : 'The ad names only a city, so the location filter assumes the city centre. Fill missing info looks for the office, or open the job to set it.')}">office unknown${job.recruiter ? ' · recruiter' : ''}</span>` : '',
-    job.softened_reason ? `<span class="badge soft" title="${esc(`Your saved rule excludes this: ${job.softened_reason}`)}">shown by temporary +${state.officeSlack} office day${state.officeSlack > 1 ? 's' : ''}</span>` : '',
-  ].join('');
+  const flags = flagLabels(job, { excluded: false });
   const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
   // The main link: the employer's own page when a merged copy is on it (job.link), else the listed ad. The other
   // copies, and then the listed ad itself, are under "Also on".
@@ -371,16 +583,16 @@ function renderJobCard(job) {
   ].join('');
   const fitErr = job.fit && job.fit.error ? `<p class="hint err-text">Scoring failed: ${esc(job.fit.error.slice(0, 240))}</p>` : '';
   const titleId = `job-${job.id}-title`;
-  const name = `${job.title || 'job'}${job.company ? ` at ${job.company}` : ''}`;
+  const name = jobName(job);
   card.innerHTML = `
     <div class="job-top">
-      <input type="checkbox" data-act="select" aria-label="Select ${esc(name)}" ${state.selected.has(job.id) ? 'checked' : ''} />
+      <input type="checkbox" class="p-checkbox" data-act="select" aria-label="Select ${esc(name)}" ${state.selected.has(job.id) ? 'checked' : ''} />
       <div class="job-title-row">
         <div class="job-company">${esc(job.company || '—')} ${companyIcon(job)}</div>
         <h3 class="job-title" id="${titleId}"><a href="${esc(link.url)}" target="_blank" rel="noopener">${esc(job.title || '—')}</a></h3>
         <div class="job-meta">
           <span>${esc(job.location_text || 'location unknown')}</span>
-          <span class="badge ${mode}"><span class="visually-hidden">Work mode: </span>${mode}</span>${employmentBadge(job)}${dist}${flags}
+          ${modeLabel(job)}${employmentBadge(job)}${dist}${flags}
         </div>
         ${ghostWhy(job)}
       </div>
@@ -388,7 +600,7 @@ function renderJobCard(job) {
     </div>
     <div class="job-sub">
       ${job.salary_text ? `<span><span aria-hidden="true">💰 </span><span class="visually-hidden">Salary: </span>${esc(job.salary_text)}</span>` : ''}
-      <span class="muted">${esc(sourceLabel(link.source))}${job.posted_at ? ` · posted ${esc(fmtDate(job.posted_at).split(',')[0])}` : ''}</span>${
+      <span class="muted">${esc(sourceLabel(link.source))}${job.posted_at ? ` · posted ${esc(shortDate(job.posted_at))}` : ''}</span>${
         link.copy_id ? ` ${split(link.copy_id, link.source)}` : ''}
       <span class="applied-slot">${appliedHtml(job)}</span>
     </div>
@@ -396,18 +608,20 @@ function renderJobCard(job) {
     ${also ? `<div class="also-on" title="The same job advertised on other sites, merged into this card"><span class="muted">Also on:</span> ${also}</div>` : ''}
     ${excl}${fitErr}
     <div class="job-actions">
-      <select data-act="status" aria-label="Application status of ${esc(name)}">
-        ${STATUSES.map((s) => `<option value="${s}" ${job.status === s ? 'selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}
+      <select class="p-select" data-act="status" aria-label="Application status of ${esc(name)}">
+        ${statusOptions(job.status)}
       </select>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="rescore" aria-describedby="${titleId}">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="desc" aria-describedby="${titleId}">Description</button>
-      ${isSeekJob(job) && job.detail_status === 'summary' ? `<button class="btn btn-sm" type="button" data-act="upload-ad" aria-describedby="${titleId}" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>` : ''}
-      <button class="btn btn-ghost btn-sm" type="button" data-act="hide" aria-describedby="${titleId}">${job.hidden ? 'Unhide' : 'Hide'}</button>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="letter" aria-describedby="${titleId}">${job.has_cover_letter ? 'Cover letter<span aria-hidden="true"> ✓</span><span class="visually-hidden"> (drafted)</span>' : 'Draft cover letter'}</button>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="chat" aria-describedby="${titleId}" title="Ask questions about this job in a chat on the right">Chat</button>
-      <a class="btn btn-ghost btn-sm" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" aria-describedby="${titleId}" title="Full page in a new tab: the whole ad, the office with commute links, and company details">Open${NEW_TAB}</a>
+      <button class="p-button is-dense" type="button" data-act="rescore" aria-describedby="${titleId}">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
     </div>
-    <details class="reqs" data-section="fit"><summary data-act="fit">Fit: requirements <span aria-hidden="true">→</span><span class="visually-hidden">and</span> evidence</summary><div class="fit-body"></div></details>
+    <div class="job-actions job-actions--base">
+      <button class="p-button p-button--base is-dense" type="button" data-act="desc" aria-describedby="${titleId}">Description</button>
+      ${isSeekJob(job) && job.detail_status === 'summary' ? `<button class="p-button is-dense" type="button" data-act="upload-ad" aria-describedby="${titleId}" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>` : ''}
+      <button class="p-button p-button--base is-dense" type="button" data-act="hide" aria-describedby="${titleId}">${job.hidden ? 'Unhide' : 'Hide'}</button>
+      <button class="p-button p-button--base is-dense" type="button" data-act="letter" aria-describedby="${titleId}">${job.has_cover_letter ? 'Cover letter<span aria-hidden="true"> ✓</span><span class="visually-hidden"> (drafted)</span>' : 'Draft cover letter'}</button>
+      <button class="p-button p-button--base is-dense" type="button" data-act="chat" aria-describedby="${titleId}" title="Ask questions about this job in a chat on the right">Chat</button>
+      <a class="p-button p-button--base is-dense" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" aria-describedby="${titleId}" title="${OPEN_TITLE}">Open${NEW_TAB}</a>
+    </div>
+    <details class="p-details reqs" data-section="fit"><summary data-act="fit">Fit: requirements <span aria-hidden="true">→</span><span class="visually-hidden">and</span> evidence</summary><div class="fit-body"></div></details>
     ${gapsSection(job)}`;
 
   card.querySelector('input[type="checkbox"]').addEventListener('change', (e) => {
@@ -434,6 +648,228 @@ function renderJobCard(job) {
   return card;
 }
 
+/* ---------- the table: one row a job; its title opens the fit summary in place (gaps before matches) ----------
+   On a phone the same table is drawn as stacked rows (styles.css), with a More button for the summary. */
+const SORT_COL = { score: ['fit', 'descending'], distance: ['distance', 'ascending'], newest: ['posted', 'descending'] };
+const SORT_WORDS = { score: 'fit score, highest first', newest: 'newest first', distance: 'distance, nearest first' };
+
+function renderTable(box, jobs) {
+  const [sortCol, dir] = SORT_COL[state.filter.sort] || [];
+  const th = (col, label, sortKey, cls = '') => (sortKey
+    ? `<th scope="col" class="${cls}"${sortCol === col ? ` aria-sort="${dir}"` : ''}><button class="p-button p-button--base is-dense jobs-table__sort" type="button" data-sort="${sortKey}">${label}${
+      sortCol === col ? `<span aria-hidden="true"> ${dir === 'descending' ? '↓' : '↑'}</span>` : ''}<span class="visually-hidden">: sort by this column</span></button></th>`
+    : `<th scope="col" class="${cls}">${label}</th>`);
+  box.innerHTML = `<table class="p-table jobs-table">
+    <caption class="visually-hidden">Jobs, sorted by ${SORT_WORDS[state.filter.sort] || state.filter.sort}</caption>
+    <thead><tr>
+      <th scope="col" class="col-select"><input id="table-select-all" class="p-checkbox" type="checkbox" aria-label="Select all shown" /></th>
+      ${th('job', 'Job')}${th('fit', 'Fit', 'score', 'u-num')}${th('mode', 'Mode')}${th('distance', 'Distance', 'distance', 'u-num')}${th('salary', 'Salary')}${th('posted', 'Posted', 'newest')}${th('status', 'Status')}
+      <th scope="col" class="col-open"><span class="visually-hidden">Open</span></th>
+    </tr></thead>
+    <tbody>${jobs.map(tableRowHtml).join('')}</tbody></table>`;
+  box.querySelectorAll('[data-sort]').forEach((b) => b.addEventListener('click', () => {
+    state.filter.sort = b.dataset.sort;
+    $('#sort-by').value = b.dataset.sort; // the Sort menu stays in step
+    renderJobs();
+  }));
+  $('#table-select-all').addEventListener('change', (e) => selectAllShown(e.target.checked));
+  jobs.forEach((job) => box.querySelectorAll(`[data-job-id="${job.id}"]`).forEach((el) => wireJobControls(el, job)));
+}
+
+function tableRowHtml(job) {
+  const name = jobName(job);
+  const titleId = `job-${job.id}-title`;
+  const moreId = `job-${job.id}-more`;
+  const open = state.expanded.has(job.id);
+  const cls = `${state.selected.has(job.id) ? ' is-selected' : ''}${job.excluded_reason ? ' is-excluded' : ''}`;
+  const place = `${job.company || '—'}, ${job.location_text || 'location unknown'}`;
+  const flags = flagLabels(job);
+  return `<tr class="jobs-table__row${cls}" data-job-id="${job.id}">
+    <td class="col-select"><input type="checkbox" class="p-checkbox" data-act="select" aria-label="Select ${esc(name)}"${state.selected.has(job.id) ? ' checked' : ''} /></td>
+    <td class="col-job">
+      <button id="${titleId}" class="p-button p-button--base is-dense jobs-table__title" type="button" data-act="expand" aria-expanded="${open}" aria-controls="${moreId}"><span class="jobs-table__chev" aria-hidden="true">${open ? '▾' : '▸'}</span> ${esc(job.title || '—')}</button>
+      <div class="u-small u-muted jobs-table__place">${esc(place)}</div>
+      ${flags ? `<div class="jobs-table__flags">${flags}</div>` : ''}
+    </td>
+    <td class="u-num col-fit">${fitLabel(job)}</td>
+    <td class="col-mode">${modeLabel(job)}</td>
+    <td class="u-num col-dist">${job.distance_km === null ? '<span class="u-muted">n/a</span>' : `${job.distance_km} km`}</td>
+    <td class="col-salary">${job.salary_text ? esc(job.salary_text) : '<span class="u-muted">Not stated</span>'}</td>
+    <td class="col-posted">${job.posted_at ? esc(shortDate(job.posted_at)) : '<span class="u-muted">—</span>'}</td>
+    <td class="col-status">
+      <label class="visually-hidden" for="job-${job.id}-status">Application status of ${esc(name)}</label>
+      <select id="job-${job.id}-status" class="p-select" data-act="status">${statusOptions(job.status)}</select>
+      <button class="p-button is-dense jobs-table__morebtn" type="button" data-act="expand" aria-expanded="${open}" aria-controls="${moreId}">More<span class="visually-hidden"> about ${esc(name)}</span></button>
+      <span class="applied-slot u-small">${appliedHtml(job)}</span>
+    </td>
+    <td class="col-open"><a class="p-button p-button--base is-dense" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" title="${OPEN_TITLE}">Open<span class="visually-hidden"> ${esc(name)}</span>${NEW_TAB}</a></td>
+  </tr>
+  <tr id="${moreId}" class="jobs-table__detail${cls}" data-job-id="${job.id}"${open ? '' : ' hidden'}><td class="col-select"></td><td colspan="8">${open ? detailHtml(job) : ''}</td></tr>`;
+}
+
+// The fit summary row: the scorer's summary, the gaps first and then the matched requirements, where the job is,
+// and the actions the card has.
+function detailHtml(job) {
+  const fit = job.fit;
+  const scored = fit && fit.status === 'ok';
+  const titleId = `job-${job.id}-title`;
+  let summary;
+  if (scored) summary = fit.summary ? `<p class="jobs-detail__summary">${esc(fit.summary)}</p>` : '';
+  else if (fit && fit.status === 'error') summary = `<p class="err-text">Scoring failed: ${esc((fit.error || '').slice(0, 240))}</p>`;
+  else summary = '<p class="u-muted">Not scored yet.</p>';
+  const labels = scored ? [
+    ...(fit.gaps || []).map((g) => [`Gap: ${g}`, 'negative']),
+    ...missingRequirements(fit).map((r) => [`Gap: ${r.point}${r.must_have === false ? ' (nice to have)' : ''}`, 'negative']),
+    ...(fit.requirements || []).filter((r) => r.matched).map((r) => [r.point, 'positive']),
+  ] : [];
+  const labelList = labels.length ? `<ul class="jobs-detail__labels" aria-label="Requirements: gaps first, then matches">${
+    labels.map(([t, tone]) => `<li><span class="p-status-label p-status-label--${tone}">${esc(t)}</span></li>`).join('')}</ul>` : '';
+  const where = officeHtml(job) || esc(job.location_text || 'location unknown');
+  const ghost = job.ghost ? ` <span class="u-muted">· ${esc(ghostWords(job))}.</span>` : '';
+  const excl = job.excluded_reason ? `<p class="hint">Excluded: ${esc(job.excluded_reason)}</p>` : '';
+  return `<div class="jobs-detail">
+    <div class="jobs-detail__main">
+      ${summary}${labelList}
+      <p class="u-small jobs-detail__where">${where}${ghost}${alsoOnLinks(job)}</p>
+      ${excl}
+      <details class="p-details reqs" data-section="fit"><summary>Fit: requirements <span aria-hidden="true">→</span><span class="visually-hidden">and</span> evidence</summary><div class="fit-body"></div></details>
+    </div>
+    <div class="jobs-detail__actions">
+      <button class="p-button is-dense" type="button" data-act="letter" aria-describedby="${titleId}">${job.has_cover_letter ? 'Cover letter<span aria-hidden="true"> ✓</span><span class="visually-hidden"> (drafted)</span>' : 'Draft cover letter'}</button>
+      <button class="p-button is-dense" type="button" data-act="chat" aria-describedby="${titleId}" title="Ask questions about this job in a chat on the right">Chat</button>
+      <button class="p-button p-button--base is-dense" type="button" data-act="rescore" aria-describedby="${titleId}">${scored ? 'Rescore' : 'Score'}</button>
+      <button class="p-button p-button--base is-dense" type="button" data-act="desc" aria-describedby="${titleId}">Description</button>
+      ${isSeekJob(job) && job.detail_status === 'summary' ? `<button class="p-button p-button--base is-dense" type="button" data-act="upload-ad" aria-describedby="${titleId}" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>` : ''}
+      <button class="p-button p-button--base is-dense" type="button" data-act="hide" aria-describedby="${titleId}">${job.hidden ? 'Unhide' : 'Hide'}</button>
+      <a class="p-button p-button--base is-dense" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" aria-describedby="${titleId}" title="${OPEN_TITLE}">Full page${NEW_TAB}</a>
+    </div>
+  </div>`;
+}
+
+// Opens or closes a row's summary in place, so focus stays on the button that did it.
+function toggleExpanded(id) {
+  const open = !state.expanded.has(id);
+  if (open) state.expanded.add(id); else state.expanded.delete(id);
+  $$(`[data-act="expand"][aria-controls="job-${id}-more"]`).forEach((b) => {
+    b.setAttribute('aria-expanded', String(open));
+    const chev = b.querySelector('.jobs-table__chev');
+    if (chev) chev.textContent = open ? '▾' : '▸';
+  });
+  const row = document.getElementById(`job-${id}-more`);
+  const job = state.jobs.find((j) => j.id === id);
+  if (!row || !job) return;
+  row.hidden = !open;
+  const cell = row.querySelector('td[colspan]');
+  if (open && !cell.firstElementChild) {
+    cell.innerHTML = detailHtml(job);
+    wireJobControls(cell, job);
+  }
+}
+
+/* ---------- the board: one column a status, the closed ones folded; Move to does what dragging would ----------
+   On a phone the columns become tabs (arrow keys move between them) and one column shows at a time. */
+const BOARD_COLS = ['to_review', 'shortlisted', 'applied', 'interviewing'];
+const CLOSED_STATUSES = ['rejected', 'not_interested'];
+const BOARD_CAP = 10; // cards a column shows before "n more"
+const colTitle = (s) => STATUS_LABEL[s].charAt(0).toUpperCase() + STATUS_LABEL[s].slice(1);
+
+function renderBoard(box, jobs) {
+  const phone = isPhone();
+  const by = Object.fromEntries(STATUSES.map((s) => [s, []]));
+  jobs.forEach((j) => (by[j.status] || by.to_review).push(j));
+  const closedJobs = CLOSED_STATUSES.flatMap((s) => by[s]);
+  const head = (s, n) => `${s === 'closed' ? 'Closed' : esc(colTitle(s))} <span class="p-status-label"><span class="visually-hidden">(</span>${n}<span class="visually-hidden"> jobs)</span></span>`;
+  const panel = (s) => `${phone ? ' role="tabpanel"' : ''} aria-labelledby="board-col-${s}-h"`;
+  const tabs = !phone ? '' : `<div class="p-tabs board-tabs" role="tablist" aria-label="Status columns"><div class="p-tabs__list">${
+    [...BOARD_COLS, 'closed'].map((s) => `<button id="board-tab-${s}" class="p-tabs__link" role="tab" type="button" data-col="${s}" aria-selected="${state.boardTab === s}" aria-controls="board-col-${s}" tabindex="${state.boardTab === s ? 0 : -1}">${
+      head(s, s === 'closed' ? closedJobs.length : by[s].length)}</button>`).join('')}</div></div>`;
+  const column = (s) => {
+    const list = by[s];
+    const shown = state.boardMore.has(s) ? list : list.slice(0, BOARD_CAP);
+    return `<section id="board-col-${s}" class="board-col${state.boardTab === s ? ' is-current' : ''}"${panel(s)}>
+      <h3 id="board-col-${s}-h" class="board-col__head">${head(s, list.length)}</h3>
+      ${shown.map((j) => boardCardHtml(j)).join('') || '<p class="u-small u-muted board-col__empty">Nothing here.</p>'}
+      ${list.length > shown.length ? `<button class="p-button p-button--base board-col__more" type="button" data-more="${s}">${list.length - shown.length} more<span class="visually-hidden"> in ${esc(STATUS_LABEL[s])}</span></button>` : ''}
+    </section>`;
+  };
+  const closed = `<section id="board-col-closed" class="board-col board-col--closed${state.boardTab === 'closed' ? ' is-current' : ''}${state.boardClosedOpen ? ' is-open' : ''}"${panel('closed')}>
+      <h3 id="board-col-closed-h" class="board-col__head">Closed</h3>
+      <p class="u-small u-muted">Rejected ${by.rejected.length}, not interested ${by.not_interested.length}</p>
+      <button class="p-button is-dense" type="button" data-act="closed-toggle" aria-expanded="${state.boardClosedOpen}" aria-controls="board-closed-list">${state.boardClosedOpen ? 'Fold' : 'Show'}<span class="visually-hidden"> the closed jobs</span></button>
+      <div id="board-closed-list" class="board-closed-list"${state.boardClosedOpen ? '' : ' hidden'}>${closedJobs.map((j) => boardCardHtml(j, true)).join('') || '<p class="u-small u-muted board-col__empty">Nothing here.</p>'}</div>
+    </section>`;
+  box.innerHTML = `${tabs}<div class="board-cols">${BOARD_COLS.map(column).join('')}${closed}</div>`;
+  box.querySelectorAll('[data-more]').forEach((b) => b.addEventListener('click', () => {
+    state.boardMore.add(b.dataset.more);
+    renderJobs();
+    $(`#board-col-${b.dataset.more} .board-card:nth-of-type(${BOARD_CAP + 1}) select`)?.focus({ preventScroll: true });
+  }));
+  box.querySelector('[data-act="closed-toggle"]').addEventListener('click', (e) => {
+    state.boardClosedOpen = !state.boardClosedOpen;
+    e.currentTarget.setAttribute('aria-expanded', String(state.boardClosedOpen));
+    e.currentTarget.firstChild.textContent = state.boardClosedOpen ? 'Fold' : 'Show';
+    e.currentTarget.closest('.board-col')?.classList.toggle('is-open', state.boardClosedOpen);
+    $('#board-closed-list').hidden = !state.boardClosedOpen;
+  });
+  if (phone) {
+    const tabList = box.querySelector('[role="tablist"]');
+    const names = [...BOARD_COLS, 'closed'];
+    tabList.querySelectorAll('[role="tab"]').forEach((t) => t.addEventListener('click', () => setBoardTab(t.dataset.col)));
+    tabList.addEventListener('keydown', (e) => {
+      const i = names.indexOf(state.boardTab);
+      const next = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: names.length - 1 }[e.key];
+      if (next === undefined) return;
+      e.preventDefault();
+      setBoardTab(names[(next + names.length) % names.length], { focus: true });
+    });
+  }
+  jobs.forEach((job) => box.querySelectorAll(`[data-job-id="${job.id}"]`).forEach((el) => wireJobControls(el, job)));
+}
+
+function setBoardTab(name, { focus = false } = {}) {
+  state.boardTab = name;
+  $$('#jobs-board [role="tab"]').forEach((t) => {
+    const on = t.dataset.col === name;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+    if (on && focus) t.focus();
+  });
+  $$('#jobs-board .board-col').forEach((c) => c.classList.toggle('is-current', c.id === `board-col-${name}`));
+}
+
+function boardCardHtml(job, closedCol = false) {
+  const name = jobName(job);
+  const titleId = `job-${job.id}-title`;
+  const place = `${job.company || '—'}, ${job.location_text || 'location unknown'}${job.distance_km === null ? '' : `, ${job.distance_km} km`}`;
+  const chat = `<button class="p-button p-button--base is-dense" type="button" data-act="chat" aria-describedby="${titleId}" title="Ask questions about this job in a chat on the right">Chat</button>`;
+  const letter = `<button class="p-button is-dense" type="button" data-act="letter" aria-describedby="${titleId}">${job.has_cover_letter ? 'Cover letter<span aria-hidden="true"> ✓</span><span class="visually-hidden"> (drafted)</span>' : 'Cover letter'}</button>`;
+  const stage = job.status === 'shortlisted' ? letter + chat : ['applied', 'interviewing'].includes(job.status) ? chat : '';
+  return `<article class="p-card board-card${job.excluded_reason ? ' is-excluded' : ''}" data-job-id="${job.id}" aria-labelledby="${titleId}">
+    <div class="board-card__head"><h4 id="${titleId}" class="board-card__title">${esc(job.title || '—')}</h4>${fitLabel(job)}</div>
+    <p class="u-small u-muted board-card__place">${esc(place)}</p>
+    <div class="board-card__labels">${closedCol ? `<span class="p-status-label">${esc(STATUS_LABEL[job.status])}</span>` : ''}${modeLabel(job)}${
+      job.posted_at ? `<span class="p-status-label"><span class="visually-hidden">posted </span>${esc(shortDate(job.posted_at))}</span>` : ''}${flagLabels(job)}</div>
+    <p class="u-small applied-slot">${appliedHtml(job)}</p>
+    <div class="board-card__row">
+      <label class="visually-hidden" for="job-${job.id}-move">Move ${esc(name)} to</label>
+      <select id="job-${job.id}-move" class="p-select" data-act="move"><option value="">Move to…</option>${STATUSES.filter((s) => s !== job.status).map((s) => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join('')}</select>
+      <a class="p-button p-button--base is-dense" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" title="${OPEN_TITLE}">Open<span class="visually-hidden"> ${esc(name)}</span>${NEW_TAB}</a>
+    </div>
+    ${stage ? `<div class="board-card__actions">${stage}</div>` : ''}
+  </article>`;
+}
+
+// A card's Move to: the status changes as on a card, then the card is drawn in its new column and keeps the focus.
+async function moveJob(job, next, sel) {
+  await updateJobStatus(job, next, sel);
+  renderJobs();
+  const col = CLOSED_STATUSES.includes(job.status) ? 'closed' : job.status;
+  const target = $(`#jobs-board [data-job-id="${job.id}"] select[data-act="move"]`);
+  if (target && target.offsetParent !== null) target.focus({ preventScroll: true });
+  else ($(`#board-tab-${col}`) || $('#jobs-board [data-act="closed-toggle"]'))?.focus({ preventScroll: true });
+  announce(`${job.title} moved to ${STATUS_LABEL[job.status]}.`);
+}
+
 async function showDescription(job) {
   try {
     const full = state.details.get(job.id) || await api(`/api/jobs/${job.id}${slackQuery()}`);
@@ -443,15 +879,22 @@ async function showDescription(job) {
   } catch (e) { toast(`Could not load job: ${e.message}`, 'err'); }
 }
 
+function selectAllShown(on) {
+  visibleJobs().forEach((j) => (on ? state.selected.add(j.id) : state.selected.delete(j.id)));
+  renderJobs();
+}
+
 function renderBulkBar() {
   const n = state.selected.size;
-  $('#bulk-bar').hidden = n === 0;
+  $('#bulk-bar').hidden = n === 0 || state.view === 'board';
   $('#bulk-count').textContent = `${n} selected`;
   const vis = visibleJobs().map((j) => j.id);
   const selectedShown = vis.filter((id) => state.selected.has(id)).length;
-  ['#bulk-select-all', '#select-all-shown'].forEach((sel) => {
-    $(sel).checked = vis.length > 0 && selectedShown === vis.length;
-    $(sel).indeterminate = selectedShown > 0 && selectedShown < vis.length;
+  ['#bulk-select-all', '#select-all-shown', '#table-select-all'].forEach((sel) => {
+    const box = $(sel);
+    if (!box) return;
+    box.checked = vis.length > 0 && selectedShown === vis.length;
+    box.indeterminate = selectedShown > 0 && selectedShown < vis.length;
   });
   $('#select-all-shown').disabled = vis.length === 0;
   $('#fill-info').textContent = n ? `Fill missing info (${n} selected)` : 'Fill missing info';
@@ -464,7 +907,7 @@ async function updateJobStatus(job, next, selectEl) {
   const prev = job.status;
   job.status = next;
   renderStatusChips();
-  const slot = selectEl.closest('.job-card')?.querySelector('.applied-slot');
+  const slot = selectEl.closest('[data-job-id]')?.querySelector('.applied-slot');
   try {
     const res = await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: next }) });
     job.applied_at = res.applied_at ?? job.applied_at ?? null;
@@ -567,21 +1010,32 @@ async function rescoreJob(job, btn) {
 }
 
 function initJobs() {
+  state.view = storedView();
+  state.listView = state.view === 'board' ? 'cards' : state.view;
   $('#filter-search').addEventListener('input', debounce((e) => { state.filter.q = e.target.value; renderJobs(); }, 150));
-  $('#filter-min-score').addEventListener('input', (e) => { state.filter.minScore = Number(e.target.value); $('#score-output').textContent = e.target.value; renderJobs(); });
-  $('#filter-mode').addEventListener('change', (e) => { state.filter.mode = e.target.value; renderJobs(); });
+  $('#filter-min-score').addEventListener('input', () => filterChanged('minScore'));
+  $('#filter-mode').addEventListener('change', () => filterChanged('mode'));
+  $('#filter-max-dist').addEventListener('input', () => filterChanged('maxDist'));
+  $('#filter-show-excluded').addEventListener('change', () => filterChanged('showExcluded'));
+  $('#filter-show-closed').addEventListener('change', () => filterChanged('showClosed'));
+  $('#filter-show-hidden').addEventListener('change', () => filterChanged('showHidden'));
   $('#sort-by').addEventListener('change', (e) => { state.filter.sort = e.target.value; renderJobs(); });
-  $('#filter-max-dist').addEventListener('input', (e) => { const v = e.target.value === '' ? null : Number(e.target.value); state.filter.maxDist = Number.isFinite(v) ? v : null; renderJobs(); });
-  // Excluded and hidden jobs are fetched on demand (see loadJobs).
-  $('#filter-show-excluded').addEventListener('change', (e) => {
-    state.filter.showExcluded = e.target.checked;
-    if (e.target.checked && state.loadedOmit.includes('excluded')) loadJobs(); else renderJobs();
+  $('#office-slack').addEventListener('change', (e) => setOfficeSlack(Number(e.target.value)));
+  // The Filters panel: a disclosure; Done and Escape close it and put the focus back on the button.
+  $('#filters-toggle').addEventListener('click', () => setFiltersOpen(!state.filtersOpen));
+  $('#filters-done').addEventListener('click', () => { setFiltersOpen(false); $('#filters-toggle').focus(); });
+  $('#filters-clear').addEventListener('click', clearFilters);
+  $('#filters-panel').addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    setFiltersOpen(false);
+    $('#filters-toggle').focus();
   });
-  $('#filter-show-closed').addEventListener('change', (e) => { state.filter.showClosed = e.target.checked; renderJobs(); });
-  $('#filter-show-hidden').addEventListener('change', (e) => {
-    state.filter.showHidden = e.target.checked;
-    if (e.target.checked && state.loadedOmit.includes('hidden')) loadJobs(); else renderJobs();
-  });
+  // Cards | Table | Board (List | Board on a phone: List brings back the last of the two list views).
+  $$('#view-toggle .view-toggle__btn').forEach((b) => b.addEventListener('click', () => {
+    setView(b.dataset.view === 'cards' && isPhone() ? state.listView : b.dataset.view);
+  }));
+  phoneMedia.addEventListener('change', () => renderJobs());
   $('#bulk-hide').addEventListener('click', () => {
     const ids = Array.from(state.selected);
     if (ids.length > 20 && !confirm(`Hide ${ids.length} jobs?`)) return;
@@ -590,13 +1044,9 @@ function initJobs() {
   $('#bulk-unhide').addEventListener('click', () => setHidden(Array.from(state.selected), false));
   $('#bulk-apply').addEventListener('click', bulkUpdateStatus);
   $('#bulk-clear').addEventListener('click', () => { state.selected.clear(); renderJobs(); });
-  ['#bulk-select-all', '#select-all-shown'].forEach((sel) => $(sel).addEventListener('change', (e) => {
-    visibleJobs().forEach((j) => (e.target.checked ? state.selected.add(j.id) : state.selected.delete(j.id)));
-    renderJobs();
-  }));
+  ['#bulk-select-all', '#select-all-shown'].forEach((sel) => $(sel).addEventListener('change', (e) => selectAllShown(e.target.checked)));
   $('#search-run').addEventListener('click', () => startRun('/api/search/run', {}));
   $('#score-pending').addEventListener('click', () => startRun('/api/score/run', { mode: 'pending', office_slack: state.officeSlack }));
-  $('#office-slack').addEventListener('change', (e) => setOfficeSlack(Number(e.target.value)));
   $('#fill-info').addEventListener('click', () => {
     const ids = Array.from(state.selected);
     startRun('/api/companies/research', ids.length ? { mode: 'missing', job_ids: ids } : { mode: 'missing' });
@@ -604,6 +1054,21 @@ function initJobs() {
   $('#bulk-chat').addEventListener('click', () => openChat(Array.from(state.selected)));
   $('#bulk-merge').addEventListener('click', mergeSelected);
   $('#dupes-open').addEventListener('click', showDuplicates);
+  renderViewToggle();
+}
+
+/* The header on a phone: the workspace controls and tools fold behind a Menu button (styles.css shows the button
+   only there; on a wide screen everything is in view and the button is gone). */
+function initHeaderMenu() {
+  const btn = $('#header-menu-btn');
+  const meta = $('#header-meta');
+  const set = (open) => { meta.classList.toggle('is-open', open); btn.setAttribute('aria-expanded', String(open)); };
+  btn.addEventListener('click', () => set(!meta.classList.contains('is-open')));
+  meta.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !isPhone() || !meta.classList.contains('is-open')) return;
+    set(false);
+    btn.focus();
+  });
 }
 
 /* ================= BACKGROUND RUNS ================= */
@@ -854,13 +1319,14 @@ function renderDupeNote() {
   const m = state.dupes.auto_merged.length;
   const note = $('#dupe-note');
   note.hidden = !n && !m;
-  $('#dupes-open').textContent = n ? `Duplicates (${n} to check)` : 'Duplicates';
+  $('#dupes-open').innerHTML = n ? `Duplicates <span class="p-status-label p-status-label--caution">${n} to check</span>` : 'Duplicates';
   if (note.hidden) return;
   const parts = [];
   if (n) parts.push(`<strong>${n}</strong> possible duplicate ad${n === 1 ? '' : 's'} to check`);
   if (m) parts.push(`${m} ad${m === 1 ? ' was' : 's were'} merged automatically`);
-  note.innerHTML = `<span>The same job on several sites is shown as one card. ${parts.join(' · ')}.</span>
-    <button class="btn btn-sm" type="button" data-act="review">Review</button>`;
+  note.innerHTML = `<svg class="p-notification__icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7.5v.5"></path></svg>
+    <div class="p-notification__body"><span class="p-notification__title">Duplicates merged.</span> The same job on several sites is shown as one card. ${parts.join(' · ')}.
+    <button class="p-button p-button--base is-dense" type="button" data-act="review">Review the merges</button></div>`;
   note.querySelector('[data-act="review"]').addEventListener('click', showDuplicates);
 }
 
@@ -988,11 +1454,11 @@ async function splitCopy(id) {
    The chat itself (its state, API calls and controls) is chat.js, shared with the job page. This page
    provides the job labels and the card finder (initChat below) and keeps the card-flashing helper. */
 function showJobCard(id) {
-  const card = document.querySelector(`.job-card[data-job-id="${id}"]`);
-  if (!card || card.closest('[hidden]')) { toast('That job is hidden by the current filters, or the Jobs tab is closed.', '', 4000); return; }
+  const card = document.querySelector(`[data-job-id="${id}"]`); // a card, a table row or a board card
+  if (!card || card.closest('[hidden]') || card.offsetParent === null) { toast('That job is hidden by the current filters, or the Jobs tab is closed.', '', 4000); return; }
   if (chatCovers.matches) closeChat({ restoreFocus: false }); // the chat covers the cards on this screen
   card.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
-  card.querySelector('.job-title a')?.focus({ preventScroll: true });
+  (card.querySelector('.job-title a') || card.querySelector('[data-act="expand"], select'))?.focus({ preventScroll: true });
   card.classList.remove('flash');
   void card.offsetWidth;
   card.classList.add('flash');
@@ -2448,6 +2914,8 @@ async function switchWorkspace(id) {
   state.lastRun = null;
   state.schedule = null;
   state.selected.clear();
+  state.expanded.clear();
+  state.boardMore.clear();
   state.details.clear();
   state.jobs = []; // the old workspace's jobs must not show under the new one's name
   state.jobsStatus = 'loading';
@@ -2557,6 +3025,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initTabs();
   initJumpLists();
   initJobs();
+  initHeaderMenu();
   initSetup();
   initSchedule();
   initDocs();
