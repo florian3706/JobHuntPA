@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session
 from backend import commute, docs, mapping_format, schedule, source_bulk
 from backend.db import (
     JOB_CONTENT,
+    LETTER_TEMPLATE_KIND,
     ChatMessage,
     ChatThread,
     CompanyProfile,
@@ -310,6 +311,7 @@ class Importer:
         self.db, self.user_id, self.data, self.archive = db, user_id, data, archive
         self.stored: list[str] = []   # uploads sealed so far (deleted again if the import fails)
         self.company_keys: set[str] = set()
+        self.document_ids: dict[int, int] = {}  # the workspace being imported: its documents' new ids by ref
         self.totals = {"jobs": 0, "documents": 0, "chats": 0, "originals": 0}
 
     def run(self, picked: list[int], today: date) -> dict:
@@ -394,6 +396,10 @@ class Importer:
                 sources[s.ref] = row
         made["documents"] = self.documents(ws, data)
         db.flush()
+        if data.letter_template is not None and data.letter_template in self.document_ids:
+            template = db.get(Document, self.document_ids[data.letter_template])
+            if template is not None and template.kind == LETTER_TEMPLATE_KIND and template.stored_name:
+                db.get(Workspace, ws).letter_template_id = template.id
         jobs = self.jobs(ws, data, {ref: row.id for ref, row in sources.items()}, made)
         made["chats"] = self.chats(ws, data, jobs)
         return made
@@ -422,6 +428,7 @@ class Importer:
         for d in data.documents:
             if d.summary_of:
                 rows[d.ref].summary_of = [rows[r].id for r in d.summary_of if r in rows and r != d.ref] or None
+        self.document_ids = {ref: row.id for ref, row in rows.items()}
         self.totals["documents"] += len(rows)
         return len(rows)
 
@@ -484,8 +491,8 @@ class Importer:
                                  error=f.error, profile_hash=f.profile_hash, model=f.model, created_at=f.created_at or now))
             if j.cover_letter is not None:
                 c = j.cover_letter
-                db.add(CoverLetter(job_id=job.id, text=c.text, instructions=c.instructions, edited=c.edited,
-                                   model=c.model, reasoning_effort=c.reasoning_effort, created_at=c.created_at or now,
+                db.add(CoverLetter(job_id=job.id, text=c.text, draft_text=c.draft_text, instructions=c.instructions,
+                                   edited=c.edited, model=c.model, reasoning_effort=c.reasoning_effort, created_at=c.created_at or now,
                                    updated_at=c.updated_at or c.created_at or now))
                 made["cover_letters"] += 1
         made["jobs"] = sum(1 for job in rows.values() if job.duplicate_of is None)

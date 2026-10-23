@@ -152,8 +152,8 @@ def _fit(fit: Optional[FitResult]) -> Optional[dict]:
 def _letter(letter: Optional[CoverLetter]) -> Optional[dict]:
     if letter is None:
         return None
-    return {"text": letter.text or "", "instructions": letter.instructions, "edited": bool(letter.edited),
-            "model": letter.model, "reasoning_effort": letter.reasoning_effort, "created_at": iso(letter.created_at),
+    return {"text": letter.text or "", "draft_text": letter.draft_text, "instructions": letter.instructions,
+            "edited": bool(letter.edited), "model": letter.model, "reasoning_effort": letter.reasoning_effort, "created_at": iso(letter.created_at),
             "updated_at": iso(letter.updated_at)}
 
 
@@ -224,6 +224,8 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tup
         } for d in documents],
         "jobs": jobs,
         "chats": chats,
+        # The letter template cover-letter downloads use (one of the documents above); None: the plain layout.
+        "letter_template": doc_ref.get(ws.letter_template_id) if ws.letter_template_id else None,
     }
     return data, companies
 
@@ -428,7 +430,7 @@ class DocumentIn(_In):
     ref: Ref
     filename: Short
     filetype: Optional[Annotated[str, StringConstraints(max_length=20)]] = None
-    kind: Optional[Literal["resume", "cover_letter", "preferences", "other"]] = None
+    kind: Optional[Literal["resume", "cover_letter", "preferences", "other", "letter_template"]] = None
     text: Optional[DocText] = None
     concise_text: Optional[DocText] = None
     use_concise: bool = False
@@ -518,6 +520,7 @@ class FitIn(_In):
 
 class LetterIn(_In):
     text: Long = ""
+    draft_text: Optional[Long] = None
     instructions: Optional[Long] = None
     edited: bool = False
     model: Optional[Short] = None
@@ -581,6 +584,7 @@ class WorkspaceIn(_In):
     documents: Annotated[list[DocumentIn], Field(max_length=MANY)] = Field(default_factory=list)
     jobs: Annotated[list[JobIn], Field(max_length=MANY)] = Field(default_factory=list)
     chats: Annotated[list[ChatIn], Field(max_length=MANY)] = Field(default_factory=list)
+    letter_template: Optional[Ref] = None  # the document (its ref) cover-letter downloads use
 
 
 def _web_page(url: str) -> str:

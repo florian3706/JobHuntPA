@@ -70,11 +70,20 @@ def _tiny_pdf(text: str) -> bytes:
     return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, start)
 
 
-def _docx(text: str) -> bytes:
+def _docx(text: str, template: bool = False) -> bytes:
+    """A one-paragraph .docx; as a ``template``, a letterhead (``text`` in the header and footer) with the
+    {{letter}} marker in a font this computer may not have."""
     import docx
+    from docx.shared import Pt
 
     document = docx.Document()
-    document.add_paragraph(text)
+    if template:
+        document.sections[0].header.paragraphs[0].text = f"{text} {{{{date}}}}"
+        document.sections[0].footer.paragraphs[0].text = text
+        run = document.add_paragraph().add_run("{{letter}}")
+        run.font.name, run.font.size = "ZQX Garamond", Pt(11)
+    else:
+        document.add_paragraph(text)
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
@@ -381,6 +390,26 @@ class FullRun(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(c.put(f"/api/jobs/{job_id}/cover-letter", json={"text": "ZQX edited letter"}).status_code, 200)
         self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter.docx").status_code, 200)
+        # The letter as PDF, .odt and .docx from the plain layout, then from a letter template (a letterhead with
+        # the marker in a font this computer doesn't have: the substitution is answered, never logged).
+        for fmt in ("pdf", "odt"):
+            self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter.{fmt}").status_code, 200)
+        r = c.post("/api/documents", files={"file": ("ZQX-letterhead.docx", _docx("ZQX letterhead", template=True),
+                                                     "application/octet-stream")}, data={"kind": "letter_template"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["current_template"])
+        info = c.get("/api/documents/letter-template").json()
+        self.assertEqual(info["template"]["filename"], "ZQX-letterhead.docx")
+        self.assertIn("ZQX Garamond", [f["asked"] for f in info["fonts"]])
+        r = c.get(f"/api/jobs/{job_id}/cover-letter.pdf")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("ZQX Garamond", r.headers["x-font-substitutions"])
+        self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter.docx").status_code, 200)
+        self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter.odt").status_code, 409)  # a .docx template: no .odt
+        r = c.post("/api/documents", files={"file": ("ZQX-no-marker.docx", _docx("ZQX no marker here"),
+                                                     "application/octet-stream")}, data={"kind": "letter_template"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(c.put("/api/documents/letter-template", json={"id": None}).json()["template"], None)
         r = c.post("/api/companies/research", json={"mode": "all"})
         self.assertEqual(r.status_code, 200, r.text)
         listed = c.get("/api/tasks")  # the tasks tray, while the research may still run: kinds and ids only

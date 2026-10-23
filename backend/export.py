@@ -666,7 +666,10 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
                 head += facts([("Job", rel_link(_job_label(entry), entry.letter_path, entry.path)), ("Written", when(letter.created_at)),
                                ("Last changed", when(letter.updated_at)), ("Edited by you", yes(letter.edited)),
                                ("Instructions you gave", line(letter.instructions))])
-                arc.add_text(entry.letter_path, f"{head}\n---\n\n{text(letter.text)}\n")
+                body = f"{head}\n---\n\n{text(letter.text)}\n"
+                if letter.edited and (letter.draft_text or "").strip() and letter.draft_text != letter.text:
+                    body += f"\n## The draft as the model wrote it\n\n{text(letter.draft_text)}\n"
+                arc.add_text(entry.letter_path, body)
     # the index
     index = f"{base}/Jobs/Jobs.md"
     out = ["# Jobs\n", f"\n{len(with_files)} job(s) with a file of their own.\n"]

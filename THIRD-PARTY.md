@@ -26,6 +26,7 @@ Installed by setup and bundled into the AppImage. "Direct" means listed in `requ
 | pypdf | 6.20.1 | BSD-3-Clause | yes | |
 | python-docx | 1.2.0 | MIT | yes | |
 | odfpy | 1.4.1 | Apache-2.0, or GPL-2.0-or-later, or LGPL-2.1-or-later (the files' headers); the metadata lists all three | yes | used under any of them |
+| reportlab | 5.1.0 | BSD-3-Clause (its metadata: "BSD license (see license.txt for details)") | yes | draws the cover-letter PDF; pulls in Pillow (MIT-CMU) and charset-normalizer (MIT) |
 | httpx | 0.28.1 | BSD-3-Clause | yes | |
 | anthropic | 1.13.0 | MIT | yes | vendors `httpx_aiohttp` (Apache-2.0, with its NOTICE) |
 | beautifulsoup4 | 4.15.0 | MIT | yes | |
@@ -42,6 +43,7 @@ Installed by setup and bundled into the AppImage. "Direct" means listed in `requ
 | anyio | 4.15.1 | MIT | | |
 | certifi | 2026.7.22 | MPL-2.0 | | Mozilla's CA certificates |
 | cffi | 2.1.1 | MIT-0 | | |
+| charset-normalizer | 3.5.2 | MIT | | pulled in by reportlab |
 | click | 8.5.0 | BSD-3-Clause | | |
 | defusedxml | 0.7.1 | PSF-2.0 | | |
 | docstring_parser | 0.18.0 | MIT | | |
@@ -53,6 +55,7 @@ Installed by setup and bundled into the AppImage. "Direct" means listed in `requ
 | idna | 3.20 | BSD-3-Clause | | |
 | jiter | 0.17.0 | MIT | | |
 | opentelemetry-api | 1.45.1 | Apache-2.0 | | |
+| pillow | 13.0.0 | MIT-CMU | | pulled in by reportlab (pictures in a letter template's PDF); its wheels bundle libjpeg, zlib, libtiff, freetype and others under their own permissive licences |
 | pycparser | 3.11 | BSD-3-Clause | | |
 | pydantic | 2.14.1 | MIT | | |
 | pydantic_core | 2.50.1 | MIT | | |

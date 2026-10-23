@@ -202,6 +202,9 @@ class Workspace(Base):
     # deletes its workspaces. (Databases from before accounts get this column without the foreign key, which
     # SQLite can't add later: delete an account's workspaces explicitly, don't rely on the cascade.)
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    # The letter template (a ``documents`` row of kind letter_template in this workspace) that cover-letter downloads
+    # use; NULL: the plain built-in layout. An id, so plaintext; cleared when that document goes (backend.docs).
+    letter_template_id = Column(Integer, nullable=True)
 
 
 def _workspace_fk():
@@ -496,7 +499,11 @@ class FitResult(Base):
 
 # preferences: what the candidate wants from a job (salary, place, kind of work...). Sent to the scorer,
 # the chat and title suggestions, but never counted as experience and never sent for a cover letter.
-DOCUMENT_KINDS = ("resume", "cover_letter", "preferences", "other")
+# letter_template: a .docx or .odt letterhead with a {{letter}} marker, which the cover-letter downloads are poured
+# into (backend/letter_files.py). Its file is what matters; its text is shown but never sent to the AI (every prompt
+# builder skips the kind, and ``use_for_scoring`` stays off: backend/docs.py).
+DOCUMENT_KINDS = ("resume", "cover_letter", "preferences", "other", "letter_template")
+LETTER_TEMPLATE_KIND = "letter_template"
 
 # Documents without a file (``stored_name`` is empty), told apart by ``filetype``:
 NOTE_FILETYPE = "note"          # written in the app: title in ``filename``, body in ``text``
@@ -740,7 +747,8 @@ class CoverLetter(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    text = Column(SealedText(), nullable=False, default="")
+    text = Column(SealedText(), nullable=False, default="")       # the current text (the draft, or the user's edits)
+    draft_text = Column(SealedText(), nullable=True)               # the model's draft as written (NULL: older letter)
     instructions = Column(SealedText(), nullable=True)
     edited = Column(Boolean, nullable=False, default=False, server_default="0")
     model = Column(String, nullable=True)

@@ -37,7 +37,11 @@ listed underneath.
 
 ![The job chat panel next to the job cards, answering how well the candidate fits](docs/screenshots/chat.png)
 
-**Cover letter drafts** from your own documents, to edit, copy or download as a Word file.
+**Cover letter drafts** from your own documents, to edit, copy, print or download as PDF, OpenDocument (.odt) or
+Word (.docx). Upload your own letterhead (a .docx or .odt with a `{{letter}}` marker in a paragraph of its own) as a
+**Letter template** on the Documents tab and the downloads are poured into it, in that paragraph's font; `{{date}}`,
+`{{company}}`, `{{job_title}}` and `{{name}}` are filled in too. The PDF uses the fonts on this computer and says
+which one stood in when the template asks for a font it doesn't have.
 
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
