@@ -7,10 +7,11 @@ from each package's own metadata (`License-Expression`, `License` and its licenc
 move within the bounds in `requirements.txt`. The other parts below are not Python packages; their licences are
 the projects' own statements, and for the AppImage's Python the libraries were checked in a built AppImage.
 
-Every licence below may be combined with GPLv3. Apache-2.0 is compatible with version 3 of the GPL (not with
-version 2), which is one reason the app is GPL-3.0 and not GPL-2.0. MPL-2.0 allows combination with the GPL (its
-section 3.3; none of these files is marked "Incompatible With Secondary Licenses"). LGPL-2.1 allows conveying the
-code under the GPL.
+Every licence below may be combined with GPLv3, with one exception explained under
+[Fonts shipped with the app](#fonts-shipped-with-the-app). Apache-2.0 is compatible with version 3 of the GPL (not
+with version 2), which is one reason the app is GPL-3.0 and not GPL-2.0. MPL-2.0 allows combination with the GPL
+(its section 3.3; none of these files is marked "Incompatible With Secondary Licenses"). LGPL-2.1 allows conveying
+the code under the GPL.
 
 ## Python packages (requirements.txt and what they pull in)
 
@@ -74,6 +75,22 @@ install's `site-packages`.
 | CPython 3.12 | PSF-2.0 | Windows setup installs it from python.org; the AppImage bundles a build from [python-build-standalone](https://github.com/astral-sh/python-build-standalone), which brings, among others, OpenSSL (Apache-2.0), SQLite (public domain), libffi, expat and mpdecimal (MIT/BSD-style), zlib, bzip2 and xz (permissive), libedit (BSD-3-Clause, not GNU readline) and Tcl/Tk (BSD-style) |
 | [appimagetool](https://github.com/AppImage/appimagetool) and the AppImage runtime | MIT (the runtime includes libraries such as libfuse and squashfuse under their own licences; see the [type2-runtime](https://github.com/AppImage/type2-runtime) project) | `installer/appimage.sh` downloads appimagetool to build the AppImage; the runtime it writes is the first part of every AppImage |
 | [PyInstaller](https://pyinstaller.org/) | GPL-2.0-or-later with the bootloader exception (programs it builds may carry any licence) | `release.yml` builds the Windows `.exe` files with it; each `.exe` carries the CPython 3.12 runtime it was built with (PSF-2.0, and the libraries named in the CPython row) |
+
+## Fonts shipped with the app
+
+| What | Licence | Where it comes in |
+| --- | --- | --- |
+| [Ubuntu Sans](https://design.ubuntu.com/font) (variable, `UbuntuSans[wdth,wght].woff2`) and Ubuntu Sans Mono (`UbuntuSansMono[wght].woff2`) | [Ubuntu Font Licence 1.0](https://ubuntu.com/legal/font-licence) | `frontend/fonts/`, loaded by `frontend/styles.css` for every theme but the Dyslexia ones, from the Vanilla redesign on; the licence text is beside them as `frontend/fonts/UFL-1.0.txt` |
+
+**The decision (October 2026).** The Ubuntu Font Licence is the one licence here that the Free Software Foundation
+does not list as GPL-compatible. It is used all the same, for this reason: the font files are data the browser
+downloads next to the pages, not part of the program. Nothing in JobHuntPA's code is derived from them and nothing
+in them is derived from JobHuntPA, so neither licence's terms spread to the other, and the GPL's "corresponding
+source" is JobHuntPA's own code, which is all here. The UFL's own conditions are met: the files are shipped
+unmodified, keep their original names and the Reserved Font Name "Ubuntu", and the licence text ships with them.
+Anyone redistributing JobHuntPA (the AppImage and the Windows installers included) passes both licences along. The
+same rule, stated in `CLAUDE.md`, applies to any font added later: a font file may come under a font licence (the
+UFL or the SIL Open Font License) when it is unmodified and its licence text sits beside it; code and scripts may not.
 
 ## Downloaded while the app runs, never shipped with it
 

@@ -27,7 +27,10 @@ working and be reflected in them**:
   passing. Publish by bumping `VERSION` and pushing tag `v<VERSION>` (`release.yml` builds and attaches the
   .exe files and the AppImage).
 - New dependency, bundled file or outside script → a line in `THIRD-PARTY.md` with its licence (from the
-  package's own metadata), which must be one GPL-3.0-only code may be combined with.
+  package's own metadata), which must be one GPL-3.0-only code may be combined with. The one exception is a font
+  file: it is data, not code, so it may ship under a font licence (Ubuntu Font Licence 1.0, SIL OFL 1.1) when it is
+  unmodified, keeps its name and has its licence text beside it in `frontend/fonts/`; `THIRD-PARTY.md` ("Fonts
+  shipped with the app") records the reasoning, and a new font gets a row there.
 
 ## Conventions
 

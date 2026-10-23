@@ -1381,7 +1381,8 @@ A full run takes about 45 minutes. The exit status is 1 when anything is reporte
 `.github/workflows/release.yml` builds JobHuntPA-Setup.exe, JobHuntPA.exe, the uninstaller, the reset tool and the
 AppImage and attaches them to a GitHub Release. The setup program downloads the source of its own tag, so the tag
 must exist on GitHub. The AppImage carries `LICENSE` and `THIRD-PARTY.md`; a new dependency gets a line in
-`THIRD-PARTY.md` (its licence from the package's own metadata, and one GPLv3 can be combined with).
+`THIRD-PARTY.md` (its licence from the package's own metadata, and one GPLv3 can be combined with; the fonts in
+`frontend/fonts/` are the one exception, and `THIRD-PARTY.md` says why).
 
 ## How a search run works
 
@@ -1467,4 +1468,6 @@ fitness for a particular purpose. See [`LICENSE`](LICENSE) for the full text.
 
 The browser extensions are separate programs in their own repositories, each with its own licence file. JobHuntPA
 uses other people's code and services under their own licences, all of which may be combined with GPLv3; they are
-listed in [`THIRD-PARTY.md`](THIRD-PARTY.md). Job ads, company research and map data belong to their owners.
+listed in [`THIRD-PARTY.md`](THIRD-PARTY.md). The Ubuntu fonts it ships are separate data files under the Ubuntu Font
+Licence, not part of the program; `THIRD-PARTY.md` explains that decision. Job ads, company research and map data
+belong to their owners.
