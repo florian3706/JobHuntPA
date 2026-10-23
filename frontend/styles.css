@@ -827,34 +827,8 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 .job-office { font-size: 13px; }
 .modal-html .offices { margin: 4px 0 0; padding-left: 18px; }
 
-/* Job page (job.html) */
 .brand-link { color: inherit; text-decoration: none; }
-.job-main { max-width: 1400px; }
-.job-head { margin-bottom: 16px; display: flex; flex-direction: column; gap: 10px; }
-.job-head[hidden] { display: none; }
-.job-page-title { margin: 4px 0; font-size: 2rem; line-height: 1.25; }
-@media (max-width: 640px) { .job-page-title, .auth-card h1 { font-size: 1.5rem; } }
-.job-page-title a { color: inherit; text-decoration: none; }
-.job-page-title a:hover { text-decoration: underline; }
-.job-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-@media (max-width: 1000px) { .job-cols { grid-template-columns: minmax(0, 1fr); } }
-.job-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.job-section h2 { margin: 0 0 10px; font-size: 1.5rem; line-height: 1.25; }
-.job-section .reqs { border-top: none; padding-top: 0; }
-.job-page .notice { font-size: .875rem; margin: 6px 0; } /* (the look: .p-notification--caution above) */
-.job-page .company-body { padding: 0; overflow: visible; }
-.job-ad .ad-text { white-space: pre-wrap; font-size: 1rem; line-height: 1.55; overflow-wrap: anywhere; }
-.office-form { margin: 8px 0; }
-.verdict-row { align-items: center; gap: 8px; }
-.office-cands { margin: 6px 0; font-size: 13px; }
-.office-cands p { margin: 0 0 6px; }
-.office-cands-ul .btn[aria-pressed="true"] { border-color: var(--accent-edge, var(--accent)); }
-.commute-links { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.commute-links a { color: var(--accent-text); overflow-wrap: anywhere; }
-.commute-title { margin: 14px 0 4px; font-size: 1rem; overflow-wrap: anywhere; }
-.gaps-title { font-size: 1rem; margin: 14px 0 4px; color: var(--danger); }
-.job-head .job-actions select { flex: 0 1 260px; }
-a.btn { text-decoration: none; }
+a.btn { text-decoration: none; display: inline-block; }
 
 /* Map tab: modes, legend, jobs in view */
 /* No overflow: hidden on the group, so the focus ring of either half isn't clipped. */
@@ -1519,3 +1493,174 @@ body[data-page="first-run"] .auth-main.auth-split { grid-template-columns: minma
 }
 @media print { .auth-page .p-navigation { display: none; } }
 .pin-fields .p-field, .pin-fields .pin-radius { display: flex; flex-direction: column; align-items: stretch; gap: .25rem; }
+/* ===== Job page (job.html, job.js): the sticky summary, the in-page tabs and their panels. =====
+   The components (p-card, p-tabs, p-status-label, p-button, p-notification, p-list, p-table, p-details, u-*) are the
+   shared rules above; only what is particular to this page is here, under jp-*. */
+html:has(body.job-page) { scroll-padding-top: calc(var(--jp-sticky-h, 0px) + 12px); } /* nothing scrolls in under the summary (WCAG 2.4.11) */
+body.job-page .app-header { position: static; } /* the summary is this page's sticky part */
+.job-page .jp-summary { background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 900; }
+.job-page .jp-summary__inner { position: relative; min-width: 0; max-width: 1240px; margin: 0 auto; padding: 12px 20px 8px; display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center; }
+.job-page .jp-summary__back { display: none; }
+.job-page .jp-summary__who { flex: 1 1 360px; min-width: 0; }
+.job-page .jp-summary__where { margin: 0; }
+.job-page .jp-summary__title { margin: 0; font-size: 24px; font-weight: 550; line-height: 1.25; overflow-wrap: anywhere; }
+.job-page .jp-summary__title a { color: inherit; text-decoration: none; }
+.job-page .jp-summary__title a:hover { text-decoration: underline; }
+.job-page .jp-summary__sub { margin: 2px 0 0; }
+.job-page .jp-sub__phone { display: none; }
+.job-page .jp-sub__excluded { color: var(--warn); }
+.job-page .jp-summary__labels, .job-page .jp-summary__actions, .job-page .jp-controls { gap: 8px; }
+.job-page .jp-status { width: 11rem; flex: 0 1 11rem; min-height: 36px; padding: 4px 8px; }
+.job-page .jp-short { display: none; }
+.job-page .jp-more { position: relative; }
+.job-page .jp-more__menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 950; min-width: 240px; background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow); padding: 4px; }
+.job-page .jp-more__list { gap: 0; margin: 0; }
+.job-page .jp-more__item { width: 100%; justify-content: flex-start; text-align: left; white-space: normal; }
+.job-page .jp-tabs { border-bottom: 0; }
+/* position: relative on the scrolling and clipped boxes keeps hidden text (visually-hidden is absolute) inside them. */
+.job-page .jp-tabs .p-tabs__list { position: relative; overflow-x: auto; scrollbar-width: thin; }
+.job-page .jp-tab-count { margin-left: 6px; }
+.job-page .jp-main { position: relative; max-width: 1240px; margin: 0 auto; padding: 20px; }
+.job-page .jp-panel:focus-visible { outline-offset: 4px; }
+.job-page .jp-grid { display: grid; gap: 20px; align-items: start; }
+.job-page .jp-grid--rail { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+.job-page .jp-grid--halves { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.job-page .jp-grid--ad { grid-template-columns: minmax(0, 1fr) minmax(280px, 380px); gap: 32px; }
+.job-page .jp-grid--chats { grid-template-columns: 280px minmax(0, 1fr); }
+.job-page .jp-stack, .job-page .jp-rail { gap: 20px; min-width: 0; }
+.job-page .jp-rail--ad { position: sticky; top: calc(var(--jp-sticky-h, 0px) + 16px); }
+.job-page .jp-card { gap: 12px; }
+.job-page .jp-card__head { margin: 0; }
+.job-page .jp-h2 { margin: 0; font-size: 20px; font-weight: 550; line-height: 1.25; overflow-wrap: anywhere; }
+.job-page .jp-h2--small { font-size: 16px; }
+.job-page .jp-h2--gap { color: var(--danger); }
+.job-page .jp-h2--match { color: var(--ok); }
+.job-page .jp-h2--upper { font-size: 12px; font-weight: 550; }
+.job-page .jp-h3 { margin: 0; font-size: 16px; font-weight: 550; }
+.job-page .jp-h3--gap { color: var(--danger); }
+.job-page .jp-h3--match { color: var(--ok); }
+.job-page .jp-lead { margin: 0; font-size: 17px; }
+.job-page .jp-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.job-page .jp-two__col { gap: 6px; }
+.job-page .jp-list { gap: 4px; margin: 0; }
+.job-page .jp-self-start { align-self: flex-start; white-space: normal; text-align: left; }
+.job-page .jp-ad__actions .p-button, .job-page .jp-next__row .p-button { white-space: normal; }
+.job-page .jp-inline-btn { padding: 0 4px; min-height: 24px; }
+.job-page .jp-next { gap: 0; margin: 0; }
+.job-page .jp-next__row { justify-content: space-between; flex-wrap: nowrap; padding: 8px 0; }
+.job-page .jp-facts { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.job-page .jp-fact dt { margin: 0; }
+.job-page .jp-fact dd { margin: 0; overflow-wrap: anywhere; }
+.job-page .jp-facts--rows .jp-fact { display: flex; justify-content: space-between; gap: 16px; }
+/* The rails' cards are disclosures: open cards on wide screens, folds above the content on narrow ones (job.js). */
+.job-page .jp-fold__summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; min-height: 32px; }
+.job-page .jp-fold__summary::-webkit-details-marker { display: none; }
+.job-page .jp-fold__summary::before { content: ""; width: 8px; height: 8px; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(-45deg); flex: none; margin: 0 6px 0 2px; }
+.job-page .jp-fold[open] > .jp-fold__summary::before { transform: rotate(45deg); }
+.job-page .jp-fold > :not(summary) { margin-top: 10px; }
+.job-page .jp-reqs { gap: 0; margin: 0; }
+.job-page .jp-req { gap: 4px; padding: 10px 0; }
+.job-page .jp-req__head { gap: 8px; }
+.job-page .jp-evidence { margin: 0; padding-left: 18px; }
+.job-page .jp-evidence__subs { color: var(--muted); padding-left: 16px; margin: 2px 0 0; }
+.job-page .jp-compare, .job-page .jp-others, .job-page .jp-source-list { gap: 6px; margin: 0; }
+.job-page .jp-compare__row { justify-content: space-between; flex-wrap: nowrap; gap: 8px; }
+.job-page .jp-compare__row a, .job-page .jp-source-list a { overflow-wrap: anywhere; }
+.job-page .jp-dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; }
+.job-page .jp-dl dt { font-weight: 550; }
+.job-page .jp-dl dd { margin: 0; overflow-wrap: anywhere; }
+.job-page .jp-offices { margin: 0; padding-left: 18px; }
+.job-page .jp-news { gap: 0; margin: 0; }
+.job-page .jp-news__item { gap: 4px; padding: 8px 0; }
+.job-page .jp-news__item p { margin: 0; }
+.job-page .jp-sources, .job-page .jp-sources a { overflow-wrap: anywhere; }
+.job-page .jp-ask { gap: 6px; margin: 0; }
+.job-page .jp-ask__btn { white-space: normal; text-align: left; justify-content: flex-start; padding-left: 0; }
+.job-page .jp-office__line { margin: 0; font-size: 17px; }
+.job-page .jp-office__list { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.job-page .jp-office__list legend { margin-bottom: 4px; padding: 0; }
+.job-page .jp-office__choice { align-items: flex-start; overflow-wrap: anywhere; }
+.job-page .jp-office__choice .p-radio { margin-top: 6px; }
+.job-page .jp-office__form { gap: 4px; }
+.job-page .jp-office__row { gap: 8px; }
+.job-page .jp-office__input { flex: 1 1 14rem; width: auto; }
+.job-page .jp-verdict { gap: 8px; }
+/* The pressed call: filled, with a tick in its text (aria-pressed says it too). */
+.job-page .jp-verdict .p-button[aria-pressed="true"] { background: var(--check, var(--accent)); color: var(--on-check, var(--on-accent)); border-color: var(--check, var(--accent)); }
+.job-page .jp-there { gap: 6px; margin: 0; }
+.job-page .jp-there__row { gap: 8px; flex-wrap: nowrap; align-items: flex-start; }
+.job-page .jp-there__row .p-status-label { flex: none; margin-top: 2px; }
+.job-page .jp-directions a, .job-page .jp-commute-list a { overflow-wrap: anywhere; }
+.job-page .jp-commute-list { gap: 4px; margin: 0; }
+/* The ad, annotated: a sentence the scorer tied a requirement to is underlined, and a word label follows it. */
+.job-page .jp-ad { display: flex; flex-direction: column; gap: 16px; max-width: 760px; min-width: 0; }
+.job-page .jp-ad__intro, .job-page .jp-ad__unplaced { margin: 0; }
+.job-page .jp-ad__unplaced { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+.job-page .jp-ad__text { white-space: pre-wrap; font-size: 17px; line-height: 1.6; overflow-wrap: anywhere; }
+.job-page .jp-mark { background: transparent; color: inherit; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; text-decoration-color: var(--ok); }
+.job-page .jp-mark--gap { text-decoration-color: var(--danger); }
+.job-page .jp-mark--both { text-decoration-color: var(--danger); text-decoration-style: double; }
+.job-page .jp-ad-label { text-decoration: none; vertical-align: middle; white-space: normal; }
+.job-page .jp-ad__actions { gap: 8px; }
+.job-page .jp-upload .upload-ad { margin-top: 8px; gap: 8px; }
+.job-page .jp-upload .upload-ad p, .job-page .jp-upload .upload-ad ol { margin: 0; }
+.job-page .jp-glance { gap: 4px; margin: 0; font-size: 15px; }
+.job-page .jp-glance__row { justify-content: space-between; flex-wrap: nowrap; gap: 8px; }
+.job-page .jp-glance__row a { overflow-wrap: anywhere; }
+/* Chats: the conversations beside the chat (a list on wide screens, a select on narrow ones). */
+.job-page .jp-chat-side { gap: 12px; }
+.job-page .jp-chat-pick { gap: 8px; flex-wrap: nowrap; display: none; }
+.job-page .jp-chat-pick .p-select { flex: 1; min-width: 0; min-height: 36px; padding: 4px 8px; }
+.job-page .jp-chat-threads { gap: 0; margin: 0; border: 1px solid var(--border); background: var(--card); }
+.job-page .jp-chat-threads li + li { border-top: 1px solid var(--border); }
+.job-page .chat-thread { font: inherit; display: block; width: 100%; text-align: left; padding: 10px 14px; background: none; border: 0; border-left: 3px solid transparent; color: inherit; cursor: pointer; }
+.job-page .chat-thread:hover { background: var(--accent-soft); }
+.job-page .chat-thread[aria-current="true"] { background: var(--accent-soft); border-left-color: var(--text); }
+.job-page .chat-thread__title { display: block; font-weight: 550; overflow-wrap: anywhere; }
+.job-page .chat-thread-none { padding: 10px 14px; }
+.job-page .jp-chat-note { margin: 0; }
+.job-page .jp-chat-starters { gap: 6px; }
+.job-page .jp-chat-starters .chat-starters { gap: 6px; }
+.job-page .jp-chat-starters .chat-starter { white-space: normal; text-align: left; padding-left: 0; }
+.job-page .jp-chat { display: flex; flex-direction: column; gap: 12px; min-height: 620px; }
+.job-page .jp-chat__head { margin: 0; }
+.job-page .jp-chat__messages { flex: 1; padding: 0; max-height: 70vh; }
+.job-page .jp-chat__form { border-top: 1px solid var(--border); padding: 12px 0 0; }
+.job-page .jp-chat__row { justify-content: space-between; }
+.job-page .jp-chat .chat-empty { margin: 0; }
+#panel-chats .chat-form textarea { min-height: 4rem; }
+/* The bottom action bar (phones): job.js moves the status, Letter and Chat controls into it. */
+.job-page .jp-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; background: var(--panel); border-top: 1px solid var(--border); padding: 12px 16px; display: flex; gap: 8px; align-items: center; }
+.job-page .jp-bar .jp-controls { width: 100%; flex-wrap: nowrap; }
+.job-page .jp-bar .jp-status { flex: 1 1 8rem; width: auto; min-width: 0; }
+@media (max-width: 899px) {
+  .job-page .jp-grid--rail, .job-page .jp-grid--halves, .job-page .jp-grid--ad, .job-page .jp-grid--chats { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .job-page .jp-rail { order: -1; gap: 12px; }
+  .job-page .jp-rail--ad { position: static; }
+  .job-page .jp-chat-pick { display: flex; }
+  .job-page .jp-chat-threads, .job-page .jp-chat-note { display: none; }
+  .job-page .jp-chat { min-height: 0; }
+}
+@media (max-width: 719px) {
+  .job-page .jp-summary { position: static; }
+  .job-page .jp-summary__inner { padding: 8px 16px; gap: 8px; flex-wrap: nowrap; }
+  .job-page .jp-summary__back { display: inline-flex; flex: none; padding-left: 4px; }
+  .job-page .jp-summary__who { flex: 1 1 0; }
+  .job-page .jp-summary__where, .job-page .jp-sub__wide, .job-page .jp-phone-hide, .job-page .jp-long { display: none; }
+  .job-page .jp-sub__phone, .job-page .jp-short { display: inline; }
+  /* One line each, cut with an ellipsis (the whole title is still there for screen readers). position: relative keeps
+     their hidden text inside the clipped box, so nothing widens the page. */
+  .job-page .jp-summary__title { position: relative; font-size: 17px; line-height: 24px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .job-page .jp-summary__title a { display: inline-block; min-height: 24px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+  .job-page .jp-summary__sub { position: relative; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .job-page .jp-summary__labels, .job-page .jp-summary__actions { flex: none; }
+  .job-page .jp-tabs .p-tabs__list { padding: 0 8px; }
+  .job-page .jp-main { padding: 16px 16px 96px; }
+  .job-page .jp-lead { font-size: 16px; }
+  .job-page .jp-next__row, .job-page .jp-glance__row, .job-page .jp-compare__row, .job-page .jp-there__row { flex-wrap: wrap; }
+}
+@media (max-width: 600px) { .job-page .jp-two { grid-template-columns: minmax(0, 1fr); } }
+@media (pointer: coarse) {
+  .job-page .jp-fold__summary, .job-page .chat-thread { min-height: 44px; }
+  .job-page .jp-ad-label, .job-page .jp-inline-btn { min-height: 24px; }
+}
