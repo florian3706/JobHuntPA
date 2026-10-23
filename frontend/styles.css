@@ -833,6 +833,7 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 .job-head { margin-bottom: 16px; display: flex; flex-direction: column; gap: 10px; }
 .job-head[hidden] { display: none; }
 .job-page-title { margin: 4px 0; font-size: 2rem; line-height: 1.25; }
+@media (max-width: 640px) { .job-page-title, .auth-card h1 { font-size: 1.5rem; } }
 .job-page-title a { color: inherit; text-decoration: none; }
 .job-page-title a:hover { text-decoration: underline; }
 .job-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
