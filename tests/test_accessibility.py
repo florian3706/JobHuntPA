@@ -239,7 +239,7 @@ class GeneratedMarkupTest(unittest.TestCase):
 
     def test_templates_label_their_controls(self):
         problems = []
-        for name in ("app.js", "job.js", "common.js", "auth.js", "welcome.js", "account.js", "server-settings.js",
+        for name in ("app.js", "job.js", "chat.js", "common.js", "auth.js", "welcome.js", "account.js", "server-settings.js",
                      "export.js", "restore.js", "background.js", "extension.js", "sources-bulk.js"):
             problems += self.check_file(name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
@@ -1093,7 +1093,10 @@ class GhostJobPagesTest(unittest.TestCase):
         self.assertIn('<div class="ratings">${scoreBadge(job)}${ghostMeter(job, ghostHref)}</div>', ratings)
         self.assertIn("${ratingsHtml(job)}", self.app)
         self.assertIn("${ratingsHtml(j)}", self.app)
-        self.assertIn("${ratingsHtml(job, '#ghost-title')}", self.job)  # on the job page it links to the explanation
+        # The job page's summary says both in words (fitLabelHtml, ghostLabelHtml); the rating links to the explanation.
+        self.assertIn('<span class="visually-hidden">Fit score </span>${fit.score}<span class="visually-hidden"> out of 100', self.job)
+        self.assertIn('href="#ghost-title" title="${esc(ghostHover(j))}">${esc(words)}<span class="visually-hidden">: why this rating</span>', self.job)
+        self.assertIn("const words = level ? ghostWords(j) : 'Real vacancy: likely';", self.job)
         self.assertIn('<h2 id="ghost-title" tabindex="-1">', self.job_html)  # ... which can take the focus
         self.assertRegex(self.css, r"\.ratings \{[^}]*flex-direction: column")
         for src in (self.app, self.job):
@@ -1143,7 +1146,8 @@ class GhostJobPagesTest(unittest.TestCase):
         for inside in ('id="ghost-why-title"', 'id="ghost-key-title"', "What to do", "A rating from the signs above"):
             self.assertGreater(fn.index(inside), details, inside)
         # The header's circle links to the section and opens the reasons.
-        self.assertIn("$('#job-head a.ghost-dot')?.addEventListener('click', () => { const why = $('#ghost-why'); if (why) why.open = true; });", self.job)
+        self.assertIn("$('#job-head a.jp-ghost-link')?.addEventListener('click', () => { const why = $('#ghost-why'); if (why) why.open = true; });", self.job)
+        self.assertIn("if (id === 'ghost-title') { const why = $('#ghost-why'); if (why) why.open = true; }", self.job)  # a #ghost-title link too
         self.assertRegex(self.css, r"\.ghost-details > summary \{[^}]*cursor: pointer")
         start = self.css.index("@media (pointer: coarse) {\n")
         self.assertIn(".ghost-details summary", self.css[start:self.css.index("\n}", start)])
@@ -1446,22 +1450,36 @@ class CommuteLinksMarkupTest(unittest.TestCase):
     def test_rows_and_offices_wrap_on_a_phone(self):
         self.assertRegex(self.css, r"\.start-row \{[^}]*flex-wrap: wrap")
         self.assertRegex(self.css, r"\.start-name \{[^}]*overflow-wrap: anywhere")
-        self.assertRegex(self.css, r"\.office-cands-ul \.btn \{[^}]*white-space: normal")
-        self.assertRegex(self.css, r"\.commute-links a \{[^}]*overflow-wrap: anywhere")
+        self.assertRegex(self.css, r"\.jp-office__choice \{[^}]*overflow-wrap: anywhere")
+        self.assertRegex(self.css, r"\.jp-directions a, \.job-page \.jp-commute-list a \{[^}]*overflow-wrap: anywhere")
 
-    def test_the_office_list_says_which_is_picked_in_words_and_state(self):
+    def test_the_office_list_is_a_group_of_radios_with_another_address(self):
         block = self.job[self.job.index("function officeListHtml"):self.job.index("function renderOffice")]
-        self.assertIn('aria-pressed="${picked}"', block)
-        self.assertIn('aria-describedby="office-cands-intro"', block)
+        self.assertIn('<fieldset class="jp-office__list">', block)
+        self.assertIn('<legend class="p-form-help-text" id="office-cands-intro">', block)
+        self.assertIn('<input class="p-radio" type="radio" name="office-choice" value="${i}" ${pickedIndex === i ? \'checked\' : \'\'} />', block)
         self.assertIn("${esc(o.address)}", block)  # the address is shown, not only a hover text
+        self.assertIn('value="other"', block)
+        self.assertIn("Another address", block)
+        office = self.job[self.job.index("function renderOffice"):self.job.index("function renderThere")]
+        self.assertIn('<label class="p-label" for="office-input">Office address or suburb</label>', office)
+        self.assertIn("if (r.value === 'other') { $('#office-input').focus(); return; }", office)
+        self.assertIn('aria-pressed="${job.location_verdict === \'ok\'}"', office)
+        self.assertIn('aria-pressed="${job.location_verdict === \'too_far\'}"', office)
+        self.assertRegex(self.css, r"\.jp-verdict \.p-button\[aria-pressed=\"true\"\] \{")
 
     def test_the_links_say_where_they_go_and_that_they_open_a_new_tab(self):
-        block = self.job[self.job.index("function commuteLink"):self.job.index("async function loadCommute")]
+        block = self.job[self.job.index("function commuteLink"):self.job.index("function commuteBriefHtml")]
         self.assertIn("a.insertAdjacentHTML('beforeend', NEW_TAB);", block)
         self.assertIn("`${TRAVEL_TEXT[mode] || 'Directions'} from ${start.label}`", block)
-        load = self.job[self.job.index("async function loadCommute"):]
-        self.assertIn("list.setAttribute('aria-labelledby', 'commute-links-title');", load)
+        # In the directions table the starting point is the row's header; the link keeps it as hidden text.
+        self.assertIn('<span class="visually-hidden"> from ${esc(start.label)}, in Google Maps</span>', block)
+        load = self.job[self.job.index("async function loadCommute"):self.job.index("/* ---------- The ad, annotated")]
+        self.assertIn("table.setAttribute('aria-labelledby', 'commute-links-title');", load)
         self.assertIn('id="commute-links-title"', load)
+        self.assertIn('<th scope="col">From</th>', load)
+        self.assertIn("th.scope = 'row';", load)
+        self.assertIn("td.textContent = 'Not set';", load)  # a missing way of travelling is said, not left blank
 
 
 class TasksTrayTest(unittest.TestCase):
@@ -1606,3 +1624,144 @@ class FirstRunStepsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JobPageTabsTest(unittest.TestCase):
+    """The job page (job.html, job.js): a sticky summary over in-page tabs (WAI-ARIA tabs: one tab list, arrow keys,
+    the hash remembers the tab), gaps before matches wherever requirements are listed, the ad annotated with word
+    labels that link both ways, the chat shared with the dashboard through chat.js, and a bottom action bar on phones."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (FRONTEND / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.html, cls.js, cls.chat, cls.app = read("job.html"), read("job.js"), read("chat.js"), read("app.js")
+        cls.index, cls.css = read("index.html"), read("styles.css")
+        cls.page = parse("job.html")
+        cls.tabs = [n for n in cls.page.nodes if n["attrs"].get("role") == "tab"]
+        cls.panels = {n["attrs"]["id"]: n for n in cls.page.nodes if n["attrs"].get("role") == "tabpanel"}
+
+    def test_one_tab_list_of_six_tabs_each_controlling_a_panel_that_names_it(self):
+        lists = [n for n in self.page.nodes if n["attrs"].get("role") == "tablist"]
+        self.assertEqual(len(lists), 1)
+        self.assertEqual(lists[0]["attrs"].get("aria-label"), "Sections of this job")
+        self.assertEqual([" ".join(t["text"].split()) for t in self.tabs], ["Overview", "Fit", "Company", "Commute", "The ad", "Chats"])
+        for tab in self.tabs:
+            a = tab["attrs"]
+            self.assertEqual(tab["tag"], "button")
+            self.assertEqual(a.get("type"), "button")
+            panel = self.panels.get(a.get("aria-controls"))
+            self.assertIsNotNone(panel, f"{a['id']} controls no panel")
+            self.assertEqual(panel["attrs"].get("aria-labelledby"), a["id"])
+            self.assertEqual(panel["attrs"].get("tabindex"), "-1")  # focus can land in a panel opened from a link
+            selected = a.get("aria-selected") == "true"
+            self.assertEqual(selected, a["id"] == "tab-overview")
+            self.assertEqual("hidden" in panel["attrs"], not selected)
+            if not selected:
+                self.assertEqual(a.get("tabindex"), "-1")  # one tab stop: the arrow keys move between tabs
+        self.assertEqual(len(self.panels), 6)
+
+    def test_arrow_keys_and_the_hash(self):
+        tabs = self.js[self.js.index("function initTabs()"):self.js.index("/* ---------- Overview")]
+        self.assertIn("const keys = { ArrowRight: 1, ArrowLeft: -1, Home: 0, End: 0 };", tabs)
+        self.assertIn("window.addEventListener('hashchange', () => applyHash());", tabs)
+        select = self.js[self.js.index("function selectTab("):self.js.index("function tabOf(")]
+        self.assertIn("tab.setAttribute('aria-selected', String(on));", select)
+        self.assertIn("tab.tabIndex = on ? 0 : -1;", select)
+        self.assertIn("panel.hidden = !on;", select)
+        self.assertIn("history.replaceState(null, '', `#${name}`)", select)
+        self.assertIn("if (focus === 'tab') byId(`tab-${name}`).focus();", select)
+        self.assertIn("else if (focus === 'panel') byId(`panel-${name}`).focus({ preventScroll: true });", select)
+        hash_ = self.js[self.js.index("function applyHash("):self.js.index("function initTabs()")]
+        self.assertIn("if (TABS.includes(id)) { selectTab(id, { hash: false, focus }); return; }", hash_)
+        self.assertIn("const tab = tabOf(el);", hash_)  # an id inside a tab opens that tab
+        self.assertIn("el.focus({ preventScroll: true });", hash_)
+        self.assertIn("applyHash({ focus: null });", self.js)  # at load: no focus is moved
+
+    def test_gaps_come_before_matches_everywhere(self):
+        groups = self.js[self.js.index("function requirementGroups"):self.js.index("/* The fit score as a status label")]
+        self.assertIn("gaps: [...unmatched.sort(mustFirst), ...notes], matched:", groups)
+        overview = self.js[self.js.index("function renderVerdict"):self.js.index("/* ---------- is this a real vacancy?")]
+        self.assertLess(overview.index("Gaps: what to prepare for"), overview.index("Matched: what to lean on"))
+        fit = self.js[self.js.index("function renderFit()"):self.js.index("function renderFitHow")]
+        self.assertLess(fit.index('id="gaps-title"'), fit.index('id="matched-title"'))
+        glance = self.js[self.js.index("function renderGlance"):self.js.index("/* Upload the full ad")]
+        self.assertLess(glance.index("Gaps: what to prepare for"), glance.index("Matched: what to lean on"))
+        ad = self.js[self.js.index("function renderAd()"):self.js.index("function renderGlance")]
+        self.assertIn("const ordered = [...gaps, ...matched];", ad)
+        company = self.js[self.js.index("function renderCompany()"):self.js.index("function renderOtherJobs")]
+        self.assertLess(company.index("Often criticised"), company.index("Often praised"))
+
+    def test_the_ad_labels_are_links_with_words_anchored_both_ways(self):
+        lab = self.js[self.js.index("function adLabelHtml"):self.js.index("function renderAd()")]
+        self.assertIn("const words = `${kind === 'gap' ? 'Gap' : 'Matched'}${r.must_have === false ? ', nice to have' : ''}`;", lab)
+        self.assertIn('<a class="p-status-label p-status-label--${kind === \'gap\' ? \'negative\' : \'positive\'} jp-ad-label" href="#jp-rail-r${r.i}"', lab)
+        self.assertIn('<span class="visually-hidden">: ${esc(r.point)}. Go to it in Fit at a glance</span>', lab)
+        ad = self.js[self.js.index("function renderAd()"):self.js.index("function renderGlance")]
+        self.assertIn('<mark class="jp-mark ${cls}" id="jp-ad-r${rs[0].i}" tabindex="-1">', ad)
+        self.assertIn("Not tied to one sentence: ", ad)  # a requirement no sentence matches: labelled under the heading
+        glance = self.js[self.js.index("function renderGlance"):self.js.index("/* Upload the full ad")]
+        self.assertIn('<li id="jp-rail-r${r.i}" class="u-row jp-glance__row"><a href="#jp-ad-r${r.i}">', glance)
+        # The underline is a second cue only: the word label carries the meaning (and a mark is never colour alone).
+        self.assertRegex(self.css, r"\.jp-mark--gap \{[^}]*text-decoration-color: var\(--danger\)")
+
+    def test_the_summary_says_the_score_mode_and_rating_in_words(self):
+        head = self.js[self.js.index("function renderHead()"):self.js.index("function initStatus()")]
+        self.assertIn("fitLabelHtml(job)", head)
+        self.assertIn('<span class="visually-hidden">Work mode: </span>${esc(modeWords(job))}', head)
+        self.assertIn("ghostLabelHtml(job)", head)
+        self.assertIn('<label class="u-sr" for="job-status">Application status</label>', self.html)
+        self.assertIn('<h1 id="job-title" class="jp-summary__title">', self.html)
+        self.assertEqual(self.html.count("<h1"), 1)
+        # The More menu is a disclosure that Escape closes, returning focus to its button.
+        more = self.js[self.js.index("function initMore()"):self.js.index("function closeMore()")]
+        self.assertIn("btn.setAttribute('aria-expanded', String(yes));", more)
+        self.assertIn("if (e.key === 'Escape') { e.preventDefault(); open(false); btn.focus(); }", more)
+        self.assertIn('aria-expanded="false" aria-controls="job-more-menu"', self.html)
+
+    def test_phones_get_a_bottom_action_bar_and_folded_rails(self):
+        self.assertIn('<div id="job-bar" class="jp-bar" role="region" aria-label="Actions for this job" hidden></div>', self.html)
+        place = self.js[self.js.index("function placeControls()"):self.js.index("/* The rails fold")]
+        self.assertIn("if (phone.matches) { bar.appendChild(controls); bar.hidden = false; }", place)
+        self.assertIn("const phone = window.matchMedia('(max-width: 719px)');", self.js)
+        self.assertRegex(self.css, r"@media \(max-width: 719px\) \{[^@]*\.job-page \.jp-summary \{ position: static; \}")
+        self.assertRegex(self.css, r"\.job-page \.jp-summary \{[^}]*position: sticky")
+        self.assertRegex(self.css, r"\.job-page \.jp-tabs \.p-tabs__list \{[^}]*overflow-x: auto")
+        folds = self.js[self.js.index("function setFolds()"):self.js.index("/* ---------- tabs")]
+        self.assertIn("d.open = narrow.matches ? d.dataset.phoneOpen === 'true' : true;", folds)
+        self.assertGreaterEqual(self.html.count('class="p-card jp-fold"'), 6)
+        start = self.css.index("@media (pointer: coarse) {\n  .job-page .jp-fold__summary")
+        self.assertIn("min-height: 44px", self.css[start:self.css.index("\n}", start)])
+
+    def test_live_regions_and_headings_per_card(self):
+        self.assertIn('<p id="company-status" class="u-small u-muted" role="status"></p>', self.html)
+        self.assertIn('<span id="chat-status" class="muted" role="status"></span>', self.html)
+        for ident in ("verdict-title", "next-title", "facts-title", "office-title", "directions-title", "ad-title", "chat-title"):
+            self.assertIn(f'<h2 id="{ident}"', self.html)
+        built = self.js[self.js.index("function renderFit()"):self.js.index("function renderOtherJobs")]
+        for h2 in ('<h2 id="fit-title"', '<h2 id="gaps-title"', '<h2 id="matched-title"', '<h2 id="co-title"', '<h2 id="sentiment-title"', '<h2 id="news-title"'):
+            self.assertIn(h2, built)
+
+    def test_the_chat_is_one_module_for_both_pages(self):
+        for page in (self.index, self.html):
+            self.assertLess(page.index('src="./common.js"'), page.index('src="./chat.js"'))
+        self.assertLess(self.index.index('src="./chat.js"'), self.index.index('src="./app.js"'))
+        self.assertLess(self.html.index('src="./chat.js"'), self.html.index('src="./job.js"'))
+        for fn in ("function openChat(", "function closeChat(", "function renderChatMessages(", "function sendChat(", "function initChat("):
+            self.assertIn(fn, self.chat)
+            self.assertNotIn(fn, self.app)
+        self.assertIn("initChat({ findJob: (id) => state.jobs.find((j) => j.id === id), showJob: showJobCard, panel: true });", self.app)
+        self.assertIn("initChat({ findJob: (id) => (id === job.id ? job : null) });", self.js)
+        for ident in ("chat-title", "chat-threads", "chat-new", "chat-delete", "chat-messages", "chat-form", "chat-input", "chat-web", "chat-status", "chat-send"):
+            for page in (self.index, self.html):
+                self.assertIn(f'id="{ident}"', page, ident)
+        for call in ("/api/chats?job_ids=", "`/api/chats/${id}`", "'/api/chats'", "`/api/chats/${c.threadId}/messages`", "{ method: 'DELETE' }"):
+            self.assertIn(call, self.chat)
+        self.assertIn('<input id="chat-web" class="p-switch" type="checkbox" role="switch" />', self.html)
+        self.assertIn('<ul id="chat-thread-list" class="p-list jp-chat-threads" aria-label="Earlier chats about this job"></ul>', self.html)
+
+    def test_no_inline_styles_handlers_or_colour_only_meaning(self):
+        for name, src in (("job.js", self.js), ("chat.js", self.chat), ("job.html", self.html)):
+            self.assertNotRegex(src, r"""\sstyle\s*=\s*["']""", name)
+            self.assertNotRegex(src, r"""\son[a-z]+\s*=\s*["']""", name)
+        self.assertIn("}Location OK</button>", self.js)  # the calls on the location are words
+        self.assertIn("✓ </span>' : ''}Location OK", self.js)  # and the pressed one carries a tick in its text

@@ -24,9 +24,11 @@ Australian job sites (SEEK, APSJobs) and any company's careers page.
 
 ## A quick look
 
-**A job's full page** (*Open ↗* on any job): the office with links to Google Maps directions from
-your starting points, how well the job fits your CV and where the gaps are, what company research
-found about the employer, and the whole ad.
+**A job's full page** (*Open ↗* on any job): a summary that stays at the top (the fit score, the work mode,
+whether it looks like a real vacancy, the status, the cover letter and the chat), then tabs: *Overview*,
+*Fit* (every requirement, the gaps before the matches), *Company*, *Commute* (the office to pick and Google Maps
+directions from your starting points), *The ad* (with a *Gap* or *Matched* label after the sentence each
+requirement came from) and *Chats*.
 
 <img src="docs/screenshots/job-page.png" alt="A job's full page: the office and the commute, fit requirements and gaps, company profile and the ad" width="760">
 
@@ -741,9 +743,16 @@ limits on searches. The AI features use the provider and key set on the Settings
   (*Same job: merge* / *Different jobs*). Your status, cover letter and score carry over to the
   merged card. *split* (under *Also on*, or beside the employer's site) undoes a merge; **Merge as
   one job** (tick two or more jobs) merges ads the app missed.
-- **Job page**: *Open ↗* on a job opens it in a new tab: the whole ad, the fit and gaps, the office
-  (with every office company research found for the employer, to pick from), the company profile,
-  and [commute links](#commute-links) to Google Maps.
+- **Job page**: *Open ↗* on a job opens it in a new tab. A summary stays at the top (score, work mode, the
+  ghost-job rating, the status menu, *Cover letter*, *Chat* and *More*: rescore, hide, open on the source site);
+  under it, tabs you can link to (`#fit`, `#company`, …): **Overview** (the verdict, gaps then matches, is it a
+  real vacancy, next steps, key facts), **Fit** (every requirement with its evidence, gaps first), **Company**
+  (the profile, sentiment with criticisms before praise, news, sources, other jobs at the company), **Commute**
+  (every office company research found for the employer, to pick from, your call on the location, and
+  [directions](#commute-links) to Google Maps as a table), **The ad** (the whole ad, each sentence a requirement
+  came from labelled *Gap* or *Matched*, linking to a rail that links back) and **Chats** (the same chat as on
+  the dashboard, with the earlier conversations beside it). On a phone the tabs scroll sideways and the status,
+  *Letter* and *Chat* sit in a bar at the bottom.
 - **Map**: two modes. **Jobs** shows the jobs your Jobs tab filters show, with your pins and their
   radii, and lists the jobs in view under the map (click a dot, or **Show** in the list, to see a
   place's jobs; **Open ↗** for a job's full page in a new tab); nothing can be changed by accident.
@@ -782,8 +791,8 @@ rating made from them, and never hides, scores or ranks a job down because of th
 
 <img src="docs/screenshots/ghost-job.png" alt="A job card with its fit score, 63, and under it a ghost and a red circle. Possible ghost job (several signs): why? is opened: the ad mentions a talent pool and has been open for 68 days" width="397">
 
-- **The circle:** under its fit score (🎯), every job card, the map list and the job page show 👻 and a
-  coloured circle:
+- **The circle:** under its fit score (🎯), every job card and the map list show 👻 and a coloured circle
+  (the job page says the same in words, as a label in its summary that links to the explanation):
   - 🟢 no signs, or only one or two weak ones;
   - 🟡 some signs: the card adds **Possible ghost job (some signs): why?**, which lists them;
   - 🔴 one strong sign, or several moderate ones (**several signs**).

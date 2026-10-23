@@ -34,7 +34,6 @@ const state = {
   titleSuggestions: [],
   officeSlack: 0, // temporary extra office days allowed on the Jobs tab (never saved)
   dupes: { suggested: [], auto_merged: [] }, // duplicate ads to check
-  chat: null, // the open job chat: { jobIds, jobs, threadId, threads, messages, busy }
   // Documents tab: the list, which rows are open, their texts, unsaved edits ("id:field"), status lines
   // ("id:area") and actions under way ("id:act"), all for workspace `ws`.
   docs: { ws: null, list: [], open: new Set(), text: new Map(), drafts: new Map(), status: new Map(), busy: new Set() },
@@ -953,172 +952,9 @@ async function splitCopy(id) {
   } catch (e) { toast(`Split failed: ${e.message}`, 'err'); }
 }
 
-/* ================= JOB CHAT ================= */
-const CHAT_MAX_JOBS = 12;
-const CHAT_STARTERS = {
-  one: ['What would I actually be doing day to day?', 'Honestly, how well do I fit? What are my biggest gaps?',
-    'How should I address my gaps in an interview?', 'What should I ask them in an interview?'],
-  many: ['Compare these jobs for me.', 'Which should I apply to first, and why?', 'Which one fits my experience best?'],
-};
-let chatToken = 0; // bumps when the panel switches jobs, so late answers for old jobs are dropped
-let chatReturn = null; // finds the control that opened the chat, for focus when it closes
-
-/* Beside the cards on wide screens the chat is a complementary region; on narrower screens it covers the
-   page, so there it is a modal dialog: the page behind is inert and Escape closes it (WCAG 2.4.3, 2.4.11). */
-const chatCovers = window.matchMedia('(max-width: 1099px)');
-function syncChatMode() {
-  const panel = $('#chat-panel');
-  const modal = !panel.hidden && chatCovers.matches;
-  panel.setAttribute('role', modal ? 'dialog' : 'complementary');
-  if (modal) panel.setAttribute('aria-modal', 'true'); else panel.removeAttribute('aria-modal');
-  ['.skip-link', '.app-header', '#main'].forEach((sel) => { const el = $(sel); if (el) el.inert = modal; });
-}
-
-function jobLabel(j) { return { id: j.id, title: j.title, company: j.company, url: j.url }; }
-
-async function openChat(ids) {
-  const jobIds = [...new Set(ids)].sort((a, b) => a - b);
-  if (!jobIds.length) return;
-  if (jobIds.length > CHAT_MAX_JOBS) { toast(`Chat about up to ${CHAT_MAX_JOBS} jobs at a time; select fewer.`, 'err'); return; }
-  const token = ++chatToken;
-  state.chat = {
-    jobIds, threadId: null, threads: [], messages: [], busy: false,
-    jobs: jobIds.map((id) => state.jobs.find((j) => j.id === id)).filter(Boolean).map(jobLabel),
-  };
-  if ($('#chat-panel').hidden) chatReturn = focusFinder(document.activeElement);
-  $('#chat-panel').hidden = false;
-  document.body.classList.add('chat-open');
-  syncChatMode();
-  setChatStatus('');
-  renderChat();
-  $('#chat-input').focus();
-  try {
-    const threads = await api(`/api/chats?job_ids=${jobIds.join(',')}`);
-    if (token !== chatToken) return;
-    state.chat.threads = threads;
-    if (threads.length) await loadChatThread(threads[0].id, token);
-    else renderChat();
-  } catch (e) { if (token === chatToken) setChatStatus(`Could not load earlier chats: ${e.message}`, true); }
-}
-
-async function loadChatThread(id, token = chatToken) {
-  const t = await api(`/api/chats/${id}`);
-  if (token !== chatToken) return;
-  applyThread(t);
-  renderChat();
-}
-
-function applyThread(t) {
-  const c = state.chat;
-  c.threadId = t.id;
-  c.messages = t.messages;
-  if (t.jobs.length) c.jobs = t.jobs;
-  const summary = { id: t.id, title: t.title, updated_at: t.updated_at };
-  c.threads = [summary, ...c.threads.filter((x) => x.id !== t.id)];
-}
-
-function closeChat({ restoreFocus = true } = {}) {
-  const wasOpen = !$('#chat-panel').hidden;
-  const hadFocus = $('#chat-panel').contains(document.activeElement);
-  chatToken++;
-  state.chat = null;
-  $('#chat-panel').hidden = true;
-  document.body.classList.remove('chat-open');
-  syncChatMode();
-  if (wasOpen && restoreFocus && hadFocus) (chatReturn?.() || $('#main')).focus();
-  chatReturn = null;
-}
-
-function setChatStatus(text, isError = false) {
-  const el = $('#chat-status');
-  el.textContent = text;
-  el.classList.toggle('err-text', isError);
-}
-
-function renderChat() {
-  const c = state.chat;
-  if (!c) return;
-  const n = c.jobIds.length;
-  $('#chat-title').textContent = n === 1 ? 'Ask about this job' : `Ask about ${n} jobs`;
-  $('#chat-input').placeholder = `Ask anything about ${n === 1 ? 'this job' : 'these jobs'}…`;
-  $('#chat-jobs').innerHTML = c.jobs.map((j, i) => `<li><button class="chat-job" type="button" data-id="${j.id}" title="Show this job's card">
-    ${n > 1 ? `<strong>${i + 1}</strong> ` : ''}${esc(j.title || '—')} · ${esc(j.company || '—')}<span class="visually-hidden">: show its card</span></button></li>`).join('');
-  $$('#chat-jobs .chat-job').forEach((b) => b.addEventListener('click', () => showJobCard(Number(b.dataset.id))));
-  const sel = $('#chat-threads');
-  const opts = c.threads.map((t) => `<option value="${t.id}" ${t.id === c.threadId ? 'selected' : ''}>${esc(t.title || 'Chat')} · ${esc(fmtDate(t.updated_at).split(',')[0])}</option>`);
-  if (!c.threadId) opts.unshift('<option value="" selected>New chat</option>');
-  sel.innerHTML = opts.join('');
-  sel.disabled = c.busy || c.threads.length === 0;
-  // A button that is about to be hidden or disabled hands keyboard focus to the question box.
-  const strand = [$('#chat-delete'), $('#chat-new'), $('#chat-send'), sel].includes(document.activeElement)
-    || $('#chat-messages').contains(document.activeElement);
-  $('#chat-delete').hidden = !c.threadId;
-  $('#chat-new').disabled = c.busy || !c.threadId;
-  $('#chat-send').disabled = c.busy;
-  renderChatMessages();
-  if (strand && (!document.activeElement || document.activeElement === document.body || document.activeElement.disabled
-      || document.activeElement.closest('[hidden]'))) $('#chat-input').focus();
-}
-
-function renderChatMessages() {
-  const c = state.chat;
-  const box = $('#chat-messages');
-  if (!c.messages.length && !c.busy) {
-    const starters = CHAT_STARTERS[c.jobIds.length === 1 ? 'one' : 'many'];
-    box.innerHTML = `<p class="muted" id="chat-starters-intro">The model sees ${c.jobIds.length === 1 ? 'the ad' : 'each ad'}, your documents, the fit assessment,
-      the company info and any cover-letter draft. Try:</p>
-      <ul class="chat-starters" aria-labelledby="chat-starters-intro">${starters.map((q) => `<li><button class="btn btn-ghost btn-sm chat-starter" type="button">${esc(q)}</button></li>`).join('')}</ul>`;
-    box.querySelectorAll('.chat-starter').forEach((b) => b.addEventListener('click', () => sendChat(b.textContent)));
-    return;
-  }
-  box.innerHTML = c.messages.map((m) => {
-    if (m.role === 'user') {
-      return `<div class="chat-msg user"><span class="visually-hidden">You asked: </span>${esc(m.content)}${
-        m.web_search ? '<div class="chat-meta"><span aria-hidden="true">🌐 </span>with web search</div>' : ''}</div>`;
-    }
-    const links = m.sources || [];
-    const sources = links.length
-      ? `<div class="chat-sources"><span class="muted">${links.some((x) => x.cited) ? 'Sources:' : 'Pages the web search found:'}</span>
-          ${links.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title || x.url)}</a>`).join(' · ')}</div>` : '';
-    return `<div class="chat-msg assistant"><span class="visually-hidden">Answer: </span>${mdToHtml(m.content)}${sources}
-      <div class="chat-meta">${esc(m.model || '')}${m.created_at ? ` · ${esc(fmtDate(m.created_at))}` : ''}
-        <button class="link chat-copy" type="button" data-id="${m.id}">Copy<span class="visually-hidden"> this answer</span></button></div></div>`;
-  }).join('') + (c.busy ? '<div class="chat-msg assistant chat-thinking" aria-hidden="true"><span></span><span></span><span></span></div>' : '');
-  box.querySelectorAll('.chat-copy').forEach((b) => b.addEventListener('click', async () => {
-    const msg = c.messages.find((m) => String(m.id) === b.dataset.id);
-    try { await navigator.clipboard.writeText(msg.content); toast('Copied', 'ok', 1500); } catch { toast('Could not copy', 'err', 2500); }
-  }));
-  box.scrollTop = box.scrollHeight;
-}
-
-async function sendChat(text) {
-  const c = state.chat;
-  text = String(text || '').trim();
-  if (!c || !text || c.busy) return;
-  const web = $('#chat-web').checked;
-  const token = chatToken;
-  c.busy = true;
-  c.messages.push({ role: 'user', content: text, web_search: web });
-  $('#chat-input').value = '';
-  setChatStatus(web ? 'Searching the web… this can take a minute or two.' : 'Thinking…');
-  renderChat();
-  try {
-    const body = JSON.stringify(c.threadId ? { message: text, web_search: web } : { job_ids: c.jobIds, message: text, web_search: web });
-    const t = await api(c.threadId ? `/api/chats/${c.threadId}/messages` : '/api/chats', { method: 'POST', body });
-    if (token !== chatToken) return;
-    applyThread(t);
-    setChatStatus('');
-    announce('Answer received: it is the last message in the conversation.');
-  } catch (e) {
-    if (token !== chatToken) return;
-    c.messages.pop();
-    if (!$('#chat-input').value) $('#chat-input').value = text; // nothing typed is lost (WCAG 3.3.7)
-    setChatStatus(`Failed: ${e.message}`, true);
-  }
-  c.busy = false;
-  renderChat();
-}
-
+/* ================= JOB CHAT =================
+   The chat itself (its state, API calls and controls) is chat.js, shared with the job page. This page
+   provides the job labels and the card finder (initChat below) and keeps the card-flashing helper. */
 function showJobCard(id) {
   const card = document.querySelector(`.job-card[data-job-id="${id}"]`);
   if (!card || card.closest('[hidden]')) { toast('That job is hidden by the current filters, or the Jobs tab is closed.', '', 4000); return; }
@@ -1128,42 +964,6 @@ function showJobCard(id) {
   card.classList.remove('flash');
   void card.offsetWidth;
   card.classList.add('flash');
-}
-
-function initChat() {
-  $('#chat-close').addEventListener('click', () => closeChat());
-  $('#chat-panel').addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); closeChat(); }
-  });
-  chatCovers.addEventListener('change', syncChatMode);
-  $('#chat-form').addEventListener('submit', (e) => { e.preventDefault(); sendChat($('#chat-input').value); });
-  $('#chat-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat($('#chat-input').value); }
-  });
-  $('#chat-new').addEventListener('click', () => {
-    const c = state.chat;
-    if (!c || c.busy) return;
-    c.threadId = null;
-    c.messages = [];
-    setChatStatus('');
-    renderChat();
-    $('#chat-input').focus();
-  });
-  $('#chat-threads').addEventListener('change', async (e) => {
-    if (!e.target.value) return;
-    try { await loadChatThread(Number(e.target.value)); } catch (err) { setChatStatus(`Could not load that chat: ${err.message}`, true); }
-  });
-  $('#chat-delete').addEventListener('click', async () => {
-    const c = state.chat;
-    if (!c?.threadId || !confirm('Delete this conversation?')) return;
-    try {
-      await api(`/api/chats/${c.threadId}`, { method: 'DELETE' });
-      c.threads = c.threads.filter((t) => t.id !== c.threadId);
-      c.threadId = null;
-      c.messages = [];
-      if (c.threads.length) await loadChatThread(c.threads[0].id); else renderChat();
-    } catch (e) { setChatStatus(`Delete failed: ${e.message}`, true); }
-  });
 }
 
 /* ================= JOB TITLE SUGGESTIONS ================= */
@@ -2677,7 +2477,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSetup();
   initSchedule();
   initDocs();
-  initChat();
+  initChat({ findJob: (id) => state.jobs.find((j) => j.id === id), showJob: showJobCard, panel: true });
   initModal();
   initTheme();
   $('#theme-picker-slot').replaceWith(createThemePicker({ legend: 'Theme', onChange: saveAccountTheme }));
