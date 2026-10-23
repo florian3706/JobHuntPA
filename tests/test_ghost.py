@@ -492,12 +492,14 @@ class Plant:
 
     @staticmethod
     def posting(db, company, title, *, first=0, last=0, since=None, closed=None, text=None, where="Sydney NSW", posted=None,
-                source="seek", hash_of=None, url=None) -> Posting:
+                source="seek", hash_of=None, url=None, now=NOW) -> Posting:
+        """``first``, ``last``, ``since`` and ``closed`` are days before ``now``: the module's fixed clock, or the real one
+        (``datetime.utcnow()``) for a test whose code path reads the real date, such as the export."""
         text = text if text is not None else AD + f" Reference {unique('ref')}."  # (an ad of its own: equal text is the same ad)
         p = Posting(url=url or f"https://ads.example/{unique('p')}", source=source, company=company, title=title,
                     location_text=where, description=text, detail_status="full", rev=1, posted_at=posted,
-                    first_seen=days_ago(first), listed_since=days_ago(first if since is None else since),
-                    last_listed_at=days_ago(last), closed_at=None if closed is None else days_ago(closed))
+                    first_seen=days_ago(first, now), listed_since=days_ago(first if since is None else since, now),
+                    last_listed_at=days_ago(last, now), closed_at=None if closed is None else days_ago(closed, now))
         pool.derive(p)
         if hash_of is not None:
             p.description_hash = hash_of
@@ -1239,9 +1241,12 @@ class ExportTest(unittest.TestCase, Plant):
         with helpers.as_account(acct):
             db = SessionLocal()
             try:
+                # The export reads the real clock, so these dates are relative to it: the flagged ad has been open for
+                # 100 days and was listed today, which is what "Open for" needs.
+                today = datetime.utcnow()
                 flagged = self.job(db, acct.workspace_id, self.posting(db, unique("Expco"), "Project Manager", first=100,
-                                                                      text="Join our talent pool. " + AD))
-                quiet = self.job(db, acct.workspace_id, self.posting(db, unique("Expco"), "Quiet Analyst", first=1))
+                                                                      text="Join our talent pool. " + AD, now=today))
+                quiet = self.job(db, acct.workspace_id, self.posting(db, unique("Expco"), "Quiet Analyst", first=1, now=today))
                 db.commit()
                 flagged_id, quiet_id = flagged.id, quiet.id
             finally:
