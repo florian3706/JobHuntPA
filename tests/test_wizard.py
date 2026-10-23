@@ -152,6 +152,23 @@ class PrefsTest(unittest.TestCase):
     def test_the_servers_theme_list_matches_the_pages(self):
         offered = set(re.findall(r"\{ id: '([\w-]+)'", (FRONTEND / "common.js").read_text(encoding="utf-8")))
         self.assertEqual(set(account.THEME_IDS), offered)
+        exact = {t for t in offered if f"{t}-aa" in offered}
+        self.assertEqual(set(account.EXACT_THEME_IDS), exact)
+
+    def test_a_family_theme_saved_before_the_exact_palettes_keeps_meaning_its_aa_version(self):
+        # Saved before (no "themes" mark): the plain family id was the AA palette, so it reads as "<id>-aa" ...
+        for old, now in (("catppuccin-mocha", "catppuccin-mocha-aa"), ("nord", "nord-aa"),
+                         ("vanilla-dark", "vanilla-dark-aa"), ("dyslexia", "dyslexia"), ("dark", "dark"),
+                         ("system", "system")):
+            self.assertEqual(account._migrated({"theme": old})["theme"], now, old)
+        self.assertEqual(account._migrated({}), {"themes": account.THEMES_VERSION})
+        # ... and once marked, a plain id is the exact palette.
+        marked = {"theme": "nord", "themes": account.THEMES_VERSION}
+        self.assertEqual(account._migrated(marked)["theme"], "nord")
+        # Through the API: a save writes the mark, so choosing an exact palette stays exact.
+        for theme in ("nord", "nord-aa", "catppuccin-latte", "vanilla-dark-aa"):
+            self.assertEqual(self.c.put("/api/account/prefs", json={"theme": theme}).json(), {"theme": theme})
+            self.assertEqual(self.c.get("/api/account/prefs").json(), {"theme": theme})
 
 
 class FirstAdminShortPathTest(unittest.TestCase):

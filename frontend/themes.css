@@ -20,23 +20,27 @@
 
 /* JobHuntPA themes: every theme fills the same slots and changes nothing else.
 
-   Vanilla Light and Vanilla Dark carry the default colours of Ubuntu's Vanilla framework and are the
-   app's defaults (Vanilla Dark for a new install; System switches between the two). Dark is the app's
-   look before the Vanilla redesign. Light, Catppuccin's four flavours and the themes
-   built for a way of seeing or reading (Dyslexia, Protanomaly, Deuteranomaly,
-   Tritanomaly, Dichromacy, Monochromacy, each in light and dark) are ported
-   from ProjectTimeline, where the colour-vision palettes were simulated.
-   Rosé Pine (three variants), Nord (dark, plus a light one made from Nord's
-   colours), Kanagawa (Wave, Dragon, Lotus) and Everforest (dark and light,
-   medium contrast) use each project's official palette.
+   Vanilla Light and Vanilla Dark carry the default colours of Ubuntu's Vanilla framework; Vanilla Dark
+   (AA) is the default for a new install, and System switches between Vanilla Light (AA) and Vanilla
+   Dark (AA). Dark is the app's look before the Vanilla redesign. Light, Catppuccin's four flavours and
+   the themes built for a way of seeing or reading (Dyslexia, Protanomaly, Deuteranomaly, Tritanomaly,
+   Dichromacy, Monochromacy, each in light and dark) are ported from ProjectTimeline, where the
+   colour-vision palettes were simulated. Rosé Pine (three variants), Nord (dark, plus a light one made
+   from Nord's colours), Kanagawa (Wave, Dragon, Lotus) and Everforest (dark and light, medium contrast)
+   use each project's official palette.
 
-   Every theme meets WCAG 2.2 AA for the pairs the app uses: 4.5:1 for text,
-   3:1 for field borders (--border-strong), the focus ring (--focus) and
-   selected fills (--accent). Where a palette fell short, the value is a little
-   lighter or darker in the same hue, and the theme's comment lists what changed
-   and the original. tools/theme_contrast.py lists the pairs and
-   tests/test_accessibility.py fails if one drops below AA, so run it after
-   changing a colour.
+   Every family theme (Vanilla, Catppuccin, Rosé Pine, Nord, Kanagawa, Everforest) comes twice:
+   - the plain id (vanilla-dark, catppuccin-mocha, nord, ...) is the project's EXACT palette, offered as it
+     is; some of its pairs are under WCAG AA;
+   - "<id>-aa" is the WCAG AA version: where the palette fell short, the value is a little lighter or
+     darker in the same hue, and the theme's comment lists what changed and the original.
+   The app's own themes (Dark, Light, Dyslexia, the colour-vision ones) are built to AA and come once.
+
+   The AA themes are flagged "aa: true" in THEMES (common.js), which shows the "WCAG 2.0 AA" badge in
+   the picker. tools/theme_contrast.py checks those themes' pairs (4.5:1 for text, 3:1 for field
+   borders (--border-strong), the focus ring (--focus) and the edges of selected fills) and fails if one
+   drops below AA; tests/test_accessibility.py checks that the flagged set is exactly the set that passes
+   and that every exact theme has an -aa sibling. Run it after changing a colour.
 
    ProjectTimeline's semantic slots map to these: success -> --ok,
    warning -> --warn, danger -> --danger, the "decision" hue -> --info,
@@ -132,7 +136,7 @@
    on the tinted work-mode badges and notices, the focus ring on tinted bars), before in brackets, each the same hue
    a little darker: ok #0d781d (#0e8420), warn #995a00 (#a86300), danger #c6162b (#c7162b), accent-text #0065cb
    (#0066cc), focus #0983ff (#2e96ff). --accent and the label fills keep Vanilla's #0e8420. */
-[data-theme="vanilla-light"] {
+[data-theme="vanilla-light-aa"] {
   --bg: #f7f7f7;
   --panel: #ffffff;
   --card: #ffffff;
@@ -168,6 +172,44 @@
   color-scheme: light;
 }
 
+/* Vanilla Light, exact: Vanilla's own values as the design took them (vanilla.css), --warn included, with none of the adjustments above (it sets ok, warn, danger, accent-text, focus, accent-edge back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="vanilla-light"] {
+  --bg: #f7f7f7;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --field: #f5f5f5;
+  --border: #cccccc;
+  --border-strong: #707070;
+  --text: #000000;
+  --muted: #666666;
+  --accent: #0e8420;
+  --accent-text: #0066cc;
+  --accent-soft: #f2f2f2;
+  --on-accent: #ffffff;
+  --focus: #2e96ff;
+  --ok: #0e8420;
+  --warn: #a86300;
+  --danger: #c7162b;
+  --info: #24598f;
+  --special: #7d42b8;
+  --quiet: #666666;
+  --shadow: 0 1px 1px rgba(0, 0, 0, 0.15), 0 2px 8px rgba(0, 0, 0, 0.1);
+  --brand: #e95420;
+  --warn-fill: #cc7900;
+  --check: #000000;
+  --on-check: #ffffff;
+  --accent-edge: #0e8420;
+  --lbl-neu-bg: #666666; --lbl-neu-fg: #ffffff;
+  --lbl-pos-bg: #0e8420; --lbl-pos-fg: #ffffff;
+  --lbl-cau-bg: #cc7900; --lbl-cau-fg: #000000;
+  --lbl-neg-bg: #c7162b; --lbl-neg-fg: #ffffff;
+  --lbl-inf-bg: #24598f; --lbl-inf-fg: #ffffff;
+  --lbl-spe-bg: #7d42b8; --lbl-spe-fg: #ffffff;
+  --leading: 1.5;
+  color-scheme: light;
+}
+
 /* Vanilla Dark: Vanilla's dark theme, the default for a new install. Values from the same file: grounds
    $colors--dark-theme--background-alt / -default / -inputs, --accent-soft background-hover; --muted and --border
    white at 60% and 20% laid on #262626; --border-strong border-high-contrast; --accent $color-positive-dark;
@@ -180,7 +222,7 @@
    Adjusted for AA in the pairs the app uses today (status text on the field ground, text on the tinted badges and
    notices), before in brackets, each the same hue a little lighter: ok #74ae7d (#62a36c), warn
    #cf933d (#c48831; --warn-fill keeps it), danger #d5858f (#d17b85), accent-text #71a0d0 (#6699cc). */
-[data-theme="vanilla-dark"] {
+[data-theme="vanilla-dark-aa"] {
   --bg: #202020;
   --panel: #262626;
   --card: #262626;
@@ -206,6 +248,44 @@
   --check: #ffffff;
   --on-check: #000000;
   --accent-edge: #939393;
+  --lbl-neu-bg: #666666; --lbl-neu-fg: #ffffff;
+  --lbl-pos-bg: #0e8420; --lbl-pos-fg: #ffffff;
+  --lbl-cau-bg: #cc7900; --lbl-cau-fg: #000000;
+  --lbl-neg-bg: #c7162b; --lbl-neg-fg: #ffffff;
+  --lbl-inf-bg: #24598f; --lbl-inf-fg: #ffffff;
+  --lbl-spe-bg: #7d42b8; --lbl-spe-fg: #ffffff;
+  --leading: 1.5;
+  color-scheme: dark;
+}
+
+/* Vanilla Dark, exact: Vanilla's own dark-theme values (vanilla.css); the primary button's edge is its #008013 fill, with none of the adjustments above (it sets ok, warn, danger, accent-text, accent-edge back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="vanilla-dark"] {
+  --bg: #202020;
+  --panel: #262626;
+  --card: #262626;
+  --field: #2f2f2f;
+  --border: #525252;
+  --border-strong: #939393;
+  --text: #ffffff;
+  --muted: #a8a8a8;
+  --accent: #008013;
+  --accent-text: #6699cc;
+  --accent-soft: #313131;
+  --on-accent: #ffffff;
+  --focus: #99ccff;
+  --ok: #62a36c;
+  --warn: #c48831;
+  --danger: #d17b85;
+  --info: #5ea6ed;
+  --special: #a679d2;
+  --quiet: #a8a8a8;
+  --shadow: 0 1px 1px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --brand: #e95420;
+  --warn-fill: #c48831;
+  --check: #ffffff;
+  --on-check: #000000;
+  --accent-edge: #008013;
   --lbl-neu-bg: #666666; --lbl-neu-fg: #ffffff;
   --lbl-pos-bg: #0e8420; --lbl-pos-fg: #ffffff;
   --lbl-cau-bg: #cc7900; --lbl-cau-fg: #000000;
@@ -247,7 +327,7 @@
    Adjusted for AA (before in brackets): border-strong #818492 (#acb0be), muted #595c71 (#6c6f85), accent-text #7c26e0 (#8839ef),
    ok #1c6d02 (#40a02b), warn #a63d00 (#fe640b), danger #b6002e (#d20f39), info #056979 (#209fb5),
    special #cc5aaf (#ea76cb), quiet #818495 (#8c8fa1). */
-[data-theme="catppuccin-latte"] {
+[data-theme="catppuccin-latte-aa"] {
   --bg: #e6e9ef;
   --panel: #eff1f5;
   --card: #eff1f5;
@@ -271,10 +351,36 @@
   color-scheme: light;
 }
 
+/* Catppuccin Latte, exact: the flavour's official colours, with none of the adjustments above (it sets border-strong, muted, accent-text, ok, warn, danger, info, special, quiet back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="catppuccin-latte"] {
+  --bg: #e6e9ef;
+  --panel: #eff1f5;
+  --card: #eff1f5;
+  --field: #dce0e8;
+  --border: #ccd0da;
+  --border-strong: #acb0be;
+  --text: #4c4f69;
+  --muted: #6c6f85;
+  --accent: #8839ef;
+  --accent-text: #8839ef;
+  --accent-soft: #8839ef26;
+  --on-accent: #eff1f5;
+  --focus: #8839ef;
+  --ok: #40a02b;
+  --warn: #fe640b;
+  --danger: #d20f39;
+  --info: #209fb5;
+  --special: #ea76cb;
+  --quiet: #8c8fa1;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
 /* Catppuccin Frappé: the softest of the dark flavours.
    Adjusted for AA (before in brackets): border-strong #787e97 (#626880), muted #afb7d8 (#a5adce), accent-text #d3a7f0 (#ca9ee6),
    warn #f2a178 (#ef9f76), danger #fa9394 (#e78284). */
-[data-theme="catppuccin-frappe"] {
+[data-theme="catppuccin-frappe-aa"] {
   --bg: #292c3c;
   --panel: #303446;
   --card: #303446;
@@ -298,9 +404,35 @@
   color-scheme: dark;
 }
 
+/* Catppuccin Frappé, exact: the flavour's official colours, with none of the adjustments above (it sets border-strong, muted, accent-text, warn, danger back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="catppuccin-frappe"] {
+  --bg: #292c3c;
+  --panel: #303446;
+  --card: #303446;
+  --field: #232634;
+  --border: #414559;
+  --border-strong: #626880;
+  --text: #c6d0f5;
+  --muted: #a5adce;
+  --accent: #ca9ee6;
+  --accent-text: #ca9ee6;
+  --accent-soft: #ca9ee626;
+  --on-accent: #303446;
+  --focus: #ca9ee6;
+  --ok: #a6d189;
+  --warn: #ef9f76;
+  --danger: #e78284;
+  --info: #85c1dc;
+  --special: #f4b8e4;
+  --quiet: #838ba7;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 /* Catppuccin Macchiato: mid contrast.
    Adjusted for AA (before in brackets): border-strong #6c7189 (#5b6078). */
-[data-theme="catppuccin-macchiato"] {
+[data-theme="catppuccin-macchiato-aa"] {
   --bg: #1e2030;
   --panel: #24273a;
   --card: #24273a;
@@ -324,9 +456,35 @@
   color-scheme: dark;
 }
 
+/* Catppuccin Macchiato, exact: the flavour's official colours, with none of the adjustments above (it sets border-strong back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="catppuccin-macchiato"] {
+  --bg: #1e2030;
+  --panel: #24273a;
+  --card: #24273a;
+  --field: #181926;
+  --border: #363a4f;
+  --border-strong: #5b6078;
+  --text: #cad3f5;
+  --muted: #a5adcb;
+  --accent: #c6a0f6;
+  --accent-text: #c6a0f6;
+  --accent-soft: #c6a0f626;
+  --on-accent: #24273a;
+  --focus: #c6a0f6;
+  --ok: #a6da95;
+  --warn: #f5a97f;
+  --danger: #ed8796;
+  --info: #7dc4e4;
+  --special: #f5bde6;
+  --quiet: #8087a2;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 /* Catppuccin Mocha: the deepest ground.
    Adjusted for AA (before in brackets): border-strong #676a7f (#585b70). */
-[data-theme="catppuccin-mocha"] {
+[data-theme="catppuccin-mocha-aa"] {
   --bg: #181825;
   --panel: #1e1e2e;
   --card: #1e1e2e;
@@ -350,12 +508,38 @@
   color-scheme: dark;
 }
 
+/* Catppuccin Mocha, exact: the flavour's official colours, with none of the adjustments above (it sets border-strong back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="catppuccin-mocha"] {
+  --bg: #181825;
+  --panel: #1e1e2e;
+  --card: #1e1e2e;
+  --field: #11111b;
+  --border: #313244;
+  --border-strong: #585b70;
+  --text: #cdd6f4;
+  --muted: #a6adc8;
+  --accent: #cba6f7;
+  --accent-text: #cba6f7;
+  --accent-soft: #cba6f726;
+  --on-accent: #1e1e2e;
+  --focus: #cba6f7;
+  --ok: #a6e3a1;
+  --warn: #fab387;
+  --danger: #f38ba8;
+  --info: #74c7ec;
+  --special: #f5c2e7;
+  --quiet: #7f849c;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 /* Rosé Pine (rosepinetheme.com), its three official variants. Grounds: base for the page and wells,
    surface for chrome and cards, overlay for dividers. Iris is the accent in the dark variants and pine
    in Dawn. Rosé Pine has no green, so ok (success) is foam. */
 /* Rosé Pine. Adjusted for AA (official in brackets): muted #a19dbc (subtle #908caa),
    info #5ea0bc (pine #31748f). */
-[data-theme="rose-pine"] {
+[data-theme="rose-pine-aa"] {
   --bg: #191724;
   --panel: #1f1d2e;
   --card: #1f1d2e;
@@ -379,10 +563,36 @@
   color-scheme: dark;
 }
 
+/* Rosé Pine, exact: the official palette, with none of the adjustments above (it sets muted, info back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="rose-pine"] {
+  --bg: #191724;
+  --panel: #1f1d2e;
+  --card: #1f1d2e;
+  --field: #191724;
+  --border: #26233a;
+  --border-strong: #6e6a86;
+  --text: #e0def4;
+  --muted: #908caa;
+  --accent: #c4a7e7;
+  --accent-text: #c4a7e7;
+  --accent-soft: #c4a7e726;
+  --on-accent: #191724;
+  --focus: #c4a7e7;
+  --ok: #9ccfd8;
+  --warn: #f6c177;
+  --danger: #eb6f92;
+  --info: #31748f;
+  --special: #ebbcba;
+  --quiet: #6e6a86;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 /* Rosé Pine Moon. Adjusted for AA (official in brackets): field borders #75708d (muted #6e6a86),
    muted #ada9c8 (subtle #908caa), danger #f6789b (love #eb6f92), info #5fafd1 (pine #3e8fb0),
    quiet #6f6b87 (muted #6e6a86). */
-[data-theme="rose-pine-moon"] {
+[data-theme="rose-pine-moon-aa"] {
   --bg: #232136;
   --panel: #2a273f;
   --card: #2a273f;
@@ -406,10 +616,36 @@
   color-scheme: dark;
 }
 
+/* Rosé Pine Moon, exact: the official palette, with none of the adjustments above (it sets border-strong, muted, danger, info, quiet back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="rose-pine-moon"] {
+  --bg: #232136;
+  --panel: #2a273f;
+  --card: #2a273f;
+  --field: #232136;
+  --border: #393552;
+  --border-strong: #6e6a86;
+  --text: #e0def4;
+  --muted: #908caa;
+  --accent: #c4a7e7;
+  --accent-text: #c4a7e7;
+  --accent-soft: #c4a7e726;
+  --on-accent: #232136;
+  --focus: #c4a7e7;
+  --ok: #9ccfd8;
+  --warn: #f6c177;
+  --danger: #eb6f92;
+  --info: #3e8fb0;
+  --special: #ea9a97;
+  --quiet: #6e6a86;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 /* Rosé Pine Dawn (light). Adjusted for AA (official in brackets): field borders and quiet #8f8a9c
    (muted #9893a5), muted #64607d (subtle #797593), ok #2e6d78 (foam #56949f), warn #8f5a05 (gold #ea9d34),
    danger #9a4b63 (love #b4637a), info #735d8a (iris #907aa9), special #c97572 (rose #d7827e). */
-[data-theme="rose-pine-dawn"] {
+[data-theme="rose-pine-dawn-aa"] {
   --bg: #faf4ed;
   --panel: #fffaf3;
   --card: #fffaf3;
@@ -433,13 +669,39 @@
   color-scheme: light;
 }
 
+/* Rosé Pine Dawn, exact: the official palette, with none of the adjustments above (it sets border-strong, quiet, muted, ok, warn, danger, info, special back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="rose-pine-dawn"] {
+  --bg: #faf4ed;
+  --panel: #fffaf3;
+  --card: #fffaf3;
+  --field: #f2e9e1;
+  --border: #dfdad9;
+  --border-strong: #9893a5;
+  --text: #575279;
+  --muted: #797593;
+  --accent: #286983;
+  --accent-text: #286983;
+  --accent-soft: #28698326;
+  --on-accent: #fffaf3;
+  --focus: #286983;
+  --ok: #56949f;
+  --warn: #ea9d34;
+  --danger: #b4637a;
+  --info: #907aa9;
+  --special: #d7827e;
+  --quiet: #9893a5;
+  --shadow: 0 6px 18px -6px rgba(18, 22, 29, 0.18);
+  color-scheme: light;
+}
+
 /* Nord (nordtheme.com): Polar Night grounds, Snow Storm ink, Frost for the accent, Aurora for the data hues
    (nord13 for warnings and nord14 for success, as Nord's own guide assigns them). */
 /* Nord. Adjusted for AA (official in brackets): field borders #838ea4 (nord3 #4c566a),
    accent-text #9ad3e3 (nord8 #88c0d0), ok #bad6a3 (nord14 #a3be8c), danger #ffb0b4 (nord11 #bf616a),
    info #adcff0 (nord9 #81a1c1), quiet #737e93 (nord3). Nord's Aurora is too dark for text on Polar Night,
    so these are the same hues, lighter. */
-[data-theme="nord"] {
+[data-theme="nord-aa"] {
   --bg: #2e3440;
   --panel: #3b4252;
   --card: #3b4252;
@@ -463,13 +725,39 @@
   color-scheme: dark;
 }
 
+/* Nord, exact: Nord's own colours, with none of the adjustments above (it sets border-strong, accent-text, ok, danger, info, quiet back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="nord"] {
+  --bg: #2e3440;
+  --panel: #3b4252;
+  --card: #3b4252;
+  --field: #2e3440;
+  --border: #434c5e;
+  --border-strong: #4c566a;
+  --text: #eceff4;
+  --muted: #d8dee9;
+  --accent: #88c0d0;
+  --accent-text: #88c0d0;
+  --accent-soft: #88c0d026;
+  --on-accent: #2e3440;
+  --focus: #88c0d0;
+  --ok: #a3be8c;
+  --warn: #ebcb8b;
+  --danger: #bf616a;
+  --info: #81a1c1;
+  --special: #b48ead;
+  --quiet: #4c566a;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 /* Nord light: not an official Nord theme, but built only from Nord's colours: Snow Storm grounds,
    Polar Night ink, Frost (nord10) for the accent, Aurora for the data hues. */
 /* Nord light. Adjusted for AA (Nord colour in brackets): accent #4b6d97, accent-text #3e6089 and
    focus #5b7ea9 (nord10 #5e81ac), ok #4d6537 (nord14 #a3be8c), warn #8f4c37 (nord12 #d08770),
    danger #993f4a (nord11 #bf616a), info #44627f (nord9 #81a1c1), special #9e7998 (nord15 #b48ead).
    Aurora is pastel, so on Snow Storm it has to be darkened a long way: the same hues, much deeper. */
-[data-theme="nord-light"] {
+[data-theme="nord-light-aa"] {
   --bg: #e5e9f0;
   --panel: #eceff4;
   --card: #eceff4;
@@ -493,11 +781,37 @@
   color-scheme: light;
 }
 
+/* Nord Light, exact: Nord's own colours, undarkened, with none of the adjustments above (it sets accent, accent-text, focus, ok, warn, danger, info, special back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="nord-light"] {
+  --bg: #e5e9f0;
+  --panel: #eceff4;
+  --card: #eceff4;
+  --field: #d8dee9;
+  --border: #d8dee9;
+  --border-strong: #4c566a;
+  --text: #2e3440;
+  --muted: #4c566a;
+  --accent: #5e81ac;
+  --accent-text: #5e81ac;
+  --accent-soft: #5e81ac26;
+  --on-accent: #eceff4;
+  --focus: #5e81ac;
+  --ok: #a3be8c;
+  --warn: #d08770;
+  --danger: #bf616a;
+  --info: #81a1c1;
+  --special: #b48ead;
+  --quiet: #4c566a;
+  --shadow: 0 6px 18px -6px rgba(46, 52, 64, 0.2);
+  color-scheme: light;
+}
+
 /* Kanagawa (github.com/rebelot/kanagawa.nvim): Wave and Dragon (dark), Lotus (light), with the colour
    names of its palette. */
 /* Kanagawa Wave. Adjusted for AA (official in brackets): field borders #72738d (sumiInk6 #54546d),
    accent-text #8aa9e5 (crystalBlue #7e9cd8), danger #ff7878 (peachRed #ff5d62). */
-[data-theme="kanagawa-wave"] {
+[data-theme="kanagawa-wave-aa"] {
   --bg: #1f1f28;
   --panel: #2a2a37;
   --card: #2a2a37;
@@ -521,10 +835,36 @@
   color-scheme: dark;
 }
 
+/* Kanagawa Wave, exact: the official palette, with none of the adjustments above (it sets border-strong, accent-text, danger back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="kanagawa-wave"] {
+  --bg: #1f1f28;
+  --panel: #2a2a37;
+  --card: #2a2a37;
+  --field: #181820;
+  --border: #363646;
+  --border-strong: #54546d;
+  --text: #dcd7ba;
+  --muted: #9cabca;
+  --accent: #7e9cd8;
+  --accent-text: #7e9cd8;
+  --accent-soft: #7e9cd826;
+  --on-accent: #1f1f28;
+  --focus: #7e9cd8;
+  --ok: #98bb6c;
+  --warn: #ff9e3b;
+  --danger: #ff5d62;
+  --info: #7fb4ca;
+  --special: #957fb8;
+  --quiet: #727169;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 /* Kanagawa Dragon. Adjusted for AA (official in brackets): field borders #75716d (dragonBlack6 #625e5a),
    muted #a8a59d (dragonGray2 #9e9b93), accent-text #90a9b5 (dragonBlue2 #8ba4b0), ok #8bad8b
    (dragonGreen #87a987), danger #db8982 (dragonRed #c4746e), info #98a3b9 (dragonTeal #949fb5). */
-[data-theme="kanagawa-dragon"] {
+[data-theme="kanagawa-dragon-aa"] {
   --bg: #181616;
   --panel: #282727;
   --card: #282727;
@@ -548,11 +888,37 @@
   color-scheme: dark;
 }
 
+/* Kanagawa Dragon, exact: the official palette, with none of the adjustments above (it sets border-strong, muted, accent-text, ok, danger, info back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="kanagawa-dragon"] {
+  --bg: #181616;
+  --panel: #282727;
+  --card: #282727;
+  --field: #12120f;
+  --border: #393836;
+  --border-strong: #625e5a;
+  --text: #c5c9c5;
+  --muted: #9e9b93;
+  --accent: #8ba4b0;
+  --accent-text: #8ba4b0;
+  --accent-soft: #8ba4b026;
+  --on-accent: #181616;
+  --focus: #8ba4b0;
+  --ok: #87a987;
+  --warn: #c4b28a;
+  --danger: #c4746e;
+  --info: #949fb5;
+  --special: #a292a3;
+  --quiet: #737c73;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 /* Kanagawa Lotus (light). Adjusted for AA (official in brackets): text #525262 (lotusInk1 #545464),
    muted #5f5c4f (lotusGray2 #716e61), accent-text #405c8d (lotusBlue4 #4d699b), ok #4b6329 (lotusGreen
    #6f894e), warn #8e4a01 (lotusOrange #cc6d00), danger #a31836 (lotusRed #c84053), info #236378 (lotusTeal1
    #4e8ca2), quiet #7d7c73 (lotusGray3 #8a8980). */
-[data-theme="kanagawa-lotus"] {
+[data-theme="kanagawa-lotus-aa"] {
   --bg: #e5ddb0;
   --panel: #f2ecbc;
   --card: #f2ecbc;
@@ -576,12 +942,38 @@
   color-scheme: light;
 }
 
+/* Kanagawa Lotus, exact: the official palette, with none of the adjustments above (it sets text, muted, accent-text, ok, warn, danger, info, quiet back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="kanagawa-lotus"] {
+  --bg: #e5ddb0;
+  --panel: #f2ecbc;
+  --card: #f2ecbc;
+  --field: #e7dba0;
+  --border: #d5cea3;
+  --border-strong: #716e61;
+  --text: #545464;
+  --muted: #716e61;
+  --accent: #4d699b;
+  --accent-text: #4d699b;
+  --accent-soft: #4d699b26;
+  --on-accent: #f2ecbc;
+  --focus: #4d699b;
+  --ok: #6f894e;
+  --warn: #cc6d00;
+  --danger: #c84053;
+  --info: #4e8ca2;
+  --special: #b35b79;
+  --quiet: #8a8980;
+  --shadow: 0 6px 18px -6px rgba(84, 84, 100, 0.2);
+  color-scheme: light;
+}
+
 /* Everforest (github.com/sainnhe/everforest), medium contrast, dark and light. Green is both the accent
    and success, as in Everforest itself. */
 /* Everforest dark, medium. Adjusted for AA (official in brackets): muted #bbc7be (grey2 #9da9a0),
    accent-text #b3cd8c and ok #b5ce8d (green #a7c080), warn #debf82 (yellow #dbbc7f), danger #fea5a5
    (red #e67e80), info #92cfc7 (blue #7fbbb3). */
-[data-theme="everforest-dark"] {
+[data-theme="everforest-dark-aa"] {
   --bg: #2d353b;
   --panel: #343f44;
   --card: #343f44;
@@ -605,12 +997,38 @@
   color-scheme: dark;
 }
 
+/* Everforest Dark, exact: the official medium palette, with none of the adjustments above (it sets muted, accent-text, ok, warn, danger, info back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="everforest-dark"] {
+  --bg: #2d353b;
+  --panel: #343f44;
+  --card: #343f44;
+  --field: #232a2e;
+  --border: #475258;
+  --border-strong: #859289;
+  --text: #d3c6aa;
+  --muted: #9da9a0;
+  --accent: #a7c080;
+  --accent-text: #a7c080;
+  --accent-soft: #a7c08026;
+  --on-accent: #2d353b;
+  --focus: #a7c080;
+  --ok: #a7c080;
+  --warn: #dbbc7f;
+  --danger: #e67e80;
+  --info: #7fbbb3;
+  --special: #d699b6;
+  --quiet: #7a8478;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 /* Everforest light, medium. Its accents are bright on a pale ground, so most needed darkening for AA
    (official in brackets): text #515f67 (fg #5c6a72), field borders #7e8d7d and muted #586657 (grey2 #829181),
    accent #697706, accent-text #5c6903, focus #778802 and ok #5b6901 (green #8da101), warn #835c05 (yellow
    #dfa000), danger #bd0e20 (red #f85552), info #036995 (blue #3a94c5), special #d35eaf (purple #df69ba),
    quiet #838c7d (grey0 #a6b0a0). */
-[data-theme="everforest-light"] {
+[data-theme="everforest-light-aa"] {
   --bg: #f4f0d9;
   --panel: #fdf6e3;
   --card: #fdf6e3;
@@ -630,6 +1048,32 @@
   --info: #036995;
   --special: #d35eaf;
   --quiet: #838c7d;
+  --shadow: 0 6px 18px -6px rgba(92, 106, 114, 0.2);
+  color-scheme: light;
+}
+
+/* Everforest Light, exact: the official medium palette, with none of the adjustments above (it sets text, border-strong, muted, accent, accent-text, focus, ok, warn, danger, info, special, quiet back).
+   Offered as it is: some pairs are under WCAG AA, so it carries no AA badge. */
+[data-theme="everforest-light"] {
+  --bg: #f4f0d9;
+  --panel: #fdf6e3;
+  --card: #fdf6e3;
+  --field: #efebd4;
+  --border: #e0dcc7;
+  --border-strong: #829181;
+  --text: #5c6a72;
+  --muted: #829181;
+  --accent: #8da101;
+  --accent-text: #8da101;
+  --accent-soft: #8da10126;
+  --on-accent: #fdf6e3;
+  --focus: #8da101;
+  --ok: #8da101;
+  --warn: #dfa000;
+  --danger: #f85552;
+  --info: #3a94c5;
+  --special: #df69ba;
+  --quiet: #a6b0a0;
   --shadow: 0 6px 18px -6px rgba(92, 106, 114, 0.2);
   color-scheme: light;
 }

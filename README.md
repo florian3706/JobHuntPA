@@ -51,7 +51,8 @@ address ([settings for this JobHuntPA](#settings-for-this-jobhuntpa)), and [your
 **Themes**: Vanilla Dark (the default) and Vanilla Light, in the colours and the Ubuntu Sans type of
 Ubuntu's Vanilla design, then Dark (above), Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and
 Everforest families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from
-live previews on the Settings tab.
+live previews on the Settings tab. Each family theme comes twice: a version adjusted to WCAG 2.0 AA
+(marked with a **WCAG 2.0 AA** badge) and the project's exact colours.
 
 ![The Theme card on the Settings tab: each theme is a card with a live preview of the app in it, grouped by family](docs/screenshots/theme-picker.png)
 
@@ -762,17 +763,21 @@ limits on searches. The AI features use the provider and key set on the Settings
   **Location OK** / **Too far**. The office then drives the location filter and distance.
 - **Themes** (Settings > Theme, saved with your account and remembered by the browser): each theme is a card with a small live
   preview of the app in it; click or tap one, or move through them with the arrow keys, and it
-  applies at once (open job pages follow). **Vanilla Dark** (the default on a new install) and
-  **Vanilla Light**, from Ubuntu's Vanilla design, or *System* to switch between those two with your
-  computer; the app's earlier Dark and Light; Catppuccin (Latte, Frappé, Macchiato, Mocha); Rosé Pine (Rosé Pine, Moon, Dawn); Nord
+  applies at once (open job pages follow). **Vanilla Dark** (its AA version is the default on a new
+  install) and **Vanilla Light**, from Ubuntu's Vanilla design, or *System* to switch between their AA
+  versions with your computer; the app's earlier Dark and Light; Catppuccin (Latte, Frappé, Macchiato, Mocha); Rosé Pine (Rosé Pine, Moon, Dawn); Nord
   (dark, and a light variant made from Nord's colours); Kanagawa (Wave, Dragon, Lotus); Everforest
   (dark and light, medium contrast); a **Dyslexia** theme (warm low-glare background, Atkinson
   Hyperlegible font, wider letter and word spacing) in light and dark; and colour-vision themes
-  (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and dark. The
-  family themes use their projects' official palettes; where a colour fell short of the WCAG AA
-  contrast minimums it is a little lighter or darker in the same hue (themes.css lists each change).
-  Every theme but the Dyslexia ones uses Ubuntu Sans, a font that ships with the app (nothing is loaded
-  from another site for it). If you had chosen a theme before, you keep it.
+  (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and dark: 46 in
+  all. Every family theme (Vanilla, Catppuccin, Rosé Pine, Nord and Nord Light, Kanagawa, Everforest)
+  comes in two versions side by side: the **WCAG 2.0 AA** one, with that badge, where a colour that fell
+  short of the AA contrast minimums is a little lighter or darker in the same hue (themes.css lists each
+  change), and the project's **exact colours**, offered as they are, with the line "The project's exact
+  colours; some text is under 4.5:1". The app's own themes (Dark, Light, Dyslexia, colour vision) are
+  built to AA and carry the badge. Every theme but the Dyslexia ones uses Ubuntu Sans, a font that ships
+  with the app (nothing is loaded from another site for it). If you had chosen a theme before, you keep
+  what you chose: a family theme picked before the exact versions came in becomes its AA version.
   Labels, marks or shapes always accompany colours, so nothing relies on colour alone. See
   [Accessibility](#accessibility).
 - **Reasoning level** (Settings > AI provider): how long the AI thinks, set separately for scoring,
@@ -1195,9 +1200,12 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 - **Screen readers:** landmarks, one heading outline, labels on every field, and spoken status
   messages for searches, scoring, saves and errors. Form errors appear under the field they belong
   to and say how to fix it.
-- **Colour:** every theme meets 4.5:1 for text and 3:1 for field borders, the focus ring and
-  selected states in all 30 themes (`tools/theme_contrast.py` checks 79 colour pairs per theme, 85 in
-  the Vanilla themes, which also fill status labels). Nothing is told by
+- **Colour:** every theme with the **WCAG 2.0 AA** badge (30 of the 46, the default among them) meets
+  4.5:1 for text and 3:1 for field borders, the focus ring and selected states
+  (`tools/theme_contrast.py` checks 79 colour pairs per theme, 85 in the Vanilla themes, which also fill
+  status labels, and fails if a badged theme drops below AA; the tests check the badge is on exactly the
+  themes that pass). The other 16 are the family projects' exact colours, offered as they are for people
+  who want them: some of their text is under 4.5:1, and the AA guarantee doesn't cover them. Nothing is told by
   colour alone: scores are numbers, statuses and work modes are words, excluded jobs on the map are
   hollow dashed dots, the pin kinds have solid, dashed and dotted rings, and messages carry a mark.
 - **Phones and zoom:** the app works from 320 px wide, at 200% zoom and with wider text spacing
@@ -1210,8 +1218,9 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 [axe-core](https://github.com/dequelabs/axe-core) 4.14 with the WCAG 2.0, 2.1 and 2.2 A and AA rules, in
 headless Chromium (Playwright), on every page and every state of it: the dashboard's tabs, cards and
 dialogs, the job page, the sign-in, first-run and recover pages, each step of the walkthrough, at 320 and 1280 px wide in the Light, Dark, Dyslexia and
-Deuteranomaly themes (the colour contrast rule also in all 28 themes there were then; the two Vanilla themes
-came later and are covered by `tools/theme_contrast.py` until the next run): no violations. The same run
+Deuteranomaly themes (the colour contrast rule also in all 28 themes there were then, which are today's AA
+versions; the Vanilla themes came later and are covered by `tools/theme_contrast.py` until the next run): no
+violations. The same run
 checked reflow at 320 px and WCAG's text spacing, watched the console (no errors, no
 Content-Security-Policy violations) and pressed Tab through the main flows (sign in, the
 walkthrough, change password, a job's status, the data export) and through every page: a visible focus ring
@@ -1361,15 +1370,17 @@ shots). The map needs OpenStreetMap's tiles, so take that one on a machine that 
 the README until then). Where unpkg.com can't be reached, `--leaflet DIR` serves Leaflet from a local
 `npm install leaflet@1.9.4` (its `node_modules/leaflet/dist`).
 
-**Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme, the colour
-pairs the app uses together and fails on any below WCAG AA (`--all` shows the passing ones too).
+**Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme with the AA badge
+(`aa: true` in THEMES, `frontend/common.js`), the colour pairs the app uses together and fails on any
+below WCAG AA (`--all` shows the passing ones too, `--exact` also reports the exact palettes, which never
+fail the run).
 When you style something with a new combination of colour tokens, add it to `PAIRS` there. The
 unit tests run the same check plus a static check of the pages (language, viewport, skip link,
 headings, a name for every control). See [Accessibility](#accessibility) for the browser checks.
 
 **Browser accessibility audit:** `python3 tools/a11y_audit.py NODE_MODULES` drives every page and
 dialog in headless Chromium (Playwright) on made-up data and runs axe-core (the WCAG 2.0, 2.1 and 2.2 A
-and AA rules) on each state at 320 and 1280 px in six themes (Vanilla Dark and Light, Dark, Light, Dyslexia,
+and AA rules) on each state at 320 and 1280 px in six themes (Vanilla Dark and Light in their AA versions, Dark, Light, Dyslexia,
 Deuteranomaly). It also checks reflow at 320 px and
 WCAG's text spacing, watches the browser console (any error or Content-Security-Policy violation is
 reported) and walks the main flows with the keyboard (sign in, the walkthrough, change
@@ -1380,7 +1391,7 @@ Playwright and Chromium that setup installs. axe-core is developer-only: nothing
 or the app uses the tool. It starts its own throwaway copy of the app (a demo database and the sign-in rate
 limits lifted) and never touches `data/` or
 `.env`. axe is put into each page by the browser itself, so the page's Content-Security-Policy stays as
-it is. Options: `--widths 320,640,1280`, `--themes light,dark,monochromacy` (or `all`), `--only
+it is. Options: `--widths 320,640,1280`, `--themes light,dark,monochromacy` (or `all`, the 30 AA themes), `--only
 index,keyboard` (`--list` names the groups), `--review` (axe's "needs review" results), `--json FILE`.
 A full run takes about 45 minutes. The exit status is 1 when anything is reported.
 

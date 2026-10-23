@@ -7,9 +7,19 @@
   <script>
     // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
     (function () {
-      var t = "vanilla-dark";
-      try { t = localStorage.getItem("jobhunt.theme") || "vanilla-dark"; } catch (e) {}
-      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark" : "vanilla-light";
+      var t = "vanilla-dark-aa";
+      try {
+        t = localStorage.getItem("jobhunt.theme") || t;
+        // Once: a family theme saved before the exact palettes came in was its AA version (see common.js).
+        if (localStorage.getItem("jobhunt.themeMigrated") !== "aa") {
+          if (/^(vanilla-(dark|light)|catppuccin-(latte|frappe|macchiato|mocha)|rose-pine(-moon|-dawn)?|nord(-light)?|kanagawa-(wave|dragon|lotus)|everforest-(dark|light))$/.test(t)) {
+            t += "-aa";
+            localStorage.setItem("jobhunt.theme", t);
+          }
+          localStorage.setItem("jobhunt.themeMigrated", "aa");
+        }
+      } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark-aa" : "vanilla-light-aa";
       document.documentElement.setAttribute("data-theme", t);
     })();
   </script>
