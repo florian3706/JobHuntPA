@@ -7,9 +7,9 @@
   <script>
     // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
     (function () {
-      var t = "vanilla-dark";
-      try { t = localStorage.getItem("jobhunt.theme") || "vanilla-dark"; } catch (e) {}
-      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark" : "vanilla-light";
+      var t = "dark";
+      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
       document.documentElement.setAttribute("data-theme", t);
     })();
   </script>
@@ -18,48 +18,48 @@
 </head>
 <body class="auth-page" data-page="login">
   <a class="skip-link" href="#main">Skip to main content</a>
-  <header class="app-header auth-header">
-    <div class="header-inner">
-      <div class="brand">
+  <header class="p-navigation auth-header">
+    <div class="p-navigation__row">
+      <span class="p-navigation__banner">
         <span class="p-navigation__logo-tag" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" focusable="false"><circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="2.5" fill="currentColor" stroke="none"/></svg></span>
-        <span class="brand-text"><span class="brand-name">JobHuntPA</span><span class="subtitle">Personal job-hunt dashboard</span></span>
-      </div>
+        <span class="brand-text"><span class="p-navigation__title">JobHuntPA</span><span class="p-navigation__sub">Personal job-hunt dashboard</span></span>
+      </span>
     </div>
   </header>
 
-  <main id="main" class="main auth-main" tabindex="-1">
-    <section class="card auth-card" aria-labelledby="page-title">
+  <main id="main" class="main auth-main auth-split" tabindex="-1">
+    <section class="p-card auth-card" aria-labelledby="page-title">
       <h1 id="page-title">Sign in</h1>
-      <p id="auth-status" class="muted" role="status"></p>
-      <div id="error-summary" class="error-summary" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
-        <h2 id="error-summary-title">There is a problem</h2>
-        <ul id="error-summary-list"></ul>
+      <p id="auth-status" class="u-muted" role="status"></p>
+      <div id="error-summary" class="p-notification p-notification--negative" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
+        <svg class="p-notification__icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M9 9l6 6M15 9l-6 6"></path></svg>
+        <div class="p-notification__body"><p id="error-summary-title" class="p-notification__title">There is a problem</p><ul id="error-summary-list" class="error-summary-list"></ul></div>
       </div>
       <form id="login-form" class="auth-form" novalidate>
-        <div class="auth-field">
-          <label for="name">Name</label>
-          <input id="name" name="name" type="text" autocomplete="username" autocapitalize="none"
+        <div class="p-field">
+          <label class="p-label" for="name">Name</label>
+          <input id="name" class="p-input" name="name" type="text" autocomplete="username" autocapitalize="none"
                  spellcheck="false" required />
         </div>
-        <div class="auth-field">
-          <label for="password">Password</label>
+        <div class="p-field">
+          <label class="p-label" for="password">Password</label>
           <div class="pw-row">
-            <input id="password" name="password" type="password" autocomplete="current-password" spellcheck="false" required />
-            <button class="btn pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show password</button>
+            <input id="password" class="p-input" name="password" type="password" autocomplete="current-password" spellcheck="false" required />
+            <button class="p-button pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show password</button>
           </div>
         </div>
-        <div class="auth-field">
-          <label class="check"><input id="remember" name="remember" type="checkbox" aria-describedby="remember-hint" /> Keep me signed in</label>
-          <p id="remember-hint" class="hint">On this device, until you sign out or haven't used JobHuntPA for 30 days. Don't tick it on a shared computer.</p>
+        <div class="p-field">
+          <label class="p-check"><input class="p-checkbox" id="remember" name="remember" type="checkbox" aria-describedby="remember-hint" /> Keep me signed in</label>
+          <p id="remember-hint" class="p-form-help-text">On this device, until you sign out or haven't used JobHuntPA for 30 days. Don't tick it on a shared computer.</p>
         </div>
-        <button id="login-submit" class="btn btn-primary auth-submit" type="submit">Sign in</button>
+        <button id="login-submit" class="p-button p-button--positive auth-submit" type="submit">Sign in</button>
       </form>
 
     </section>
 
     <section class="auth-help" aria-labelledby="help-title">
       <h2 id="help-title">Trouble signing in?</h2>
-      <ul>
+      <ul class="p-list p-list--divided">
         <li>Use the name you chose for your account (on an install from before names, the email address it was made with). Capitals and spaces around it don't matter; in the password they do.</li>
         <li>Your password manager can fill in both fields, and pasting works too.</li>
         <li>After 5 wrong passwords in a row, JobHuntPA asks you to wait a little before the next try.</li>

@@ -149,6 +149,38 @@ function initTabs() {
   show(names.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'jobs');
 }
 
+/* ---------- jump lists (Search setup, Documents, Settings) ----------
+   Each of those tabs lists its cards in a nav on the left (a strip across the top on a phone). The link of the card
+   in view carries aria-current. A link scrolls to its card and puts focus on the card's heading, without changing the
+   address (the address picks the tab). */
+function initJumpLists() {
+  $$('.tab-jump').forEach((nav) => {
+    const links = Array.from(nav.querySelectorAll('a[href^="#"]'));
+    const targets = links.map((a) => document.getElementById(a.getAttribute('href').slice(1)));
+    const setCurrent = (link) => links.forEach((a) => {
+      if (a === link) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current');
+    });
+    links.forEach((a, i) => a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const target = targets[i];
+      if (!target) return;
+      setCurrent(a);
+      target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+      const heading = target.matches('h2, h3') ? target : target.querySelector('h3, h2');
+      if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); } else target.focus?.({ preventScroll: true });
+    }));
+    if (!('IntersectionObserver' in window)) return;
+    // The card whose top is the highest one still above the middle of the screen is the one in view.
+    const seen = new Set();
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((en) => { if (en.isIntersecting) seen.add(en.target); else seen.delete(en.target); });
+      const first = targets.find((t) => t && seen.has(t));
+      if (first) setCurrent(links[targets.indexOf(first)]);
+    }, { rootMargin: '-15% 0px -60% 0px' });
+    targets.forEach((t) => t && io.observe(t));
+  });
+}
+
 /* ================= JOBS ================= */
 // Every request that returns jobs passes the temporary office-days softening.
 const slackQuery = () => (state.officeSlack ? `?office_slack=${state.officeSlack}` : '');
@@ -1170,13 +1202,13 @@ function initChat() {
 const FIT_LABEL = { strong: 'Strong fit', good: 'Good fit', stretch: 'Stretch' };
 
 function renderTitleSuggestions(titles) {
-  $('#titles-list').innerHTML = titles.length ? `<ul class="titles-ul" aria-label="Suggested job titles">${titles.map((t, i) => `
+  const FIT_LABEL_CLASS = { strong: 'positive', good: 'positive', stretch: 'caution' };
+  $('#titles-list').innerHTML = titles.length ? `<ul class="p-list titles-ul" aria-label="Suggested job titles">${titles.map((t, i) => `
     <li class="title-row">
-      <input type="checkbox" id="title-sugg-${i}" data-i="${i}" aria-describedby="title-sugg-${i}-fit title-sugg-${i}-why" ${t.in_search ? 'disabled' : (t.fit !== 'stretch' ? 'checked' : '')} />
-      <label class="title-name" for="title-sugg-${i}">${esc(t.title)}</label>
-      <span class="title-badges"><span class="badge fit-${t.fit}" id="title-sugg-${i}-fit">${FIT_LABEL[t.fit] || t.fit}</span>
-      ${t.in_search ? '<span class="badge flag">already in this search</span>' : ''}</span>
-      <span class="muted title-reason" id="title-sugg-${i}-why">${esc(t.reason)}</span>
+      <label class="p-check" for="title-sugg-${i}"><input class="p-checkbox" type="checkbox" id="title-sugg-${i}" data-i="${i}" aria-describedby="title-sugg-${i}-fit title-sugg-${i}-why" ${t.in_search ? 'disabled' : (t.fit !== 'stretch' ? 'checked' : '')} /> <span class="title-name">${esc(t.title)}</span></label>
+      <span class="title-badges"><span class="p-status-label p-status-label--${FIT_LABEL_CLASS[t.fit] || 'information'}" id="title-sugg-${i}-fit">${FIT_LABEL[t.fit] || t.fit}</span>
+      ${t.in_search ? '<span class="p-status-label">Already in this search</span>' : ''}</span>
+      <span class="u-muted u-small title-reason" id="title-sugg-${i}-why">${esc(t.reason)}</span>
     </li>`).join('')}</ul>` : '';
   $('#titles-actions').hidden = !titles.length;
 }
@@ -1260,19 +1292,21 @@ function renderStarts() {
   // Redrawn (a pin changed): keep keyboard focus on the same row's control.
   const active = list.contains(document.activeElement) ? document.activeElement : null;
   const back = active ? (active.dataset.startUse !== undefined ? `[data-start-use="${active.dataset.startUse}"]` : `[data-start-remove="${active.dataset.startRemove}"]`) : null;
-  list.innerHTML = state.startingPoints.length ? '' : '<li class="muted">No starting points of your own yet.</li>';
+  list.innerHTML = '';
+  $('#starts-empty').hidden = state.startingPoints.length > 0;
+  $('#starts-table-wrap').hidden = !state.startingPoints.length;
   state.startingPoints.forEach((sp, i) => {
-    const li = document.createElement('li');
-    li.className = 'start-row';
+    const tr = document.createElement('tr');
+    tr.className = 'start-row';
     const name = startName(sp);
     const missing = sp.pin_id && !startPin(sp);
-    li.innerHTML = `<span class="start-name"><strong>${esc(name)}</strong>
-        <span class="muted">${name === startPlace(sp) ? '' : `from ${esc(startPlace(sp))}`}</span>
-        ${missing ? '<span class="err-text">This pin was deleted: remove this starting point or add the place again.</span>' : ''}</span>
-      <label class="start-use"><span class="visually-hidden">Used for, ${esc(name)}</span>
-        <select data-start-use="${i}">${Object.entries(START_USES).map(([v, t]) => `<option value="${v}"${sp.use === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
-      <button class="btn btn-ghost btn-sm" type="button" data-start-remove="${i}">Remove<span class="visually-hidden"> ${esc(name)}</span></button>`;
-    list.appendChild(li);
+    tr.innerHTML = `<th scope="row" data-label="Starting point"><strong>${esc(name)}</strong>
+        ${missing ? '<span class="err-text"><span aria-hidden="true">✕ </span>This pin was deleted: remove this starting point or add the place again.</span>' : ''}</th>
+      <td data-label="From">${name === startPlace(sp) ? '<span aria-hidden="true">–</span><span class="u-sr">the same place</span>' : esc(startPlace(sp))}</td>
+      <td data-label="Used for"><label><span class="u-sr">Used for, ${esc(name)}</span>
+        <select class="p-select" data-start-use="${i}">${Object.entries(START_USES).map(([v, t]) => `<option value="${v}"${sp.use === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label></td>
+      <td class="tab-actions"><button class="p-button p-button--base is-dense" type="button" data-start-remove="${i}">Remove<span class="u-sr"> ${esc(name)}</span></button></td>`;
+    list.appendChild(tr);
   });
   list.querySelectorAll('[data-start-use]').forEach((sel) => sel.addEventListener('change', () => {
     const sp = state.startingPoints[Number(sel.dataset.startUse)];
@@ -1283,17 +1317,26 @@ function renderStarts() {
   list.querySelectorAll('[data-start-remove]').forEach((b) => b.addEventListener('click', () => {
     const [sp] = state.startingPoints.splice(Number(b.dataset.startRemove), 1);
     renderStarts();
-    $('#start-from').focus(); // the row with the button is gone
+    focusStartFrom(); // the row with the button is gone
     announce(`Removed the starting point ${startName(sp)}.`);
     saveSetup();
   }));
-  if (back) (list.querySelector(back) || $('#start-from')).focus();
+  if (back) {
+    const again = list.querySelector(back);
+    if (again) again.focus(); else focusStartFrom();
+  }
   const from = $('#start-from');
   const picked = from.value;
   from.innerHTML = '<option value="">A place I type</option>'
     + state.setupPins.map((p) => `<option value="${p.id}">Pin: ${esc(p.label)} (${esc(p.kind)})</option>`).join('');
   from.value = state.setupPins.some((p) => String(p.id) === picked) ? picked : '';
   showStartPlace();
+}
+
+// The add form sits in a closed disclosure: opened when focus has to go to it.
+function focusStartFrom() {
+  $('#starts-add').open = true;
+  $('#start-from').focus();
 }
 
 function showStartPlace() {
@@ -1348,10 +1391,7 @@ function addTag(field, value, save = true) {
     if (save) announce(`${value} is already in the list.`);
     return;
   }
-  const el = document.createElement('li');
-  el.className = 'tag';
-  el.dataset.value = value;
-  el.innerHTML = `<span>${esc(value)}</span><button type="button" aria-label="Remove ${esc(value)}"><span aria-hidden="true">×</span></button>`;
+  const el = Object.assign(document.createElement('ul'), { innerHTML: chipHtml(value) }).firstElementChild;
   el.querySelector('button').addEventListener('click', () => {
     el.remove();
     document.querySelector(`.tag-input[data-field="${field}"] input`).focus();
@@ -1488,8 +1528,8 @@ function scheduleTimes() { return $$('#sched-times .tag').map((t) => t.dataset.v
 function renderScheduleTimes(times) {
   const sorted = [...new Set(times)].sort(); // "HH:MM" sorts as time
   $('#sched-times').innerHTML = sorted.length
-    ? sorted.map((t) => `<li class="tag" data-value="${esc(t)}"><span>${esc(t)}</span><button type="button" aria-label="Remove ${esc(t)}"><span aria-hidden="true">×</span></button></li>`).join('')
-    : '<li class="muted">No times yet</li>';
+    ? sorted.map(chipHtml).join('')
+    : '<li class="u-muted u-small">No times yet</li>';
 }
 
 function renderScheduleControls(sch) {
@@ -1654,39 +1694,46 @@ async function loadSources() {
   }
 }
 
+const onOffWord = (on) => (on ? 'On' : 'Off');
+
 function renderSources(sources) {
   const box = $('#sources-list');
   const focusBack = box.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
-  box.innerHTML = sources.length ? '' : '<div class="empty">No company sources yet. Add a careers page above.</div>';
-  const list = document.createElement('ul');
-  list.className = 'sources-ul';
-  list.setAttribute('aria-label', 'Company sources');
-  if (sources.length) box.appendChild(list);
+  box.innerHTML = sources.length ? '' : '<p class="u-muted">No company sources yet. Add a careers page above.</p>';
+  if (sources.length) {
+    box.innerHTML = `<div class="p-table-wrap"><table class="p-table tab-stack-table sources-table">
+      <caption class="u-sr">Company sources, ${sources.length}</caption>
+      <thead><tr><th scope="col">Company</th><th scope="col">Search it</th><th scope="col">Page</th><th scope="col">Last run</th><th scope="col"><span class="u-sr">Actions</span></th></tr></thead>
+      <tbody></tbody></table></div>`;
+  }
+  const body = box.querySelector('tbody');
   sources.forEach((src) => {
-    const row = document.createElement('li');
-    row.className = 'doc-row source-row';
+    const row = document.createElement('tr');
+    row.className = 'source-row';
     const last = src.last_run
-      ? `${src.last_error ? `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(src.last_error)}</span>` : `<span aria-hidden="true">✓ </span>${src.last_count} listed`} · ${esc(fmtDate(src.last_run))}${src.last_method ? `<br>${esc(src.last_method)}` : ''}`
+      ? `${src.last_error ? `<span class="err-text"><span aria-hidden="true">✕ </span>${esc(src.last_error)}</span>` : `<span aria-hidden="true">✓ </span>${src.last_count} listed`} · ${esc(fmtDate(src.last_run))}`
       : 'not run yet';
     const name = esc(src.label || src.url);
     row.innerHTML = `
-      <input type="checkbox" id="src-${src.id}-on" data-act="enabled" aria-label="Search ${name}" ${src.enabled ? 'checked' : ''} />
-      <div class="source-main">
-        <input class="source-label" id="src-${src.id}-label" data-act="label" type="text" value="${esc(src.label)}" aria-label="Company name for ${esc(src.url)}" autocomplete="off" />
-        <a class="doc-meta" href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.url)}</a>
-        <div class="doc-meta">${last}</div>
-        ${src.mapping ? '<div class="doc-meta">Read with a page layout the AI worked out (from the browser extension)</div>' : ''}
-        <div class="doc-meta test-result" role="status"></div>
-      </div>
-      <button class="btn btn-ghost btn-sm" id="src-${src.id}-test" data-act="test" type="button">Test<span class="visually-hidden"> ${name}</span></button>
-      ${src.mapping ? `<button class="btn btn-ghost btn-sm" id="src-${src.id}-forget" data-act="forget" type="button">Forget layout<span class="visually-hidden"> of ${name}</span></button>` : ''}
-      <button class="btn btn-danger btn-sm" id="src-${src.id}-delete" data-act="delete" type="button">Delete<span class="visually-hidden"> ${name}</span></button>`;
-    row.querySelector('input[type="checkbox"]').addEventListener('change', (e) => patchSource(src.id, { enabled: e.target.checked }));
+      <th scope="row" data-label="Company"><input class="p-input source-label" id="src-${src.id}-label" data-act="label" type="text" value="${esc(src.label)}" aria-label="Company name for ${esc(src.url)}" autocomplete="off" /></th>
+      <td data-label="Search it"><span class="p-check"><input class="p-switch" type="checkbox" role="switch" id="src-${src.id}-on" data-act="enabled" aria-label="Search ${name}" ${src.enabled ? 'checked' : ''} /> <span class="tab-onoff" aria-hidden="true">${onOffWord(src.enabled)}</span></span></td>
+      <td data-label="Page" class="u-small"><a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.url)}</a>
+        ${src.last_method ? `<span class="p-status-label">${esc(src.last_method)}</span>` : ''}
+        ${src.mapping ? '<div class="u-muted">Read with a page layout the AI worked out (from the browser extension)</div>' : ''}</td>
+      <td data-label="Last run" class="u-small">${last}<div class="test-result" role="status"></div></td>
+      <td class="tab-actions"><span class="u-row">
+        <button class="p-button p-button--base is-dense" id="src-${src.id}-test" data-act="test" type="button">Test<span class="u-sr"> ${name}</span></button>
+        ${src.mapping ? `<button class="p-button p-button--base is-dense" id="src-${src.id}-forget" data-act="forget" type="button">Forget layout<span class="u-sr"> of ${name}</span></button>` : ''}
+        <button class="p-button p-button--base is-dense" id="src-${src.id}-delete" data-act="delete" type="button">Remove<span class="u-sr"> ${name}</span></button></span></td>`;
+    row.querySelector('input[type="checkbox"]').addEventListener('change', (e) => {
+      row.querySelector('.tab-onoff').textContent = onOffWord(e.target.checked);
+      patchSource(src.id, { enabled: e.target.checked });
+    });
     row.querySelector('.source-label').addEventListener('change', (e) => patchSource(src.id, { label: e.target.value }));
     row.querySelector('[data-act="test"]').addEventListener('click', (e) => testSource(src, e.currentTarget, row.querySelector('.test-result')));
     row.querySelector('[data-act="delete"]').addEventListener('click', () => deleteSource(src));
     row.querySelector('[data-act="forget"]')?.addEventListener('click', () => forgetLayout(src));
-    list.appendChild(row);
+    body.appendChild(row);
   });
   if (focusBack) (focusBack() || $('#source-url')).focus();
 }
@@ -1773,7 +1820,7 @@ async function loadScorerStatus() {
 // the text and its concise version. Unsaved edits live in state.docs.drafts, so a row can be redrawn (after a
 // save, a tick, a new concise version) without losing what's typed in another, and focus returns to the
 // control that had it (data-focus). Status lines are kept in state too and announced through #docs-live.
-const DOC_KINDS = [['resume', 'Resume / CV'], ['cover_letter', 'Cover letter'], ['preferences', 'Preferences'], ['other', 'Other/supporting']];
+const DOC_KINDS = [['resume', 'Resume / CV'], ['cover_letter', 'Cover letter'], ['preferences', 'Preferences'], ['other', 'Other/supporting'], ['letter_template', 'Letter template']];
 // Ticked documents coming to more than this (the text the AI gets: each one's sent_len, which is
 // Document.text_for_llm) are a lot to send with every request: a warning, never a limit.
 const DOCS_WARN_CHARS = 50000;
@@ -1802,13 +1849,13 @@ function announceDocs(text) {
 function setDocStatus(id, area, text, isError = false) {
   state.docs.status.set(`${id}:${area}`, { text, isError });
   const el = document.getElementById(`doc-${id}-${area}-status`);
-  if (el) { el.textContent = text; el.className = isError ? 'err-text' : 'muted'; }
+  if (el) { el.textContent = text; el.className = isError ? 'err-text' : 'u-small u-muted'; }
   announceDocs(text);
 }
 
 function docStatusHtml(id, area) {
   const s = state.docs.status.get(`${id}:${area}`);
-  return `<span id="doc-${id}-${area}-status" class="${s?.isError ? 'err-text' : 'muted'}">${esc(s?.text || '')}</span>`;
+  return `<span id="doc-${id}-${area}-status" class="${s?.isError ? 'err-text' : 'u-small u-muted'}">${esc(s?.text || '')}</span>`;
 }
 
 function rememberFocus(root) {
@@ -1846,8 +1893,13 @@ async function loadDocs() {
 function renderDocs() {
   const list = $('#docs-list');
   const focus = rememberFocus(list);
-  list.replaceChildren(...state.docs.list.map(docRow));
+  const table = list.querySelector('table');
+  table.querySelectorAll('tbody').forEach((b) => b.remove());
+  table.append(...state.docs.list.map(docRow));
+  list.hidden = state.docs.list.length === 0;
   $('#docs-empty').hidden = state.docs.list.length !== 0;
+  const used = state.docs.list.filter((d) => d.use_for_scoring && d.kind !== 'letter_template').length;
+  $('#docs-count').textContent = state.docs.list.length ? `${used} of ${state.docs.list.length} used for scoring` : '';
   restoreFocus(list, focus);
   renderSummarySuggestion();
   renderDocsSize();
@@ -1863,8 +1915,9 @@ function renderDocsSize() {
     const text = `Your ticked documents come to ${total.toLocaleString()} characters (the versions the AI gets). That is a lot to send with every request to the AI. Create summary merges them into one shorter document.`;
     if (box.dataset.text !== text) {
       box.dataset.text = text;
-      box.innerHTML = `<p><strong>Long documents:</strong> ${esc(text)}</p>
-        <button id="docs-size-go" class="btn btn-sm" type="button">Go to Create summary</button>`;
+      box.innerHTML = `<svg class="p-notification__icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l10 18H2z"></path><path d="M12 10v5M12 18v.5"></path></svg>
+        <div class="p-notification__body u-stack"><p><span class="p-notification__title">Long documents:</span> ${esc(text)}</p>
+        <div><button id="docs-size-go" class="p-button is-dense" type="button">Go to Create summary</button></div></div>`;
       box.querySelector('#docs-size-go').addEventListener('click', () => {
         const btn = $('#summary-make');
         btn.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
@@ -1888,38 +1941,46 @@ function redrawDoc(id) {
   renderDocsSize();
 }
 
+/* One document is a <tbody> of two rows: the document's line (name, type, used for scoring, size, date, Open and
+   Delete) and the panel with its text and concise version, a row of its own that is hidden until it is opened. */
 function docRow(doc) {
   const id = doc.id;
   const open = state.docs.open.has(id);
-  const meta = [DOC_SOURCE[doc.source] || 'File', charCount(doc.text_len)];
-  if (doc.use_concise) meta.push(`the AI gets its concise version (${charCount(doc.concise_len)})`);
-  else if (doc.concise_len) meta.push('has a concise version (not used)');
-  meta.push(fmtDate(doc.updated_at || doc.created_at));
+  const template = doc.kind === 'letter_template';
+  const notes = [];
+  if (doc.use_concise) notes.push(`the AI gets its concise version (${charCount(doc.concise_len)})`);
+  else if (doc.concise_len) notes.push('has a concise version (not used)');
   const sources = (doc.summary_of || []).map(docById).filter(Boolean);
   const madeFrom = doc.source === 'summary' && (doc.summary_of || []).length
-    ? `<p class="doc-meta">Made from ${sources.length ? sources.map((d) => esc(d.filename)).join(', ') : ''}${
-      sources.length < doc.summary_of.length ? `${sources.length ? ' and ' : ''}${doc.summary_of.length - sources.length} deleted document(s)` : ''}</p>`
+    ? `Made from ${sources.length ? sources.map((d) => esc(d.filename)).join(', ') : ''}${
+      sources.length < doc.summary_of.length ? `${sources.length ? ' and ' : ''}${doc.summary_of.length - sources.length} deleted document(s)` : ''}`
     : '';
-  const row = document.createElement('article');
+  const label = doc.source === 'summary' ? '<span class="p-status-label p-status-label--special">Summary</span>'
+    : doc.source === 'note' ? '<span class="p-status-label">Note</span>' : '';
+  const name = esc(doc.filename);
+  const row = document.createElement('tbody');
   row.className = 'doc-item';
   row.id = `doc-${id}`;
-  row.setAttribute('aria-labelledby', `doc-${id}-name`);
   row.innerHTML = `
-    <div class="doc-head">
-      <div class="doc-title">
-        <h4 class="doc-name" id="doc-${id}-name">${esc(doc.filename)}</h4>
-        <p class="doc-meta">${esc(meta.join(' · '))}</p>
-        ${madeFrom}
-      </div>
-      <div class="doc-controls">
-        <label class="visually-hidden" for="doc-${id}-kind">Type of ${esc(doc.filename)}</label>
-        <select id="doc-${id}-kind" data-act="kind" data-focus="${id}-kind">${docKindOptions(doc.kind)}</select>
-        <label class="check"><input type="checkbox" data-act="use" data-focus="${id}-use" aria-describedby="doc-${id}-name"${doc.use_for_scoring ? ' checked' : ''} /> use for scoring</label>
-        <button class="btn btn-sm" type="button" data-act="toggle" data-focus="${id}-toggle" aria-expanded="${open}" aria-controls="doc-${id}-panel">${open ? 'Close' : 'Open'}<span class="visually-hidden"> ${esc(doc.filename)}</span></button>
-        <button class="btn btn-danger btn-sm" type="button" data-act="delete" data-focus="${id}-delete">Delete<span class="visually-hidden"> ${esc(doc.filename)}</span></button>
-      </div>
-    </div>
-    <div class="doc-panel" id="doc-${id}-panel"${open ? '' : ' hidden'}>${open ? docPanelHtml(doc) : ''}</div>`;
+    <tr class="doc-main-row">
+      <th scope="row" data-label="Document">
+        <a class="doc-name" id="doc-${id}-name" href="#doc-${id}-panel" data-act="open-link">${name}</a> ${label}
+        ${notes.length || madeFrom ? `<div class="doc-meta u-small u-muted">${[...notes, madeFrom].filter(Boolean).join(' · ')}</div>` : ''}
+      </th>
+      <td data-label="Type">
+        <label class="u-sr" for="doc-${id}-kind">Type of ${name}</label>
+        <select id="doc-${id}-kind" class="p-select" data-act="kind" data-focus="${id}-kind">${docKindOptions(doc.kind)}</select>
+      </td>
+      <td data-label="Used for scoring">${template
+    ? '<span class="u-small u-muted">Not read by the AI</span>'
+    : `<label class="p-check"><input class="p-switch" type="checkbox" role="switch" data-act="use" data-focus="${id}-use"${doc.use_for_scoring ? ' checked' : ''} /> <span class="u-sr">Use ${name} for scoring</span><span class="tab-onoff" aria-hidden="true">${onOffWord(doc.use_for_scoring)}</span></label>`}</td>
+      <td data-label="Characters" class="u-num">${Number(doc.text_len || 0).toLocaleString()}</td>
+      <td data-label="Added" class="u-small">${esc(fmtDate(doc.updated_at || doc.created_at).split(',')[0])}</td>
+      <td class="tab-actions"><span class="u-row">
+        <button class="p-button p-button--base is-dense" type="button" data-act="toggle" data-focus="${id}-toggle" aria-expanded="${open}" aria-controls="doc-${id}-panel">${open ? 'Close' : 'Open'}<span class="u-sr"> ${name}</span></button>
+        <button class="p-button p-button--base is-dense" type="button" data-act="delete" data-focus="${id}-delete">Delete<span class="u-sr"> ${name}</span></button></span></td>
+    </tr>
+    <tr class="doc-panel-row"${open ? '' : ' hidden'}><td colspan="6"><div class="doc-panel" id="doc-${id}-panel">${open ? docPanelHtml(doc) : ''}</div></td></tr>`;
   row.addEventListener('input', (e) => {
     const field = e.target.dataset.draft;
     if (field) state.docs.drafts.set(`${id}:${field}`, e.target.value);
@@ -1931,6 +1992,12 @@ function docRow(doc) {
     else if (act === 'version') setDocVersion(id, e.target.value === 'concise');
   });
   row.addEventListener('click', (e) => {
+    const link = e.target.closest('a[data-act="open-link"]');
+    if (link) { // the name opens the document (and, when it is open already, goes to its text)
+      e.preventDefault();
+      if (!state.docs.open.has(id)) toggleDoc(id); else document.getElementById(`doc-${id}-title`)?.focus();
+      return;
+    }
     const btn = e.target.closest('button[data-act]');
     if (!btn || btn.getAttribute('aria-disabled') === 'true') return;
     const actions = { toggle: toggleDoc, delete: deleteDoc, save: saveDoc, 'concise-make': makeConcise, 'concise-save': saveConcise };
@@ -1942,35 +2009,35 @@ function docRow(doc) {
 function docPanelHtml(doc) {
   const id = doc.id;
   const t = state.docs.text.get(id);
-  if (!t) return '<p class="muted">Loading the text…</p>';
+  if (!t) return '<p class="u-muted">Loading the text…</p>';
   const busy = state.docs.busy.has(`${id}:concise-make`);
   const textLabel = doc.editable ? 'Text' : 'Text taken from the file (read only; to change what the AI reads, edit a concise version below)';
-  const conciseBy = doc.concise_model ? `<p class="hint">Concise version written by ${esc(doc.concise_model)}, ${esc(fmtDate(doc.concise_at))}.</p>` : '';
+  const conciseBy = doc.concise_model ? `<p class="p-form-help-text">Concise version written by ${esc(doc.concise_model)}, ${esc(fmtDate(doc.concise_at))}.</p>` : '';
   return `
-    <div class="doc-edit">
-      <div class="field"><label class="field-label" for="doc-${id}-title">${doc.source === 'file' ? 'Name' : 'Title'}</label>
-        <input id="doc-${id}-title" type="text" maxlength="200" autocomplete="off" data-draft="title" data-focus="${id}-title" value="${esc(docDraft(id, 'title', doc.filename))}" /></div>
-      <div class="field"><label class="field-label" for="doc-${id}-text">${esc(textLabel)}</label>
-        <textarea id="doc-${id}-text" class="doc-textarea" rows="12" data-focus="${id}-text"${doc.editable ? ' data-draft="text"' : ' readonly'}>${esc(doc.editable ? docDraft(id, 'text', t.text) : t.text)}</textarea></div>
-      <div class="toolbar-row doc-actions">
-        <button class="btn btn-primary btn-sm" type="button" data-act="save" data-focus="${id}-save">${doc.editable ? 'Save' : 'Save name'}</button>
+    <div class="doc-edit u-stack">
+      <div class="p-field"><label class="p-label" for="doc-${id}-title">${doc.source === 'file' ? 'Name' : 'Title'}</label>
+        <input id="doc-${id}-title" class="p-input" type="text" maxlength="200" autocomplete="off" data-draft="title" data-focus="${id}-title" value="${esc(docDraft(id, 'title', doc.filename))}" /></div>
+      <div class="p-field"><label class="p-label" for="doc-${id}-text">${esc(textLabel)}</label>
+        <textarea id="doc-${id}-text" class="p-textarea doc-textarea" rows="12" data-focus="${id}-text"${doc.editable ? ' data-draft="text"' : ' readonly'}>${esc(doc.editable ? docDraft(id, 'text', t.text) : t.text)}</textarea></div>
+      <div class="u-row doc-actions">
+        <button class="p-button p-button--positive is-dense" type="button" data-act="save" data-focus="${id}-save">${doc.editable ? 'Save' : 'Save name'}</button>
         ${docStatusHtml(id, 'main')}
       </div>
     </div>
     <section class="doc-concise" aria-labelledby="doc-${id}-concise-heading">
-      <h5 id="doc-${id}-concise-heading">Concise version</h5>
-      <p class="hint">A shorter rewrite by the AI that keeps every employer, date, number and qualification, so every request is smaller.
+      <h4 id="doc-${id}-concise-heading">Concise version</h4>
+      <p class="p-form-help-text">A shorter rewrite by the AI that keeps every employer, date, number and qualification, so every request is smaller.
         Check it against the original (the scorer quotes it as evidence) and edit it freely.</p>
       <fieldset class="version-pick">
-        <legend>The AI gets</legend>
-        <label class="check"><input type="radio" name="doc-${id}-version" value="original" data-act="version" data-focus="${id}-v-original"${doc.use_concise ? '' : ' checked'} /> the original (${charCount(doc.text_len)})</label>
-        <label class="check"><input type="radio" name="doc-${id}-version" value="concise" data-act="version" data-focus="${id}-v-concise"${doc.use_concise ? ' checked' : ''}${doc.concise_len ? '' : ' disabled'} /> the concise version (${doc.concise_len ? charCount(doc.concise_len) : 'none yet'})</label>
+        <legend class="p-label">The AI gets</legend>
+        <label class="p-check"><input class="p-radio" type="radio" name="doc-${id}-version" value="original" data-act="version" data-focus="${id}-v-original"${doc.use_concise ? '' : ' checked'} /> the original (${charCount(doc.text_len)})</label>
+        <label class="p-check"><input class="p-radio" type="radio" name="doc-${id}-version" value="concise" data-act="version" data-focus="${id}-v-concise"${doc.use_concise ? ' checked' : ''}${doc.concise_len ? '' : ' disabled'} /> the concise version (${doc.concise_len ? charCount(doc.concise_len) : 'none yet'})</label>
       </fieldset>
-      <div class="field"><label class="field-label" for="doc-${id}-concise">Concise text</label>
-        <textarea id="doc-${id}-concise" class="doc-textarea" rows="10" data-draft="concise" data-focus="${id}-concise" placeholder="None yet: Create concise version writes one, or type your own.">${esc(docDraft(id, 'concise', t.concise_text))}</textarea></div>
-      <div class="toolbar-row doc-actions">
-        <button class="btn btn-sm" type="button" data-act="concise-make" data-focus="${id}-concise-make"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Writing…' : t.concise_text ? 'Write it again' : 'Create concise version'}</button>
-        <button class="btn btn-sm" type="button" data-act="concise-save" data-focus="${id}-concise-save">Save concise version</button>
+      <div class="p-field"><label class="p-label" for="doc-${id}-concise">Concise text</label>
+        <textarea id="doc-${id}-concise" class="p-textarea doc-textarea" rows="10" data-draft="concise" data-focus="${id}-concise" placeholder="None yet: Create concise version writes one, or type your own.">${esc(docDraft(id, 'concise', t.concise_text))}</textarea></div>
+      <div class="u-row doc-actions">
+        <button class="p-button is-dense" type="button" data-act="concise-make" data-focus="${id}-concise-make"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Writing…' : t.concise_text ? 'Write it again' : 'Create concise version'}</button>
+        <button class="p-button is-dense" type="button" data-act="concise-save" data-focus="${id}-concise-save">Save concise version</button>
         ${docStatusHtml(id, 'concise')}
       </div>
       ${conciseBy}
@@ -2111,14 +2178,16 @@ function renderSummarySuggestion() {
   const focus = rememberFocus(box);
   box.innerHTML = items.map(({ s, ticked }) => {
     const n = ticked.length;
-    return `<div class="callout">
+    return `<div class="p-notification p-notification--information">
+      <svg class="p-notification__icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7.5v.5"></path></svg>
+      <div class="p-notification__body u-stack">
       <p><strong>${esc(s.filename)}</strong> is ticked, and so ${n === 1 ? 'is 1 document' : `are ${n} documents`} it was made from
         (${ticked.map((d) => esc(d.filename)).join(', ')}): the AI gets that content twice.
         Once you've read the summary through, untick ${n === 1 ? 'it' : 'them'}.</p>
-      <div class="toolbar-row">
-        <button class="btn btn-primary btn-sm" type="button" data-act="untick" data-id="${s.id}" data-focus="sum-${s.id}-untick">Untick the ${n === 1 ? 'original' : `${n} originals`}</button>
-        <button class="btn btn-sm" type="button" data-act="keep" data-id="${s.id}" data-focus="sum-${s.id}-keep">Keep both ticked</button>
-      </div>
+      <div class="u-row">
+        <button class="p-button p-button--positive is-dense" type="button" data-act="untick" data-id="${s.id}" data-focus="sum-${s.id}-untick">Untick the ${n === 1 ? 'original' : `${n} originals`}</button>
+        <button class="p-button is-dense" type="button" data-act="keep" data-id="${s.id}" data-focus="sum-${s.id}-keep">Keep both ticked</button>
+      </div></div>
     </div>`;
   }).join('');
   box.hidden = !items.length;
@@ -2226,6 +2295,8 @@ function initDocs() {
 const PIN_HUE = { home: 'special', hybrid: 'info', onsite: 'warn' }; // theme slots
 const PIN_DASH = { home: null, hybrid: '10 7', onsite: '2 7' }; // the radius ring's pattern, as in the legend
 const PIN_KINDS = ['home', 'hybrid', 'onsite'];
+const PIN_LABEL = { home: 'special', hybrid: 'information', onsite: 'caution' }; // the same hues as PIN_HUE, with the word beside them
+const PIN_NOTE = { home: 'Hybrid and onsite roles inside are OK', hybrid: 'Hybrid roles inside are OK', onsite: 'Onsite roles inside are OK' };
 const pinColour = (kind) => themeColor(PIN_HUE[kind] || 'accent');
 const MAP_LIST_MAX = 200;
 const mapAnimate = () => !reducedMotion();
@@ -2265,20 +2336,20 @@ function setMapMode(mode, redraw = true) {
   try { localStorage.setItem('jobhunt.mapMode', mode); } catch { /* private mode */ }
   const edit = mode === 'pins';
   [['#map-mode-jobs', !edit], ['#map-mode-pins', edit]].forEach(([sel, on]) => {
-    $(sel).classList.toggle('active', on);
     $(sel).setAttribute('aria-pressed', String(on));
   });
   $('#map-hint-jobs').hidden = edit;
   $('#map-hint-pins').hidden = !edit;
   $('#pin-controls').hidden = !edit;
-  $('#pins-list').hidden = !edit;
+  $('#pins-edit-note').hidden = edit;
   $('#map-jobs').hidden = edit;
   $('#map').classList.toggle('editing', edit);
   $('#map').setAttribute('aria-describedby', edit ? 'map-hint-pins' : 'map-hint-jobs');
   $('#map').setAttribute('aria-label', edit ? 'Map for placing pins' : 'Map of jobs and pins');
   if (!redraw) return;
   drawPins();
-  if (edit) renderPinsList(); else renderMapJobs();
+  renderPinsList();
+  if (!edit) renderMapJobs();
 }
 
 /* Jobs on the map: the ones the Jobs tab's filters show, grouped by place
@@ -2344,12 +2415,14 @@ function drawJobMarkers() {
 function renderMapLegend() {
   const all = visibleJobs().length;
   const onMap = mapJobs().length;
-  $('#map-legend').innerHTML = `<span class="visually-hidden">Key: </span>
-    <span class="dot" aria-hidden="true"></span> job you'd consider (filled)
-    <span class="dot hollow" aria-hidden="true"></span> excluded (hollow, dashed)
-    ${PIN_KINDS.map((k) => `<span class="ring ring-${k} hue-${PIN_HUE[k]}" aria-hidden="true"></span> ${k} pin (${{ home: 'solid', hybrid: 'dashed', onsite: 'dotted' }[k]} ring)`).join(' ')}
-    · ${onMap} of ${all} filtered job${all === 1 ? '' : 's'} on the map${all > onMap ? ` (${all - onMap} remote or without a location)` : ''}`;
+  $('#map-legend').innerHTML = `<span class="u-sr">Key: </span>
+    <span class="legend-item"><span class="dot" aria-hidden="true"></span> Job you'd consider (filled)</span>
+    <span class="legend-item"><span class="dot hollow" aria-hidden="true"></span> Excluded job (hollow, dashed)</span>
+    ${PIN_KINDS.map((k) => `<span class="legend-item"><span class="ring ring-${k} hue-${PIN_HUE[k]}" aria-hidden="true"></span> ${k} pin (${{ home: 'solid', hybrid: 'dashed', onsite: 'dotted' }[k]} ring)</span>`).join('')}
+    <span class="u-muted">Dots with several jobs show a count. ${onMap} of ${all} filtered job${all === 1 ? '' : 's'} on the map${all > onMap ? ` (${all - onMap} remote or without a location)` : ''}.</span>`;
 }
+
+const MODE_LABEL_CLASS = { remote: 'positive', hybrid: 'caution', onsite: 'information' };
 
 function renderMapJobs() {
   const box = $('#map-jobs');
@@ -2359,23 +2432,23 @@ function renderMapJobs() {
   const inView = mapJobs().filter((j) => bounds.contains([j.lat, j.lng]));
   const focusBack = box.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
   if (!inView.length) {
-    box.innerHTML = '<div class="empty">No jobs in this part of the map. Zoom out, or change the Jobs tab filters.</div>';
+    box.innerHTML = '<p class="empty u-muted">No jobs in this part of the map. Zoom out, or change the Jobs tab filters.</p>';
     return;
   }
   const shown = inView.slice(0, MAP_LIST_MAX);
-  box.innerHTML = `<div class="map-jobs-head"><h3 class="map-jobs-title" id="map-jobs-title">${inView.length} job${inView.length === 1 ? '' : 's'} in view</h3>
-      <span class="muted">sorted like the Jobs tab${inView.length > MAP_LIST_MAX ? `; first ${MAP_LIST_MAX} shown, zoom in for the rest` : ''}</span></div>
-    <ul class="map-jobs-ul" aria-labelledby="map-jobs-title">${shown.map((j) => `<li class="map-job-row" data-id="${j.id}">
-      ${ratingsHtml(j)}
-      <div class="map-job-main">
-        <div><a class="map-job-title" id="mapjob-${j.id}-title" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Open the full page in a new tab">${esc(j.title || '—')}<span class="visually-hidden"> (opens in a new tab)</span></a>
-          <span class="muted">· ${esc(j.company || '—')}</span></div>
-        <div class="muted">${esc(j.location_text || '')}${j.office_unknown ? ' · office unknown' : ''}${j.distance_km !== null ? ` · <span aria-hidden="true">📍 </span><span class="visually-hidden">distance </span>${j.distance_km} km` : ''}
-          · <span class="badge ${modeOf(j)}">${modeOf(j)}</span>${j.ghost?.level ? ` · possible ghost job (${GHOST_STRENGTH[j.ghost.level]})` : ''} · ${esc(STATUS_LABEL[j.status] || j.status)}${j.excluded_reason ? ` · excluded: ${esc(j.excluded_reason)}` : ''}</div>
-      </div>
-      <button class="btn btn-ghost btn-sm" type="button" id="mapjob-${j.id}-show" data-act="show" title="Show it on the map">Show<span class="visually-hidden"> ${esc(j.title || 'job')} on the map</span></button>
-      <a class="btn btn-ghost btn-sm" id="mapjob-${j.id}-open" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener">Open<span class="visually-hidden"> ${esc(j.title || 'job')}</span>${NEW_TAB}</a>
-    </li>`).join('')}</ul>`;
+  box.innerHTML = `<div class="p-card__head"><h3 class="map-card-title" id="map-jobs-title">${inView.length} job${inView.length === 1 ? '' : 's'} in view</h3>
+      <span class="u-small u-muted">sorted like the Jobs tab${inView.length > MAP_LIST_MAX ? `; first ${MAP_LIST_MAX} shown, zoom in for the rest` : ''}. Pan or zoom to change the list.</span></div>
+    <div class="p-table-wrap"><table class="p-table tab-stack-table map-jobs-table" aria-labelledby="map-jobs-title">
+      <thead><tr><th scope="col">Place</th><th scope="col">Job</th><th scope="col">Fit</th><th scope="col">Mode</th><th scope="col">Status</th><th scope="col"><span class="u-sr">Actions</span></th></tr></thead>
+      <tbody>${shown.map((j) => `<tr class="map-job-row" data-id="${j.id}">
+        <th scope="row" data-label="Place">${esc(j.location_text || '—')}${j.office_unknown ? ' <span class="u-small u-muted">· office unknown</span>' : ''}${j.distance_km !== null ? ` <span class="u-small u-muted">· <span class="u-sr">distance </span>${j.distance_km} km</span>` : ''}</th>
+        <td data-label="Job"><a class="map-job-title" id="mapjob-${j.id}-title" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Open the full page in a new tab">${esc(j.title || '—')}<span class="u-sr"> (opens in a new tab)</span></a>
+          <span class="u-small u-muted">${esc(j.company || '—')}${j.excluded_reason ? `. Excluded: ${esc(j.excluded_reason)}` : ''}</span></td>
+        <td data-label="Fit">${ratingsHtml(j)}</td>
+        <td data-label="Mode"><span class="p-status-label${MODE_LABEL_CLASS[modeOf(j)] ? ` p-status-label--${MODE_LABEL_CLASS[modeOf(j)]}` : ''}">${modeOf(j)}</span></td>
+        <td data-label="Status">${esc(STATUS_LABEL[j.status] || j.status)}${j.ghost?.level ? ` <span class="u-small u-muted">· possible ghost job (${GHOST_STRENGTH[j.ghost.level]})</span>` : ''}</td>
+        <td class="tab-actions"><button class="p-button p-button--base is-dense" type="button" id="mapjob-${j.id}-show" data-act="show" title="Show it on the map">Show<span class="u-sr"> ${esc(j.title || 'job')} on the map</span></button></td>
+      </tr>`).join('')}</tbody></table></div>`;
   box.querySelectorAll('[data-act="show"]').forEach((b) => b.addEventListener('click', () => {
     const marker = state.jobMarkers.get(Number(b.closest('.map-job-row').dataset.id));
     if (!marker) return;
@@ -2478,22 +2551,22 @@ const pinsChanged = debounce(async () => {
 
 function renderPinsList() {
   const box = $('#pins-list');
-  if (state.mapMode !== 'pins') return;
-  const inViewOnly = $('#pins-in-view').checked && state.map;
+  const edit = state.mapMode === 'pins';
+  const inViewOnly = edit && $('#pins-in-view').checked && state.map;
   const bounds = state.map?.getBounds();
   const pins = inViewOnly ? state.pins.filter((p) => bounds.contains([p.lat, p.lng])) : state.pins;
   const focusBack = box.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
   box.innerHTML = '';
   if (!state.pins.length) {
-    box.innerHTML = '<div class="empty">No pins yet. Click or tap the map to drop one, or use Drop a pin at the cross.</div>';
+    box.innerHTML = `<p class="u-small u-muted">No pins yet.${edit ? ' Click or tap the map to drop one, or use Drop a pin at the cross.' : ' Switch to Edit pins to add one.'}</p>`;
     return;
   }
   if (inViewOnly) {
-    box.insertAdjacentHTML('beforeend', `<p class="muted">${pins.length} of ${state.pins.length} pins in view</p>`);
+    box.insertAdjacentHTML('beforeend', `<p class="u-small u-muted">${pins.length} of ${state.pins.length} pins in view</p>`);
     if (!pins.length) return;
   }
   const list = document.createElement('ul');
-  list.className = 'pins-ul';
+  list.className = 'p-list p-list--divided pins-ul';
   list.setAttribute('aria-label', 'Your pins');
   box.appendChild(list);
   pins.forEach((p) => {
@@ -2502,19 +2575,28 @@ function renderPinsList() {
     const id = `pin-${p.id}`;
     const name = esc(p.label);
     const huge = p.radius_km >= 1000 ? '<span class="err-text" title="Ignored by the location filter: a radius this large covers everywhere. Remote roles are handled by the Remote toggles in Search setup."><span aria-hidden="true">⚠ </span>ignored by location filter (radius ≥ 1000 km)</span>' : '';
-    row.innerHTML = `
-      <span class="pin-kind pin-kind-${esc(p.kind)} hue-${PIN_HUE[p.kind] || 'border'}">${esc(p.kind)}</span>
-      <strong id="${id}-name">${name}</strong>
-      <span class="muted"><span class="visually-hidden">at </span>${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>
-      <span class="pin-radius"><label for="${id}-radius">Radius</label> <input id="${id}-radius" type="number" min="0.1" step="0.5" inputmode="decimal" value="${p.radius_km}" aria-describedby="${id}-name" /> <span aria-hidden="true">km</span><span class="visually-hidden">kilometres</span></span>
-      <select id="${id}-kind" aria-label="Kind of pin ${name}">${PIN_KINDS.map((k) => `<option ${p.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select>
+    const where = `<span class="u-small u-muted"><span class="u-sr">at </span>${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`;
+    row.innerHTML = edit ? `
+      <span class="pin-head"><span class="p-status-label p-status-label--${PIN_LABEL[p.kind] || 'information'} pin-kind">${esc(p.kind)}</span>
+        <strong id="${id}-name">${name}</strong> ${where}</span>
+      <span class="pin-fields">
+        <span class="pin-radius p-field"><label class="p-label" for="${id}-radius">Radius (km)</label> <input id="${id}-radius" class="p-input" type="number" min="0.1" step="0.5" inputmode="decimal" value="${p.radius_km}" aria-describedby="${id}-name" /></span>
+        <span class="p-field"><label class="p-label" for="${id}-kind">Kind</label><select id="${id}-kind" class="p-select" aria-describedby="${id}-name">${PIN_KINDS.map((k) => `<option ${p.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select></span>
+      </span>
       ${huge}
-      <span class="pin-actions">
-        <button class="btn btn-ghost btn-sm" id="${id}-locate" data-act="locate" type="button">Locate<span class="visually-hidden"> ${name}</span></button>
-        <button class="btn btn-ghost btn-sm" id="${id}-move" data-act="move" type="button" title="Move this pin to the cross in the middle of the map">Move to the cross<span class="visually-hidden">: ${name}</span></button>
-        <button class="btn btn-danger btn-sm" id="${id}-delete" data-act="del" type="button">Delete<span class="visually-hidden"> ${name}</span></button>
+      <span class="pin-actions u-row">
+        <button class="p-button p-button--base is-dense" id="${id}-locate" data-act="locate" type="button">Locate<span class="u-sr"> ${name}</span></button>
+        <button class="p-button p-button--base is-dense" id="${id}-move" data-act="move" type="button" title="Move this pin to the cross in the middle of the map">Move to the cross<span class="u-sr">: ${name}</span></button>
+        <button class="p-button p-button--base is-dense" id="${id}-delete" data-act="del" type="button">Delete<span class="u-sr"> ${name}</span></button>
+      </span>` : `
+      <span class="pin-head"><span class="p-status-label p-status-label--${PIN_LABEL[p.kind] || 'information'} pin-kind">${esc(p.kind)}</span>
+        <strong id="${id}-name">${name}</strong> <span class="u-small u-muted">${p.radius_km} km radius</span></span>
+      <span class="u-small u-muted">${esc(PIN_NOTE[p.kind] || '')}</span>
+      ${huge}
+      <span class="pin-actions u-row">
+        <button class="p-button p-button--base is-dense" id="${id}-locate" data-act="locate" type="button">Locate<span class="u-sr"> ${name}</span></button>
       </span>`;
-    row.querySelector('input').addEventListener('change', (e) => {
+    row.querySelector('input')?.addEventListener('change', (e) => {
       const km = Number(e.target.value);
       if (!e.target.validity.valid || !(km > 0)) {
         setFieldError(e.target, 'Enter the radius in kilometres, more than 0 (for example 10).');
@@ -2523,17 +2605,17 @@ function renderPinsList() {
       setFieldError(e.target, '');
       savePin(p, { radius_km: km });
     });
-    row.querySelector('select').addEventListener('change', (e) => savePin(p, { kind: e.target.value }));
+    row.querySelector('select')?.addEventListener('change', (e) => savePin(p, { kind: e.target.value }));
     row.querySelector('[data-act="locate"]').addEventListener('click', (e) => {
       state.map.setView([p.lat, p.lng], 14, { animate: mapAnimate() });
       const marker = state.pinLayers.get(p.id)?.marker;
       if (marker) { marker.openPopup(); focusPopup(marker, e.currentTarget); }
     });
-    row.querySelector('[data-act="move"]').addEventListener('click', async () => {
+    row.querySelector('[data-act="move"]')?.addEventListener('click', async () => {
       const c = state.map.getCenter();
       if (await savePin(p, { lat: c.lat, lng: c.lng })) announce(`Moved ${p.label} to the middle of the map.`);
     });
-    row.querySelector('[data-act="del"]').addEventListener('click', () => deletePin(p));
+    row.querySelector('[data-act="del"]')?.addEventListener('click', () => deletePin(p));
     list.appendChild(row);
   });
   if (focusBack) focusBack()?.focus({ preventScroll: true });
@@ -2673,6 +2755,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initWorkspaces();
   initTitleSuggestions();
   initTabs();
+  initJumpLists();
   initJobs();
   initSetup();
   initSchedule();

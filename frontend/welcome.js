@@ -45,6 +45,7 @@ function clearErrors() {
   $('#error-summary').hidden = true;
   $('#error-summary-list').innerHTML = '';
   $$('#wiz-form .field-error').forEach((el) => el.remove());
+  $$('#wiz-form .is-error').forEach((el) => el.classList.remove('is-error'));
   $$('#wiz-form [aria-invalid="true"]').forEach((input) => {
     input.removeAttribute('aria-invalid');
     const ids = (input.getAttribute('aria-describedby') || '').split(/\s+/).filter((x) => x && x !== `${input.id}-error`);
@@ -62,10 +63,7 @@ function showErrors(errors) {
     if (input) {
       li.innerHTML = `<a href="#${esc(field)}">${esc(message)}</a>`;
       li.querySelector('a').addEventListener('click', (e) => { e.preventDefault(); input.focus(); });
-      const note = document.createElement('p');
-      note.id = `${input.id}-error`;
-      note.className = 'field-error';
-      note.innerHTML = `<span class="visually-hidden">Error: </span>${esc(message)}`;
+      const note = fieldErrorEl(input, `${input.id}-error`, message);
       (input.closest('.tag-input') || input).insertAdjacentElement('afterend', note);
       input.setAttribute('aria-invalid', 'true');
       input.setAttribute('aria-describedby', [note.id, input.getAttribute('aria-describedby')].filter(Boolean).join(' '));
@@ -82,15 +80,15 @@ function showErrors(errors) {
 const status = (text) => setText($('#auth-status'), text);
 
 /* ---------- tag inputs (titles, locations, keywords): list items with a remove button, as on the Search tab ---------- */
-const tagHtml = (value) => `<li class="tag" data-value="${esc(value)}"><span>${esc(value)}</span><button type="button" aria-label="Remove ${esc(value)}"><span aria-hidden="true">×</span></button></li>`;
+const tagHtml = (value) => chipHtml(value);
 
 function tagField(field, label, hint, placeholder, values) {
   const id = `wz-${field}`;
-  return `<div class="form-group">
-      <label for="${id}">${label}</label>
+  return `<div class="p-field">
+      <label class="p-label" for="${id}">${label}</label>
       <div class="tag-input" data-field="${field}"><ul class="tags" aria-label="${label}">${values.map(tagHtml).join('')}</ul>
         <input id="${id}" type="text" placeholder="${placeholder}" aria-describedby="${id}-hint" enterkeyhint="done" autocomplete="off" /></div>
-      <small id="${id}-hint" class="hint">${hint}</small>
+      <p id="${id}-hint" class="p-form-help-text">${hint}</p>
     </div>`;
 }
 
@@ -171,28 +169,28 @@ const STEPS = {
     skippable: true,
     html() {
       const st = wiz.llm;
-      return `<div class="form-group">
-          <label for="wz-ai-provider">Provider</label>
-          <select id="wz-ai-provider" aria-describedby="wz-ai-note">${st.presets.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join('')}</select>
-          <small id="wz-ai-note" class="hint"></small>
+      return `<div class="p-field">
+          <label class="p-label" for="wz-ai-provider">Provider</label>
+          <select id="wz-ai-provider" class="p-select" aria-describedby="wz-ai-note">${st.presets.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join('')}</select>
+          <p id="wz-ai-note" class="p-form-help-text"></p>
         </div>
-        <div class="form-group" id="wz-ai-url-group">
-          <label for="wz-ai-url">API address</label>
-          <input id="wz-ai-url" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="wz-ai-url-hint" />
-          <small id="wz-ai-url-hint" class="hint">The provider's OpenAI-compatible address, starting with https:// (http:// only for a server on this computer).</small>
+        <div class="p-field" id="wz-ai-url-group">
+          <label class="p-label" for="wz-ai-url">API address</label>
+          <input id="wz-ai-url" class="p-input" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="wz-ai-url-hint" />
+          <p id="wz-ai-url-hint" class="p-form-help-text">The provider's OpenAI-compatible address, starting with https:// (http:// only for a server on this computer).</p>
         </div>
-        <div class="form-group">
-          <label for="wz-ai-model">Model</label>
-          <input id="wz-ai-model" type="text" list="wz-ai-models" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="wz-ai-model-hint" />
+        <div class="p-field">
+          <label class="p-label" for="wz-ai-model">Model</label>
+          <input id="wz-ai-model" class="p-input" type="text" list="wz-ai-models" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="wz-ai-model-hint" />
           <datalist id="wz-ai-models"></datalist>
-          <small id="wz-ai-model-hint" class="hint">The provider's name for the model. The suggestion is a good start.</small>
+          <p id="wz-ai-model-hint" class="p-form-help-text">The provider's name for the model. The suggestion is a good start.</p>
         </div>
-        <div class="form-group" id="wz-ai-key-group">
-          <label for="wz-ai-key">API key</label>
-          <input id="wz-ai-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="wz-ai-key-hint" />
-          <small id="wz-ai-key-hint" class="hint"></small>
+        <div class="p-field" id="wz-ai-key-group">
+          <label class="p-label" for="wz-ai-key">API key</label>
+          <input id="wz-ai-key" class="p-input" type="password" autocomplete="off" spellcheck="false" aria-describedby="wz-ai-key-hint" />
+          <p id="wz-ai-key-hint" class="p-form-help-text"></p>
         </div>
-        <p class="hint">Until a provider is set, these wait: ${esc(AI_FEATURES)}.</p>`;
+        <p class="p-form-help-text">Until a provider is set, these wait: ${esc(AI_FEATURES)}.</p>`;
     },
     mount() {
       const st = wiz.llm;
@@ -255,7 +253,7 @@ const STEPS = {
           ${row('Work types', modes)}
           ${row('Salary floor', p.salary_floor ? `$${p.salary_floor.toLocaleString()} a year` : 'none')}
         </dl>
-        <p><button id="wz-review" class="btn" type="button">Review them step by step</button></p>`;
+        <p><button id="wz-review" class="p-button" type="button">Review them step by step</button></p>`;
     },
     mount() {
       $('#wz-review').addEventListener('click', () => {
@@ -287,26 +285,26 @@ const STEPS = {
       const p = wiz.profile;
       const home = wiz.pins.find((x) => x.kind === 'home');
       return `${tagField('seek_locations', 'Places to search', 'Write places the way SEEK does, for example All Sydney NSW or Melbourne VIC. Leave empty to search all of Australia.', 'Add a place and press Enter', p.seek_locations)}
-        <fieldset class="form-group wiz-group">
+        <fieldset class="p-field wiz-group">
           <legend>Kinds of work you would take</legend>
-          ${WORK_MODES.map(([id, key, label]) => `<label class="check"><input type="checkbox" id="${id}" ${p[key] ? 'checked' : ''} /> ${label}</label>`).join('')}
+          ${WORK_MODES.map(([id, key, label]) => `<label class="p-check"><input class="p-checkbox" type="checkbox" id="${id}" ${p[key] ? 'checked' : ''} /> ${label}</label>`).join('')}
         </fieldset>
-        <div class="form-group">
-          <label for="wz-office-days">Hybrid: most days a week in the office</label>
-          <select id="wz-office-days" aria-describedby="wz-office-days-hint">
+        <div class="p-field">
+          <label class="p-label" for="wz-office-days">Hybrid: most days a week in the office</label>
+          <select id="wz-office-days" class="p-select" aria-describedby="wz-office-days-hint">
             <option value="">Any</option>
             ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${p.max_office_days === n ? 'selected' : ''}>${n} day${n > 1 ? 's' : ''}</option>`).join('')}
           </select>
-          <small id="wz-office-days-hint" class="hint">Only used for hybrid jobs that say how many days they need you in.</small>
+          <p id="wz-office-days-hint" class="p-form-help-text">Only used for hybrid jobs that say how many days they need you in.</p>
         </div>
-        <div class="form-group">
-          <label for="wz-home">Your home suburb or town <span class="muted">(optional)</span></label>
-          <input id="wz-home" type="text" autocomplete="off" placeholder="For example Chatswood NSW" value="${esc(home ? home.label : '')}" aria-describedby="wz-home-hint" />
-          <small id="wz-home-hint" class="hint">Hybrid and onsite jobs are kept only if the office is within your travel distance of home. JobHuntPA looks the place up on OpenStreetMap; it doesn't keep your address. Without a home place, those jobs can't be checked for distance.</small>
+        <div class="p-field">
+          <label class="p-label" for="wz-home">Your home suburb or town <span class="muted">(optional)</span></label>
+          <input id="wz-home" class="p-input" type="text" autocomplete="off" placeholder="For example Chatswood NSW" value="${esc(home ? home.label : '')}" aria-describedby="wz-home-hint" />
+          <p id="wz-home-hint" class="p-form-help-text">Hybrid and onsite jobs are kept only if the office is within your travel distance of home. JobHuntPA looks the place up on OpenStreetMap; it doesn't keep your address. Without a home place, those jobs can't be checked for distance.</p>
         </div>
-        <div class="form-group">
-          <label for="wz-radius">How far will you travel (kilometres)?</label>
-          <input id="wz-radius" type="number" min="1" max="500" step="1" inputmode="numeric" value="${home ? Math.round(home.radius_km) : 25}" />
+        <div class="p-field">
+          <label class="p-label" for="wz-radius">How far will you travel (kilometres)?</label>
+          <input id="wz-radius" class="p-input" type="number" min="1" max="500" step="1" inputmode="numeric" value="${home ? Math.round(home.radius_km) : 25}" />
         </div>`;
     },
     mount() {
@@ -366,10 +364,10 @@ const STEPS = {
     intro: 'Everything on this step is optional. A salary floor, words you want, and words or industries you never want help leave out jobs that are not worth your time.',
     skippable: true,
     html() {
-      return `<div class="form-group">
-          <label for="wz-salary">Lowest salary you would accept (AUD a year)</label>
-          <input id="wz-salary" type="number" min="0" step="1000" inputmode="numeric" placeholder="For example 140000" autocomplete="off" aria-describedby="wz-salary-hint" value="${wiz.profile.salary_floor ?? ''}" />
-          <small id="wz-salary-hint" class="hint">Only applied to jobs that state a salary. Hourly and daily rates are turned into a yearly amount.</small>
+      return `<div class="p-field">
+          <label class="p-label" for="wz-salary">Lowest salary you would accept (AUD a year)</label>
+          <input id="wz-salary" class="p-input" type="number" min="0" step="1000" inputmode="numeric" placeholder="For example 140000" autocomplete="off" aria-describedby="wz-salary-hint" value="${wiz.profile.salary_floor ?? ''}" />
+          <p id="wz-salary-hint" class="p-form-help-text">Only applied to jobs that state a salary. Hourly and daily rates are turned into a yearly amount.</p>
         </div>
         ${tagField('keywords_include', 'Words you want to see', 'A job also passes if its title or description mentions one of these.', 'Add a word and press Enter', wiz.profile.keywords_include)}
         ${tagField('keywords_exclude', 'Words you do not want', 'Jobs that use one of these as a whole word in the title or description are left out.', 'Add a word and press Enter', wiz.profile.keywords_exclude)}
@@ -400,8 +398,8 @@ const STEPS = {
     skippable: true,
     html() {
       const on = !!(wiz.background?.enabled && wiz.schedule?.enabled);
-      return `<label class="check"><input type="checkbox" id="wz-auto" aria-describedby="wz-auto-hint" ${on ? 'checked' : ''} /> Search for new jobs automatically</label>
-        <div id="wz-auto-hint" class="hint">
+      return `<label class="p-check"><input class="p-checkbox" type="checkbox" id="wz-auto" aria-describedby="wz-auto-hint" ${on ? 'checked' : ''} /> Search for new jobs automatically</label>
+        <div id="wz-auto-hint" class="p-form-help-text">
           <p><strong>If you tick this:</strong> ${esc(BACKGROUND_ON_COPY)}</p>
           <p><strong>If you leave it empty:</strong> ${esc(BACKGROUND_OFF_COPY)}</p>
           <p>You can change this later in Settings: the days and times under Scheduled searches, and Background access.</p>
@@ -425,8 +423,8 @@ const STEPS = {
     title: 'Add your résumé (optional)',
     intro: "JobHuntPA scores how well each job fits you by comparing what the job asks for with what your résumé says you have done. Without a résumé it still finds and filters jobs, but there are no fit scores. You add it on the Documents tab, and it stays in your account.",
     nextLabel: 'Finish',
-    html: () => `<label class="check"><input type="checkbox" id="wz-goto-docs" ${wiz.gotoDocs ? 'checked' : ''} /> Take me to the Documents tab when I finish, so I can add it now</label>
-      <p class="hint">Or leave this unticked and add it later: it is the Documents tab on the dashboard.</p>`,
+    html: () => `<label class="p-check"><input class="p-checkbox" type="checkbox" id="wz-goto-docs" ${wiz.gotoDocs ? 'checked' : ''} /> Take me to the Documents tab when I finish, so I can add it now</label>
+      <p class="p-form-help-text">Or leave this unticked and add it later: it is the Documents tab on the dashboard.</p>`,
     async save() {
       wiz.gotoDocs = $('#wz-goto-docs').checked;
       return true;
@@ -467,7 +465,7 @@ function renderProgress() {
   $('#wiz-steps').innerHTML = wiz.steps.map((id, i) => {
     const state = i < wiz.idx ? 'done' : i === wiz.idx ? 'current' : 'todo';
     const word = { done: 'done', current: 'current step', todo: 'not started' }[state];
-    return `<li class="wiz-mark is-${state}"${state === 'current' ? ' aria-current="step"' : ''}><span aria-hidden="true">${state === 'done' ? '✓' : i + 1}</span><span class="visually-hidden">Step ${i + 1}: ${esc(STEPS[id].title)}, ${word}</span></li>`;
+    return `<li class="wiz-step is-${state}"><span class="p-side-navigation__link${state === 'todo' ? ' u-muted' : ''}"${state === 'current' ? ' aria-current="step"' : ''}>${state === 'done' ? '<span class="p-status-label p-status-label--positive" aria-hidden="true">Done</span> ' : ''}<span>${esc(STEPS[id].title)}</span><span class="u-sr">, step ${i + 1}, ${word}</span></span></li>`;
   }).join('');
   $('#wiz-progress').hidden = false;
 }
