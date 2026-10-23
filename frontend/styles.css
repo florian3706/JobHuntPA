@@ -1116,3 +1116,192 @@ a.ghost-dot:hover { border-color: var(--border-strong); }
 .ghost-check.found.strong .ghost-state { color: var(--danger); }
 .ghost-check.clear { border-left-color: var(--ok); }
 .ghost-check.clear .ghost-state { color: var(--ok); }
+
+/* ======================= Jobs tab (Vanilla redesign): run strip, toolbar, Filters panel, Table and Board =======================
+   Only what is specific to the Jobs tab is here; the p-* component rules (buttons, labels, chips, cards, tables)
+   are shared by every page. Colours are theme slots; nothing is told by colour alone. */
+.run-card { margin-bottom: 0; }
+.run-strip { display: flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: center; }
+.run-strip__status { display: inline-flex; flex-wrap: wrap; gap: .25rem .75rem; align-items: center; flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
+.run-strip__tools { margin-left: auto; display: flex; flex-wrap: wrap; gap: .5rem; }
+.run-report { display: inline-block; }
+.run-report[open] { flex-basis: 100%; }
+.run-report summary { font-size: .9375rem; }
+.p-progress.indeterminate .p-progress__bar { width: 30% !important; animation: slide 1.2s infinite ease-in-out; }
+#dupes-open .p-status-label { margin-left: .125rem; }
+.p-notification.dupe-note, .p-notification.soften-note { margin: 0; border-radius: 0; font-size: .9375rem; padding: .75rem 1rem; background: var(--card); border: 1px solid var(--border); }
+.dupe-note { border-left: 3px solid var(--info); }
+.soften-note { border-left: 3px solid var(--warn-fill, var(--warn)); }
+.soften-note__body { display: flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: center; }
+.dupe-note .p-button { margin-left: .25rem; }
+
+/* The toolbar: search, Filters, sort; the view toggle to the right */
+.jobs-toolbar { display: flex; flex-direction: column; gap: .75rem; margin: 1rem 0; }
+.jobs-toolbar__row { display: flex; flex-wrap: wrap; gap: .75rem 1rem; justify-content: space-between; align-items: center; }
+.jobs-toolbar__main { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; flex: 1 1 auto; min-width: 0; }
+.jobs-search { width: 15rem; max-width: 100%; }
+.jobs-search .p-input { min-height: 2.5rem; }
+.jobs-sort { flex-direction: row; align-items: center; gap: .5rem; }
+.jobs-sort .p-label { margin: 0; white-space: nowrap; }
+.jobs-sort .p-select { width: 11rem; min-height: 2.5rem; padding: .25rem .5rem; }
+.jobs-toolbar .filters-toggle { min-height: 2.5rem; }
+/* Filters set: a tinted ground besides the count on the button */
+.jobs-toolbar .filters-toggle.is-active { background: var(--accent-soft); }
+.jobs-toolbar .filters-toggle[aria-expanded="true"] { border-color: var(--text); }
+.view-toggle { display: inline-flex; }
+.view-toggle .view-toggle__btn { border-radius: 0; }
+.view-toggle .view-toggle__btn + .view-toggle__btn { margin-left: -1px; }
+.view-toggle .view-toggle__btn:first-child { border-radius: .125rem 0 0 .125rem; }
+.view-toggle .view-toggle__btn:last-child { border-radius: 0 .125rem .125rem 0; }
+/* The view in use: filled and bold, so it doesn't rest on colour alone. */
+.view-toggle .view-toggle__btn[aria-pressed="true"], .view-toggle .view-toggle__btn[aria-pressed="true"]:hover { background: var(--check, var(--accent)); color: var(--on-check, var(--on-accent)); border-color: var(--check, var(--accent)); font-weight: 700; position: relative; }
+
+/* The Filters panel (a disclosure under the toolbar) and the chips for the filters set */
+.p-card.filters-panel { border-top: 3px solid var(--text); display: flex; flex-direction: column; gap: .75rem; border-radius: 0; box-shadow: none; }
+.filters-panel__head { margin: 0; }
+.filters-heading { margin: 0; font-size: 1rem; font-weight: 550; }
+.filters-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); align-items: end; }
+.filters-grid .p-field { min-width: 0; }
+.filters-grid .p-range { min-height: 2rem; }
+.filters-checks { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; align-items: center; }
+.filters-checks .check-field { font-size: 1rem; min-height: 2rem; }
+.filters-actions { margin-left: auto; display: flex; gap: .5rem; }
+.filter-chips { display: flex; flex-wrap: wrap; gap: .375rem; align-items: center; }
+.filter-chips .p-chip { min-height: 2rem; }
+.chips { gap: .375rem; }
+.chips-row { gap: .5rem .75rem; }
+
+/* The bulk bar: an information notification; on a phone it docks at the bottom of the screen. */
+.p-notification.bulk-bar { margin: 0; padding: .5rem 1rem; border-radius: 0; align-items: center; gap: .5rem .75rem; flex-wrap: wrap; background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--info); }
+.bulk-bar .p-select { width: 11rem; min-height: 2.25rem; padding: .25rem .5rem; }
+.bulk-select-all { gap: .5rem; font-size: .9375rem; }
+
+/* Cards: the job card on the shared card, status labels in place of badges */
+.jobs-grid .job-card { border-radius: 0; box-shadow: none; padding: 1rem 1.25rem; }
+.jobs-grid .job-card.is-selected { outline: 2px solid var(--accent); outline-offset: -1px; box-shadow: none; }
+.jobs-grid .job-card.is-excluded { border-style: dashed; }
+.job-actions .p-select { flex: 1 1 10rem; min-height: 2.25rem; padding: .25rem .5rem; }
+.job-actions--base { gap: .375rem; }
+.job-meta .p-status-label { font-size: .75rem; }
+
+/* Table: one row a job; the title opens the fit summary row (gaps first, then matches) in place */
+.jobs-table-wrap { background: var(--card); border: 1px solid var(--border); overflow-x: auto; }
+.jobs-table { width: 100%; border-collapse: collapse; font-size: .9375rem; }
+.jobs-table th, .jobs-table td { text-align: left; padding: .5rem .75rem; vertical-align: top; }
+.jobs-table th { font-weight: 400; border-bottom: 1px solid var(--border-strong); color: var(--text); vertical-align: bottom; }
+.jobs-table td { border-bottom: 1px solid var(--border); }
+.jobs-table .u-num { text-align: right; font-variant-numeric: tabular-nums; }
+.jobs-table .col-select { width: 2.5rem; }
+.jobs-table .col-select .p-checkbox { margin-top: .25rem; }
+.jobs-table .jobs-table__sort { padding: 0 .25rem; min-height: 1.75rem; font-weight: 500; font-size: .9375rem; }
+.jobs-table .jobs-table__sort:hover { text-decoration: underline; }
+.jobs-table .jobs-table__title { padding: 0; min-height: 1.5rem; text-align: left; white-space: normal; font-weight: 550; font-size: 1rem; justify-content: flex-start; color: var(--text); overflow-wrap: anywhere; line-height: 1.3; }
+.jobs-table .jobs-table__title:hover { background: none; text-decoration: underline; }
+.jobs-table__chev { display: inline-block; width: 1em; flex: none; }
+.jobs-table__place { margin-top: .125rem; }
+.jobs-table__flags { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .25rem; }
+.jobs-table .col-salary { min-width: 10rem; }
+.jobs-table .col-status .p-select { min-height: 2.25rem; padding: .25rem .5rem; width: 9.5rem; max-width: 100%; }
+.jobs-table .col-status .applied-slot:not(:empty) { display: block; margin-top: .25rem; }
+.jobs-table td .jobs-table__morebtn { display: none; } /* (more specific than .p-button's display) */
+/* Selected rows: a tinted ground besides the ticked box; excluded ones keep full contrast and carry a label. */
+.jobs-table__row.is-selected td, .jobs-table__detail.is-selected td { background: var(--accent-soft); }
+.jobs-table__detail > td[colspan] { padding: 0 .75rem 1rem; }
+.jobs-detail { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1rem 1.5rem; align-items: start; }
+.jobs-detail__main { display: flex; flex-direction: column; gap: .5rem; min-width: 0; }
+.jobs-detail__summary { margin: 0; }
+.jobs-detail__labels { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .375rem; }
+/* Requirement labels are sentences: they wrap and keep their case. */
+.jobs-detail__labels .p-status-label { white-space: normal; text-transform: none; letter-spacing: normal; line-height: 1.3; padding: .125rem .5rem; font-size: .8125rem; }
+/* On a selected row's tinted ground the outlined labels keep the card ground behind their text (the checked pair). */
+.jobs-detail__labels .p-status-label--negative { background: var(--lbl-neg-bg, var(--card)); }
+.jobs-detail__labels .p-status-label--positive { background: var(--lbl-pos-bg, var(--card)); }
+.jobs-detail__where { margin: 0; color: var(--muted); }
+.jobs-detail__where a { color: var(--accent-text); }
+.jobs-detail .hint { margin: 0; }
+.jobs-detail__actions { display: flex; flex-wrap: wrap; gap: .375rem; justify-content: flex-end; }
+.jobs-detail .reqs { border-top: none; padding-top: 0; }
+
+/* Board: one column a status, the closed ones folded; Move to does what dragging would */
+.jobs-board { display: flex; flex-direction: column; gap: .75rem; }
+.board-cols { display: grid; grid-template-columns: repeat(4, minmax(230px, 1fr)) 10rem; gap: 1rem; overflow-x: auto; align-items: start; }
+/* The Closed column grows to the others' width while it is open. */
+.board-cols:has(.board-col--closed.is-open) { grid-template-columns: repeat(5, minmax(200px, 1fr)); }
+.board-col { display: flex; flex-direction: column; gap: .5rem; background: var(--accent-soft); padding: .75rem; border: 1px solid var(--border); min-width: 0; }
+.board-col--closed { background: none; border: 1px dashed var(--border-strong); }
+.board-col__head { font-size: 1rem; font-weight: 550; margin: 0; display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
+.board-col__empty, .board-col--closed p { margin: 0; }
+.board-col__more { align-self: stretch; }
+.board-col .board-card { padding: .75rem; display: flex; flex-direction: column; gap: .5rem; border-radius: 0; box-shadow: none; }
+.board-col .board-card.is-excluded { border-style: dashed; }
+.board-card__head { display: flex; gap: .5rem; justify-content: space-between; align-items: flex-start; }
+.board-card__title { font-size: .9375rem; font-weight: 550; line-height: 1.3; margin: 0; overflow-wrap: anywhere; }
+.board-card__place { margin: 0; }
+.board-card__labels, .board-card__actions { display: flex; flex-wrap: wrap; gap: .375rem; }
+.board-card__row { display: flex; gap: .375rem; align-items: center; }
+.board-card__row .p-select { flex: 1; min-width: 7rem; width: auto; min-height: 2.25rem; padding: .25rem .5rem; }
+.board-card .applied-slot { margin: 0; }
+.board-closed-list { display: flex; flex-direction: column; gap: .5rem; }
+.board-tabs { display: none; }
+
+/* The header's Menu button: only on a phone (see below) */
+.header-inner > .header-menu-btn { display: none; } /* (more specific than .p-button's display) */
+
+/* Phones (720 px and under): List | Board. The table is stacked rows with a More button, the board is status tabs
+   with one column in view, the bulk bar docks at the bottom, and the header's controls fold behind Menu. */
+@media (max-width: 720px) {
+  .header-inner { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+  .header-inner > .header-menu-btn { display: inline-flex; }
+  .header-meta { display: none; flex-basis: 100%; align-items: flex-start; border-top: 1px solid var(--border); padding-top: .5rem; }
+  .header-meta.is-open { display: flex; }
+  .run-strip > .p-button--positive { flex-basis: 100%; }
+  .run-strip__tools { margin-left: 0; }
+  .jobs-search { width: 100%; }
+  .jobs-sort .p-select { width: auto; flex: 1; }
+  .jobs-table-wrap { background: none; border: none; overflow: visible; }
+  .jobs-table, .jobs-table tbody, .jobs-table tr, .jobs-table td { display: block; }
+  .jobs-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .jobs-table tr.jobs-table__row { background: var(--card); border: 1px solid var(--border); padding: .75rem 1rem; margin-bottom: .5rem; display: flex; flex-wrap: wrap; gap: .375rem .5rem; align-items: flex-start; }
+  .jobs-table__row td { border: none; padding: 0; }
+  .jobs-table__row .col-select { order: 0; width: auto; }
+  .jobs-table__row .col-job { order: 1; flex: 1 1 55%; min-width: 0; }
+  .jobs-table__row .col-fit { order: 2; text-align: right; }
+  .jobs-table__row .col-fit .p-status-label { font-size: 1rem; line-height: 1.75rem; padding: 0 .625rem; font-weight: 700; }
+  .jobs-table__row .col-mode, .jobs-table__row .col-dist, .jobs-table__row .col-salary, .jobs-table__row .col-posted { order: 3; }
+  .jobs-table__row .col-mode { margin-left: 2rem; }
+  /* distance, salary and posted date read as plain labels beside the work mode */
+  .jobs-table__row .col-dist, .jobs-table__row .col-salary, .jobs-table__row .col-posted {
+    font-size: .75rem; line-height: 1.25rem; font-weight: 550; text-transform: uppercase; letter-spacing: .03em; padding: 0 .5rem;
+    border: 1px solid var(--border-strong); border-radius: .125rem; white-space: nowrap;
+  }
+  .jobs-table__row .col-dist:has(> .u-muted), .jobs-table__row .col-posted:has(> .u-muted) { display: none; }
+  .jobs-table__row .col-status { order: 4; flex: 1 1 12rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-left: 2rem; min-width: 0; }
+  .jobs-table__row .col-status .p-select { flex: 1 1 8rem; width: auto; }
+  .jobs-table__row .col-open { order: 5; }
+  .jobs-table__title .jobs-table__chev { display: none; }
+  .jobs-table td .jobs-table__morebtn { display: inline-flex; }
+  .jobs-table__row.is-selected { background: var(--accent-soft); }
+  .jobs-table__row.is-selected td, .jobs-table__detail.is-selected td { background: none; }
+  .jobs-table__detail { background: var(--card); border: 1px solid var(--border); border-top: none; margin: -.5rem 0 .5rem; padding: .75rem 1rem; }
+  .jobs-table__detail.is-selected { background: var(--accent-soft); }
+  .jobs-table__detail td { border: none; }
+  .jobs-table__detail .col-select { display: none; }
+  .jobs-table__detail > td[colspan] { padding: 0; }
+  .jobs-detail { grid-template-columns: minmax(0, 1fr); }
+  .jobs-detail__actions { justify-content: flex-start; }
+  .board-tabs { display: block; margin: 0; }
+  .board-tabs .p-tabs__list { padding: 0; position: relative; } /* the tabs' hidden text stays inside the scrolling list */
+  .board-cols { display: flex; flex-direction: column; overflow: visible; }
+  .board-col { background: none; border: none; padding: 0; }
+  .board-col:not(.is-current) { display: none; }
+  .board-col__head { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .board-col .board-card { padding: .875rem 1rem; }
+  .p-notification.bulk-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; margin: 0; box-shadow: var(--shadow); }
+  #tab-jobs:has(#bulk-bar:not([hidden])) { padding-bottom: 8rem; }
+}
+/* Touch screens: the Jobs tab's dense controls grow to 44 px, its tick boxes to 24 px. */
+@media (pointer: coarse) {
+  #tab-jobs .p-button.is-dense, #tab-jobs .p-chip, #tab-jobs .p-select, #tab-jobs .p-input, #tab-jobs .jobs-table__sort, #tab-jobs .p-chip__x { min-height: 44px; }
+  #tab-jobs .p-chip__x { min-width: 44px; }
+  #tab-jobs .p-checkbox { width: 24px; height: 24px; }
+}

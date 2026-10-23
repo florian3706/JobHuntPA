@@ -657,6 +657,17 @@ limits on searches. The AI features use the provider and key set on the Settings
 
   <img src="docs/screenshots/search-schedule.png" alt="The Scheduled searches card: run times, days, public holidays and the next search" width="760">
 
+- **Cards, Table or Board**: the Jobs tab shows the same jobs three ways (the toggle at the right of the
+  toolbar; the choice is remembered in this browser). **Cards** carry everything about a job. **Table** has
+  one row a job, sortable by fit, distance or posted date (the column headings, or the Sort menu); a
+  job's title opens its fit summary in place: the scorer's words, the gaps first and then the matched
+  requirements, the office, and the card's buttons. **Board** has one column a status (*to review*,
+  *shortlisted*, *applied*, *interviewing*, with *rejected* and *not interested* folded into a *Closed*
+  column): each card's **Move to** menu changes its status, so the keyboard and screen readers do what
+  dragging would. On a phone the toggle reads **List | Board**, the table becomes stacked rows with a
+  **More** button and the board becomes status tabs. **Filters** opens a panel with the minimum score,
+  work mode, maximum distance, the temporary office days and *Show excluded / closed / hidden*; the
+  button says how many are set, and each one is also a chip under the toolbar that removes it.
 - **Tracking and tidying**: set each job's status (to review, shortlisted, applied, interviewing,
   rejected, not interested). Moving a job to *Applied* keeps the date: the card and the job page
   show *Applied* and the date while it stays there (moved away and back, the latest move; a job
