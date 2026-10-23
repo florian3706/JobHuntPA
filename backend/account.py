@@ -44,11 +44,11 @@ router = APIRouter(prefix="/api/account", tags=["account"])
 
 # The ids in THEMES (frontend/common.js); tests/test_wizard.py checks the two lists agree.
 THEME_IDS = frozenset({
-    "system", "dark", "light", "catppuccin-latte", "catppuccin-frappe", "catppuccin-macchiato", "catppuccin-mocha",
-    "rose-pine", "rose-pine-moon", "rose-pine-dawn", "nord", "nord-light", "kanagawa-wave", "kanagawa-dragon",
-    "kanagawa-lotus", "everforest-dark", "everforest-light", "dyslexia", "dyslexia-dark", "protanomaly",
-    "protanomaly-dark", "deuteranomaly", "deuteranomaly-dark", "tritanomaly", "tritanomaly-dark", "dichromacy",
-    "dichromacy-dark", "monochromacy", "monochromacy-dark",
+    "system", "vanilla-dark", "vanilla-light", "dark", "light", "catppuccin-latte", "catppuccin-frappe",
+    "catppuccin-macchiato", "catppuccin-mocha", "rose-pine", "rose-pine-moon", "rose-pine-dawn", "nord", "nord-light",
+    "kanagawa-wave", "kanagawa-dragon", "kanagawa-lotus", "everforest-dark", "everforest-light", "dyslexia",
+    "dyslexia-dark", "protanomaly", "protanomaly-dark", "deuteranomaly", "deuteranomaly-dark", "tritanomaly",
+    "tritanomaly-dark", "dichromacy", "dichromacy-dark", "monochromacy", "monochromacy-dark",
 })
 MAX_STEP = 20
 SHORT_PATH_LAST_STEP = 3  # on the short path: 1 AI provider, 2 theme, 3 "keep your current settings or review them"

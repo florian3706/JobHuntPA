@@ -867,14 +867,17 @@ function officeHtml(job) {
 
 /* ================= THEMES ================= */
 // A per-browser display preference, as in ProjectTimeline. The stored value may
-// be "system", which follows the OS between Light and Dark. themes.css has one
+// be "system", which follows the OS between Vanilla Light and Vanilla Dark; with
+// nothing stored (a new install) the theme is Vanilla Dark. themes.css has one
 // block per theme; each page's <head> script applies the theme before first
 // paint, and initTheme() keeps it in step afterwards (and across open tabs).
 // The Settings tab chooses it with createThemePicker(), which the sign-up wizard
 // (docs/design/accounts.md, Phase K) reuses as its first step.
 const DYSLEXIA_FONT = 'Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400';
 const THEMES = [
-  { id: 'system', label: 'System', family: 'JobHuntPA', mode: 'auto', note: 'follows this device' },
+  { id: 'system', label: 'System', family: 'Vanilla', mode: 'auto', note: 'follows this device' },
+  { id: 'vanilla-dark', label: 'Vanilla Dark', family: 'Vanilla', mode: 'dark' },
+  { id: 'vanilla-light', label: 'Vanilla Light', family: 'Vanilla', mode: 'light' },
   { id: 'dark', label: 'Dark', family: 'JobHuntPA', mode: 'dark' },
   { id: 'light', label: 'Light', family: 'JobHuntPA', mode: 'light' },
   { id: 'catppuccin-latte', label: 'Catppuccin Latte', family: 'Catppuccin', mode: 'light' },
@@ -905,17 +908,18 @@ const THEMES = [
   { id: 'monochromacy-dark', label: 'Monochromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'greys only' },
 ];
 const THEME_KEY = 'jobhunt.theme';
+const DEFAULT_THEME = 'vanilla-dark'; // also in each page's first-paint script
 const MODE_LABEL = { light: 'Light', dark: 'Dark', auto: 'Light or dark' };
 
 function storedTheme() {
   try {
     const t = localStorage.getItem(THEME_KEY);
-    return THEMES.some((x) => x.id === t) ? t : 'dark';
-  } catch { return 'dark'; }
+    return THEMES.some((x) => x.id === t) ? t : DEFAULT_THEME;
+  } catch { return DEFAULT_THEME; }
 }
 
 function resolveTheme(pref) {
-  return pref === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : pref;
+  return pref === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'vanilla-dark' : 'vanilla-light') : pref;
 }
 
 function applyTheme(pref = storedTheme()) {
@@ -988,7 +992,7 @@ function createThemePicker({ legend = 'Theme', name = 'theme', onChange = null }
   const card = (t) => {
     const id = `${name}-opt-${t.id}`;
     const preview = t.id === 'system'
-      ? `<span class="theme-split">${themePreviewHtml('light')}${themePreviewHtml('dark')}</span>`
+      ? `<span class="theme-split">${themePreviewHtml('vanilla-light')}${themePreviewHtml('vanilla-dark')}</span>`
       : themePreviewHtml(t.id);
     return `<label class="theme-card" for="${id}">
         ${preview}
@@ -1014,7 +1018,7 @@ function createThemePicker({ legend = 'Theme', name = 'theme', onChange = null }
     if (!radio) return;
     setTheme(radio.value);
     const t = THEMES.find((x) => x.id === radio.value);
-    announce(`Theme: ${t.label}${t.id === 'system' ? `, now ${resolveTheme('system') === 'dark' ? 'Dark' : 'Light'}` : ''}.`);
+    announce(`Theme: ${t.label}${t.id === 'system' ? `, now ${resolveTheme('system') === 'vanilla-dark' ? 'Vanilla Dark' : 'Vanilla Light'}` : ''}.`);
     onChange?.(radio.value);
   });
   document.addEventListener('themechange', sync); // chosen in another tab

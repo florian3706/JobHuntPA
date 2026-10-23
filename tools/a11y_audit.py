@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """WCAG 2.2 AA audit of every page and dialog in a real browser (axe-core + Playwright), on fictional data.
 
-    python3 tools/a11y_audit.py NODE_MODULES [--widths 320,1280] [--themes light,dark,dyslexia,deuteranomaly]
+    python3 tools/a11y_audit.py NODE_MODULES [--widths 320,1280] [--themes vanilla-dark,vanilla-light,light,dark,dyslexia,deuteranomaly]
                                 [--only index,login] [--json report.json] [--keep]
 
 NODE_MODULES is a folder that holds ``axe-core/axe.min.js`` (``npm install axe-core`` in an empty folder makes it)
@@ -51,7 +51,7 @@ import readme_screenshots as shots  # noqa: E402  (its server environment: demo 
 DEMO_EMAIL, DEMO_PASSWORD = shots.DEMO_EMAIL, shots.DEMO_PASSWORD
 PASSWORD = "an audit password 1"
 AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]
-DEFAULT_THEMES = ["light", "dark", "dyslexia", "deuteranomaly"]
+DEFAULT_THEMES = ["vanilla-dark", "vanilla-light", "light", "dark", "dyslexia", "deuteranomaly"]
 DEFAULT_WIDTHS = [320, 1280]
 HEIGHT = 900
 REAL_DATA = (ROOT / "data").resolve()
@@ -1469,7 +1469,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("node_modules", type=Path, nargs="?", help="folder with axe-core/ (and leaflet/dist) inside")
     parser.add_argument("--widths", default=",".join(map(str, DEFAULT_WIDTHS)))
-    parser.add_argument("--themes", default=",".join(DEFAULT_THEMES), help="comma-separated theme ids, or 'all' (28 themes)")
+    parser.add_argument("--themes", default=",".join(DEFAULT_THEMES), help="comma-separated theme ids, or 'all' (30 themes)")
     parser.add_argument("--only", default="", help="comma-separated scenario groups (--list shows them)")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--best-practice", action="store_true", help="also run axe's best-practice rules (reported separately)")

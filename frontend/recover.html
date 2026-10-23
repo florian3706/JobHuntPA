@@ -7,9 +7,9 @@
   <script>
     // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
     (function () {
-      var t = "dark";
-      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
-      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      var t = "vanilla-dark";
+      try { t = localStorage.getItem("jobhunt.theme") || "vanilla-dark"; } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark" : "vanilla-light";
       document.documentElement.setAttribute("data-theme", t);
     })();
   </script>

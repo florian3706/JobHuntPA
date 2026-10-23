@@ -27,15 +27,16 @@ UI = 3.0  # 1.4.11: user interface components and graphical objects
 
 GROUNDS = ("bg", "panel", "card", "field")  # page, chrome, cards, wells (inputs, score badges)
 
-# (foreground token, background, minimum, where it is used). A background is a token, or
+# (foreground token, background, minimum, where it is used, optional). A background is a token, or
 # (token, percent, ground) for color-mix(in srgb, var(--token) percent%, transparent) laid on a ground.
-PAIRS: list[tuple[str, object, float, str]] = []
+# An optional pair is checked only in the themes that set both its slots (the --lbl-* label fills).
+PAIRS: list[tuple[str, object, float, str, bool]] = []
 
 
-def _add(fgs, bgs, minimum, where):
+def _add(fgs, bgs, minimum, where, optional=False):
     for fg in fgs:
         for bg in bgs:
-            PAIRS.append((fg, bg, minimum, where))
+            PAIRS.append((fg, bg, minimum, where, optional))
 
 
 # Text on the grounds
@@ -60,7 +61,16 @@ _add(["text", "muted", "accent-text"], [("accent", 16, "panel")], TEXT, "your me
 # Non-text contrast
 _add(["focus"], GROUNDS, UI, "keyboard focus ring")
 _add(["focus"], [("accent", 10, "bg"), ("warn", 12, "panel"), ("warn", 12, "card")], UI, "focus ring on the bulk-action bar and on notices")
-_add(["accent"], GROUNDS, UI, "selected tab, chip and map mode; checked boxes and radio buttons; progress bar")
+# The edge of an --accent fill. --accent-edge is --accent itself in every theme but Vanilla Dark, where the fill
+# (#008013) is under 3:1 on the grounds and the fill's 1 px border in --accent-edge is what people see.
+_add(["accent-edge"], GROUNDS, UI, "edge of --accent fills: primary buttons, selected tab, chip and map mode, "
+     "switches, progress bar (drawn in --accent-edge)")
+_add(["check"], GROUNDS, UI, "checked boxes and radio buttons, pressed chips")
+_add(["on-check"], ["check"], TEXT, "the tick in a checked box, the text of a pressed chip")
+_add(["warn-fill"], ("bg", "panel", "card"), UI, "caution borders and icons (notices, caution labels)")
+# Filled status labels (the Vanilla themes); elsewhere these slots are unset and labels are outlined text
+for _kind in ("neu", "pos", "cau", "neg", "inf", "spe"):
+    _add([f"lbl-{_kind}-fg"], [f"lbl-{_kind}-bg"], TEXT, "filled status labels", optional=True)
 _add(["border-strong"], ("bg", "panel", "card"), UI, "borders of text fields, selects, tag inputs and checkboxes")
 _add(["ok", "quiet", "special", "info", "warn"], ["bg"], UI, "map legend swatches (job dots and pin rings)")
 
@@ -118,9 +128,30 @@ def over(fg, bg):
     return tuple(a * f + (1 - a) * g for f, g in zip(fg[:3], bg[:3])) + (1.0,)
 
 
+_VAR = re.compile(r"^var\(\s*--([\w-]+)\s*(?:,[^)]*)?\)$")
+
+
+def is_set(tokens: dict[str, str], name: str) -> bool:
+    """Whether the theme gives the slot a colour (directly or through var()); ``initial`` leaves it unset."""
+    for _ in range(10):
+        value = tokens.get(name, "").strip()
+        ref = _VAR.match(value)
+        if not ref:
+            return bool(_COLOR.search(value))
+        name = ref.group(1)
+    return False
+
+
 def token(tokens: dict[str, str], name: str):
     if name not in tokens:
         raise KeyError(f"--{name} is not defined")
+    for _ in range(10):  # a fallback slot such as --check: var(--accent)
+        ref = _VAR.match(tokens[name].strip())
+        if not ref:
+            break
+        name = ref.group(1)
+        if name not in tokens:
+            raise KeyError(f"--{name} is not defined")
     found = _COLOR.search(tokens[name])
     if not found:
         raise ValueError(f"--{name}: {tokens[name]!r} is not a colour")
@@ -147,7 +178,9 @@ def check(css: str | None = None) -> list[dict]:
     themes = parse_themes(css if css is not None else THEMES_CSS.read_text(encoding="utf-8"))
     rows = []
     for theme, tokens in themes.items():
-        for fg, bg, minimum, where in PAIRS:
+        for fg, bg, minimum, where, optional in PAIRS:
+            if optional and not all(is_set(tokens, t) for t in (fg, bg if isinstance(bg, str) else bg[0])):
+                continue
             back = resolve(tokens, bg)
             value = ratio(over(token(tokens, fg), back), back)
             rows.append({"theme": theme, "fg": fg, "bg": describe(bg), "ratio": value, "min": minimum,

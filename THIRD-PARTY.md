@@ -80,7 +80,7 @@ install's `site-packages`.
 
 | What | Licence | Where it comes in |
 | --- | --- | --- |
-| [Ubuntu Sans](https://design.ubuntu.com/font) (variable, `UbuntuSans[wdth,wght].woff2`) and Ubuntu Sans Mono (`UbuntuSansMono[wght].woff2`) | [Ubuntu Font Licence 1.0](https://ubuntu.com/legal/font-licence) | `frontend/fonts/`, loaded by `frontend/styles.css` for every theme but the Dyslexia ones, from the Vanilla redesign on; the licence text is beside them as `frontend/fonts/UFL-1.0.txt` |
+| [Ubuntu Sans](https://design.ubuntu.com/font) (variable, `UbuntuSans[wdth,wght].woff2`) and Ubuntu Sans Mono (`UbuntuSansMono[wght].woff2`) | [Ubuntu Font Licence 1.0](https://ubuntu.com/legal/font-licence) | `frontend/fonts/`, Canonical's own variable WOFF2 builds (from [Ubuntu-Sans-fonts](https://github.com/canonical/Ubuntu-Sans-fonts) and [Ubuntu-Sans-Mono-fonts](https://github.com/canonical/Ubuntu-Sans-Mono-fonts), `fonts/webfont/`), loaded by `frontend/themes.css` for every theme but the Dyslexia ones, from the Vanilla redesign on; the licence text is beside them as `frontend/fonts/UFL-1.0.txt` |
 
 **The decision (October 2026).** The Ubuntu Font Licence is the one licence here that the Free Software Foundation
 does not list as GPL-compatible. It is used all the same, for this reason: the font files are data the browser

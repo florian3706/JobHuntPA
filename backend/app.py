@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -136,6 +137,9 @@ class FrontendFiles(StaticFiles):
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+# The Ubuntu fonts in frontend/fonts/. Python before 3.13 (and a Windows registry without the type) doesn't know
+# .woff2, and the file would go out as text/plain.
+mimetypes.add_type("font/woff2", ".woff2")
 STATUSES = ("to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested")
 Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested"]
 

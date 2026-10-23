@@ -1,6 +1,28 @@
+/* Ubuntu Sans and Ubuntu Sans Mono, shipped in frontend/fonts/ (Canonical's own variable WOFF2 builds, unmodified,
+   under the Ubuntu Font Licence 1.0 in frontend/fonts/UFL-1.0.txt; THIRD-PARTY.md says why a font licence is fine
+   here). Served by the app itself, so they need no outside host (font-src 'self'). Every theme's type is Ubuntu Sans
+   except the Dyslexia themes, which keep Atkinson Hyperlegible. */
+@font-face {
+  font-family: "Ubuntu Sans";
+  src: url("fonts/UbuntuSans[wdth,wght].woff2") format("woff2");
+  font-weight: 100 800;
+  font-stretch: 75% 100%;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Ubuntu Sans Mono";
+  src: url("fonts/UbuntuSansMono[wght].woff2") format("woff2");
+  font-weight: 100 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* JobHuntPA themes: every theme fills the same slots and changes nothing else.
 
-   Dark is the app's own look. Light, Catppuccin's four flavours and the themes
+   Vanilla Light and Vanilla Dark carry the default colours of Ubuntu's Vanilla framework and are the
+   app's defaults (Vanilla Dark for a new install; System switches between the two). Dark is the app's
+   look before the Vanilla redesign. Light, Catppuccin's four flavours and the themes
    built for a way of seeing or reading (Dyslexia, Protanomaly, Deuteranomaly,
    Tritanomaly, Dichromacy, Monochromacy, each in light and dark) are ported
    from ProjectTimeline, where the colour-vision palettes were simulated.
@@ -56,8 +78,15 @@
   /* Outlines drawn on the map. The OpenStreetMap tiles are light in every theme, so this one dark ink
      (3:1 and more against them) is shared by all themes rather than set per theme. */
   --map-ink: #1d232c;
+  /* Slots added with the Vanilla redesign. Only the Vanilla themes set them; elsewhere they fall back to an
+     older slot (here and in the [data-theme] rule below), so no other theme block needs them. */
+  --brand: var(--accent);           /* the logo tag (decorative) */
+  --warn-fill: var(--warn);         /* caution borders, icons and fills */
+  --check: var(--accent);           /* a checked checkbox or radio, a pressed chip */
+  --on-check: var(--on-accent);     /* the tick or text on --check */
+  --accent-edge: var(--accent);     /* the border of a primary button (an --accent fill) */
   /* Type (the dyslexia themes move these) */
-  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-ui: "Ubuntu Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --leading: normal;
   --tracking: normal;
   --word-spacing: normal;
@@ -67,10 +96,124 @@
 /* Type for every theme, so a preview of a plain theme inside a page in a Dyslexia theme isn't
    drawn in the dyslexia type. The Dyslexia themes set their own below. */
 [data-theme] {
-  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-ui: "Ubuntu Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --leading: normal;
   --tracking: normal;
   --word-spacing: normal;
+  /* The new slots' fallbacks, per element, so a theme preview resolves them against its own theme. */
+  --brand: var(--accent);
+  --warn-fill: var(--warn);
+  --check: var(--accent);
+  --on-check: var(--on-accent);
+  --accent-edge: var(--accent);
+  /* Status label fills: only the Vanilla themes fill labels; every other theme leaves these unset (so a preview
+     inside a Vanilla page doesn't inherit them) and its labels stay outlined in --ok, --warn, --danger, --info
+     and --special. */
+  --lbl-neu-bg: initial; --lbl-neu-fg: initial;
+  --lbl-pos-bg: initial; --lbl-pos-fg: initial;
+  --lbl-cau-bg: initial; --lbl-cau-fg: initial;
+  --lbl-neg-bg: initial; --lbl-neg-fg: initial;
+  --lbl-inf-bg: initial; --lbl-inf-fg: initial;
+  --lbl-spe-bg: initial; --lbl-spe-fg: initial;
+}
+
+/* Vanilla Light: Ubuntu's Vanilla framework, its default (light) theme.
+   Values from Vanilla's scss/_settings_colors.scss (main branch, October 2026): grounds
+   $colors--light-theme--background-alt / -default / -inputs; text $colors--light-theme--text-default; --muted and
+   --border are its translucent text-muted (black at 60%) and border-default (black at 20%) laid on white;
+   --border-strong border-high-contrast; --accent and --ok $color-positive; --accent-text $color-link; --focus
+   $color-focus; --danger $color-negative; --info $color-information; --special $color-link-visited (Vanilla's
+   purple); --accent-soft the base button's fill (#f2f2f2); --brand $color-ubuntu; --warn-fill $color-caution;
+   the --lbl-* pairs are Vanilla's filled status labels.
+   Not Vanilla's: --warn, caution used as text. $color-caution #cc7900 is under 4.5:1 as text on these grounds, so
+   the design took #a86300, a darker step of the same hue; #cc7900 stays as --warn-fill (borders, icons, the caution
+   label's fill), where 3:1 is the bar.
+   Adjusted for AA in the pairs the app uses today (tools/theme_contrast.py: status text on the field ground, text
+   on the tinted work-mode badges and notices, the focus ring on tinted bars), before in brackets, each the same hue
+   a little darker: ok #0d781d (#0e8420), warn #995a00 (#a86300), danger #c6162b (#c7162b), accent-text #0065cb
+   (#0066cc), focus #0983ff (#2e96ff). --accent and the label fills keep Vanilla's #0e8420. */
+[data-theme="vanilla-light"] {
+  --bg: #f7f7f7;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --field: #f5f5f5;
+  --border: #cccccc;
+  --border-strong: #707070;
+  --text: #000000;
+  --muted: #666666;
+  --accent: #0e8420;
+  --accent-text: #0065cb;
+  --accent-soft: #f2f2f2;
+  --on-accent: #ffffff;
+  --focus: #0983ff;
+  --ok: #0d781d;
+  --warn: #995a00;
+  --danger: #c6162b;
+  --info: #24598f;
+  --special: #7d42b8;
+  --quiet: #666666;
+  --shadow: 0 1px 1px rgba(0, 0, 0, 0.15), 0 2px 8px rgba(0, 0, 0, 0.1);
+  --brand: #e95420;
+  --warn-fill: #cc7900;
+  --check: #000000;
+  --on-check: #ffffff;
+  --accent-edge: #0e8420;
+  --lbl-neu-bg: #666666; --lbl-neu-fg: #ffffff;
+  --lbl-pos-bg: #0e8420; --lbl-pos-fg: #ffffff;
+  --lbl-cau-bg: #cc7900; --lbl-cau-fg: #000000;
+  --lbl-neg-bg: #c7162b; --lbl-neg-fg: #ffffff;
+  --lbl-inf-bg: #24598f; --lbl-inf-fg: #ffffff;
+  --lbl-spe-bg: #7d42b8; --lbl-spe-fg: #ffffff;
+  --leading: 1.5;
+  color-scheme: light;
+}
+
+/* Vanilla Dark: Vanilla's dark theme, the default for a new install. Values from the same file: grounds
+   $colors--dark-theme--background-alt / -default / -inputs, --accent-soft background-hover; --muted and --border
+   white at 60% and 20% laid on #262626; --border-strong border-high-contrast; --accent $color-positive-dark;
+   --accent-text $color-link-dark; --focus $color-focus-dark; --ok, --warn, --danger and --info the dark theme's
+   tinted borders; --special $color-link-visited-dark. The label fills are the same as in Vanilla Light.
+   One pair needed a fix: the primary button's fill, --accent #008013, is only 2.95:1 against the #262626 card,
+   under the 3:1 a control's edge needs. The fill stays Vanilla's (white text on it is 5:1); the slot --accent-edge
+   is #939393 here (the control border colour, 4.9:1 on the card) and draws the primary button's 1 px border, so the
+   button's edge meets 3:1. In every other theme --accent-edge is just --accent.
+   Adjusted for AA in the pairs the app uses today (status text on the field ground, text on the tinted badges and
+   notices), before in brackets, each the same hue a little lighter: ok #74ae7d (#62a36c), warn
+   #cf933d (#c48831; --warn-fill keeps it), danger #d5858f (#d17b85), accent-text #71a0d0 (#6699cc). */
+[data-theme="vanilla-dark"] {
+  --bg: #202020;
+  --panel: #262626;
+  --card: #262626;
+  --field: #2f2f2f;
+  --border: #525252;
+  --border-strong: #939393;
+  --text: #ffffff;
+  --muted: #a8a8a8;
+  --accent: #008013;
+  --accent-text: #71a0d0;
+  --accent-soft: #313131;
+  --on-accent: #ffffff;
+  --focus: #99ccff;
+  --ok: #74ae7d;
+  --warn: #cf933d;
+  --danger: #d5858f;
+  --info: #5ea6ed;
+  --special: #a679d2;
+  --quiet: #a8a8a8;
+  --shadow: 0 1px 1px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --brand: #e95420;
+  --warn-fill: #c48831;
+  --check: #ffffff;
+  --on-check: #000000;
+  --accent-edge: #939393;
+  --lbl-neu-bg: #666666; --lbl-neu-fg: #ffffff;
+  --lbl-pos-bg: #0e8420; --lbl-pos-fg: #ffffff;
+  --lbl-cau-bg: #cc7900; --lbl-cau-fg: #000000;
+  --lbl-neg-bg: #c7162b; --lbl-neg-fg: #ffffff;
+  --lbl-inf-bg: #24598f; --lbl-inf-fg: #ffffff;
+  --lbl-spe-bg: #7d42b8; --lbl-spe-fg: #ffffff;
+  --leading: 1.5;
+  color-scheme: dark;
 }
 
 /* On paper: ProjectTimeline's own light palette.

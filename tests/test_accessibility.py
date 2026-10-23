@@ -34,6 +34,10 @@ REMOVED_FILES = ("billing.html", "billing.js", "stripe-settings.js", "free-searc
                  "admin.html", "admin.js", "dialogs.js", "signup.html", "signup.js")
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 FOCUSABLE = {"a", "button", "input", "select", "textarea", "summary"}
+# Slots added with the Vanilla redesign that fall back to an older slot outside the Vanilla themes (themes.css)
+FALLBACK_SLOTS = {"brand": "accent", "warn-fill": "warn", "check": "accent", "on-check": "on-accent",
+                  "accent-edge": "accent"}
+LABEL_SLOTS = [f"lbl-{kind}-{part}" for kind in ("neu", "pos", "cau", "neg", "inf", "spe") for part in ("bg", "fg")]
 
 
 class ThemeContrastTest(unittest.TestCase):
@@ -56,9 +60,137 @@ class ThemeContrastTest(unittest.TestCase):
         for theme in themes:
             block = re.search(r'\[data-theme="%s"\][^{]*\{([^}]*)\}' % re.escape(theme), css).group(1)
             own = set(re.findall(r"--([\w-]+)\s*:", block))
-            # --map-ink and the type settings are shared from :root; every colour slot is set per theme.
-            missing = {t for t in slots - own if t not in ("map-ink", "font-ui", "leading", "tracking", "word-spacing")}
+            # --map-ink and the type settings are shared from :root, and the slots added with the Vanilla redesign
+            # fall back to an older slot there; every other colour slot is set per theme.
+            missing = {t for t in slots - own if t not in ("map-ink", "font-ui", "leading", "tracking", "word-spacing")
+                       and t not in FALLBACK_SLOTS}
             self.assertEqual(missing, set(), f"{theme} doesn't set {sorted(missing)}")
+
+    def test_the_vanilla_themes_set_every_slot_and_fill_their_labels(self):
+        css = (FRONTEND / "themes.css").read_text(encoding="utf-8")
+        themes = theme_contrast.parse_themes(css)
+        for theme in ("vanilla-light", "vanilla-dark"):
+            block = re.search(r'\[data-theme="%s"\] \{([^}]*)\}' % theme, css).group(1)
+            own = set(re.findall(r"--([\w-]+)\s*:", block))
+            self.assertEqual(set(FALLBACK_SLOTS) - own, set(), f"{theme} sets every new slot itself")
+            self.assertEqual(set(LABEL_SLOTS) - own, set(), f"{theme} fills its status labels")
+            for slot in LABEL_SLOTS + list(FALLBACK_SLOTS):
+                self.assertTrue(theme_contrast.is_set(themes[theme], slot), f"{theme}: --{slot}")
+        # Vanilla's own values where AA allows (themes.css lists the few that were moved, and why)
+        dark = themes["vanilla-dark"]
+        self.assertEqual((dark["accent"], dark["accent-edge"], dark["card"]), ("#008013", "#939393", "#262626"))
+        self.assertEqual(themes["vanilla-light"]["warn-fill"], "#cc7900")
+        # The other themes leave the label fills unset (initial), so a preview inside a Vanilla page stays outlined,
+        # and their new slots resolve to the slot they fall back to.
+        shared = re.search(r"\n\[data-theme\] \{([^}]*)\}", css).group(1)
+        for slot in LABEL_SLOTS:
+            self.assertRegex(shared, r"--%s:\s*initial;" % slot)
+        for slot, fallback in FALLBACK_SLOTS.items():
+            self.assertRegex(shared, r"--%s:\s*var\(--%s\);" % (slot, fallback))
+        for theme, tokens in themes.items():
+            if not theme.startswith("vanilla-"):
+                self.assertFalse(any(theme_contrast.is_set(tokens, slot) for slot in LABEL_SLOTS), theme)
+                self.assertEqual(theme_contrast.token(tokens, "accent-edge"), theme_contrast.token(tokens, "accent"), theme)
+
+    def test_ubuntu_sans_in_every_theme_but_the_dyslexia_ones(self):
+        css = (FRONTEND / "themes.css").read_text(encoding="utf-8")
+        for theme, tokens in theme_contrast.parse_themes(css).items():
+            block = re.search(r'\[data-theme="%s"\][^{]*\{([^}]*)\}' % re.escape(theme), css).group(1)
+            font = re.search(r"--font-ui:\s*([^;]+);", block)
+            if theme.startswith("dyslexia"):
+                self.assertTrue(font and font.group(1).startswith('"Atkinson Hyperlegible"'), theme)
+            else:  # the shared type, or (the :root block) the same stack
+                self.assertTrue(font is None or font.group(1).startswith('"Ubuntu Sans", '), theme)
+        shared = re.search(r"\n\[data-theme\] \{([^}]*)\}", css).group(1)
+        root = re.search(r":root, \[data-theme=\"dark\"\] \{([^}]*)\}", css).group(1)
+        for where in (shared, root):
+            self.assertIn('--font-ui: "Ubuntu Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;', where)
+
+    def test_vanilla_dark_is_the_default_and_system_follows_the_vanilla_pair(self):
+        common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        self.assertIn("const DEFAULT_THEME = 'vanilla-dark';", common)
+        self.assertIn("? 'vanilla-dark' : 'vanilla-light') : pref;", common)
+        ids = re.findall(r"\{ id: '([\w-]+)', label: '([^']+)', family: '([^']+)'", common)
+        self.assertEqual(ids[:3], [("system", "System", "Vanilla"), ("vanilla-dark", "Vanilla Dark", "Vanilla"),
+                                   ("vanilla-light", "Vanilla Light", "Vanilla")], "the Vanilla family is listed first")
+        self.assertIn(("dark", "Dark", "JobHuntPA"), ids)
+        self.assertIn(("light", "Light", "JobHuntPA"), ids)
+        for page in PAGES:
+            src = (FRONTEND / page).read_text(encoding="utf-8")
+            self.assertIn('var t = "vanilla-dark";', src, page)
+            self.assertIn('localStorage.getItem("jobhunt.theme") || "vanilla-dark"', src, page)
+            self.assertIn('matches ? "vanilla-dark" : "vanilla-light";', src, page)
+            self.assertNotIn('|| "dark"', src, page)
+
+
+class FontsTest(unittest.TestCase):
+    """Ubuntu Sans and Ubuntu Sans Mono ship in frontend/fonts/ with their licence and come from this server; the only
+    font loaded from another site is the Dyslexia themes' Atkinson Hyperlegible, and only while one is on."""
+    FILES = ("UbuntuSans[wdth,wght].woff2", "UbuntuSansMono[wght].woff2")
+
+    def test_the_font_files_and_their_licence_ship_with_the_app(self):
+        for name in self.FILES:
+            data = (FRONTEND / "fonts" / name).read_bytes()
+            self.assertEqual(data[:4], b"wOF2", name)
+        licence = (FRONTEND / "fonts" / "UFL-1.0.txt").read_text(encoding="utf-8")
+        self.assertIn("UBUNTU FONT LICENCE Version 1.0", licence)
+        third_party = (ROOT / "THIRD-PARTY.md").read_text(encoding="utf-8")
+        for name in (*self.FILES, "UFL-1.0.txt"):
+            self.assertIn(f"`{name}`" if name != "UFL-1.0.txt" else "frontend/fonts/UFL-1.0.txt", third_party)
+        shipped = {p.name for p in (FRONTEND / "fonts").iterdir()}
+        self.assertEqual(shipped, {*self.FILES, "UFL-1.0.txt"}, "every font file in frontend/fonts/ has a row in THIRD-PARTY.md")
+
+    def test_font_faces_point_at_the_shipped_files(self):
+        css = (FRONTEND / "themes.css").read_text(encoding="utf-8")
+        faces = re.findall(r"@font-face\s*\{([^}]*)\}", css)
+        families = {}
+        for face in faces:
+            family = re.search(r'font-family:\s*"([^"]+)"', face).group(1)
+            src = re.findall(r'url\("([^"]+)"\)', face)
+            self.assertEqual(len(src), 1, family)
+            self.assertTrue((FRONTEND / "themes.css").parent.joinpath(src[0]).is_file(), src[0])
+            self.assertIn("font-display: swap;", face, family)
+            families[family] = face
+        self.assertEqual(set(families), {"Ubuntu Sans", "Ubuntu Sans Mono"})
+        self.assertIn("font-weight: 100 800;", families["Ubuntu Sans"])
+        self.assertIn("font-stretch: 75% 100%;", families["Ubuntu Sans"])
+        self.assertIn("font-weight: 100 700;", families["Ubuntu Sans Mono"])
+        for page in PAGES:  # every page loads themes.css, so every page has the faces
+            self.assertIn('<link rel="stylesheet" href="./themes.css" />', (FRONTEND / page).read_text(encoding="utf-8"), page)
+
+    def test_no_page_or_stylesheet_loads_fonts_from_another_site_but_the_dyslexia_one(self):
+        hosts = re.compile(r"fonts\.(googleapis|gstatic)\.com|use\.typekit|fonts\.bunny|fontshare|assets\.ubuntu\.com", re.I)
+        for path in sorted(FRONTEND.glob("*.html")) + sorted(FRONTEND.glob("*.css")):
+            src = path.read_text(encoding="utf-8")
+            self.assertIsNone(hosts.search(src), f"{path.name} loads a font from another site")
+            self.assertNotIn("@import", src, path.name)
+        for path in sorted(FRONTEND.glob("*.js")):
+            src = path.read_text(encoding="utf-8")
+            found = [m.group(0) for m in hosts.finditer(src)]
+            if path.name == "common.js":
+                # applyTheme(): the Dyslexia themes' font, the one stylesheet from Google Fonts
+                self.assertEqual(found, ["fonts.googleapis.com"], path.name)
+                self.assertIn("link.href = `https://fonts.googleapis.com/css2?family=${font}&display=swap`;", src)
+                fonted = re.findall(r"\{ id: '([\w-]+)'[^}]*font: DYSLEXIA_FONT", src)
+                self.assertEqual(fonted, ["dyslexia", "dyslexia-dark"])
+            else:
+                self.assertEqual(found, [], path.name)
+
+    def test_the_app_serves_the_fonts_to_anyone(self):
+        from tests import helpers  # sets the test environment first
+        from fastapi.testclient import TestClient
+        from backend.app import app
+        helpers.started()
+        with TestClient(app) as c:  # signed out: the sign-in page needs them too
+            for name, kind in ((self.FILES[0], "font/woff2"), (self.FILES[1], "font/woff2"),
+                               ("UFL-1.0.txt", "text/plain")):
+                for path in (f"/fonts/{name}", "/fonts/" + name.replace("[", "%5B").replace("]", "%5D")):
+                    r = c.get(path)
+                    self.assertEqual(r.status_code, 200, path)
+                    self.assertEqual(r.headers["content-type"].split(";")[0], kind, path)
+                    self.assertEqual(r.content, (FRONTEND / "fonts" / name).read_bytes(), path)
+            policy = c.get("/fonts/" + self.FILES[0]).headers["content-security-policy"]
+            self.assertIn("font-src 'self' https://fonts.gstatic.com", policy)
 
     def test_ratio_maths(self):
         black, white = (0, 0, 0, 1), (1, 1, 1, 1)

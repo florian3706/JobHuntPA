@@ -48,9 +48,10 @@ address ([settings for this JobHuntPA](#settings-for-this-jobhuntpa)), and [your
 
 ![The Settings tab: scheduled searches, the AI provider with its reasoning levels, and the Rescore buttons](docs/screenshots/settings.png)
 
-**Themes**: Dark (above), Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and Everforest
-families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from live
-previews on the Settings tab.
+**Themes**: Vanilla Dark (the default) and Vanilla Light, in the colours and the Ubuntu Sans type of
+Ubuntu's Vanilla design, then Dark (above), Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and
+Everforest families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from
+live previews on the Settings tab.
 
 ![The Theme card on the Settings tab: each theme is a card with a live preview of the app in it, grouped by family](docs/screenshots/theme-picker.png)
 
@@ -761,14 +762,17 @@ limits on searches. The AI features use the provider and key set on the Settings
   **Location OK** / **Too far**. The office then drives the location filter and distance.
 - **Themes** (Settings > Theme, saved with your account and remembered by the browser): each theme is a card with a small live
   preview of the app in it; click or tap one, or move through them with the arrow keys, and it
-  applies at once (open job pages follow). Dark (the default), Light, or *System* to follow your
-  computer; Catppuccin (Latte, Frappé, Macchiato, Mocha); Rosé Pine (Rosé Pine, Moon, Dawn); Nord
+  applies at once (open job pages follow). **Vanilla Dark** (the default on a new install) and
+  **Vanilla Light**, from Ubuntu's Vanilla design, or *System* to switch between those two with your
+  computer; the app's earlier Dark and Light; Catppuccin (Latte, Frappé, Macchiato, Mocha); Rosé Pine (Rosé Pine, Moon, Dawn); Nord
   (dark, and a light variant made from Nord's colours); Kanagawa (Wave, Dragon, Lotus); Everforest
   (dark and light, medium contrast); a **Dyslexia** theme (warm low-glare background, Atkinson
   Hyperlegible font, wider letter and word spacing) in light and dark; and colour-vision themes
   (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and dark. The
   family themes use their projects' official palettes; where a colour fell short of the WCAG AA
   contrast minimums it is a little lighter or darker in the same hue (themes.css lists each change).
+  Every theme but the Dyslexia ones uses Ubuntu Sans, a font that ships with the app (nothing is loaded
+  from another site for it). If you had chosen a theme before, you keep it.
   Labels, marks or shapes always accompany colours, so nothing relies on colour alone. See
   [Accessibility](#accessibility).
 - **Reasoning level** (Settings > AI provider): how long the AI thinks, set separately for scoring,
@@ -1192,7 +1196,8 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
   messages for searches, scoring, saves and errors. Form errors appear under the field they belong
   to and say how to fix it.
 - **Colour:** every theme meets 4.5:1 for text and 3:1 for field borders, the focus ring and
-  selected states (`tools/theme_contrast.py` checks 71 colour pairs per theme). Nothing is told by
+  selected states in all 30 themes (`tools/theme_contrast.py` checks 79 colour pairs per theme, 85 in
+  the Vanilla themes, which also fill status labels). Nothing is told by
   colour alone: scores are numbers, statuses and work modes are words, excluded jobs on the map are
   hollow dashed dots, the pin kinds have solid, dashed and dotted rings, and messages carry a mark.
 - **Phones and zoom:** the app works from 320 px wide, at 200% zoom and with wider text spacing
@@ -1205,7 +1210,8 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 [axe-core](https://github.com/dequelabs/axe-core) 4.14 with the WCAG 2.0, 2.1 and 2.2 A and AA rules, in
 headless Chromium (Playwright), on every page and every state of it: the dashboard's tabs, cards and
 dialogs, the job page, the sign-in, first-run and recover pages, each step of the walkthrough, at 320 and 1280 px wide in the Light, Dark, Dyslexia and
-Deuteranomaly themes (the colour contrast rule also in all 28 themes): no violations. The same run
+Deuteranomaly themes (the colour contrast rule also in all 28 themes there were then; the two Vanilla themes
+came later and are covered by `tools/theme_contrast.py` until the next run): no violations. The same run
 checked reflow at 320 px and WCAG's text spacing, watched the console (no errors, no
 Content-Security-Policy violations) and pressed Tab through the main flows (sign in, the
 walkthrough, change password, a job's status, the data export) and through every page: a visible focus ring
@@ -1363,7 +1369,8 @@ headings, a name for every control). See [Accessibility](#accessibility) for the
 
 **Browser accessibility audit:** `python3 tools/a11y_audit.py NODE_MODULES` drives every page and
 dialog in headless Chromium (Playwright) on made-up data and runs axe-core (the WCAG 2.0, 2.1 and 2.2 A
-and AA rules) on each state at 320 and 1280 px in four themes. It also checks reflow at 320 px and
+and AA rules) on each state at 320 and 1280 px in six themes (Vanilla Dark and Light, Dark, Light, Dyslexia,
+Deuteranomaly). It also checks reflow at 320 px and
 WCAG's text spacing, watches the browser console (any error or Content-Security-Policy violation is
 reported) and walks the main flows with the keyboard (sign in, the walkthrough, change
 password, a job's status, the Settings tab's cards for this JobHuntPA, the data export).
