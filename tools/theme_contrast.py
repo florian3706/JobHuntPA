@@ -80,6 +80,7 @@ for _kind in ("neu", "pos", "cau", "neg", "inf", "spe"):
     _add([f"lbl-{_kind}-fg"], [f"lbl-{_kind}-bg"], TEXT, "filled status labels", optional=True)
 _add(["border-strong"], ("bg", "panel", "card"), UI, "borders of text fields, selects, tag inputs and checkboxes")
 _add(["ok", "quiet", "special", "info", "warn"], ["bg"], UI, "map legend swatches (job dots and pin rings)")
+_add(["special"], ("card", "panel"), UI, "the border of special status labels (home pins, a summary document); their word is --text")
 
 _COLOR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)")
 

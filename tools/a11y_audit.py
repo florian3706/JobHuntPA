@@ -16,7 +16,9 @@ What it does
    never contacted (the browser's requests to them are answered by this script).
 2. Opens each page and each state of it (every tab, card, step and dialog) as the right account, at each width
    and in each theme, and runs axe-core with the WCAG 2.0/2.1/2.2 A and AA tags on it. axe is injected through the
-   browser's own channel (so the app's Content-Security-Policy stays as it is).
+   browser's own channel (so the app's Content-Security-Policy stays as it is). The theme picker's miniatures
+   (.theme-preview, aria-hidden) are left out: each is a picture of a theme, drawn in that theme's colours, and the
+   exact palettes are shown as they are on purpose (WCAG 1.4.3's "incidental" text).
 3. Watches the console on every page: any error, any Content-Security-Policy violation, any failed request and
    any HTTP status of 400 or more that the state doesn't expect is reported.
 4. Walks the main flows with the keyboard alone (Tab order, a visible focus ring, no trap, focus back after a
@@ -191,7 +193,7 @@ document.addEventListener('securitypolicyviolation', (e) => window.__audit.csp.p
 """
 
 AXE_RUN = """async () => {
-  const r = await axe.run(document, { runOnly: { type: 'tag', values: %s }, resultTypes: ['violations', 'incomplete'],
+  const r = await axe.run({ exclude: [['.theme-preview']] }, { runOnly: { type: 'tag', values: %s }, resultTypes: ['violations', 'incomplete'],
     preload: false /* axe would fetch other sites' stylesheets itself, which the CSP's connect-src refuses */ });
   const cut = (n) => ({ target: n.target.join(' >> '), html: (n.html || '').slice(0, 220),
                         summary: (n.failureSummary || '').split('\\n').slice(0, 4).join(' ').slice(0, 300) });
@@ -496,6 +498,19 @@ def dashboard(a: Auditor, ctx, hash_: str = "#jobs", state: str = "index"):
 
 # -- the dashboard ---------------------------------------------------------------------------------------
 
+def header_menu(page, target: str) -> None:
+    """On a phone the header's workspace bar and account menu fold behind Menu: open it when ``target`` is hidden."""
+    if not page.is_visible(target) and page.is_visible("#header-menu-btn"):
+        page.click("#header-menu-btn")
+        page.wait_for_selector(target, state="visible")
+
+
+def open_filters(page) -> None:
+    """The Filters panel (Show excluded, closed, hidden, ...), opened when it isn't."""
+    if page.get_attribute("#filters-toggle", "aria-expanded") != "true":
+        page.click("#filters-toggle")
+        page.wait_for_selector("#filters-panel:not([hidden])")
+
 def open_tab(page, tab: str) -> None:
     page.click(f'.tab[data-tab="{tab}"]')
     page.wait_for_selector(f"#tab-{tab}:not([hidden])")
@@ -509,12 +524,14 @@ def sc_jobs(a, w, theme):
     with a.step("index: Jobs tab"):
         a.check(page, "index: Jobs tab")
     with a.step("index: show excluded/closed/hidden"):
+        open_filters(page)
         for box in ("excluded", "closed", "hidden"):
             page.check(f"#filter-show-{box}")
         settle(page, 600)
         a.check(page, "index: Jobs tab, show excluded/closed/hidden ticked")
         for box in ("excluded", "closed", "hidden"):
             page.uncheck(f"#filter-show-{box}")
+        page.click("#filters-done")
     with a.step("index: nothing matches"):
         page.fill("#filter-search", "zzzz no such job")
         settle(page, 600)
@@ -545,6 +562,7 @@ def sc_jobs(a, w, theme):
             page.click("#run-report summary")
             a.check(page, "index: run report open")
     with a.step("index: account menu"):
+        header_menu(page, "#account-btn")
         page.click("#account-btn")
         page.wait_for_selector("#account-panel:not([hidden])")
         a.check(page, "index: account menu open")
@@ -568,6 +586,78 @@ def sc_jobs_empty(a, w, theme):
         ctx.close()
         if w >= 500:
             break
+
+
+def jobs_view(a: Auditor, w: int, theme: str, view: str, state: str):
+    """The dashboard with the Jobs tab in a view (localStorage jobhunt.jobsView, as a returning visitor has it)."""
+    ctx = a.context(a.apps["demo"], width=w, theme=theme, login=(DEMO_EMAIL, DEMO_PASSWORD),
+                    extra_ls={"jobhunt.ws": str(a.fixtures["ws"]), "jobhunt.jobsView": view})
+    page = a.page(ctx, state)
+    page.goto(f"{a.apps['demo'].base}/#jobs")
+    page.wait_for_selector(f"#jobs-{'table' if view == 'table' else 'board'}:not([hidden]) [data-job-id]")
+    settle(page, 600)
+    return ctx, page
+
+
+@scenario("index")
+def sc_jobs_filters(a, w, theme):
+    """The Filters panel, the chips for the filters that are set, and Clear all."""
+    ctx = owner_ctx(a, w, theme)
+    page = dashboard(a, ctx)
+    with a.step("index: Filters panel"):
+        page.click("#filters-toggle")
+        page.wait_for_selector("#filters-panel:not([hidden])")
+        settle(page, 300)
+        a.check(page, "index: Jobs tab, Filters panel open")
+        page.check("#filter-show-closed")
+        page.select_option("#filter-mode", index=1)
+        page.wait_for_selector("#filter-chips:not([hidden]) .p-chip")
+        settle(page, 500)
+        a.check(page, "index: Jobs tab, Filters set (count and chips)")
+        page.click("#filters-clear")
+        page.wait_for_selector("#filter-chips", state="hidden")
+        page.click("#filters-done")
+    ctx.close()
+
+
+@scenario("index")
+def sc_jobs_table(a, w, theme):
+    """The Table view (stacked rows with a More button on a phone): a row's fit summary opened, a row selected."""
+    ctx, page = jobs_view(a, w, theme, "table", "index: Jobs tab, Table view")
+    with a.step("index: Table view"):
+        a.check(page, "index: Jobs tab, Table view")
+    with a.step("index: Table view, a row opened"):
+        page.locator('#jobs-table [data-act="expand"]:visible').first.click()
+        page.wait_for_selector(".jobs-table__detail:not([hidden]) .jobs-detail")
+        settle(page, 400)
+        a.check(page, "index: Jobs tab, Table view, a row's fit summary open")
+    with a.step("index: Table view, a row selected"):
+        page.locator('#jobs-table [data-act="select"]').nth(1).check()
+        page.wait_for_selector("#bulk-bar:not([hidden])")
+        settle(page, 300)
+        a.check(page, "index: Jobs tab, Table view, a row selected (bulk bar)")
+        page.locator('#jobs-table [data-act="select"]').nth(1).uncheck()
+    ctx.close()
+
+
+@scenario("index")
+def sc_jobs_board(a, w, theme):
+    """The Board view: a column per status, the closed ones folded (on a phone a tab per column)."""
+    ctx, page = jobs_view(a, w, theme, "board", "index: Jobs tab, Board view")
+    with a.step("index: Board view"):
+        a.check(page, "index: Jobs tab, Board view")
+    with a.step("index: Board view, closed jobs shown"):
+        if page.is_visible("#board-tab-closed"):  # a phone: the columns are tabs
+            page.click("#board-tab-shortlisted")
+            settle(page, 300)
+            a.check(page, "index: Jobs tab, Board view, the second column's tab")
+            page.click("#board-tab-closed")
+            settle(page, 300)
+        page.click('#jobs-board [data-act="closed-toggle"]')
+        page.wait_for_selector("#board-closed-list:not([hidden]) [data-job-id]")
+        settle(page, 400)
+        a.check(page, "index: Jobs tab, Board view, closed jobs shown")
+    ctx.close()
 
 
 @scenario("index")
@@ -618,7 +708,12 @@ def sc_dialogs(a, w, theme):
         page.wait_for_function("() => document.querySelector('#cl-text') && document.querySelector('#cl-text').value.length > 100")
         settle(page, 400)
         a.check(page, "index: cover letter dialog")
-        page.keyboard.press("Escape")
+        page.click("#cl-download")
+        page.wait_for_selector("#cl-menu:not([hidden]) [role=menuitem]")
+        settle(page, 300)
+        a.check(page, "index: cover letter dialog, Download menu open")
+        page.keyboard.press("Escape")  # the menu
+        page.keyboard.press("Escape")  # the dialog
     with a.step("index: company modal"):
         page.click(f'{first} [data-act="company"]')
         page.wait_for_selector("#modal[open]")
@@ -656,6 +751,7 @@ def sc_more_states(a, w, theme):
     ctx = owner_ctx(a, w, theme)
     page = dashboard(a, ctx)
     with a.step("index: new workspace dialog"):
+        header_menu(page, "#ws-new")
         page.click("#ws-new")
         page.wait_for_selector("#modal[open]")
         settle(page, 300)
@@ -665,6 +761,7 @@ def sc_more_states(a, w, theme):
         a.check(page, "index: new workspace dialog with an error")
         page.keyboard.press("Escape")
     with a.step("index: rename workspace dialog"):
+        header_menu(page, "#ws-rename")
         page.click("#ws-rename")
         page.wait_for_selector("#modal[open]")
         a.check(page, "index: rename workspace dialog")
@@ -687,6 +784,8 @@ def sc_more_states(a, w, theme):
         page.click("#source-add")
         settle(page, 500)
         a.check(page, "index: Search setup, empty source added")
+        if not page.evaluate("() => document.querySelector('#starts-add').open"):
+            page.click("#starts-add summary")  # the form to add one is a disclosure
         page.click("#starts-form button[type=submit]")  # a starting point with no place typed and no pin chosen
         page.wait_for_selector("#start-place[aria-invalid=true]")
         a.check(page, "index: Search setup, starting point with no place")
@@ -895,13 +994,13 @@ def sc_wizard(a, w, theme):
             a.check(page, f"welcome: step {n} of {total} ({title.split(': ')[-1]})")
         n += 1
     with a.step("welcome: step with a problem"):
-        api.call("PUT", "/api/account/onboarding", {"step": 2})
+        api.call("PUT", "/api/account/onboarding", {"step": 3})  # the job titles: Next with none is a problem
         page.goto("about:blank")
         page.goto(f"{app.base}/welcome.html")
         page.wait_for_selector("#step-title")
         page.click("#wiz-next")
         page.wait_for_selector("#error-summary:not([hidden])")
-        a.check(page, "welcome: step 2 with an error")
+        a.check(page, "welcome: step 3 (job titles) with an error")
     ctx.close()
     api.call("PUT", "/api/account/onboarding", {"step": 1})
 
@@ -937,17 +1036,43 @@ def sc_job(a, w, theme):
     page._expect.append((404, "/api/jobs/"))
     with a.step("job.html"):
         page.goto(f"{app.base}/job.html?id=1&ws={a.fixtures['ws']}")
-        page.wait_for_selector("#job-company dl.profile")
+        page.wait_for_selector("#job-verdict-body > *")
+        page.wait_for_selector("#job-company dl.jp-dl", state="attached")  # the company profile, on its tab
         page.wait_for_function("() => !document.querySelector('#job-commute').textContent.includes('Listing the commute links')", timeout=60000)
         # the "Is this a real vacancy?" section (planted signs), its reasons collapsed until asked for
         page.wait_for_selector("#job-ghost-section:not([hidden]) .ghost-check.found", state="attached")
         settle(page, 600)
-        a.check(page, "job.html")
+        a.check(page, "job.html: Overview tab")
     with a.step("job.html: why this rating, opened"):
         page.click("#ghost-why summary")
         page.wait_for_selector("#job-ghost-section .ghost-check.found")
         settle(page, 300)
         a.check(page, "job.html: why this rating open")
+    for tab, name in (("fit", "Fit"), ("company", "Company"), ("commute", "Commute"), ("ad", "The ad"), ("chats", "Chats")):
+        with a.step(f"job.html: {name} tab"):
+            page.click(f"#tab-{tab}")
+            page.wait_for_selector(f"#panel-{tab}:not([hidden])")
+            if tab == "chats":
+                page.wait_for_selector(".chat-msg.assistant")
+            settle(page, 500)
+            a.check(page, f"job.html: {name} tab")
+    with a.step("job.html: More menu"):
+        page.click("#tab-overview")
+        page.click("#job-more")
+        page.wait_for_selector("#job-more-menu:not([hidden])")
+        a.check(page, "job.html: More menu open")
+        page.keyboard.press("Escape")
+    with a.step("job.html: cover letter window"):
+        page.click("#job-letter")  # (on a phone it sits in the bar at the bottom: the same button)
+        page.wait_for_function("() => document.querySelector('#cl-text') && document.querySelector('#cl-text').value.length > 100")
+        settle(page, 400)
+        a.check(page, "job.html: cover letter window")
+        page.click("#cl-download")
+        page.wait_for_selector("#cl-menu:not([hidden]) [role=menuitem]")
+        settle(page, 300)
+        a.check(page, "job.html: cover letter window, Download menu open")
+        page.keyboard.press("Escape")
+        page.keyboard.press("Escape")
     with a.step("job.html: a job that isn't there"):
         page.goto(f"{app.base}/job.html?id=99999&ws={a.fixtures['ws']}")
         page.wait_for_selector("#job-error:not([hidden])")
@@ -1013,6 +1138,7 @@ def sc_settings_member(a, w, theme):
         page.wait_for_selector("#jobs-empty:not([hidden]), .job-card")
         settle(page, 800)
         a.check(page, "index: Jobs tab, a new account (no jobs)")
+        header_menu(page, "#account-btn")
         page.click("#account-btn")
         a.check(page, "index: account menu of an ordinary account")
     ctx.close()
@@ -1162,10 +1288,14 @@ def kb_wizard(a, w, theme):
         page.wait_for_function("() => document.title.startsWith('Step 2')", timeout=15000)
         expect_focus(a, page, "walkthrough: step 2's heading takes focus", "step-title")
         walk(a, page, "walkthrough step 2", until=lambda i: i["id"] == "wiz-next")
+        page.keyboard.press("Enter")  # Next: step 3 is the job titles (step 2 is the theme)
+        page.wait_for_function("() => document.title.startsWith('Step 3')", timeout=15000)
+        expect_focus(a, page, "walkthrough: step 3's heading takes focus", "step-title")
+        walk(a, page, "walkthrough step 3", until=lambda i: i["id"] == "wiz-next")
         page.keyboard.press("Enter")  # no title yet: a problem
         page.wait_for_selector("#error-summary:not([hidden])")
         expect_focus(a, page, "walkthrough: a problem moves focus to the error summary", "error-summary")
-        a.check(page, "keyboard: walkthrough step 2, error summary focused")
+        a.check(page, "keyboard: walkthrough step 3, error summary focused")
         page.keyboard.press("Tab")
         page.keyboard.press("Enter")  # the summary's link goes to the field
         expect_focus(a, page, "walkthrough: the summary's link moves focus to the field", "wz-titles")
@@ -1173,8 +1303,8 @@ def kb_wizard(a, w, theme):
         page.keyboard.press("Enter")  # adds the tag; doesn't submit
         if "Product Manager" not in page.inner_text(".tag-input"):
             key_problem(a, page, "walkthrough: Enter in the title field doesn't add the title")
-        walk(a, page, "walkthrough step 2 (after the title)", until=lambda i: i["id"] == "wiz-next")
-        for n in (3, 4):
+        walk(a, page, "walkthrough step 3 (after the title)", until=lambda i: i["id"] == "wiz-next")
+        for n in (4, 5):
             page.keyboard.press("Enter")  # Next
             page.wait_for_function("(n) => document.title.startsWith('Step ' + n)", arg=n, timeout=15000)
             expect_focus(a, page, f"walkthrough: step {n}'s heading takes focus", "step-title")
@@ -1305,7 +1435,7 @@ def kb_whole_pages(a, w, theme):
     ctx = owner_ctx(a, w, theme)
     page = a.page(ctx, "keyboard: whole pages")
     pages = [("the Jobs tab", "/#jobs", ".job-card"), ("the Settings tab", "/#settings", "#export-btn"),
-             ("the job page", f"/job.html?id=1&ws={a.fixtures['ws']}", "#job-company dl.profile")]
+             ("the job page", f"/job.html?id=1&ws={a.fixtures['ws']}", "#job-verdict-body > *")]
     for name, path, ready in pages:
         with a.step(f"keyboard: Tab through {name}"):
             page.goto("about:blank")
@@ -1408,6 +1538,7 @@ def kb_dialogs(a, w, theme):
             now = focus_now(page)
             key_problem(a, page, f"chat: closing returns focus to {now and now['label']}, not the Chat button")
     with a.step("keyboard: confirm your password"):
+        header_menu(page, "#account-btn")
         page.focus("#account-btn")
         page.evaluate("() => { window.__opener = document.activeElement; window.__confirm = confirmPassword(); }")
         page.wait_for_selector("dialog.confirm-dialog[open]")
@@ -1419,6 +1550,112 @@ def kb_dialogs(a, w, theme):
         if not page.evaluate("() => document.activeElement === window.__opener"):
             now = focus_now(page)
             key_problem(a, page, f"confirm password: Escape returns focus to {now and now['label']}, not the button that opened it")
+    ctx.close()
+
+
+@scenario("keyboard")
+def kb_jobs_views(a, w, theme):
+    """The Filters panel (Escape closes it, focus back on its button), the view toggle, a table row's fit summary and a
+    board card's Move to, by keyboard alone."""
+    ctx = owner_ctx(a, w, theme)
+    page = dashboard(a, ctx)
+    with a.step("keyboard: the Filters panel"):
+        page.focus("#filters-toggle")
+        page.keyboard.press("Enter")
+        page.wait_for_selector("#filters-panel:not([hidden])")
+        if page.get_attribute("#filters-toggle", "aria-expanded") != "true":
+            key_problem(a, page, "Filters: the button doesn't say the panel is open (aria-expanded)")
+        stops = walk(a, page, "Filters panel", until=lambda i: i["id"] == "filters-done", limit=20)
+        if not stops or not stops[-1] or stops[-1]["id"] != "filters-done":
+            key_problem(a, page, "Filters: Tab from the button doesn't go through the panel to Done")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        if page.is_visible("#filters-panel"):
+            key_problem(a, page, "Filters: Escape doesn't close the panel")
+        expect_focus(a, page, "Filters: Escape puts focus back on the Filters button", "filters-toggle")
+    with a.step("keyboard: the view toggle and the table"):
+        toggle = '#view-toggle [data-view="table"]'
+        if page.is_visible(toggle):  # (a phone has List | Board: the table comes from the List button)
+            page.focus(toggle)
+            page.keyboard.press("Enter")
+            page.wait_for_selector("#jobs-table:not([hidden]) [data-job-id]")
+            page.wait_for_timeout(200)
+            if page.get_attribute(toggle, "aria-pressed") != "true":
+                key_problem(a, page, "view toggle: the Table button isn't marked pressed after Enter")
+            expect_focus(a, page, "view toggle: focus stays on the Table button", None)
+            row = page.locator('#jobs-table [data-act="expand"]:visible').first
+            row.focus()
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(300)
+            if row.get_attribute("aria-expanded") != "true":
+                key_problem(a, page, "table: Enter on a job's title doesn't open its fit summary")
+            info = expect_focus(a, page, "table: focus stays on the row's button after it opens", None)
+            if info and info["tag"] != "BUTTON":
+                key_problem(a, page, f"table: after opening a row focus is on {info['label']}")
+            a.check(page, "keyboard: Table view, a row opened with Enter")
+            page.keyboard.press("Enter")
+            page.focus('#view-toggle [data-view="cards"]')
+            page.keyboard.press("Enter")
+            page.wait_for_selector("#jobs-list:not([hidden]) .job-card")
+    with a.step("keyboard: a board card's Move to"):
+        page.focus('#view-toggle [data-view="board"]')
+        page.keyboard.press("Enter")
+        page.wait_for_selector("#jobs-board:not([hidden]) [data-job-id]")
+        page.wait_for_timeout(300)
+        move = page.locator('#jobs-board select[data-act="move"]:visible').first
+        job_id = int(move.evaluate("(el) => el.closest('[data-job-id]').dataset.jobId"))
+        before = page.evaluate("(id) => api('/api/jobs/' + id).then((j) => j.status)", job_id)
+        move.focus()
+        page.keyboard.press("ArrowDown")  # a closed select changes at once: the card moves to that column
+        page.wait_for_timeout(1500)
+        info = focus_now(page)
+        if info is None:
+            key_problem(a, page, "board: focus is lost after a card was moved")
+        a.check(page, "keyboard: Board view, a card moved with the keyboard")
+        page.evaluate("([id, status]) => api('/api/jobs/' + id + '/status', { method: 'PATCH', body: JSON.stringify({ status }) })",
+                      [job_id, before])  # put it back
+        page.focus('#view-toggle [data-view="cards"]')
+        page.keyboard.press("Enter")
+    ctx.close()
+
+
+@scenario("keyboard")
+def kb_letter_menu(a, w, theme):
+    """The cover letter window's Download menu (an ARIA menu button): arrows open and move, Escape closes it and puts
+    focus back on Download, a second Escape closes the window."""
+    ctx = owner_ctx(a, w, theme)
+    page = dashboard(a, ctx)
+    with a.step("keyboard: the Download menu"):
+        page.click('.job-card:first-of-type [data-act="letter"]')
+        page.wait_for_function("() => document.querySelector('#cl-text') && document.querySelector('#cl-text').value.length > 100")
+        page.wait_for_timeout(400)
+        page.focus("#cl-download")
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(150)
+        names = page.evaluate("() => [...document.querySelectorAll('#cl-menu [role=menuitem]')].map((m) => m.dataset.fmt)")
+        info = focus_now(page)
+        if not info or page.evaluate("() => document.activeElement.dataset.fmt") != names[0]:
+            key_problem(a, page, f"Download menu: ArrowDown on the button doesn't open the menu on its first item ({info and info['label']})")
+        if info and not info["ring"]:
+            key_problem(a, page, "Download menu: no visible focus on the menu item")
+        a.check(page, "keyboard: cover letter Download menu, opened with ArrowDown")
+        page.keyboard.press("ArrowDown")
+        if page.evaluate("() => document.activeElement.dataset.fmt") != names[1]:
+            key_problem(a, page, "Download menu: ArrowDown doesn't move to the next item")
+        page.keyboard.press("End")
+        if page.evaluate("() => document.activeElement.dataset.fmt") != names[-1]:
+            key_problem(a, page, "Download menu: End doesn't move to the last item")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(150)
+        if page.is_visible("#cl-menu"):
+            key_problem(a, page, "Download menu: Escape doesn't close the menu")
+        expect_focus(a, page, "Download menu: Escape puts focus back on Download", "cl-download")
+        if not page.evaluate("() => document.querySelector('#modal').open"):
+            key_problem(a, page, "Download menu: Escape on the menu closed the whole window")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        if page.evaluate("() => document.querySelector('#modal').open"):
+            key_problem(a, page, "cover letter: Escape doesn't close the window")
     ctx.close()
 
 

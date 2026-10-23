@@ -22,8 +22,8 @@ fetches Leaflet (unpkg.com), map tiles (openstreetmap.org) and, for the Dyslexia
 (``npm install leaflet@1.9.4`` in an empty folder, then ``--leaflet that-folder/node_modules/leaflet/dist``); the map
 image still needs OpenStreetMap's tiles, so leave it out there (``--only`` without ``map``).
 
-Images (all dark theme unless noted, 1440x900 at 1x; the job page uses 1240 wide):
-    jobs, run-report, job-page, map (light theme), search-setup, company-sources, settings, search-schedule
+Images (all in the default theme, Vanilla Dark's AA version, unless noted; 1440x900 at 1x; the job page uses 1240 wide):
+    jobs, run-report, job-page (its Overview tab), map (Vanilla Light), search-setup, company-sources, settings, search-schedule
     (the Scheduled searches card, on the Settings tab), theme-picker (the first rows of the Theme card on the
     Settings tab), themes, chat, cover-letter, ghost-job (a job card with the ghost-job circle under its
     fit score and its "why?" list opened), settings-account (the account cards on the Settings tab: password,
@@ -69,7 +69,7 @@ ALLOWED_HOSTS = ("unpkg.com", "tile.openstreetmap.org", "fonts.googleapis.com", 
 DEMO_EMAIL, DEMO_PASSWORD = "demo@example.invalid", "demo-password-not-real"
 
 # theme id -> shown in themes.png, in this order
-MONTAGE_THEMES = ["light", "catppuccin-mocha-aa", "catppuccin-latte-aa", "dyslexia", "deuteranomaly-dark", "monochromacy"]
+MONTAGE_THEMES = ["vanilla-light-aa", "catppuccin-mocha-aa", "catppuccin-latte-aa", "dyslexia", "deuteranomaly-dark", "monochromacy"]
 ALL_SHOTS = ["jobs", "run-report", "job-page", "map", "search-setup", "company-sources", "settings", "search-schedule",
              "theme-picker", "themes", "chat", "cover-letter", "ghost-job", "settings-account", "settings-data",
              "settings-install", "sign-in"]
@@ -178,7 +178,7 @@ class Shooter:
         self.sizes: dict[str, int] = {}
         self.session = None  # the browser state of the one sign-in, shared by every profile (sign-ins are rate limited)
 
-    def context(self, theme: str = "dark", viewport: dict | None = None, signed_in: bool = True):
+    def context(self, theme: str = "vanilla-dark-aa", viewport: dict | None = None, signed_in: bool = True):
         """A fresh browser profile. The theme and workspace are set in localStorage before any page
         script runs, so the page starts in them (setting them afterwards would race its start-up)."""
         ctx = self.browser.new_context(viewport=viewport or VIEWPORT, device_scale_factor=1, locale="en-AU",
@@ -321,8 +321,10 @@ def shot_job_page(s: Shooter) -> None:
     ctx = s.context(viewport=JOB_PAGE_VIEWPORT)
     page = s.page(ctx)
     page.goto(f"{s.base}/job.html?id=1&ws={s.ws_id}")
-    page.wait_for_selector("#job-company dl.profile")
-    page.wait_for_selector("#job-commute .commute-links a")
+    page.wait_for_selector("#job-verdict-body > *")
+    page.wait_for_selector("#job-company-brief > *")  # the company profile, in the Overview's rail
+    page.wait_for_selector("#job-commute-brief a")    # the commute links
+    page.mouse.move(5, 5)
     s.settle(page)
     height = page.evaluate("document.documentElement.scrollHeight")
     s.save("job-page", s.grab(page, (0, 0, JOB_PAGE_VIEWPORT["width"], height)))
@@ -330,7 +332,7 @@ def shot_job_page(s: Shooter) -> None:
 
 
 def shot_map(s: Shooter) -> None:
-    ctx = s.context("light")  # the thin pin radii show up best in the light theme
+    ctx = s.context("vanilla-light-aa")  # the thin pin radii show up best in a light theme
     page = s.page(ctx)
     page.goto(f"{s.base}/#jobs")
     s.wait_dashboard(page)
@@ -358,9 +360,10 @@ def shot_search(s: Shooter) -> None:
     s.settle(page)
     form = s.rect(page, "#search-form")
     s.save("search-setup", s.grab(page, (CONTENT_X, 0, CONTENT_W, int(form["y"] + form["h"]) + 14)))
-    box = page.evaluate("""() => { const r = document.querySelector('#sources-list').closest('.card').getBoundingClientRect();
-        return { y: r.top + scrollY, h: r.height }; }""")
-    s.save("company-sources", s.grab(page, (CONTENT_X, int(box["y"]) - 10, CONTENT_W, int(box["h"]) + 20)))
+    box = page.evaluate("""() => { const r = document.querySelector('#sources-list').closest('.p-card').getBoundingClientRect();
+        return { x: r.left + scrollX, y: r.top + scrollY, w: r.width, h: r.height }; }""")
+    # (the card alone: the tab's jump list on its left is left out)
+    s.save("company-sources", s.grab(page, (int(box["x"]) - 10, int(box["y"]) - 10, int(box["w"]) + 20, int(box["h"]) + 20)))
     ctx.close()
 
 
@@ -375,15 +378,17 @@ def shot_settings(s: Shooter) -> None:
     page.wait_for_function("() => !document.querySelector('#scorer-info').textContent.includes('(LLM_MODEL not set)') "
                            "&& document.querySelector('#scorer-info').textContent.length > 0")
     s.settle(page)
+    # The cards' column (the tab's jump list on their left is left out).
     top = s.rect(page, "#schedule-card")
-    last = page.evaluate("""() => { const r = document.querySelector('#scorer-info').closest('.card').getBoundingClientRect();
-        return { y: r.top + scrollY, h: r.height }; }""")  # the AI card, the last one of the tab
-    s.save("settings", s.grab(page, (CONTENT_X, int(top["y"]) - 10, CONTENT_W, int(last["y"] + last["h"] - top["y"]) + 24)))
+    x, w = int(top["x"]) - 10, int(top["w"]) + 20
+    last = page.evaluate("""() => { const r = document.querySelector('#scorer-info').closest('.p-card').getBoundingClientRect();
+        return { y: r.top + scrollY, h: r.height }; }""")  # the Fit scores card, after the AI provider
+    s.save("settings", s.grab(page, (x, int(top["y"]) - 10, w, int(last["y"] + last["h"] - top["y"]) + 24)))
     card = s.rect(page, "#schedule-card")
-    s.save("search-schedule", s.grab(page, (CONTENT_X, int(card["y"]) - 10, CONTENT_W, int(card["h"]) + 20)))
+    s.save("search-schedule", s.grab(page, (x, int(card["y"]) - 10, w, int(card["h"]) + 20)))
     theme = s.rect(page, "#theme-card")
     third = s.rect(page, "#theme-card .theme-family:nth-of-type(3)")
-    s.save("theme-picker", s.grab(page, (CONTENT_X, int(theme["y"]) - 10, CONTENT_W, int(third["y"] + third["h"] - theme["y"]) + 26)))
+    s.save("theme-picker", s.grab(page, (x, int(theme["y"]) - 10, w, int(third["y"] + third["h"] - theme["y"]) + 26)))
     ctx.close()
 
 
@@ -446,9 +451,9 @@ def settings_page(s: Shooter):
 
 
 def span(s: Shooter, page, first: str, last: str) -> tuple[int, int, int, int]:
-    """Page coordinates of the area from the top of one element to the bottom of another, across the content column."""
+    """Page coordinates of the area from the top of one element to the bottom of another, across the first one's width."""
     a, b = s.rect(page, first), s.rect(page, last)
-    return CONTENT_X, int(a["y"]) - 10, CONTENT_W, int(b["y"] + b["h"] - a["y"]) + 24
+    return int(a["x"]) - 10, int(a["y"]) - 10, int(a["w"]) + 20, int(b["y"] + b["h"] - a["y"]) + 24
 
 
 def shot_settings_account(s: Shooter) -> None:
@@ -459,9 +464,9 @@ def shot_settings_account(s: Shooter) -> None:
 
 def shot_settings_data(s: Shooter) -> None:
     ctx, page = settings_page(s)
-    page.wait_for_selector("#account-export-slot .card")
+    page.wait_for_selector("#account-export-slot .p-card")
     s.settle(page)
-    s.save("settings-data", s.grab(page, span(s, page, "#account-export-slot .card", "#acct-del-card")))
+    s.save("settings-data", s.grab(page, span(s, page, "#account-export-slot .p-card", "#acct-del-card")))
     ctx.close()
 
 
@@ -484,8 +489,10 @@ def shot_sign_in(s: Shooter) -> None:
     page.wait_for_selector("#login-form")
     s.settle(page)
     card, help_ = s.rect(page, ".auth-card"), s.rect(page, ".auth-help")
-    s.save("sign-in", s.grab(page, (int(card["x"]) - 40, int(card["y"]) - 30, int(card["w"]) + 80,
-                                    int(help_["y"] + help_["h"] - card["y"]) + 60)))
+    # the form and the help beside it (or under it, on a narrower window): the box round both
+    left, top = min(card["x"], help_["x"]), min(card["y"], help_["y"])
+    right, bottom = max(card["x"] + card["w"], help_["x"] + help_["w"]), max(card["y"] + card["h"], help_["y"] + help_["h"])
+    s.save("sign-in", s.grab(page, (int(left) - 40, int(top) - 30, int(right - left) + 80, int(bottom - top) + 60)))
     ctx.close()
 
 

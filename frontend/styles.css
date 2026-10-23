@@ -34,7 +34,7 @@ input[type="time"]:focus-within { outline: 3px solid var(--focus); outline-offse
 
 /* ======================= Vanilla components =======================
    The look of Ubuntu's Vanilla framework (type, spacing and patterns), drawn in the theme slots of themes.css.
-   The p-* and u-* classes are the components; the app's older class names (.btn, .badge, .chip, .card, ...) are
+   The p-* and u-* classes are the components; the app's older class names (.btn, .card, ...) are
    listed beside them, so both render the same until every page uses the new names. New slots have fallbacks:
    --brand (the logo tag), --warn-fill (caution bars and borders), --check / --on-check (checked boxes, pressed
    chips), --accent-edge (the 1 px edge of every --accent fill or mark) and the --lbl-* pairs (filled status labels, set only by the Vanilla themes; elsewhere labels are outlined). */
@@ -108,7 +108,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 0; }
   display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: baseline; justify-content: space-between; margin-bottom: .75rem;
 }
 .p-strip { max-width: 1200px; margin: 0 auto; padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
-.p-scope-tag, .scope-tag {
+.p-scope-tag {
   display: inline-block; margin-left: .5rem; padding: 0 .375rem; max-width: 100%; overflow-wrap: anywhere;
   font-size: .75rem; font-weight: 400; text-transform: uppercase; letter-spacing: .04em; line-height: 1.5;
   color: var(--muted); border: 1px solid var(--border-strong); border-radius: .125rem; vertical-align: middle;
@@ -179,40 +179,42 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
   content: ""; position: absolute; inset: 18%; border-radius: 50%; background: var(--check, var(--accent));
 }
 .p-checkbox:disabled, .p-radio:disabled, input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .55; cursor: not-allowed; }
-.p-switch {
+/* (input[type="checkbox"].p-switch: more specific than the check box rules above and .check input below) */
+input[type="checkbox"].p-switch {
   appearance: none; -webkit-appearance: none; margin: 0; width: 2.75rem; height: 1.5rem; flex: none; position: relative; cursor: pointer;
   border-radius: .75rem; border: 1px solid var(--border-strong); background: var(--field);
 }
-.p-switch::after {
+input[type="checkbox"].p-switch::after {
   content: ""; position: absolute; top: .1875rem; left: .1875rem; width: 1rem; height: 1rem; border-radius: 50%;
-  background: var(--border-strong); transition: left .15s;
+  border: 0; transform: none; background: var(--border-strong); transition: left .15s;
 }
-.p-switch:checked { background: var(--accent); border-color: var(--accent-edge, var(--accent)); }
-.p-switch:checked::after { left: 1.4375rem; background: var(--on-accent); }
+input[type="checkbox"].p-switch:checked { background: var(--accent); border-color: var(--accent-edge, var(--accent)); }
+input[type="checkbox"].p-switch:checked::after { left: 1.4375rem; background: var(--on-accent); }
 
 /* Status labels: filled where the theme sets the --lbl-* pairs (the Vanilla themes), outlined in the status
    colour elsewhere. Each one carries a word, so none rests on colour. */
-.p-status-label, .badge, .score {
+.p-status-label, .score {
   display: inline-flex; align-items: center; gap: .25rem; padding: 0 .5rem; max-width: 100%;
   font-size: .75rem; line-height: 1.25rem; font-weight: 550; text-transform: uppercase; letter-spacing: .03em;
   border: 1px solid var(--border-strong); border-radius: .125rem; overflow-wrap: anywhere;
   background: var(--lbl-neu-bg, transparent); color: var(--lbl-neu-fg, var(--text));
 }
 .p-status-label { white-space: nowrap; }
-.p-status-label--positive, .badge.remote, .badge.fit-strong {
+.p-status-label--positive {
   border-color: var(--lbl-pos-bg, var(--ok)); background: var(--lbl-pos-bg, transparent); color: var(--lbl-pos-fg, var(--ok));
 }
-.p-status-label--caution, .badge.hybrid, .badge.soft, .badge.fit-stretch {
+.p-status-label--caution {
   border-color: var(--lbl-cau-bg, var(--warn-fill, var(--warn))); background: var(--lbl-cau-bg, transparent); color: var(--lbl-cau-fg, var(--warn));
 }
 .p-status-label--negative {
   border-color: var(--lbl-neg-bg, var(--danger)); background: var(--lbl-neg-bg, transparent); color: var(--lbl-neg-fg, var(--danger));
 }
-.p-status-label--information, .badge.onsite, .badge.fit-good {
+.p-status-label--information {
   border-color: var(--lbl-inf-bg, var(--info)); background: var(--lbl-inf-bg, transparent); color: var(--lbl-inf-fg, var(--info));
 }
+/* (outlined, the word is in --text: --special is a hue for borders and marks, under 4.5:1 as text in some themes) */
 .p-status-label--special {
-  border-color: var(--lbl-spe-bg, var(--special)); background: var(--lbl-spe-bg, transparent); color: var(--lbl-spe-fg, var(--special));
+  border-color: var(--lbl-spe-bg, var(--special)); background: var(--lbl-spe-bg, transparent); color: var(--lbl-spe-fg, var(--text));
 }
 .p-status-label.is-large, .score {
   font-size: 1rem; line-height: 1.75rem; padding: 0 .625rem; font-weight: 700; letter-spacing: 0; text-transform: none;
@@ -228,19 +230,19 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 .score.stale { border-style: dashed; }
 
 /* Chips: pill-shaped on the --accent-soft ground with the high-contrast border; pressed = filled in --check. */
-.p-chip, .chip, .tag {
+.p-chip, .tag {
   font: inherit; font-size: .875rem; display: inline-flex; align-items: center; gap: .375rem; max-width: 100%;
   min-height: 2.25rem; padding: 0 .875rem; border: 1px solid var(--border-strong); border-radius: 1.125rem;
   background: var(--accent-soft); color: var(--text); text-decoration: none; overflow-wrap: anywhere;
 }
-.p-chip, .chip { cursor: pointer; }
-.p-chip:hover, .chip:hover { filter: brightness(.96); }
+.p-chip { cursor: pointer; }
+.p-chip:hover { filter: brightness(.96); }
 .p-chip__lead { text-transform: uppercase; font-size: .75rem; font-weight: 700; letter-spacing: .03em; }
-.p-chip__n, .chip .n { font-variant-numeric: tabular-nums; color: var(--muted); }
-.p-chip[aria-pressed="true"], .chip[aria-pressed="true"], .chip.active {
+.p-chip__n { font-variant-numeric: tabular-nums; color: var(--muted); }
+.p-chip[aria-pressed="true"] {
   background: var(--check, var(--accent)); border-color: var(--check, var(--accent-edge, var(--accent))); color: var(--on-check, var(--on-accent)); font-weight: 550;
 }
-.p-chip[aria-pressed="true"] .p-chip__n, .chip[aria-pressed="true"] .n, .chip.active .n { color: inherit; }
+.p-chip[aria-pressed="true"] .p-chip__n { color: inherit; }
 .p-chip--dismiss, .tag { padding-right: .25rem; }
 .p-chip__x, .tag button {
   font: inherit; font-size: 1rem; line-height: 1; background: none; border: 0; color: inherit; cursor: pointer;
@@ -283,6 +285,7 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 }
 .p-table td, .report td, .report tbody th { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 .report tbody th { font-weight: 400; }
+th[scope="row"] { border-bottom-color: var(--border); vertical-align: top; } /* a row's header cell is lined like its row */
 .p-table td.u-num, .p-table th.u-num { text-align: right; font-variant-numeric: tabular-nums; }
 .p-table-wrap { overflow-x: auto; }
 
@@ -316,9 +319,9 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 }
 .p-details[open] > summary::before, .reqs[open] > summary::before, .run-report[open] > summary::before,
 .usage-days[open] > summary::before, .ghost-why[open] > summary::before, .ghost-details[open] > summary::before { transform: rotate(45deg); }
-.p-tile, .tile { background: var(--field); border: 1px solid var(--border); border-radius: 0; padding: .75rem 1rem; display: flex; flex-direction: column; gap: .125rem; }
-.p-tile dt, .tile dt { font-size: .8125rem; color: var(--muted); }
-.p-tile dd, .tile dd { margin: 0; font-size: 1.5rem; font-weight: 180; font-variant-numeric: tabular-nums; }
+.p-tile { background: var(--field); border: 1px solid var(--border); border-radius: 0; padding: .75rem 1rem; display: flex; flex-direction: column; gap: .125rem; }
+.p-tile dt { font-size: .8125rem; color: var(--muted); }
+.p-tile dd { margin: 0; font-size: 1.5rem; font-weight: 180; font-variant-numeric: tabular-nums; }
 /* ======================= end of the Vanilla components ======================= */
 
 /* Header + tabs. The header is sticky only where there is room for it (wide and tall enough); its height is
@@ -343,8 +346,6 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 .app-header .tabs { border-top: 1px solid var(--border); max-width: none; padding-left: max(1.25rem, calc((100% - 1200px) / 2 + 1.25rem)); }
 
 .main { max-width: 1200px; margin: 0 auto; padding: 20px; }
-.panel-head { display: flex; align-items: baseline; gap: 4px 12px; margin: 4px 0 14px; flex-wrap: wrap; }
-.panel-head h2 { margin: 0; font-size: 1.5rem; line-height: 1.25; }
 
 /* Generic */
 /* (.card: the .p-card rules above) */
@@ -379,19 +380,8 @@ fieldset[aria-invalid="true"], div[aria-invalid="true"] { border-color: var(--da
 /* On a phone-sized window the Jobs tab's filter boxes wrap into rows a few pixels apart: full-size targets (WCAG 2.5.8). */
 @media (max-width: 480px) { .check-field input { width: 24px; height: 24px; } }
 
-/* Jobs toolbar */
-.jobs-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+/* A row of buttons or fields (dialogs, the export and import cards); the Jobs tab's toolbar is further down. */
 .toolbar-row { display: flex; gap: 14px; align-items: end; flex-wrap: wrap; }
-.search-field { flex: 1 1 220px; }
-.chips-row { align-items: center; }
-.chips { display: flex; gap: 8px; flex-wrap: wrap; }
-/* (.chip: the .p-chip rules above) */
-.bulk-bar {
-  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-  background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--accent-edge, var(--accent));
-  padding: .5rem 1rem;
-}
-.bulk-select-all { display: flex; gap: .625rem; align-items: center; font-size: .875rem; }
 
 /* Job cards */
 .jobs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr)); gap: 14px; }
@@ -406,7 +396,7 @@ fieldset[aria-invalid="true"], div[aria-invalid="true"] { border-color: var(--da
 .job-company { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .job-title { margin: 2px 0; font-size: 1.125rem; font-weight: 550; line-height: 1.3; overflow-wrap: anywhere; }
 .job-meta { display: flex; gap: .375rem .5rem; flex-wrap: wrap; align-items: center; font-size: .875rem; color: var(--muted); }
-/* (.badge and .score: the .p-status-label rules above) */
+/* (.score: the .p-status-label rules above) */
 .job-sub { display: flex; gap: 12px; flex-wrap: wrap; font-size: .875rem; color: var(--muted); }
 /* The applied date (common.js appliedHtml): shown while the job is in Applied, nothing (and no gap) otherwise. */
 .applied-slot:empty { display: none; }
@@ -422,8 +412,6 @@ fieldset[aria-invalid="true"], div[aria-invalid="true"] { border-color: var(--da
 .reqs .gap { color: var(--danger); font-size: .8125rem; }
 
 /* Search form */
-.form-card { margin-bottom: 16px; }
-.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 16px; }
 .form-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .form-group > label, fieldset > legend { font-size: .875rem; font-weight: 550; }
 fieldset.form-group { border: 1px solid var(--border); border-radius: 0; padding: 10px 12px; margin: 0; display: flex; gap: 12px; flex-wrap: wrap; }
@@ -434,34 +422,15 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 0; padding
 .restore-option input { margin-top: 2px; }
 #restore-card .field { margin-bottom: 8px; }
 #restore-card input[type="file"] { max-width: 100%; font-size: 16px; }
-/* A list of tags and the field that adds one, in one input-like box: the field ground, a bottom border only. */
-.tag-input {
-  display: flex; flex-direction: column; gap: 8px;
-  background: var(--field); border: 0; border-bottom: 1px solid var(--border-strong);
-  border-radius: 0; padding: .5rem; min-width: 0;
-}
-.tags, .sched-times, .chat-jobs, .chat-starters, .titles-ul, .sources-ul, .map-jobs-ul, .pins-ul, .office-cands-ul {
+/* Lists drawn without bullets (the tag fields: further down, with the Search setup tab's rules) */
+.tags, .sched-times, .chat-jobs, .chat-starters, .titles-ul, .pins-ul {
   list-style: none; margin: 0; padding: 0;
 }
-.tag-input .tags { display: flex; gap: 6px; flex-wrap: wrap; }
-.tag-input .tags:empty { display: none; }
-/* (.tag and its remove button: .p-chip--dismiss and .p-chip__x above) */
-.tag-input input { background: transparent; border: none; padding: 4px; min-height: 32px; }
-.tag-input input:focus { outline: none; }
-.tag-input:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
-.tag-input:has(button:focus-visible) { outline: none; }
 
 /* Docs */
-.upload-card { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 14px; }
 .docs-list { display: grid; gap: 10px; }
-.doc-row {
-  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-  background: var(--card); border: 1px solid var(--border); padding: .75rem 1rem;
-}
 .doc-name { font-weight: 550; }
 .doc-meta { color: var(--muted); font-size: .8125rem; }
-.doc-row .spacer { flex: 1; }
-.upload-card input[type="file"] { max-width: 100%; }
 
 /* Documents: notes, the summary, and each document's panel (text and concise version) */
 .visually-hidden {
@@ -478,18 +447,9 @@ fieldset.form-group { border: 1px solid var(--border); border-radius: 0; padding
 .note-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; }
 .note-grid input, .note-grid select { width: 100%; }
 /* (the look of every textarea: the .p-textarea rules above) */
-.doc-textarea { width: 100%; min-height: 6em; }
 /* Read-only: the card ground and a dashed edge all round, so it does not look like a field to type in. */
 .doc-textarea[readonly] { background: var(--card); color: var(--text); border: 1px dashed var(--border-strong); }
-.docs-heading { margin: 18px 0 10px; font-size: 1.125rem; }
-.docs-heading:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
 .doc-item { background: var(--card); border: 1px solid var(--border); padding: .75rem 1rem; }
-.doc-head { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; }
-.doc-title { flex: 1 1 220px; min-width: 0; }
-.doc-title .doc-name { margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
-.doc-title .doc-meta { margin: 2px 0 0; overflow-wrap: anywhere; }
-.doc-controls { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; }
-.doc-controls select { max-width: 100%; }
 .doc-item .check, .version-pick .check, .note-actions .check { min-height: 24px; }
 .doc-panel { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 12px; display: flex; flex-direction: column; gap: 18px; }
 .doc-panel[hidden], .summary-suggest[hidden] { display: none; }
@@ -528,7 +488,6 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 
 /* Careers pages in bulk (sources-bulk.js): the dialog's three steps, its list of rows and their results */
-.sources-bulk-row { margin-top: 10px; align-items: center; }
 .srcbulk-body { flex: 1; overflow-y: auto; padding: 12px 16px 16px; }
 .srcbulk-step { display: flex; flex-direction: column; gap: 12px; }
 .srcbulk-step[hidden] { display: none; }
@@ -560,7 +519,6 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 @media (pointer: coarse) { .srcbulk-row .btn-sm { min-height: 44px; } }
 
 /* Map */
-.map-controls { display: flex; gap: 14px; align-items: end; flex-wrap: wrap; margin-bottom: 12px; }
 .map { height: 420px; border: 1px solid var(--border); overflow: hidden; background: var(--field); position: relative; }
 /* Pin mode: a cross in the middle of the map, where "Drop a pin at the cross" puts a pin. */
 .map.editing::after {
@@ -571,20 +529,7 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
     linear-gradient(var(--map-ink), var(--map-ink)) center / 100% 3px no-repeat;
   filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff);
 }
-.pins-list { display: grid; gap: 8px; margin-top: 12px; }
-.pins-ul { display: grid; gap: 8px; }
-.pin-row {
-  display: flex; gap: 8px 10px; align-items: center; flex-wrap: wrap;
-  background: var(--card); border: 1px solid var(--border);
-  padding: .5rem .75rem; font-size: .875rem;
-}
-.pin-kind {
-  text-transform: capitalize; font-size: 12px;
-  border: 2px solid var(--c, var(--border)); border-radius: 999px; padding: 2px 8px;
-}
-.pin-kind-hybrid { border-style: dashed; }
-.pin-kind-onsite { border-style: dotted; }
-/* A theme slot as --c, for the pin kinds and the map key (a class, because the page's policy
+/* A theme slot as --c, for the map key's rings (a class, because the page's policy
    refuses style attributes in markup: backend/security_headers.py). */
 .hue-accent { --c: var(--accent); }
 .hue-border { --c: var(--border); }
@@ -630,8 +575,6 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 
 .job-card .summary { font-size: .875rem; color: var(--text); background: var(--field); border: 1px solid var(--border); padding: 8px 10px; margin: 0; }
-.job-card .gaps-block { font-size: .875rem; }
-.job-card .gaps-block ul { margin: 6px 0 0; padding-left: 18px; }
 .preview-text {
   flex: 1; margin: 0; padding: 14px; overflow: auto;
   background: var(--field); color: var(--text);
@@ -647,9 +590,8 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 
 /* --- rework additions --- */
-.run-card { margin-bottom: 16px; display: flex; flex-direction: column; gap: 10px; }
 /* (.progress: the .p-progress rules above) */
-.progress.indeterminate .progress-bar { width: 30% !important; animation: slide 1.2s infinite ease-in-out; }
+.p-progress.indeterminate .p-progress__bar, .progress.indeterminate .progress-bar { width: 30% !important; animation: slide 1.2s infinite ease-in-out; }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(330%); } }
 .jobs-loading { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 10px;
   padding: 48px 16px; color: var(--muted); font-size: 15px; }
@@ -658,23 +600,14 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .run-report summary { cursor: pointer; color: var(--accent-text); font-size: .9375rem; min-height: 24px; }
 .report { margin-top: 8px; font-size: .875rem; } /* (the rest: the .p-table rules above) */
-/* (.score.none / .err / .stale, .badge.flag / .soft: with the status labels above) */
-.soften-note { margin: 8px 0 0; font-size: .875rem; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+/* (.score.none / .err / .stale: with the status labels above) */
 .err-text { color: var(--danger); }
 .ok-text { color: var(--ok); }
 .job-title a { color: inherit; text-decoration: none; }
 .job-title a:hover { text-decoration: underline; }
-.form-card h3 { margin: 0 0 10px; font-size: 1.25rem; line-height: 1.3; }
 .source-row { align-items: flex-start; }
-.source-main { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.source-main a { word-break: break-all; }
 .source-label { font-weight: 550; width: min(320px, 100%); }
-.sources-ul { display: grid; gap: 10px; }
-/* Search setup > Commute: the starting points, one row each, wrapping on a phone. */
-.starts-list { list-style: none; margin: 8px 0 12px; padding: 0; display: grid; gap: 8px; }
-.start-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
-.start-name { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
-.start-use select { max-width: 100%; }
+/* Search setup > Commute: the starting points are a table (.tab-stack-table); the form to add one: */
 .starts-form fieldset { border: 1px solid var(--border); border-radius: 0; padding: 10px 12px; margin: 0; min-width: 0; }
 .starts-form legend { font-weight: 600; padding: 0 4px; }
 .modal-box .preview-text { flex: 1; }
@@ -725,17 +658,8 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 .reasoning-settings { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 10px; }
 .reasoning-settings h4 { margin: 0; font-size: 1.125rem; }
-.letter-editor { display: flex; flex-direction: column; gap: 10px; }
-.letter-editor textarea { width: 100%; } /* (the look: .p-textarea above) */
-.letter-editor a.btn[hidden] { display: none; }
-.titles-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
 .titles-ul { display: flex; flex-direction: column; gap: 6px; }
 .title-badges { display: inline-flex; gap: 6px; flex-wrap: wrap; }
-.title-row input { width: 18px; height: 18px; margin: 0; }
-.title-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 4px 10px; align-items: center;
-  padding: 6px 8px; border: 1px solid var(--border); }
-.title-row .title-name { font-weight: 550; }
-.title-row .title-reason { grid-column: 2 / -1; }
 .upload-ad ol { padding-left: 20px; }
 .upload-ad li { margin-bottom: 6px; }
 .upload-ad kbd { border: 1px solid var(--border-strong); border-radius: .125rem; padding: 0 5px; background: var(--field); font-size: 12px; }
@@ -743,8 +667,6 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 .select-all-shown { font-size: .875rem; white-space: nowrap; }
 
 /* Duplicate ads */
-.dupe-note { font-size: .875rem; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; } /* (the look: .p-notification--information) */
-.dupe-note[hidden] { display: none; }
 .also-on { font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 .also-on a { color: var(--accent-text); display: inline-flex; align-items: center; min-height: 24px; }
 .also-item { overflow-wrap: anywhere; }
@@ -831,17 +753,9 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 a.btn { text-decoration: none; display: inline-block; }
 
 /* Map tab: modes, legend, jobs in view */
-/* No overflow: hidden on the group, so the focus ring of either half isn't clipped. */
-.seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: .125rem; margin-left: auto; }
-.seg-btn { font: inherit; background: var(--card); color: var(--text); border: none; padding: .25rem .75rem; font-size: .875rem; cursor: pointer; min-height: 2.25rem; }
-.seg-btn:hover { background: var(--accent-soft); }
-.seg-btn + .seg-btn { border-left: 1px solid var(--border-strong); }
-/* Chosen: filled in --check and heavier, as a pressed chip. */
-.seg-btn.active, .seg-btn[aria-pressed="true"] { background: var(--check, var(--accent)); color: var(--on-check, var(--on-accent)); font-weight: 550; }
 .map-controls[hidden], .pins-list[hidden], .map-jobs[hidden], .hint[hidden] { display: none; }
 .map-controls .pins-in-view { align-self: center; font-size: 13.5px; }
 .map.editing { cursor: crosshair; }
-.map-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 8px 0 4px; font-size: 12.5px; }
 .map-legend .dot, .map-legend .ring { display: inline-block; width: 14px; height: 14px; border-radius: 50%; flex: none; }
 .map-legend .dot { background: var(--ok); border: 2px solid var(--map-ink); }
 .map-legend .dot.hollow { background: color-mix(in srgb, var(--quiet) 30%, transparent); border-style: dashed; }
@@ -856,14 +770,11 @@ a.btn { text-decoration: none; display: inline-block; }
 .map-count::before { display: none; }
 .map-popup ul { margin: 6px 0 0; padding-left: 16px; }
 .map-popup li { margin-bottom: 6px; }
-.map-jobs { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-.map-jobs-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 2px; }
 .map-job-row {
   display: flex; gap: 10px; align-items: center; background: var(--card); border: 1px solid var(--border);
   padding: .5rem .75rem; font-size: .875rem;
 }
 .map-job-row .score { margin-left: 0; }
-.map-job-main { flex: 1; min-width: 0; }
 .map-job-title { color: var(--text); font-weight: 550; text-decoration: none; }
 .map-job-title:hover { text-decoration: underline; }
 @media (max-width: 640px) { .map-job-row { flex-wrap: wrap; } }
@@ -904,6 +815,9 @@ a.btn { text-decoration: none; display: inline-block; }
 .theme-card-text { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; align-items: center; }
 .theme-name { font-weight: 700; font-size: 13.5px; overflow-wrap: anywhere; }
 .theme-mode { grid-column: 2; font-size: 12.5px; color: var(--muted); }
+/* The AA badge on its own line under the name and the mode (in the name it pushed the name onto two lines). */
+.theme-badge { grid-column: 2; justify-self: start; margin-top: 2px; }
+.theme-badge .p-status-label { font-size: .6875rem; line-height: 1.125rem; padding: 0 .375rem; }
 .theme-chosen { grid-column: 2; font-size: 12.5px; font-weight: 700; color: var(--text); display: none; }
 .theme-card:has(input:checked) .theme-chosen { display: block; }
 .theme-split { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
@@ -936,17 +850,18 @@ a.btn { text-decoration: none; display: inline-block; }
   .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .theme-preview, .theme-split .theme-preview { min-height: 76px; }
   .tp-muted { display: none; }
+  /* System's two half-width miniatures: the title smaller and the labels left out, so no word breaks in the middle */
+  .theme-split .tp-title { font-size: 9px; }
+  .theme-split .tp-badge, .theme-split .tp-score { display: none; }
   .theme-card { padding: 6px; }
   .theme-card:has(input:checked) { padding: 4px; }
 }
 
 /* Settings tab */
-/* (.scope-tag: the .p-scope-tag rules above) */
 .llm-actions { margin-top: 10px; }
 .llm-form { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 10px; }
 .llm-form h4 { margin: 0; font-size: 1.125rem; }
 .llm-form p { margin: 0; }
-.llm-form .form-grid { grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); } /* provider, model, address and key side by side */
 .llm-form .field .key-state { min-height: 0; }
 .warn-text { color: var(--warn); }
 .callout { font-size: .875rem; } /* (the look: .p-notification--information above) */
@@ -954,7 +869,6 @@ a.btn { text-decoration: none; display: inline-block; }
 .browser-offer { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .browser-offer h4 { margin: 0; font-size: 1.125rem; }
 .browser-offer p { margin: 0; }
-.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .key-state { font-size: 13.5px; min-height: 20px; }
 .key-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .key-row .key-input { flex: 1 1 220px; }
@@ -962,10 +876,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .notice a { color: var(--accent-text); }
 
 /* Scheduled searches (Settings tab) */
-.sched-times { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-height: 28px; }
-.sched-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .sched-enable { margin-bottom: 14px; }
-fieldset#sched-days { flex-direction: row; align-content: flex-start; } /* the days sit in a row, not a column like other option lists */
 .sched-status { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; overflow-wrap: anywhere; }
 .sched-status p { margin: 0; }
 /* (.sched-warn: the .p-notification--caution look above) */
@@ -973,11 +884,6 @@ fieldset#sched-days { flex-direction: row; align-content: flex-start; } /* the d
 
 summary { cursor: pointer; min-height: 24px; }
 
-/* Lists on the Map tab and the job page */
-.map-jobs-ul { display: flex; flex-direction: column; gap: 6px; }
-.map-jobs-title { margin: 0; font-size: 1rem; }
-.office-cands-ul { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
-.office-cands-ul .btn { text-align: left; white-space: normal; max-width: 100%; overflow-wrap: anywhere; }
 .dupe-desc:focus-visible, .chat-messages:focus-visible, .preview-text:focus-visible { outline-offset: -2px; }
 
 /* Phones and tablets (WCAG 1.4.10 reflow, 2.5.8 target size): from 320 px wide, nothing scrolls sideways;
@@ -985,27 +891,24 @@ summary { cursor: pointer; min-height: 24px; }
 @media (max-width: 760px) {
   .toolbar-row { gap: 10px; }
   .toolbar-row > .field:not(.check-field) { flex: 1 1 140px; }
-  .jobs-toolbar .search-field { flex-basis: 100%; }
-  .bulk-bar { gap: 8px; }
   .job-actions select { flex-basis: 100%; }
-  .panel-head .seg { margin-left: 0; }
   .api-status { flex-basis: 100%; }
   .pin-actions { margin-left: 0; }
   .chat-panel { width: 100vw; border-left: none; }
 }
 @media (max-width: 760px), (pointer: coarse) {
   input[type="text"], input[type="search"], input[type="number"], input[type="password"], input[type="url"],
-  input[type="email"], input[type="time"], input[type="date"], select, textarea, .doc-textarea, .chat-form textarea, .letter-editor textarea,
+  input[type="email"], input[type="time"], input[type="date"], select, textarea, .doc-textarea, .chat-form textarea,
   .p-input, .p-select, .p-textarea { font-size: 16px; }
 }
 /* Touch screens: controls at least 44 px tall where practical. */
 @media (pointer: coarse) {
-  .btn, .btn-sm, .tab, .chip, .seg-btn, .chat-job, .toast-close, .chat-close,
+  .btn, .btn-sm, .tab, .chat-job, .toast-close, .chat-close,
   .p-button, .p-button.is-dense, .p-tabs__link, .p-chip, .p-navigation__link, .p-side-navigation__link, .p-details > summary, .p-check,
   .p-input, .p-select,
   input[type="text"], input[type="search"], input[type="number"], input[type="password"], input[type="url"],
   input[type="email"], input[type="time"], select { min-height: 44px; }
-  .check, .check-field, .run-report summary, .reqs summary, .trip summary, .dupe-side summary, .ghost-why summary, .ghost-details summary { min-height: 44px; }
+  .check, .check-field, .run-report summary, .reqs summary, .dupe-side summary, .ghost-why summary, .ghost-details summary { min-height: 44px; }
   .check input, .check-field input, .job-top input[type="checkbox"], .title-row input { width: 24px; height: 24px; }
   .p-checkbox, .p-radio { width: 24px; height: 24px; }
   .tag button, .p-chip__x, .info-btn, .link, .help-link { min-width: 36px; min-height: 36px; }
@@ -1097,10 +1000,8 @@ summary { cursor: pointer; min-height: 24px; }
 }
 .auth-field .check { font-size: 1rem; align-items: flex-start; }
 .auth-field .check input { margin-top: 2px; }
-.pw-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
 .pw-row input { flex: 1 1 12rem; }
 .pw-toggle { min-height: 44px; }
-.pw-toggle[aria-pressed="true"] { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
 .auth-submit { align-self: flex-start; min-height: 44px; padding: .5rem 1.5rem; font-size: 1rem; }
 /* (the look: .p-notification--negative above; a 2 px border all round as well, as it takes focus) */
 .error-summary { border-width: 2px 2px 2px 3px; border-color: var(--danger); }
@@ -1126,12 +1027,6 @@ summary { cursor: pointer; min-height: 24px; }
 .wiz-progress { display: flex; flex-direction: column; gap: 8px; }
 .wiz-count { margin: 0; font-weight: 550; font-size: 1rem; }
 .wiz-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-.wiz-mark span:first-child {
-  display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 4px;
-  border-radius: 999px; border: 2px solid var(--border-strong); font-size: .8125rem; font-weight: 550; color: var(--muted);
-}
-.wiz-mark.is-done span:first-child { background: var(--check, var(--accent)); border-color: var(--check, var(--accent-edge, var(--accent))); color: var(--on-check, var(--on-accent)); }
-.wiz-mark.is-current span:first-child { border-color: var(--text); border-width: 3px; color: var(--text); font-weight: 700; }
 .wiz-form { display: flex; flex-direction: column; gap: 18px; }
 .wiz-fieldset { border: none; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
 .wiz-fieldset > legend { padding: 0; float: left; width: 100%; margin-bottom: 14px; }
@@ -1147,9 +1042,6 @@ summary { cursor: pointer; min-height: 24px; }
 .wiz-summary { margin: 0; display: grid; gap: 10px; }
 .wiz-summary dt { font-weight: 550; font-size: .875rem; }
 .wiz-summary dd { margin: 0; overflow-wrap: anywhere; }
-.wiz-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.wiz-actions .btn { min-height: 44px; padding: .5rem 1.5rem; font-size: 1rem; }
-.wiz-actions #wiz-next { margin-left: auto; }
 /* "Confirm your password" dialog (common.js confirmPassword): a native <dialog>, so focus stays inside and Escape
    cancels. On small screens it uses the full width. */
 dialog.confirm-dialog {
@@ -1170,13 +1062,6 @@ dialog.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
   .confirm-box { padding: 16px; }
 }
 
-/* Text-style buttons on the sign-in pages ("Use a recovery code instead"): 44 px tall, underlined. */
-.auth-links { display: flex; flex-wrap: wrap; gap: 4px 20px; }
-.btn-link {
-  background: none; border: none; padding: 10px 0; min-height: 44px; font: inherit; font-size: 1rem;
-  color: var(--accent-text); text-decoration: underline; cursor: pointer; text-align: left;
-}
-
 /* Account cards on the Settings tab (account.js): one column, 16 px fields, 44 px controls. */
 .account-card { margin-bottom: 16px; }
 .account-body { display: flex; flex-direction: column; gap: 12px; }
@@ -1189,7 +1074,6 @@ dialog.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 .account-card .btn:not(.btn-sm):not(.pw-toggle) { min-height: 44px; padding: .5rem 1rem; }
 .account-card .btn-sm { min-height: 44px; }
 .account-card .check { min-height: 32px; }
-.account-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .account-status { margin: 0; color: var(--muted); }
 .account-status:empty { display: none; }
 .account-danger { border-color: var(--danger); }
@@ -1211,9 +1095,7 @@ dialog.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 /* ======================= Settings tab: the cards for the whole of this JobHuntPA (server-settings.js) =======================
    The AI usage figures are a definition list in tiles; their tables become cards below 640 px (the .stack-table rules
    above). */
-.install-card h4 { margin: 4px 0 0; font-size: 1.125rem; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 10px; margin: 0; }
-/* (.tile: the .p-tile rules above) */
 .tile-hint { font-size: .8125rem; font-weight: 400; color: var(--muted); }
 .usage-table td, .usage-table th { overflow-wrap: anywhere; }
 .usage-days summary { cursor: pointer; color: var(--accent-text); min-height: 24px; margin: 8px 0; }
@@ -1283,6 +1165,7 @@ a.ghost-dot:hover { border-color: var(--border-strong); }
 .tab-grid--top { align-items: start; gap: 1.25rem; }
 .tab-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .tab-fieldset > legend { padding: 0; }
+.tab-days { align-content: flex-start; } /* the days in rows, close together */
 .tab-narrow { max-width: 36rem; }
 .tab-label-gap { margin-top: .5rem; }
 .tab-days { gap: .25rem 1rem; }
@@ -1332,8 +1215,8 @@ fieldset.p-field { display: flex; flex-direction: column; gap: .25rem; }
 .tag-input:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
 .tag-input input:focus { outline: none; }
 .tag-input:has(button:focus-visible) { outline: none; }
-.sched-times { display: flex; flex-wrap: wrap; gap: .5rem; padding: 0; margin: 0 0 .5rem; list-style: none; min-height: 0; }
-.sched-add { align-items: center; }
+.sched-times { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: 0; margin: 0 0 .5rem; list-style: none; min-height: 0; }
+.sched-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* Tables that become cards on a phone: each cell names itself with its data-label. */
 .tab-stack-table tbody th, .tab-stack-table td { vertical-align: middle; }
@@ -1348,7 +1231,7 @@ fieldset.p-field { display: flex; flex-direction: column; gap: .25rem; }
 .docs-table tbody.doc-item { border: 0; padding: 0; background: none; border-radius: 0; }
 .docs-table .doc-name { font-weight: 550; overflow-wrap: anywhere; }
 .docs-table .doc-meta { margin: .125rem 0 0; font-weight: 400; }
-.doc-textarea { width: 100%; }
+.doc-textarea { width: 100%; min-height: 6em; }
 .source-row .source-label { width: 100%; min-width: 9rem; font-weight: 550; }
 .sources-table .p-status-label { margin-left: .25rem; white-space: normal; }
 .test-result:empty { display: none; }
@@ -1365,7 +1248,7 @@ fieldset.p-field { display: flex; flex-direction: column; gap: .25rem; }
 .title-row .title-name { font-weight: 400; }
 .title-row .title-reason { grid-column: auto; flex: 1 0 100%; padding-left: 1.875rem; }
 .title-row .p-checkbox { width: 1.25rem; height: 1.25rem; }
-.titles-list { margin: 0; }
+.titles-list { display: flex; flex-direction: column; gap: 6px; margin: 0; }
 .note-actions { gap: .75rem; }
 
 /* Map: the mode switch, the map with its key, the pins beside it, the jobs in view below. */
@@ -1395,8 +1278,7 @@ fieldset.p-field { display: flex; flex-direction: column; gap: .25rem; }
 .pin-row .p-input, .pin-row .p-select { min-height: 2.25rem; padding: .25rem .5rem; }
 .pin-kind { text-transform: uppercase; border: 1px solid var(--border-strong); border-radius: .125rem; padding: 0 .5rem; font-size: .75rem; }
 .pin-kind.p-status-label { border-style: solid; }
-.pin-kind-hybrid.p-status-label, .pin-kind-onsite.p-status-label { border-style: solid; }
-.map-jobs { gap: .5rem; margin-top: 0; }
+.map-jobs { display: flex; flex-direction: column; gap: .5rem; margin-top: 0; }
 .map-jobs-table tr.map-job-row { display: table-row; background: none; border: 0; border-radius: 0; padding: 0; font-size: inherit; gap: 0; }
 .map-jobs-table .map-job-title { color: var(--accent-text); font-weight: 400; text-decoration: underline; text-underline-offset: .15em; }
 .map-jobs-table .ratings { display: inline-flex; flex-direction: row; gap: .5rem; align-items: center; }
@@ -1466,8 +1348,9 @@ body[data-page="first-run"] .auth-main.auth-split { grid-template-columns: minma
 .pw-row { display: flex; gap: .5rem; flex-wrap: nowrap; align-items: stretch; }
 .pw-row .p-input { flex: 1 1 auto; min-width: 0; }
 .pw-row .pw-toggle { flex: none; }
-.pw-toggle[aria-pressed="true"] { background: var(--check, var(--accent)); color: var(--on-check, var(--on-accent)); border-color: var(--check, var(--accent)); }
+.pw-toggle[aria-pressed="true"] { background: var(--check, var(--accent)); color: var(--on-check, var(--on-accent)); border-color: var(--check, var(--accent)); box-shadow: inset 0 0 0 1px var(--text); }
 .error-summary-list { margin: .25rem 0 0; padding-left: 1.25rem; }
+.error-summary-list a { display: inline-flex; align-items: center; min-height: 1.75rem; } /* 24 px targets in every theme's type (WCAG 2.5.8) */
 .p-notification--negative { overflow-wrap: anywhere; }
 .p-form-validation__message { margin: 0; overflow-wrap: anywhere; }
 .wiz-side { display: flex; flex-direction: column; gap: 1.5rem; min-width: 0; }
@@ -1478,7 +1361,7 @@ body[data-page="first-run"] .auth-main.auth-split { grid-template-columns: minma
 .wiz-steps .p-side-navigation__link[aria-current="step"] { border-left-color: var(--text); font-weight: 550; }
 .wiz-side .auth-help { padding: 0; font-size: .875rem; }
 .wiz-side .auth-help h2 { font-size: 1rem; font-weight: 550; }
-.wiz-actions { justify-content: space-between; border-top: 1px solid var(--border); padding-top: 1rem; }
+.wiz-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); padding-top: 1rem; }
 .wiz-actions .wiz-actions-end { display: flex; flex-wrap: wrap; gap: .5rem; margin-left: auto; }
 .wiz-actions #wiz-next { margin-left: 0; min-width: 8rem; }
 .wiz-form .p-input, .wiz-form .p-select { width: 100%; }
@@ -1498,6 +1381,9 @@ body[data-page="first-run"] .auth-main.auth-split { grid-template-columns: minma
    shared rules above; only what is particular to this page is here, under jp-*. */
 html:has(body.job-page) { scroll-padding-top: calc(var(--jp-sticky-h, 0px) + 12px); } /* nothing scrolls in under the summary (WCAG 2.4.11) */
 body.job-page .app-header { position: static; } /* the summary is this page's sticky part */
+/* The header, the summary, the tabs and the panels share one 1240 px column with 20 px sides, so their edges line up. */
+body.job-page .header-inner { max-width: 1240px; padding-left: 20px; padding-right: 20px; }
+.job-page #job-company-note:not(:empty) { margin-bottom: 20px; }
 .job-page .jp-summary { background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 900; }
 .job-page .jp-summary__inner { position: relative; min-width: 0; max-width: 1240px; margin: 0 auto; padding: 12px 20px 8px; display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center; }
 .job-page .jp-summary__back { display: none; }
@@ -1518,7 +1404,7 @@ body.job-page .app-header { position: static; } /* the summary is this page's st
 .job-page .jp-more__item { width: 100%; justify-content: flex-start; text-align: left; white-space: normal; }
 .job-page .jp-tabs { border-bottom: 0; }
 /* position: relative on the scrolling and clipped boxes keeps hidden text (visually-hidden is absolute) inside them. */
-.job-page .jp-tabs .p-tabs__list { position: relative; overflow-x: auto; scrollbar-width: thin; }
+.job-page .jp-tabs .p-tabs__list { position: relative; overflow-x: auto; scrollbar-width: thin; max-width: 1240px; padding: 0 20px; }
 .job-page .jp-tab-count { margin-left: 6px; }
 .job-page .jp-main { position: relative; max-width: 1240px; margin: 0 auto; padding: 20px; }
 .job-page .jp-panel:focus-visible { outline-offset: 4px; }
@@ -1591,6 +1477,8 @@ body.job-page .app-header { position: static; } /* the summary is this page's st
 .job-page .jp-there__row { gap: 8px; flex-wrap: nowrap; align-items: flex-start; }
 .job-page .jp-there__row .p-status-label { flex: none; margin-top: 2px; }
 .job-page .jp-directions a, .job-page .jp-commute-list a { overflow-wrap: anywhere; }
+.job-page .jp-directions th, .job-page .jp-directions td { overflow-wrap: anywhere; } /* (a heading word may break at 320 px with wide text spacing) */
+.job-page .p-table-wrap { max-width: 100%; min-width: 0; }
 .job-page .jp-commute-list { gap: 4px; margin: 0; }
 /* The ad, annotated: a sentence the scorer tied a requirement to is underlined, and a word label follows it. */
 .job-page .jp-ad { display: flex; flex-direction: column; gap: 16px; max-width: 760px; min-width: 0; }
@@ -1644,15 +1532,18 @@ body.job-page .app-header { position: static; } /* the summary is this page's st
 @media (max-width: 719px) {
   .job-page .jp-summary { position: static; }
   .job-page .jp-summary__inner { padding: 8px 16px; gap: 8px; flex-wrap: nowrap; }
+  body.job-page .header-inner { padding-left: 16px; padding-right: 16px; }
   .job-page .jp-summary__back { display: inline-flex; flex: none; padding-left: 4px; }
   .job-page .jp-summary__who { flex: 1 1 0; }
-  .job-page .jp-summary__where, .job-page .jp-sub__wide, .job-page .jp-phone-hide, .job-page .jp-long { display: none; }
+  .job-page .jp-summary__where, .job-page .jp-sub__wide, .job-page .jp-phone-hide { display: none; }
+  /* "Cover letter" stays the button's name (visually hidden); "Letter" is what shows */
+  .job-page .jp-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .job-page .jp-sub__phone, .job-page .jp-short { display: inline; }
-  /* One line each, cut with an ellipsis (the whole title is still there for screen readers). position: relative keeps
-     their hidden text inside the clipped box, so nothing widens the page. */
-  .job-page .jp-summary__title { position: relative; font-size: 17px; line-height: 24px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .job-page .jp-summary__title a { display: inline-block; min-height: 24px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
-  .job-page .jp-summary__sub { position: relative; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The title and the line under it wrap (cut off with an ellipsis, the rest of a long title was lost: WCAG 1.4.12);
+     position: relative keeps their visually hidden text inside them. */
+  .job-page .jp-summary__title { position: relative; font-size: 17px; line-height: 24px; }
+  .job-page .jp-summary__title a { min-height: 24px; }
+  .job-page .jp-summary__sub { position: relative; }
   .job-page .jp-summary__labels, .job-page .jp-summary__actions { flex: none; }
   .job-page .jp-tabs .p-tabs__list { padding: 0 8px; }
   .job-page .jp-main { padding: 16px 16px 96px; }
@@ -1663,21 +1554,25 @@ body.job-page .app-header { position: static; } /* the summary is this page's st
 @media (pointer: coarse) {
   .job-page .jp-fold__summary, .job-page .chat-thread { min-height: 44px; }
   .job-page .jp-ad-label, .job-page .jp-inline-btn { min-height: 24px; }
+}
+
 /* ======================= Jobs tab (Vanilla redesign): run strip, toolbar, Filters panel, Table and Board =======================
    Only what is specific to the Jobs tab is here; the p-* component rules (buttons, labels, chips, cards, tables)
    are shared by every page. Colours are theme slots; nothing is told by colour alone. */
-.run-card { margin-bottom: 0; }
+.run-card { margin-bottom: 0; display: flex; flex-direction: column; gap: 10px; }
 .run-strip { display: flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: center; }
 .run-strip__status { display: inline-flex; flex-wrap: wrap; gap: .25rem .75rem; align-items: center; flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
 .run-strip__tools { margin-left: auto; display: flex; flex-wrap: wrap; gap: .5rem; }
 .run-report { display: inline-block; }
 .run-report[open] { flex-basis: 100%; }
-.run-report summary { font-size: .9375rem; }
-.p-progress.indeterminate .p-progress__bar { width: 30% !important; animation: slide 1.2s infinite ease-in-out; }
+/* An opened per-source report takes the strip's whole width (squeezed beside the buttons its headings broke per letter). */
+.run-strip:has(.run-report[open]) { align-items: flex-start; }
+.run-strip:has(.run-report[open]) .run-strip__status { order: 3; flex-basis: 100%; }
+@media (min-width: 641px) { .run-report .report th, .run-report .report td { overflow-wrap: break-word; } } /* words whole: "Listed", not "List / ed" (on a phone the rows are stacked, and a long address still breaks) */
 #dupes-open .p-status-label { margin-left: .125rem; }
 .p-notification.dupe-note, .p-notification.soften-note { margin: 0; border-radius: 0; font-size: .9375rem; padding: .75rem 1rem; background: var(--card); border: 1px solid var(--border); }
-.dupe-note { border-left: 3px solid var(--info); }
-.soften-note { border-left: 3px solid var(--warn-fill, var(--warn)); }
+.dupe-note { border-left: 3px solid var(--info); flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.soften-note { border-left: 3px solid var(--warn-fill, var(--warn)); flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .soften-note__body { display: flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: center; }
 .dupe-note .p-button { margin-left: .25rem; }
 
@@ -1714,13 +1609,13 @@ body.job-page .app-header { position: static; } /* the summary is this page's st
 .filters-actions { margin-left: auto; display: flex; gap: .5rem; }
 .filter-chips { display: flex; flex-wrap: wrap; gap: .375rem; align-items: center; }
 .filter-chips .p-chip { min-height: 2rem; }
-.chips { gap: .375rem; }
-.chips-row { gap: .5rem .75rem; }
+.chips { display: flex; flex-wrap: wrap; gap: .375rem; }
+.chips-row { gap: .5rem .75rem; align-items: center; }
 
 /* The bulk bar: an information notification; on a phone it docks at the bottom of the screen. */
 .p-notification.bulk-bar { margin: 0; padding: .5rem 1rem; border-radius: 0; align-items: center; gap: .5rem .75rem; flex-wrap: wrap; background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--info); }
 .bulk-bar .p-select { width: 11rem; min-height: 2.25rem; padding: .25rem .5rem; }
-.bulk-select-all { gap: .5rem; font-size: .9375rem; }
+.bulk-select-all { display: flex; align-items: center; gap: .5rem; font-size: .9375rem; }
 
 /* Cards: the job card on the shared card, status labels in place of badges */
 .jobs-grid .job-card { border-radius: 0; box-shadow: none; padding: 1rem 1.25rem; }
@@ -1734,7 +1629,7 @@ body.job-page .app-header { position: static; } /* the summary is this page's st
 .jobs-table-wrap { background: var(--card); border: 1px solid var(--border); overflow-x: auto; }
 .jobs-table { width: 100%; border-collapse: collapse; font-size: .9375rem; }
 .jobs-table th, .jobs-table td { text-align: left; padding: .5rem .75rem; vertical-align: top; }
-.jobs-table th { font-weight: 400; border-bottom: 1px solid var(--border-strong); color: var(--text); vertical-align: bottom; }
+.jobs-table th { font-weight: 400; border-bottom: 1px solid var(--border-strong); color: var(--text); vertical-align: middle; }
 .jobs-table td { border-bottom: 1px solid var(--border); }
 .jobs-table .u-num { text-align: right; font-variant-numeric: tabular-nums; }
 .jobs-table .col-select { width: 2.5rem; }
@@ -1851,9 +1746,9 @@ body.job-page .app-header { position: static; } /* the summary is this page's st
   #tab-jobs .p-chip__x { min-width: 44px; }
   #tab-jobs .p-checkbox { width: 24px; height: 24px; }
 }
-/* ======================= Cover letter window (app.js showCoverLetter): the dialog widened, two columns =======================
-   Layout classes are cl-*. The p-* rules below are the Vanilla component rules this window uses, scoped to it until the
-   shared p-* component block lands in this file (then this scoped copy can go). */
+/* ======================= Cover letter window (letter.js, on the Jobs tab and the job page): the dialog widened, two columns =======================
+   Layout classes are cl-*; the components (p-button, p-field, p-check, p-status-label, p-notification, p-list, u-*)
+   are the shared rules at the top of this file. */
 dialog.modal.modal--letter { width: min(1120px, calc(100% - 32px)); height: fit-content; max-height: calc(100dvh - 32px); }
 .cl-window { display: grid; grid-template-columns: minmax(0, 1fr) 300px; margin: -14px -16px; min-height: 100%; }
 .cl-main { padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; border-right: 1px solid var(--border); min-width: 0; }
@@ -1869,8 +1764,8 @@ dialog.modal.modal--letter { width: min(1120px, calc(100% - 32px)); height: fit-
 .cl-actions-main { gap: 8px; }
 .cl-menu-wrap { position: relative; display: inline-block; }
 .cl-download[aria-expanded="true"] { background: var(--accent-soft); }
-.cl-menu { position: absolute; left: 0; top: calc(100% + 4px); z-index: 3; min-width: 15.5rem; margin: 0; padding: 4px 0; list-style: none;
-  background: var(--card, var(--panel)); border: 1px solid var(--border-strong); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2); }
+.cl-menu { position: absolute; left: 0; bottom: calc(100% + 4px); z-index: 3; min-width: 15.5rem; margin: 0; padding: 4px 0; list-style: none;
+  background: var(--card, var(--panel)); border: 1px solid var(--border-strong); box-shadow: var(--shadow); }
 .cl-menu[hidden] { display: none; }
 .cl-menu-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-height: 44px; padding: 8px 16px;
   border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
@@ -1880,13 +1775,15 @@ dialog.modal.modal--letter { width: min(1120px, calc(100% - 32px)); height: fit-
 .cl-menu-item__note { white-space: normal; }
 .cl-section { gap: 8px; }
 .cl-h { margin: 0; font-size: 16px; font-weight: 550; }
-.cl-template p, .cl-versions { margin: 0; }
+.cl-template p { margin: 0; }
 .cl-template { gap: 6px; }
 .cl-fonts { color: var(--text); }
 .cl-change { color: var(--accent-text); }
-.cl-versions { gap: 0; }
+.cl-versions { margin: 0; gap: 0; }
 .cl-version { gap: 2px; padding: 6px 0; }
 .cl-view-draft { align-self: flex-start; padding-left: 0; }
+.cl-rail .p-check { align-items: flex-start; } /* (a two-line label: the box stays by its first line) */
+.cl-rail .p-checkbox { margin-top: .125rem; }
 .cl-draft-view { display: flex; flex-direction: column; gap: 4px; }
 @media (max-width: 640px) {
   dialog.modal.modal--letter { width: 100%; height: 100%; max-height: 100dvh; }
@@ -1902,45 +1799,4 @@ dialog.modal.modal--letter { width: min(1120px, calc(100% - 32px)); height: fit-
   .cl-menu-wrap, .cl-menu-wrap .cl-download { width: 100%; }
   .cl-menu { position: static; min-width: 0; margin-top: 4px; }
 }
-/* -- the Vanilla components this window uses (values from the design's vanilla.css), scoped: see the note above -- */
-.cl-window .p-button { font: inherit; font-size: 16px; line-height: 1.5; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  min-height: 44px; padding: 8px 16px; border: 1px solid var(--border-strong); border-radius: 2px; background: var(--card, var(--panel));
-  color: var(--text); cursor: pointer; text-decoration: none; white-space: nowrap; }
-.cl-window .p-button:hover { background: var(--accent-soft); }
-.cl-window .p-button--positive { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.cl-window .p-button--positive:hover { filter: brightness(0.92); background: var(--accent); }
-.cl-window .p-button--base { background: transparent; border-color: transparent; }
-.cl-window .p-button.is-dense { min-height: 36px; padding: 4px 12px; font-size: 14px; }
-.cl-window .p-button[aria-disabled="true"], .cl-window .p-button:disabled { opacity: 0.55; cursor: not-allowed; }
-.cl-window .p-button svg { width: 1em; height: 1em; flex: none; }
-.cl-window .p-label { display: block; font-size: 14px; font-weight: 400; margin-bottom: 4px; }
-.cl-window .p-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.cl-window .p-input, .cl-window .p-textarea { font: inherit; font-size: 16px; line-height: 1.5; min-height: 44px; padding: 8px; border: 0;
-  border-bottom: 1px solid var(--border-strong); border-radius: 0; background: var(--field); color: var(--text); width: 100%; }
-.cl-window .p-input::placeholder, .cl-window .p-textarea::placeholder { color: var(--muted); opacity: 1; }
-.cl-window .p-textarea { min-height: 6rem; }
-.cl-window .p-check { display: inline-flex; gap: 10px; align-items: flex-start; min-height: 32px; cursor: pointer; font-size: 16px; }
-.cl-window .p-checkbox { appearance: none; -webkit-appearance: none; margin: 2px 0 0; width: 20px; height: 20px; flex: none; border: 1px solid var(--border-strong);
-  border-radius: 2px; background: var(--field); position: relative; cursor: pointer; }
-.cl-window .p-checkbox:checked { background: var(--check, var(--accent)); border-color: var(--check, var(--accent)); }
-.cl-window .p-checkbox:checked::after { content: ""; position: absolute; left: 6px; top: 2px; width: 5px; height: 10px;
-  border: solid var(--on-check, var(--on-accent)); border-width: 0 2px 2px 0; transform: rotate(45deg); }
-.cl-window .p-status-label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 20px; font-weight: 550; text-transform: uppercase;
-  letter-spacing: 0.03em; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 2px; white-space: nowrap;
-  background: var(--lbl-neu-bg, transparent); color: var(--lbl-neu-fg, var(--text)); }
-.cl-window .p-status-label--positive { border-color: var(--lbl-pos-bg, var(--ok)); background: var(--lbl-pos-bg, transparent); color: var(--lbl-pos-fg, var(--ok)); }
-.cl-window .p-status-label--caution { border-color: var(--lbl-cau-bg, var(--warn-fill, var(--warn))); background: var(--lbl-cau-bg, transparent); color: var(--lbl-cau-fg, var(--warn)); }
-.cl-window .p-notification { background: var(--card, var(--panel)); border: 1px solid var(--border); border-left: 3px solid var(--border-strong); padding: 12px 16px;
-  display: flex; gap: 12px; align-items: flex-start; }
-.cl-window .p-notification--information { border-left-color: var(--info); }
-.cl-window .p-notification__icon { width: 24px; height: 24px; flex: none; margin-top: 1px; color: var(--info); }
-.cl-window .p-notification__body { flex: 1; min-width: 0; }
-.cl-window .p-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; }
-.cl-window .p-list--divided > li { border-bottom: 1px solid var(--border); }
-.cl-window .p-list--divided > li:last-child { border-bottom: 0; }
-.cl-window .u-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.cl-window .u-stack { display: flex; flex-direction: column; gap: 12px; }
-.cl-window .u-muted { color: var(--muted); }
-.cl-window .u-small { font-size: 14px; }
-.cl-window .u-sr { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .doc-template-note { font-size: 13px; }

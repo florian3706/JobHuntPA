@@ -30,7 +30,7 @@ whether it looks like a real vacancy, the status, the cover letter and the chat)
 directions from your starting points), *The ad* (with a *Gap* or *Matched* label after the sentence each
 requirement came from) and *Chats*.
 
-<img src="docs/screenshots/job-page.png" alt="A job's full page: the office and the commute, fit requirements and gaps, company profile and the ad" width="760">
+<img src="docs/screenshots/job-page.png" alt="A job's full page, Overview tab: the summary with the fit score, work mode, ghost-job rating, status, Cover letter and Chat; the tabs; the verdict with the gaps before the matches; is this a real vacancy; next steps; and the key facts, commute links and company beside them" width="760">
 
 **Map**: the jobs your filters show on an OpenStreetMap map, your pins with their radii, and the jobs in view
 listed underneath.
@@ -54,15 +54,15 @@ address ([settings for this JobHuntPA](#settings-for-this-jobhuntpa)), and [your
 
 ![The Settings tab: scheduled searches, the AI provider with its reasoning levels, and the Rescore buttons](docs/screenshots/settings.png)
 
-**Themes**: Vanilla Dark (the default) and Vanilla Light, in the colours and the Ubuntu Sans type of
-Ubuntu's Vanilla design, then Dark (above), Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and
+**Themes**: Vanilla Dark (the default, in the screenshots here) and Vanilla Light, in the colours and the Ubuntu
+Sans type of Ubuntu's Vanilla design, then the app's earlier Dark and Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and
 Everforest families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from
 live previews on the Settings tab. Each family theme comes twice: a version adjusted to WCAG 2.0 AA
 (marked with a **WCAG 2.0 AA** badge) and the project's exact colours.
 
 ![The Theme card on the Settings tab: each theme is a card with a live preview of the app in it, grouped by family](docs/screenshots/theme-picker.png)
 
-![The Jobs tab in six themes: Light, Catppuccin Mocha, Catppuccin Latte, Dyslexia, Deuteranomaly (dark) and Monochromacy](docs/screenshots/themes.png)
+![The Jobs tab in six themes: Vanilla Light, Catppuccin Mocha, Catppuccin Latte, Dyslexia, Deuteranomaly (dark) and Monochromacy](docs/screenshots/themes.png)
 
 <details>
 <summary>More: search setup and the per-source run report</summary>
@@ -237,7 +237,7 @@ recovery codes and signed-in devices, background access, then download your data
 
 ### Signing in
 
-<img src="docs/screenshots/sign-in.png" alt="The sign-in page: name, password, keep me signed in, and the Trouble signing in help" width="400">
+<img src="docs/screenshots/sign-in.png" alt="The sign-in page: name, password, keep me signed in, and the Trouble signing in help beside it" width="760">
 
 - **Staying signed in:** you are signed out after 24 hours of not using JobHuntPA, and after 7 days
   whatever you do. Tick *Keep me signed in* on your own device to stay signed in for up to 30 days of not
@@ -717,8 +717,8 @@ limits on searches. The AI features use the provider and key set on the Settings
   search for; add them to the current search or start a new workspace with them.
 - **Notes** (Documents tab): under *Write a note*, give a note a title, type its text, pick a
   type and click **Save note**. Use notes for things that aren't in your CV, such as a project you
-  led, or what you want from your next job. A note works like an uploaded document: tick or untick
-  *use for scoring*, **Open** it to edit its text, title or type, or **Delete** it. Notes are
+  led, or what you want from your next job. A note works like an uploaded document: switch *Used for scoring*
+  on or off in the list, **Open** it to edit its text, title or type, or **Delete** it. Notes are
   plain text and are stored only in JobHuntPA.
 - **Preferences** (a document type for uploads and notes, next to *Resume / CV*, *Cover letter* and
   *Other/supporting*): say what you want from a job, such as the commute you'll accept or work you
@@ -743,10 +743,23 @@ limits on searches. The AI features use the provider and key set on the Settings
   cut the size, and with it the cost. When the ticked documents come to more than 50,000
   characters (counting the concise versions where the AI gets those), the Documents tab says so and
   points to *Create summary*. It is a warning only: nothing stops you sending more.
-- **Cover letters**: *Draft cover letter* on any job writes a first draft from your documents
-  (upload earlier cover letters as "Cover letter" documents to match your style). Edit it, then
-  copy it or download it as a Word file. Always check it before sending.
-- **Chat about jobs**: *Chat* on a job (or tick several and click **Chat about N jobs**) opens a
+- **Cover letters**: *Draft cover letter* (or *Cover letter* once there is one) on a job card, in the table's
+  fit summary, on a board card or on the job page opens the cover letter window, the same one everywhere. Add
+  instructions if you like (*Mention I can start in two weeks*) and **Draft cover letter** writes a first draft from
+  your documents (upload earlier cover letters as "Cover letter" documents to match your style); **Redraft** writes
+  a new one. Edit the letter in the window: it shows the word count and whether your edits are saved. **Save
+  edits**, **Copy**, **Download** (a menu: *PDF*, *OpenDocument (.odt)* and *Word (.docx)*; a format the template
+  can't give is greyed out and says why), **Print** (the PDF in a new tab) and **Discard my edits, back to the
+  draft** (the model's draft is kept beside your edits). The rail on the right names the template in use, lists
+  the versions (*Edited by you*, *Drafted by* the model, with **View the draft**) and has *Mark this job as applied
+  when I download*. Always check a letter before sending.
+- **Letter templates** (Documents tab): upload a .docx or .odt with your header, footer and signature and a
+  `{{letter}}` marker in a paragraph of its own, as the type **Letter template**, and the downloads are poured into
+  it in that paragraph's font (`{{date}}`, `{{company}}`, `{{job_title}}` and `{{name}}` are filled in too). The
+  AI never reads a template. Several can be uploaded: the one marked *current template* is used, and **Use the plain
+  layout** goes back to an A4 letter with one inch margins. A .docx template gives .docx and PDF, an .odt one .odt
+  and PDF.
+- **Chat about jobs**: *Chat* on a job (or tick several and click **Chat about selected**) opens a
   chat on the right. The AI sees the ads, your documents, the fit assessment, the company info and
   any cover-letter draft, so you can ask what the role really involves, how to handle your gaps,
   what to ask in an interview, or which of several jobs suits you best. Tick *Search the web* for
@@ -768,7 +781,7 @@ limits on searches. The AI features use the provider and key set on the Settings
   (every office company research found for the employer, to pick from, your call on the location, and
   [directions](#commute-links) to Google Maps as a table), **The ad** (the whole ad, each sentence a requirement
   came from labelled *Gap* or *Matched*, linking to a rail that links back) and **Chats** (the same chat as on
-  the dashboard, with the earlier conversations beside it). On a phone the tabs scroll sideways and the status,
+  the dashboard, with the earlier conversations beside it). On a phone the tabs wrap onto two lines and the status,
   *Letter* and *Chat* sit in a bar at the bottom.
 - **Map**: two modes. **Jobs** shows the jobs your Jobs tab filters show, with your pins and their
   radii, and lists the jobs in view under the map (click a dot, or **Show** in the list, to see a
@@ -1226,7 +1239,7 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
   to and say how to fix it.
 - **Colour:** every theme with the **WCAG 2.0 AA** badge (30 of the 46, the default among them) meets
   4.5:1 for text and 3:1 for field borders, the focus ring and selected states
-  (`tools/theme_contrast.py` checks 79 colour pairs per theme, 85 in the Vanilla themes, which also fill
+  (`tools/theme_contrast.py` checks 81 colour pairs per theme, 87 in the Vanilla themes, which also fill
   status labels, and fails if a badged theme drops below AA; the tests check the badge is on exactly the
   themes that pass). The other 16 are the family projects' exact colours, offered as they are for people
   who want them: some of their text is under 4.5:1, and the AA guarantee doesn't cover them. Nothing is told by
@@ -1238,20 +1251,24 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 - **Motion:** with *reduce motion* set on the device, spinners, progress bars and map animations
   stop.
 
-**How it was tested** (October 2026, `tools/a11y_audit.py`, see [For developers](#for-developers)):
+**How it was tested** (23 October 2026, `tools/a11y_audit.py`, see [For developers](#for-developers)):
 [axe-core](https://github.com/dequelabs/axe-core) 4.14 with the WCAG 2.0, 2.1 and 2.2 A and AA rules, in
-headless Chromium (Playwright), on every page and every state of it: the dashboard's tabs, cards and
-dialogs, the job page, the sign-in, first-run and recover pages, each step of the walkthrough, at 320 and 1280 px wide in the Light, Dark, Dyslexia and
-Deuteranomaly themes (the colour contrast rule also in all 28 themes there were then, which are today's AA
-versions; the Vanilla themes came later and are covered by `tools/theme_contrast.py` until the next run): no
-violations. The same run
-checked reflow at 320 px and WCAG's text spacing, watched the console (no errors, no
-Content-Security-Policy violations) and pressed Tab through the main flows (sign in, the
-walkthrough, change password, a job's status, the data export) and through every page: a visible focus ring
-on every stop, none hidden, no traps, focus back where it came from after a dialog, Escape closing it. (The
-settings that were on the admin panel then have since moved to the Settings tab, with the same controls;
-`tools/a11y_audit.py` now checks them there.) `tests/test_accessibility.py` keeps the contrast and
-the pages' basics (language, viewport, skip link, headings, labels) checked on every test run.
+headless Chromium (Playwright), on every page and every state of it: the dashboard's tabs, the Jobs tab's Cards,
+Table and Board views and its Filters panel, the job cards and dialogs, the cover letter window with its Download
+menu, each tab of the job page, the sign-in, first-run and recover pages and each step of the walkthrough, at 320
+and 1280 px wide in Vanilla Dark and Vanilla Light (their AA versions): 410 axe runs over 99 states, no
+violations. The same run checked reflow at 320 px and WCAG's text spacing, watched the console (no errors, no
+Content-Security-Policy violations) and pressed Tab through the main flows (sign in, the walkthrough, change
+password, a job's status, the Filters panel, the view toggle, a table row, a board card's Move to, the Download
+menu, the data export) and through every page: a visible focus ring on every stop, none hidden, no traps, focus
+back where it came from after a dialog, Escape closing it. It found one problem, the per-source report pushing the
+page sideways at 320 px with WCAG's text spacing, which was fixed and that part checked again. A shorter pass (the sign-in page with its error summary and the Jobs,
+Settings and Map tabs) ran in all 30 AA themes at both widths, 360 axe runs: it found the error summary's links
+under 24 px tall in 26 of them (all but the Vanilla and Dyslexia ones, whose type is taller) and the home pin's
+*special* label under 4.5:1 as text in seven; both were fixed and the pass ran again with no violations. `tools/theme_contrast.py` checks the colour pairs
+of all 30 AA themes (2,442 pairs, none below AA), and
+`tests/test_accessibility.py` keeps the contrast and the pages' basics (language, viewport, skip link, headings,
+labels) checked on every test run.
 
 **Known limitations:**
 - Not yet tried with real screen readers (NVDA, JAWS, VoiceOver, TalkBack) or by disabled users: the
@@ -1263,6 +1280,9 @@ the pages' basics (language, viewport, skip link, headings, labels) checked on e
   markers are smaller than 24 px targets where they overlap; the same list reaches each of them.
   Panning the map takes a drag, the arrow keys, or the zoom buttons and a double-click.
 - Text from elsewhere (job ads, company research, AI answers) is shown as it comes.
+- The theme picker's miniatures are small pictures of each theme, drawn in its own colours (the exact palettes
+  as they are): their tiny text is decorative, hidden from screen readers and not held to the contrast minimums.
+  The theme's name, mode and badge beside each one are.
 - Messages in the corner disappear after a few seconds; they wait while the pointer or focus is on
   them, have a Dismiss button, and screen readers announce them.
 - In Chrome on Windows, the arrow keys change a closed drop-down at once, so arrowing through the
@@ -1325,8 +1345,10 @@ an account), `backend/extension.py` (the browser extensions' API and keys; the e
 send only the job, or the jobs listed on a page of search results), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
 and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
 (account cards), `background.js`, `extension.js` (Settings > Browser extension),
-`export.js`, `restore.js` (import from an export) and `server-settings.js` (the Settings tab's cards for this
-JobHuntPA).
+`export.js`, `restore.js` (import from an export), `server-settings.js` (the Settings tab's cards for this
+JobHuntPA), and two that the dashboard and the job page share: `chat.js` (the job chat) and `letter.js` (the cover
+letter window). The pages' scripts share one global scope: `tests/test_frontend_pages.py` fails when two scripts a
+page loads declare the same name, or when a block in `styles.css` is left open.
 
 **Hardening** (design §2.5 and §18): `backend/hosts.py` (the Host allowlist: 400 before anything else runs) and
 `backend/security_headers.py` (the Content-Security-Policy, built at start-up from the pages, with a hash for each
@@ -1408,7 +1430,9 @@ and AA rules) on each state at 320 and 1280 px in six themes (Vanilla Dark and L
 Deuteranomaly). It also checks reflow at 320 px and
 WCAG's text spacing, watches the browser console (any error or Content-Security-Policy violation is
 reported) and walks the main flows with the keyboard (sign in, the walkthrough, change
-password, a job's status, the Settings tab's cards for this JobHuntPA, the data export).
+password, a job's status, the Jobs tab's Filters panel, view toggle, table rows and board cards, the cover letter
+window's Download menu, the Settings tab's cards for this JobHuntPA, the data export). The theme picker's miniatures
+are left out of axe's checks: they are pictures of each theme (see Known limitations).
 `NODE_MODULES` is a folder with `axe-core` in it: `mkdir /tmp/a11y && cd /tmp/a11y && npm install axe-core`
 (add `leaflet@1.9.4` when unpkg.com isn't reachable: the map is then served from there). It uses the
 Playwright and Chromium that setup installs. axe-core is developer-only: nothing in `requirements.txt`

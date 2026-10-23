@@ -125,12 +125,13 @@ class ThemeContrastTest(unittest.TestCase):
         self.assertIn("const DEFAULT_THEME = 'vanilla-dark-aa';", common)
         self.assertIn("? 'vanilla-dark-aa' : 'vanilla-light-aa') : pref;", common)
         self.assertTrue({"vanilla-dark-aa", "vanilla-light-aa", "system"} <= flagged)
-        # The picker: the badge is a positive status label with the words in it; the exact ones get the muted line
-        self.assertIn("const AA_BADGE = '<span class=\"badge p-status-label p-status-label--positive theme-aa\">"
+        # The picker: the badge is a positive status label with the words in it, on its own line under the name and
+        # the mode; the exact ones get the muted line in its place
+        self.assertIn("const AA_BADGE = '<span class=\"p-status-label p-status-label--positive theme-aa\">"
                       "WCAG 2.0 AA</span>';", common)
-        self.assertIn("${t.aa ? ` ${AA_BADGE}` : ''}", common)
         self.assertIn("const EXACT_NOTE = 'The project\\'s exact colours; some text is under 4.5:1';", common)
-        self.assertIn("${t.aa ? '' : `<span class=\"theme-mode theme-exact\">${EXACT_NOTE}</span>`}", common)
+        self.assertIn("${t.aa ? `<span class=\"theme-badge\">${AA_BADGE}</span>` : `<span class=\"theme-mode theme-exact\">${EXACT_NOTE}</span>`}",
+                      common)
 
     def test_saved_family_themes_move_to_their_aa_version_once(self):
         common = (FRONTEND / "common.js").read_text(encoding="utf-8")
@@ -433,9 +434,8 @@ class GeneratedMarkupTest(unittest.TestCase):
 
     def test_templates_label_their_controls(self):
         problems = []
-        for name in ("app.js", "job.js", "chat.js", "common.js", "auth.js", "welcome.js", "account.js", "server-settings.js",
-                     "export.js", "restore.js", "background.js", "extension.js", "sources-bulk.js"):
-            problems += self.check_file(name)
+        for path in sorted(FRONTEND.glob("*.js")):  # every script, so a new one (letter.js, ...) is checked too
+            problems += self.check_file(path.name)
         self.assertEqual(problems, [], "controls without a label or name:\n" + "\n".join(problems))
 
 
@@ -573,7 +573,9 @@ class SignInAndRecoveryTest(unittest.TestCase):
 
     def test_buttons_that_look_like_links_are_big_enough(self):
         css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
-        self.assertIn("min-height: 44px", re.search(r"\.btn-link \{([^}]*)\}", css).group(1))
+        # .p-button--link is a .p-button (44 px: 2.75rem) drawn as a link
+        self.assertIn("min-height: 2.75rem", re.search(r"\.p-button, \.btn \{([^}]*)\}", css).group(1))
+        self.assertRegex(css, r"\.p-button--link \{[^}]*text-decoration: underline")
 
 
 class ConfirmPasswordDialogTest(unittest.TestCase):
@@ -895,7 +897,9 @@ class ExportCardTest(unittest.TestCase):
         self.assertIn("method: 'POST'", self.js)
         self.assertIn("X-CSRF-Token", self.js)
         self.assertIn("withRecentAuth(() => fetchExport(formats))", self.js)
-        self.assertIn("URL.createObjectURL(blob)", self.js)
+        self.assertIn("saveBlob(blob, name)", self.js)  # common.js saves it through a blob: address
+        common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        self.assertIn("URL.createObjectURL(blob)", common[common.index("function saveBlob"):])
 
     def test_busy_ends_and_every_outcome_is_said_in_the_status_region(self):
         self.assertIn("setBusy(btn, false)", self.js)
@@ -1156,7 +1160,12 @@ class WelcomePageTest(unittest.TestCase):
         field = re.search(r"\.wiz-form input\[type=\"text\"\][^{]*\{([^}]*)\}", self.css).group(1)
         self.assertIn("min-height: 44px", field)
         self.assertIn("font-size: 16px", field)
-        self.assertIn("min-height: 44px", re.search(r"\.wiz-actions \.btn \{([^}]*)\}", self.css).group(1))
+        # Back, Skip and Next are full-size buttons (44 px: .p-button's 2.75rem), not dense ones
+        self.assertIn("min-height: 2.75rem", re.search(r"\.p-button, \.btn \{([^}]*)\}", self.css).group(1))
+        for ident in ("wiz-back", "wiz-skip", "wiz-next"):
+            classes = self.by_id(ident)["attrs"]["class"].split()
+            self.assertIn("p-button", classes)
+            self.assertNotIn("is-dense", classes)
         mark = re.search(r"\.wiz-steps \.p-side-navigation__link \{([^}]*)\}", self.css).group(1)
         self.assertIn("min-height: 2.75rem", mark)
 
@@ -1290,7 +1299,7 @@ class GhostJobPagesTest(unittest.TestCase):
         self.assertIn('<span class="visually-hidden">Fit score </span>${fit.score}<span class="visually-hidden"> out of 100', self.job)
         self.assertIn('href="#ghost-title" title="${esc(ghostHover(j))}">${esc(words)}<span class="visually-hidden">: why this rating</span>', self.job)
         self.assertIn("const words = level ? ghostWords(j) : 'Real vacancy: likely';", self.job)
-        self.assertIn('<h2 id="ghost-title" tabindex="-1">', self.job_html)  # ... which can take the focus
+        self.assertIn('<h2 id="ghost-title" class="jp-h2" tabindex="-1">', self.job_html)  # ... which can take the focus
         self.assertRegex(self.css, r"\.ratings \{[^}]*flex-direction: column")
         for src in (self.app, self.job):
             self.assertNotIn("scoreBadge(", src)  # nowhere a score without the circle under it
@@ -1350,7 +1359,7 @@ class GhostJobPagesTest(unittest.TestCase):
     def test_job_page_section_is_named_and_shown_for_every_job(self):
         # (hidden only until the job has loaded)
         self.assertRegex(self.job_html, r'<section id="job-ghost-section"[^>]*aria-labelledby="ghost-title"[^>]*hidden>')
-        self.assertIn('<h2 id="ghost-title" tabindex="-1">Is this a real vacancy?</h2>', self.job_html)
+        self.assertIn('<h2 id="ghost-title" class="jp-h2" tabindex="-1">Is this a real vacancy?</h2>', self.job_html)
         fn = self.job[self.job.index("function renderGhost"):self.job.index("function renderFit")]
         self.assertIn("box.hidden = !g;", fn)
         self.assertNotIn("box.hidden = !g?.level", fn)
@@ -1641,8 +1650,11 @@ class CommuteLinksMarkupTest(unittest.TestCase):
         self.assertIn("announce(`Added the starting point", adding)
 
     def test_rows_and_offices_wrap_on_a_phone(self):
-        self.assertRegex(self.css, r"\.start-row \{[^}]*flex-wrap: wrap")
-        self.assertRegex(self.css, r"\.start-name \{[^}]*overflow-wrap: anywhere")
+        # the starting points are a table whose rows become stacked blocks on a phone (.tab-stack-table)
+        self.assertIn('<table class="p-table tab-stack-table">', self.index[self.index.index('id="starts-table-wrap"'):])
+        self.assertRegex(self.css, r"\.tab-stack-table, \.tab-stack-table tbody, \.tab-stack-table tr, \.tab-stack-table th, "
+                                   r"\.tab-stack-table td \{ display: block; \}")
+        self.assertRegex(self.css, r"\.tab-stack-table th, \.tab-stack-table td \{[^}]*overflow-wrap: anywhere")
         self.assertRegex(self.css, r"\.jp-office__choice \{[^}]*overflow-wrap: anywhere")
         self.assertRegex(self.css, r"\.jp-directions a, \.job-page \.jp-commute-list a \{[^}]*overflow-wrap: anywhere")
 

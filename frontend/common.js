@@ -498,6 +498,16 @@ function showEncrypting(data) {
   }
 }
 
+// A file the page made or fetched, saved through a blob: address (the page's policy allows it).
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 function fmtBytes(n) {
   if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   if (n >= 1024) return `${Math.round(n / 1024)} KB`;
@@ -590,10 +600,10 @@ function appliedHtml(job) {
     ? `<span class="applied-on"><span aria-hidden="true">📨 </span>Applied ${esc(fmtDate(job.applied_at).split(',')[0])}</span>` : '';
 }
 const EMPLOYMENT_LABEL = { full_time: 'Full-time', part_time: 'Part-time', contract: 'Contract', casual: 'Casual', temporary: 'Temporary', internship: 'Internship' };
-/* Employment type badge for job facts; nothing when unknown. */
+/* The employment type as a neutral status label (a fact, not a warning); nothing when unknown. */
 function employmentBadge(job) {
   const label = EMPLOYMENT_LABEL[job.employment_type];
-  return label ? `<span class="badge soft"><span class="visually-hidden">Employment type: </span>${label}</span>` : '';
+  return label ? `<span class="p-status-label"><span class="visually-hidden">Employment type: </span>${label}</span>` : '';
 }
 /* Ghost jobs (backend/ghost.py): signs that the ad may not be a current vacancy. Every job shows 👻 and a coloured
    circle under its fit score: 🟢 no strong signs, 🟡 some signs, 🔴 several signs. Hovering over it says which signs
@@ -961,7 +971,7 @@ function migrateStoredTheme() {
 const MODE_LABEL = { light: 'Light', dark: 'Dark', auto: 'Light or dark' };
 // The picker's mark of a theme that meets WCAG AA (a status label with the words in it, so screen readers
 // hear it), and the line under an exact palette instead.
-const AA_BADGE = '<span class="badge p-status-label p-status-label--positive theme-aa">WCAG 2.0 AA</span>';
+const AA_BADGE = '<span class="p-status-label p-status-label--positive theme-aa">WCAG 2.0 AA</span>';
 const EXACT_NOTE = 'The project\'s exact colours; some text is under 4.5:1';
 
 function storedTheme() {
@@ -1052,9 +1062,9 @@ function createThemePicker({ legend = 'Theme', name = 'theme', onChange = null }
         ${preview}
         <span class="theme-card-text">
           <input type="radio" name="${esc(name)}" id="${id}" value="${esc(t.id)}" />
-          <span class="theme-name">${esc(t.label)}${t.aa ? ` ${AA_BADGE}` : ''}</span>
+          <span class="theme-name">${esc(t.label)}</span>
           <span class="theme-mode">${MODE_LABEL[t.mode]}${t.note ? `, ${esc(t.note)}` : ''}</span>
-          ${t.aa ? '' : `<span class="theme-mode theme-exact">${EXACT_NOTE}</span>`}
+          ${t.aa ? `<span class="theme-badge">${AA_BADGE}</span>` : `<span class="theme-mode theme-exact">${EXACT_NOTE}</span>`}
           <span class="theme-chosen" aria-hidden="true">✓ Selected</span>
         </span>
       </label>`;

@@ -974,73 +974,36 @@ function initActions() {
   document.addEventListener('chat:changed', () => { chatThreads = chatState.chat?.threads || chatThreads; renderChatCount(); renderNext(); });
 }
 
-/* ---------- the cover letter (a native dialog) ---------- */
+/* ---------- the cover letter: letter.js's window, in this page's #letter-dialog ---------- */
 let letterReturn = null;
-async function showCoverLetter() {
+function showCoverLetter() {
   const dialog = $('#letter-dialog');
-  letterReturn = document.activeElement;
-  let letter = null;
-  try { letter = await api(`/api/jobs/${job.id}/cover-letter`); } catch { letter = null; }
-  $('#letter-title').textContent = `Cover letter: ${job.title} at ${job.company}`;
-  $('#letter-body').innerHTML = `
-    <div class="letter-editor">
-      <div class="p-field"><label class="p-label" for="cl-instructions">Extra instructions for the draft (optional)</label>
-        <textarea id="cl-instructions" class="p-textarea" rows="2" placeholder="e.g. Mention I can start in two weeks. Keep it under 300 words.">${esc(letter?.instructions || '')}</textarea></div>
-      <div class="u-row">
-        <button id="cl-draft" class="p-button p-button--positive is-dense" type="button">${letter ? 'Redraft' : 'Draft cover letter'}</button>
-        <span id="cl-status" class="muted" role="status"></span>
-      </div>
-      <div class="p-field"><label class="p-label" for="cl-text">Cover letter</label>
-        <textarea id="cl-text" class="p-textarea" rows="16" placeholder="Your draft appears here. You can edit it before saving.">${esc(letter?.text || '')}</textarea></div>
-      <div class="u-row">
-        <button id="cl-save" class="p-button is-dense" type="button">Save edits</button>
-        <button id="cl-copy" class="p-button p-button--base is-dense" type="button">Copy<span class="visually-hidden"> the letter</span></button>
-        <a id="cl-docx" class="p-button p-button--base is-dense" href="/api/jobs/${job.id}/cover-letter.docx?ws=${currentWorkspace()}" ${letter ? '' : 'hidden'}>Download .docx</a>
-        <span id="cl-meta" class="muted"></span>
-      </div>
-      <p class="hint">Drafts use only facts from your documents, but always check them before sending.
-        Upload earlier cover letters as "Cover letter" documents and drafts will follow your style.</p>
-    </div>`;
-  const meta = (l) => (l ? `${l.edited ? 'Edited' : 'Drafted'} ${fmtDate(l.updated_at)} · ${l.model || ''}${l.reasoning_effort ? `, reasoning ${l.reasoning_effort}` : ''}` : '');
-  $('#cl-meta').textContent = meta(letter);
-  const drafted = () => { if (!job.has_cover_letter) { job.has_cover_letter = true; renderHead(); renderNext(); } };
-  $('#cl-draft').addEventListener('click', async () => {
-    const btn = $('#cl-draft');
-    if ($('#cl-text').value.trim() && !confirm('Replace the current letter with a new draft?')) return;
-    setBusy(btn, true);
-    $('#cl-status').textContent = 'Drafting… this can take a minute.';
-    try {
-      letter = await api(`/api/jobs/${job.id}/cover-letter`, { method: 'POST', body: JSON.stringify({ instructions: $('#cl-instructions').value }) });
-      $('#cl-text').value = letter.text;
-      $('#cl-status').textContent = 'Drafted.';
-      $('#cl-meta').textContent = meta(letter);
-      $('#cl-docx').hidden = false;
-      btn.textContent = 'Redraft';
-      drafted();
-    } catch (e) { $('#cl-status').textContent = `Failed: ${e.message}`; }
-    setBusy(btn, false);
+  return openLetterWindow(job, {
+    dialog,
+    open(title, html) {
+      $('#letter-title').textContent = title;
+      $('#letter-body').innerHTML = html;
+      $('#letter-body').scrollTop = 0;
+      if (dialog.open) return;
+      letterReturn = document.activeElement;
+      dialog.showModal();
+    },
+    close: () => dialog.close(),
+    docsHref: './#docs',
+    onChange: () => { renderHead(); renderNext(); renderFacts(); },
   });
-  $('#cl-save').addEventListener('click', async () => {
-    try {
-      letter = await api(`/api/jobs/${job.id}/cover-letter`, { method: 'PUT', body: JSON.stringify({ text: $('#cl-text').value }) });
-      $('#cl-meta').textContent = meta(letter);
-      $('#cl-docx').hidden = false;
-      drafted();
-      toast('Cover letter saved', 'ok', 2000);
-    } catch (e) { toast(`Save failed: ${e.message}`, 'err'); }
-  });
-  $('#cl-copy').addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText($('#cl-text').value); toast('Copied', 'ok', 1500); }
-    catch { $('#cl-text').select(); toast('Press Ctrl+C to copy', '', 2500); }
-  });
-  if (!dialog.open) dialog.showModal();
-  $('#cl-text').focus();
 }
 
 function initLetterDialog() {
   const dialog = $('#letter-dialog');
   $('#letter-close').addEventListener('click', () => dialog.close());
-  dialog.addEventListener('close', () => { if (letterReturn?.isConnected) letterReturn.focus(); letterReturn = null; });
+  // A click on the backdrop lands on the <dialog> itself (its box fills it otherwise).
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+  dialog.addEventListener('close', () => {
+    $('#letter-body').innerHTML = ''; // nothing of the old content stays reachable
+    if (letterReturn?.isConnected) letterReturn.focus();
+    letterReturn = null;
+  });
 }
 
 /* ---------- boot ---------- */
