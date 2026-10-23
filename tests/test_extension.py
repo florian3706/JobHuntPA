@@ -691,9 +691,10 @@ class PagesTest(SavingBase):
         r = self.k.post("/api/extension/jobs", json=page(work_mode="hybrid"))
         self.assertEqual(r.status_code, 201, r.text)
         saved = r.json()
-        self.assertEqual(set(saved), {"job_id", "created", "title", "company", "link", "excluded_reason"})
-        self.assertEqual((saved["created"], saved["title"], saved["company"], saved["excluded_reason"]),
-                         (True, "Product Owner, Payments", "Acme", None))
+        self.assertEqual(set(saved), {"job_id", "created", "title", "company", "link", "excluded_reason",
+                                      "filter_warnings"})
+        self.assertEqual((saved["created"], saved["title"], saved["company"], saved["excluded_reason"],
+                          saved["filter_warnings"]), (True, "Product Owner, Payments", "Acme", None, []))
         self.assertEqual(saved["link"], f"/job.html?id={saved['job_id']}&ws={self.acct.workspace_id}")
         job = self.stored(saved["job_id"])
         self.assertEqual((job.origin, job.posting_id, job.source, job.work_mode, job.employment_type,
@@ -747,7 +748,7 @@ class PagesTest(SavingBase):
         r = self.k.post("/api/extension/jobs", json=page("https://evil.example/x", url="https://www.seek.com.au/job/1"))
         self.assertEqual(self.stored(r.json()["job_id"]).url, "https://evil.example/x")
 
-    def test_a_saved_job_is_filtered_and_waits_for_a_score(self):
+    def test_a_saved_job_is_listed_whatever_the_filters_say_and_waits_for_a_score(self):
         from backend.scorer import select_jobs
 
         r = self.c.put("/api/dealbreakers", json={"industries": [], "keywords": ["blockchain"]})
@@ -756,13 +757,21 @@ class PagesTest(SavingBase):
                                                            description="A blockchain job. " * 20))
         good = self.k.post("/api/extension/jobs", json=page())
         self.assertEqual((bad.status_code, good.status_code), (201, 201))
-        listed = {j["id"]: j for j in self.jobs()}
-        self.assertTrue(listed[bad.json()["job_id"]]["excluded_reason"])
-        self.assertIsNone(listed[good.json()["job_id"]]["excluded_reason"])
-        # The answer says why the job won't show in the Jobs list, as the list says it
-        self.assertEqual(bad.json()["excluded_reason"], listed[bad.json()["job_id"]]["excluded_reason"])
-        self.assertIsNone(good.json()["excluded_reason"])
-        self.assertNotIn(bad.json()["job_id"], [j["id"] for j in self.jobs(include="")])
+        # The person picked both: both are listed, and the answer and the list say what the one doesn't meet
+        listed = {j["id"]: j for j in self.jobs(include="")}
+        self.assertEqual(set(listed), {bad.json()["job_id"], good.json()["job_id"]})
+        for answer, warnings in ((bad.json(), ["dealbreaker keyword: blockchain"]), (good.json(), [])):
+            shown = listed[answer["job_id"]]
+            self.assertEqual((answer["excluded_reason"], answer["filter_warnings"]), (None, warnings))
+            self.assertEqual((shown["excluded_reason"], shown["included_by_user"], shown["filter_warnings"]),
+                             (None, True, warnings))
+        detail = self.c.get(f"/api/jobs/{bad.json()['job_id']}").json()
+        self.assertEqual(detail["filter_warnings"], ["dealbreaker keyword: blockchain"])
+        # A change to the filters re-checks every job: these stay listed, with the warnings as they now are
+        self.c.put("/api/dealbreakers", json={"industries": [], "keywords": ["blockchain", "payments"]})
+        listed = {j["id"]: j for j in self.jobs(include="")}
+        self.assertEqual(listed[good.json()["job_id"]]["filter_warnings"], ["dealbreaker keyword: payments"])
+        self.assertEqual(listed[bad.json()["job_id"]]["filter_warnings"], ["dealbreaker keyword: blockchain"])
         with helpers.as_account(self.acct):
             db = SessionLocal()
             try:
@@ -770,7 +779,25 @@ class PagesTest(SavingBase):
             finally:
                 db.close()
         self.assertIn(good.json()["job_id"], waiting)
-        self.assertNotIn(bad.json()["job_id"], waiting)
+        self.assertIn(bad.json()["job_id"], waiting)
+
+    def test_saving_a_job_the_filters_left_out_lists_it(self):
+        with helpers.as_account(self.acct):
+            db = SessionLocal()
+            try:
+                job = Job(workspace_id=self.acct.workspace_id, url=PAGE_URL, origin="private", title="Old title",
+                          company="Acme", detail_status="full", description=AD, status="to_review",
+                          excluded_reason="no target title or include keyword")
+                db.add(job)
+                db.commit()
+                job_id = job.id
+            finally:
+                db.close()
+        self.assertEqual(self.jobs(include=""), [])
+        r = self.k.post("/api/extension/jobs", json=page())
+        self.assertEqual((r.status_code, r.json()["job_id"], r.json()["excluded_reason"]), (200, job_id, None))
+        self.assertEqual([j["id"] for j in self.jobs(include="")], [job_id])
+        self.assertTrue(self.stored(job_id).included_by_user)
 
     def test_the_same_job_on_another_site_is_merged_and_the_listed_one_is_linked(self):
         first = self.k.post("/api/extension/jobs", json=page())
@@ -911,7 +938,8 @@ class ResultsPageTest(SavingBase):
         body = r.json()
         self.assertEqual((body["added"], body["existing"], len(body["jobs"])), (2, 0, 2))
         first, second = body["jobs"]
-        self.assertEqual(set(first), {"url", "job_id", "created", "title", "company", "link", "excluded_reason"})
+        self.assertEqual(set(first), {"url", "job_id", "created", "title", "company", "link", "excluded_reason",
+                                      "filter_warnings"})
         self.assertEqual((first["url"], first["created"], first["title"], first["company"], first["excluded_reason"]),
                          ("https://www.seek.com.au/job/81000001", True, "Product Manager 81000001", "Acme", None))
         self.assertEqual(first["link"], f"/job.html?id={first['job_id']}&ws={self.acct.workspace_id}")
@@ -1024,7 +1052,7 @@ class ResultsPageTest(SavingBase):
         self.assertEqual(self.job_count(self.acct.workspace_id), 0)
         self.assertEqual(post(results(card(description="d" * extension.SUMMARY_MAX))).status_code, 200)
 
-    def test_added_jobs_are_filtered_and_wait_for_a_score(self):
+    def test_added_jobs_are_listed_whatever_the_filters_say_and_wait_for_a_score(self):
         from backend.scorer import select_jobs
 
         r = self.c.put("/api/dealbreakers", json={"industries": [], "keywords": ["blockchain"]})
@@ -1035,21 +1063,40 @@ class ResultsPageTest(SavingBase):
         # The card's classification is the job's industry, which the industry dealbreakers read
         self.c.put("/api/dealbreakers", json={"industries": ["gambling"], "keywords": ["blockchain"]})
         by_industry = self.batch(card(81000003, industry="Gambling & Wagering")).json()["jobs"][0]
-        self.assertIn("gambling", by_industry["excluded_reason"])
-        listed = {j["id"]: j for j in self.jobs()}
-        self.assertIsNone(good["excluded_reason"])
-        self.assertTrue(bad["excluded_reason"])
-        self.assertEqual(bad["excluded_reason"], listed[bad["job_id"]]["excluded_reason"])
-        self.assertEqual([j["id"] for j in self.jobs(include="")], [good["job_id"]])
+        self.assertEqual((by_industry["excluded_reason"], by_industry["filter_warnings"]),
+                         (None, ["dealbreaker industry: gambling"]))
+        self.assertEqual((good["excluded_reason"], good["filter_warnings"]), (None, []))
+        self.assertEqual((bad["excluded_reason"], bad["filter_warnings"]), (None, ["dealbreaker keyword: blockchain"]))
+        listed = {j["id"]: j for j in self.jobs(include="")}
+        self.assertEqual(set(listed), {good["job_id"], bad["job_id"], by_industry["job_id"]})
+        self.assertEqual(listed[bad["job_id"]]["filter_warnings"], ["dealbreaker keyword: blockchain"])
         with helpers.as_account(self.acct):
             db = SessionLocal()
             try:
                 waiting = select_jobs(db, "pending", "x", self.acct.workspace_id)
             finally:
                 db.close()
-        self.assertIn(good["job_id"], waiting)
-        self.assertNotIn(bad["job_id"], waiting)
-        self.assertNotIn(by_industry["job_id"], waiting)
+        self.assertTrue({good["job_id"], bad["job_id"], by_industry["job_id"]} <= set(waiting))
+
+    def test_ticking_a_job_the_filters_left_out_lists_it_and_keeps_its_ad(self):
+        url = "https://www.seek.com.au/job/81000001"
+        with helpers.as_account(self.acct):
+            db = SessionLocal()
+            try:
+                job = Job(workspace_id=self.acct.workspace_id, url=url, origin="private", title="Stored title",
+                          company="Acme", detail_status="full", description=AD, status="to_review",
+                          excluded_reason="salary below floor ($90,000 < $120,000)")
+                db.add(job)
+                db.commit()
+                job_id = job.id
+            finally:
+                db.close()
+        r = self.batch(card(81000001))
+        self.assertEqual((r.json()["added"], r.json()["jobs"][0]["job_id"]), (0, job_id), r.text)
+        self.assertEqual([j["id"] for j in self.jobs(include="")], [job_id])
+        stored = self.stored(job_id)
+        self.assertEqual((stored.included_by_user, stored.excluded_reason, stored.title, stored.description),
+                         (True, None, "Stored title", AD))
 
     def test_a_copy_of_a_job_from_another_site_is_merged_and_the_listed_one_is_linked(self):
         first = self.k.post("/api/extension/jobs", json=page()).json()

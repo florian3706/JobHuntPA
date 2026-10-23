@@ -400,6 +400,11 @@ class Job(Base):
     # latest move. NULL: never, or before this was kept. Not SealedAlways, for the reason ad_ghost_json isn't: a column
     # added to a database already in strict mode is NULL in every old row. No server_default (accounts design §2).
     applied_at = Column(SealedDateTime(), nullable=True)
+    # True when the person keeps the job in their list whatever the filters say: they added it themselves (the browser
+    # extension, or a saved page of the one job) or ticked its "Always include" (backend.pipeline.mark_included,
+    # PATCH /api/jobs/{id}/included). The filters never leave it out, and the Jobs tab warns about the rules it doesn't
+    # meet (backend.filters.filter_warnings). NULL: the filters decide. Not SealedAlways, for applied_at's reason.
+    included_by_user = Column(SealedBool(), nullable=True)
 
     @python_only
     def url(self) -> Optional[str]:
@@ -745,8 +750,40 @@ class CoverLetter(Base):
     edited = Column(Boolean, nullable=False, default=False, server_default="0")
     model = Column(String, nullable=True)
     reasoning_effort = Column(String, nullable=True)
+    source = Column(String, nullable=True)  # "ai" (drafted by the model) | "blocks" (assembled from letter blocks)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow)
+
+
+class LetterBlock(Base):
+    """A paragraph the user wrote for cover letters; letters are built by concatenating blocks (backend.letter_blocks)."""
+
+    __tablename__ = "letter_blocks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = _workspace_fk()
+    kind = Column(String, nullable=False, default="body")      # opening | body | closing (structure, not content)
+    position = Column(Integer, nullable=False, default=0)      # plaintext: the only thing we sort on
+    title = Column(SealedText(), nullable=False, default="")
+    text = Column(SealedText(), nullable=False, default="")
+    tags = Column(SealedJSON(), nullable=False, default=list)  # ["budget", "SQL", ...]
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow)
+
+
+class LetterTemplate(Base):
+    """The workspace's cover letter template (at most one): a .docx or .odt with a ``{letter}`` paragraph that
+    downloads fill in (backend.letter_templates). The file is an upload like a document's (``stored_name``)."""
+
+    __tablename__ = "letter_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = _workspace_fk()
+    filename = Column(SealedText(), nullable=False, default="")  # the uploaded file's name
+    filetype = Column(String, nullable=False)                   # ".docx" | ".odt" (plaintext: picks the filler)
+    # The upload in data/uploads: "<random hex>.sealed", sealed under the owner's key (backend.docs.save_upload).
+    stored_name = Column(String, nullable=False)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class ChatThread(Base):
@@ -1028,7 +1065,7 @@ def get_db():
 
 
 # Rows that belong to a workspace must say which: no default, and none in the schema of new databases.
-_WORKSPACE_ROWS = (Job, JobDuplicate, Document, Pin, CompanySource, ChatThread, SearchRun)
+_WORKSPACE_ROWS = (Job, JobDuplicate, Document, LetterBlock, LetterTemplate, Pin, CompanySource, ChatThread, SearchRun)
 
 
 def _refuse_rows_without_workspace(_mapper, _connection, target) -> None:

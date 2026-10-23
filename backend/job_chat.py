@@ -129,6 +129,12 @@ def job_block(db: Session, n: int, job: Job, ad_limit: int) -> str:
                  + (" (no longer advertised)" if job.closed_at else ""))
     if job.excluded_reason:
         lines.append(f"The candidate's search filters exclude it: {job.excluded_reason}")
+    if job.included_by_user:
+        from backend.filters import filter_warnings, load_criteria
+
+        unmet = filter_warnings(job, load_criteria(db, job.workspace_id))
+        lines.append("The candidate keeps this job in their list whatever their search filters say" + (
+            f"; it doesn't meet these of their search filters: {'; '.join(unmet)}" if unmet else ""))
     if job.detail_status != "full":
         lines.append("Note: only the job board's short listing summary is stored, not the full ad.")
     lines += ["", "Ad:", _clip(job.description or "(no description stored)", ad_limit)]

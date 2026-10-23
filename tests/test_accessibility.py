@@ -1090,7 +1090,8 @@ class GhostJobPagesTest(unittest.TestCase):
 
     def test_the_circle_is_under_the_score_on_cards_the_map_list_and_the_job_page(self):
         ratings = self.common[self.common.index("function ratingsHtml"):self.common.index("function ghostWhy")]
-        self.assertIn('<div class="ratings">${scoreBadge(job)}${ghostMeter(job, ghostHref)}</div>', ratings)
+        self.assertIn('<div class="ratings">${scoreBadge(job)}${filterWarnButton(job)}${ghostMeter(job, ghostHref)}</div>',
+                      ratings)
         self.assertIn("${ratingsHtml(job)}", self.app)
         self.assertIn("${ratingsHtml(j)}", self.app)
         self.assertIn("${ratingsHtml(job, '#ghost-title')}", self.job)  # on the job page it links to the explanation
@@ -1100,6 +1101,60 @@ class GhostJobPagesTest(unittest.TestCase):
             self.assertNotIn("scoreBadge(", src)  # nowhere a score without the circle under it
         # The map list has no "why?" line, so a flagged job is said in words there (the circle alone is colour).
         self.assertIn("${j.ghost?.level ? ` · possible ghost job (${GHOST_STRENGTH[j.ghost.level]})` : ''}", self.app)
+
+    def test_the_filter_warning_is_a_named_button_above_the_circle_that_opens_a_dialog(self):
+        """A job the person included that doesn't meet their filters: ⚠️ between the score and the ghost-job circle, a
+        real button whose name says what it is (the emoji is hidden from screen readers), opening a dialog on the Jobs
+        tab, the map list and the job page."""
+        block = self.common[self.common.index("function filterWarnWords"):self.common.index("function ratingsHtml")]
+        button = block[block.index("function filterWarnButton"):block.index("const filterWarningsTitle")]
+        self.assertIn("if (!(job.filter_warnings || []).length) return '';", button)  # only when there is something
+        self.assertIn('<button class="filter-warn" type="button" data-act="filter-warnings" aria-haspopup="dialog"', button)
+        self.assertIn('<span aria-hidden="true">⚠️</span><span class="visually-hidden">${filterWarnWords(job)}: show which</span>',
+                      button)
+        self.assertIn("`Doesn't meet ${n === 1 ? 'one of your filters' : `${n} of your filters`}`", block)
+        body = block[block.index("function filterWarningsHtml"):]
+        self.assertIn("${esc(upper(w))}", body)  # each rule escaped (its words are the person's own)
+        self.assertIn('<ul class="filter-warnings">', body)
+        # Wired on the card, in the map list and on the job page, each to its page's dialog
+        self.assertIn("card.querySelector('[data-act=\"filter-warnings\"]')?.addEventListener('click', () => showFilterWarnings(job));",
+                      self.app)
+        self.assertIn("box.querySelectorAll('[data-act=\"filter-warnings\"]')", self.app)
+        self.assertIn("openHtmlModal(filterWarningsTitle(job), filterWarningsHtml(job));", self.app)
+        self.assertIn("$('#job-head [data-act=\"filter-warnings\"]')?.addEventListener('click', showFilterWarnings);", self.job)
+        self.assertIn('<dialog id="modal" class="modal" aria-labelledby="modal-title">', self.job_html)
+        self.assertIn("dlg.showModal();", self.job[self.job.index("function showFilterWarnings"):])
+        self.assertIn("initModal();", self.job)
+        self.assertRegex(self.css, r"(?m)^  \.filter-warn \{ min-height: 44px; \}")  # a touch-sized target
+
+    def test_always_include_is_a_labelled_checkbox_that_keeps_focus(self):
+        """"Always include": a real checkbox inside its label (a touch-sized .check-field), named on a card by the job's
+        title too; after the card or the job page's header is redrawn, focus is back on it (or on the Jobs tab when the
+        filters now leave the job out of the list), and a toast says what became of the job."""
+        toggle = self.common[self.common.index("function includeToggle"):self.common.index("function includedWords")]
+        self.assertIn('<label class="check-field include-toggle"><input type="checkbox" data-act="include"', toggle)
+        self.assertIn('<span>Always include</span></label>', toggle)
+        self.assertIn("${showsInclude(job) ? includeToggle(job, titleId) : ''}", self.app)
+        card = self.app[self.app.index("async function setIncluded"):self.app.index("function showFilterWarnings")]
+        self.assertIn("const back = focusFinder(box);", card)
+        self.assertIn("(back() || $('#tab-jobs')).focus({ preventScroll: true });", card)
+        self.assertIn("toast(includedWords(job, !state.filter.showExcluded), 'ok', 6000);", card)
+        self.assertIn("${includeToggle(job)}", self.job)
+        page = self.job[self.job.index("async function setIncluded"):self.job.index("function showFilterWarnings")]
+        self.assertIn("renderHead();\n    $('#job-head [data-act=\"include\"]').focus();", page)
+        self.assertIn("toast(includedWords(job), 'ok', 6000);", page)
+
+    def test_add_a_job_opens_a_dialog_with_labelled_fields(self):
+        self.assertIn('<button id="add-job-open" class="btn" type="button" aria-haspopup="dialog"', self.index)
+        dialog = self.app[self.app.index("function showAddJob"):self.app.index("function addJobResult")]
+        self.assertIn('<label for="add-job-file">', dialog)
+        self.assertIn('<input id="add-job-file" type="file"', dialog)
+        self.assertIn('<label for="add-job-url">', dialog)
+        self.assertIn('aria-describedby="add-job-url-hint"', dialog)
+        self.assertIn('<p id="add-job-status" class="muted" role="status"></p>', dialog)  # the outcome is announced
+        result = self.app[self.app.index("function addJobResult"):self.app.index("async function addJobPages")]
+        for value in ("esc(name)", "esc(j.title || 'Job')", "esc(j.company)", "esc(j.link)", "esc(j.filter_warnings.join('; '))"):
+            self.assertIn(value, result)
 
     def test_the_circles_pill_is_plain_text_on_the_field_ground(self):
         rule = re.search(r"(?m)^\.ghost-dot \{([^}]*)\}", self.css).group(1)

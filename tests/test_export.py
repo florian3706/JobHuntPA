@@ -14,7 +14,7 @@ from unittest import mock
 
 from tests import helpers
 
-from backend import crypto, docs, export
+from backend import crypto, docs, export, import_file
 from backend.db import (
     ChatMessage,
     ChatThread,
@@ -25,11 +25,25 @@ from backend.db import (
     Document,
     FitResult,
     Job,
+    LetterBlock,
+    LetterTemplate,
     Pin,
     SearchRun,
     SessionLocal,
     UserProfile,
 )
+
+
+def template_docx(text: str) -> bytes:
+    """A cover letter template (.docx) holding ``text`` and the ``{letter}`` paragraph."""
+    import docx
+
+    document = docx.Document()
+    document.add_paragraph(text)
+    document.add_paragraph("{letter}")
+    out = io.BytesIO()
+    document.save(out)
+    return out.getvalue()
 
 
 class SafeNameTest(unittest.TestCase):
@@ -149,6 +163,12 @@ class ExportTest(unittest.TestCase):
                             text=f"MARK-resume-{tag}", concise_text=f"MARK-concise-{tag}", use_concise=True))
             db.add(Document(workspace_id=ws, filename="Resume.pdf", filetype=".pdf", kind="other", text=f"MARK-second-{tag}"))
             db.add(Document(workspace_id=ws, filename="a/b", filetype="note", kind="other", text=f"MARK-note-{tag}"))
+            db.add(LetterBlock(workspace_id=ws, kind="closing", position=0, title=f"MARK-blocktitle-{tag}",
+                               text=f"MARK-blocktext-{tag}", tags=[f"MARK-blocktag-{tag}", "budget"]))
+            db.add(LetterBlock(workspace_id=ws, kind="opening", position=0, title="First block", text="Dear {company}", tags=[]))
+            self.template = template_docx(f"MARK-templatebody-{tag}")
+            db.add(LetterTemplate(workspace_id=ws, filename=f"MARK-template-{tag}.docx", filetype=".docx",
+                                  stored_name=docs.save_upload(self.template)))
             main = Job(workspace_id=ws, url=f"https://ads.example/{tag}/main", title=f"Senior Analyst MARK-jobtitle-{tag}",
                        company="Acme Corp", description=f"MARK-description-{tag} <script>alert('x')</script> ![i](http://t.example/p.png)",
                        status="shortlisted", location_text=f"MARK-location-{tag}", salary_text="100k", work_mode="hybrid", office_days=2,
@@ -212,7 +232,7 @@ class ExportTest(unittest.TestCase):
         ws = "Workspaces/My job search"
         for expected in ("README.md", "Account.md", f"{ws}/Search setup.md", f"{ws}/Sources.md", f"{ws}/Search history.md", f"{ws}/Jobs/Jobs.md",
                          f"{ws}/Jobs/Filtered out.md", f"{ws}/Documents/Resume.md", f"{ws}/Documents/Resume (2).md",
-                         f"{ws}/Documents/a-b.md", f"{ws}/Documents/Original files/Resume.pdf", "Companies/Acme Corp.md",
+                         f"{ws}/Documents/a-b.md", f"{ws}/Documents/Original files/Resume.pdf", f"{ws}/Cover letter blocks.md", "Companies/Acme Corp.md",
                          f"{ws}/Jobs/Shortlisted/Acme Corp - Senior Analyst MARK-jobtitle-bob.md",
                          f"{ws}/Jobs/Shortlisted/Acme Corp - Senior Analyst MARK-jobtitle-bob - Cover letter.md"):
             self.assertIn(expected, rel)
@@ -223,11 +243,32 @@ class ExportTest(unittest.TestCase):
         for marker in ("name-bob", "title-bob", "inc-bob", "exc-bob", "seek-bob", "station-bob", "industry-bob", "dealbreaker-bob", "pin-bob",
                        "source-bob", "sourceerror-bob", "resume-bob", "concise-bob", "second-bob", "note-bob", "jobtitle-bob", "description-bob",
                        "location-bob", "office-bob", "fitsummary-bob", "gap-bob", "req-bob", "evidence-bob", "sub-bob", "letter-bob",
-                       "instructions-bob", "chat-bob", "question-bob", "answer-bob", "runsource-bob", "hidden-bob", "filtered-bob", "reason-bob",
+                       "instructions-bob", "blocktitle-bob", "blocktext-bob", "blocktag-bob", "chat-bob", "question-bob", "answer-bob", "runsource-bob", "hidden-bob", "filtered-bob", "reason-bob",
                        "company-business"):
             self.assertIn(f"MARK-{marker}", everything, marker)
         self.assertIn("bob", z.read(f"{root}/Account.md").decode())
         self.assertIn(self.bob.email, z.read(f"{root}/Account.md").decode())
+
+    def test_the_cover_letter_blocks_file_is_in_letter_order(self):
+        z = self.open_zip(self.export())
+        name = next(n for n in z.namelist() if n.endswith("My job search/Cover letter blocks.md"))
+        md = z.read(name).decode()
+        self.assertTrue(md.startswith("# Cover letter blocks"))
+        self.assertLess(md.index("## First block"), md.index("## MARK-blocktitle-bob"), "opening before closing")
+        self.assertIn("- Kind: closing", md)
+        self.assertIn("- Tags: MARK-blocktag-bob, budget", md)
+        self.assertNotIn("Tags: \n", md)
+
+    def test_the_cover_letter_template_is_in_it_as_uploaded(self):
+        z = self.open_zip(self.export())
+        root = z.namelist()[0].split("/")[0]
+        path = "Workspaces/My job search/Cover letter template/MARK-template-bob.docx"
+        self.assertEqual(z.read(f"{root}/{path}"), self.template)
+        data = json.loads(z.read(f"{root}/{import_file.FILE_NAME}"))
+        self.assertEqual(data["workspaces"][0]["letter_template"]["original"], path)
+        self.assertEqual(data["workspaces"][0]["letter_template"]["filename"], "MARK-template-bob.docx")
+        self.assertEqual(data["workspaces"][0]["letter_template"]["filetype"], ".docx")
+        self.assertIn("Cover letter template/", z.read(f"{root}/README.md").decode())
 
     def test_another_persons_data_never_appears(self):
         z = self.open_zip(self.export())

@@ -353,7 +353,8 @@ def _refilter(db: Session, job: Job, crit) -> None:
 def merge(db: Session, roots: list[Job], crit=None, ranking: Optional[Ranking] = None) -> Job:
     """Merge the groups of these listed jobs into one and return the job that
     stays listed. Their status, hidden flag, cover letter and fit score are
-    the user's view of the job, so they carry over to it."""
+    the user's view of the job, so they carry over to it, and so does having
+    been included by the person (``included_by_user``)."""
     from backend.filters import load_criteria
 
     ws = roots[0].workspace_id
@@ -372,6 +373,8 @@ def merge(db: Session, roots: list[Job], crit=None, ranking: Optional[Ranking] =
     if applied:
         primary.applied_at = max(applied)
     primary.hidden = all(r.hidden for r in roots)  # still listed if any copy was
+    if any(m.included_by_user for m in members.values()):
+        primary.included_by_user = True  # the person included this ad: the filters never leave its card out
     ids = list(members)
     root_ids = {r.id for r in roots}
 

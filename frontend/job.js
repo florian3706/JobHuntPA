@@ -52,11 +52,14 @@ function renderHead() {
       <select id="job-status" aria-label="Application status">
         ${STATUSES.map((s) => `<option value="${s}" ${job.status === s ? 'selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}
       </select>
+      ${includeToggle(job)}
       <a class="btn btn-ghost btn-sm" href="./#jobs">Back to the dashboard</a>
     </div>`;
   document.title = `${job.title} · ${job.company} · JobHuntPA`;
   // The circle links to the ghost section; its reasons are collapsed, so following the link opens them.
   $('#job-head a.ghost-dot')?.addEventListener('click', () => { const why = $('#ghost-why'); if (why) why.open = true; });
+  $('#job-head [data-act="filter-warnings"]')?.addEventListener('click', showFilterWarnings);
+  $('#job-head [data-act="include"]').addEventListener('change', setIncluded);
   $('#job-status').addEventListener('change', async (e) => {
     try {
       const res = await api(`/api/jobs/${job.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) });
@@ -66,6 +69,45 @@ function renderHead() {
       toast(`Status saved: ${STATUS_LABEL[job.status]}`, 'ok', 2500);
     } catch (err) { toast(`Status update failed: ${err.message}`, 'err'); e.target.value = job.status; }
   });
+}
+
+/* "Always include" (common.js includeToggle): the header is redrawn for the job's new excluded reason and ⚠️, with
+   focus back on the box. */
+async function setIncluded(e) {
+  const box = e.currentTarget;
+  box.disabled = true;
+  try {
+    const updated = await api(`/api/jobs/${job.id}/included`, { method: 'PATCH', body: JSON.stringify({ included: box.checked }) });
+    for (const k of ['included_by_user', 'excluded_reason', 'softened_reason', 'filter_warnings']) job[k] = updated[k];
+    renderHead();
+    $('#job-head [data-act="include"]').focus();
+    toast(includedWords(job), 'ok', 6000);
+  } catch (err) {
+    box.checked = !box.checked;
+    box.disabled = false;
+    toast(`Could not change "Always include": ${err.message}`, 'err');
+  }
+}
+
+/* ---------- the filters a job the person included doesn't meet (its ⚠️) ----------
+   In #modal, a native <dialog>: showModal() moves focus in and keeps it there, Escape or a click outside closes it,
+   and focus goes back to the ⚠️ (or to the page, when the header was redrawn meanwhile). */
+function showFilterWarnings(e) {
+  const dlg = $('#modal');
+  const back = e.currentTarget;
+  $('#modal-title').textContent = filterWarningsTitle(job);
+  $('#modal-html').innerHTML = filterWarningsHtml(job, './#search');
+  dlg.addEventListener('close', () => {
+    $('#modal-html').innerHTML = '';
+    (back.isConnected ? back : $('#job-head [data-act="filter-warnings"]') || $('#main')).focus();
+  }, { once: true });
+  dlg.showModal();
+}
+
+function initModal() {
+  const dlg = $('#modal');
+  $('#modal-close').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); }); // the backdrop
 }
 
 /* ---------- is this a real vacancy? ----------
@@ -286,6 +328,7 @@ async function researchCompany(button) {
 /* ---------- boot ---------- */
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
+  initModal();
   if (!JOB_ID) { showPageError('No job given. Open a job from the dashboard (Open ↗ on a job card).'); return; }
   try {
     const me = await loadSession(); // signed out: goes to the sign-in page, then back here

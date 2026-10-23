@@ -164,40 +164,69 @@ def stage_of(job: Job) -> str:
     return "full" if job.detail_status in ("full", "summary") else "listing"
 
 
-def _import(db: Session, ws: int, p: Posting, source: str, crit: Criteria, now: datetime) -> tuple[Job, bool]:
-    """One posting from a page the user has (``pool.import_private``), placed and filtered, committed."""
+def mark_included(db: Session, job: Job) -> None:
+    """The person keeps this job in their list: they added it themselves (the browser extension, or a saved page of
+    the one job) or ticked its "Always include". Neither the filters (``filters.exclusion_reason``) nor a page read as
+    not a job leave it out of the Jobs list from now on. The job that is listed for it (a merged copy's original,
+    backend.duplicates) is marked too, so it shows."""
+    from backend.duplicates import root_of
+
+    for one in (job, root_of(db, job)):
+        one.included_by_user = True
+        one.excluded_reason = None
+
+
+def unmark_included(db: Session, crit: Criteria, job: Job) -> None:
+    """The person unticked a listed job's "Always include": the filters decide again, for it and its merged copies
+    (so a later merge doesn't include it again), as ``refilter`` decides. Commits."""
+    copies = db.query(Job).filter(Job.workspace_id == job.workspace_id, Job.duplicate_of == job.id).all()
+    for one in (job, *copies):
+        one.included_by_user = None
+    refilter(db, crit, job.workspace_id, jobs=[job, *copies])
+
+
+def _import(db: Session, ws: int, p: Posting, source: str, crit: Criteria, now: datetime,
+            added: bool = False) -> tuple[Job, bool]:
+    """One posting from a page the user has (``pool.import_private``), placed and filtered, committed. ``added``: the
+    person picked this job (``mark_included``)."""
     job, is_new = pool.import_private(db, ws, p, source, now)
     if job.excluded_reason == NOT_A_JOB:
         job.excluded_reason = None
+    if added:
+        mark_included(db, job)
     enrich(job, crit)
     job.excluded_reason = exclusion_reason(job, crit, stage=stage_of(job))
     db.commit()
     return job, is_new
 
 
-def import_postings(postings: list[Posting], source: str, ws: int) -> dict:
+def import_postings(postings: list[Posting], source: str, ws: int, added: bool = False) -> dict:
     """Store postings parsed from a page the user saved in their browser. They're the user's own: a job the pool
-    doesn't have stays private to this workspace (``pool.import_private``)."""
+    doesn't have stays private to this workspace (``pool.import_private``). ``added``: the person picked them, so the
+    filters never leave them out (``mark_included``). ``stored``: (the job's id, new to the workspace) for each."""
     db = SessionLocal()
     try:
         crit = load_criteria(db, ws)
         now = datetime.utcnow()
         new = kept = 0
+        stored = []
         for p in postings:
-            job, is_new = _import(db, ws, p, source, crit, now)
+            job, is_new = _import(db, ws, p, source, crit, now, added)
             new += is_new
             kept += job.excluded_reason is None
-        return {"imported": len(postings), "new": new, "kept": kept, "excluded": len(postings) - kept}
+            stored.append((job.id, is_new))
+        return {"imported": len(postings), "new": new, "kept": kept, "excluded": len(postings) - kept,
+                "stored": stored}
     finally:
         db.close()
 
 
 def import_one(posting: Posting, source: str, ws: int) -> tuple[int, bool]:
-    """``import_postings`` for one posting (a job sent by the browser extension). Returns (the job's id, new to the
-    workspace)."""
+    """``import_postings`` for one posting (a job sent by the browser extension), which the person picked
+    (``mark_included``). Returns (the job's id, new to the workspace)."""
     db = SessionLocal()
     try:
-        job, is_new = _import(db, ws, posting, source, load_criteria(db, ws), datetime.utcnow())
+        job, is_new = _import(db, ws, posting, source, load_criteria(db, ws), datetime.utcnow(), added=True)
         return job.id, is_new
     finally:
         db.close()
@@ -206,8 +235,9 @@ def import_one(posting: Posting, source: str, ws: int) -> tuple[int, bool]:
 def add_listed(listed: list[tuple[Posting, str]], ws: int) -> list[tuple[int, bool]]:
     """Jobs from a results page the user had open in their browser (the extension's "add the jobs on this page"),
     each with the source a new private job gets. Only jobs the workspace doesn't have are added
-    (``pool.add_listed``), placed and filtered like an import; the ones it has are left as they are. Returns (the
-    job's id, new to the workspace) for each, in order."""
+    (``pool.add_listed``), placed like an import; the ones it has keep their ad as it is. The person ticked each one,
+    so the filters never leave any of them out (``mark_included``). Returns (the job's id, new to the workspace) for
+    each, in order."""
     db = SessionLocal()
     try:
         crit = load_criteria(db, ws)
@@ -215,13 +245,14 @@ def add_listed(listed: list[tuple[Posting, str]], ws: int) -> list[tuple[int, bo
         out = []
         for p, source in listed:
             job, is_new = pool.add_listed(db, ws, p, source, now)
+            mark_included(db, job)
             if is_new:
                 if job.posting is not None:
                     pool.refresh_link(job, crit)  # the pool's ad: placed, its office taken over
                 else:
                     enrich(job, crit)
                 job.excluded_reason = exclusion_reason(job, crit, stage=stage_of(job))
-                db.commit()
+            db.commit()
             out.append((job.id, is_new))
         return out
     finally:
@@ -303,10 +334,11 @@ def seek_addresses(db: Session, ws: int) -> int:
 
 def update_job_from_posting(db: Session, job: Job, p: Posting) -> None:
     """Replace a stored job's data with a fuller posting (e.g. a saved SEEK job page for a listing we only had a
-    summary of), then re-filter it. The page is the user's own: it's kept on this workspace's job, and the shared
-    posting (what everyone else reads) keeps the summary."""
+    summary of). The page is the user's own: it's kept on this workspace's job, and the shared posting (what everyone
+    else reads) keeps the summary. The person uploaded it, so the filters never leave the job out (``mark_included``)."""
     crit = load_criteria(db, job.workspace_id)
     pool.apply_own(job, p, datetime.utcnow())
+    mark_included(db, job)
     enrich(job, crit)
     job.excluded_reason = exclusion_reason(job, crit, stage="full")
     db.commit()
@@ -361,7 +393,7 @@ def refilter(db: Session, crit: Criteria, ws: int, jobs: Optional[list[Job]] = N
     """Re-apply filters to stored jobs (no network). Returns #changed."""
     changed = 0
     for job in jobs if jobs is not None else db.query(Job).filter(Job.workspace_id == ws).all():
-        if job.posting is not None and job.posting.not_a_job and not job.has_own_ad:
+        if job.posting is not None and job.posting.not_a_job and not job.has_own_ad and not job.included_by_user:
             reason = NOT_A_JOB
         elif job.excluded_reason == NOT_A_JOB:
             continue
@@ -409,7 +441,7 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
         found.add(job.id)
         posting = job.posting
 
-        if posting.not_a_job:
+        if posting.not_a_job and not job.included_by_user:
             job.excluded_reason = NOT_A_JOB
             db.commit()
             continue
@@ -431,12 +463,14 @@ def _process_source(db: Session, ws: int, src: Optional[CompanySource], adapter:
                     rep.details_fetched += 1
                     if detailed is None:
                         pool.mark_not_a_job(posting, now)
-                        job.excluded_reason = NOT_A_JOB
-                        db.commit()
-                        rep.excluded += 1
-                        continue
-                    pool.apply_detail(posting, detailed, now)
-                    pool.refresh_link(job, crit)
+                        if not job.included_by_user:  # (one the person added stays listed)
+                            job.excluded_reason = NOT_A_JOB
+                            db.commit()
+                            rep.excluded += 1
+                            continue
+                    else:
+                        pool.apply_detail(posting, detailed, now)
+                        pool.refresh_link(job, crit)
 
         job.excluded_reason = exclusion_reason(job, crit, stage=stage_of(job))
         if job.excluded_reason:

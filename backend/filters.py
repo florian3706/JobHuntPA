@@ -23,13 +23,18 @@ the dealbreaker "war" does not match "software"):
 
 ``stage="listing"`` runs the subset that works on listing data alone, so
 detail pages of obviously irrelevant jobs are never fetched.
+
+A job the person included themselves (``jobs.included_by_user``: added through
+the browser extension or a saved page of the one job, or its "Always include"
+ticked) is never left out: the rules it doesn't meet (``mismatches``) are shown
+on it as a warning instead.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from sqlalchemy.orm import Session
 
@@ -137,7 +142,8 @@ def salary_range(job: Any) -> tuple[Optional[float], Optional[float]]:
 # Evaluation
 # --------------------------------------------------------------------------
 
-def exclusion_reason(job: Any, c: Criteria, stage: str = "full") -> Optional[str]:
+def _unmet(job: Any, c: Criteria, stage: str) -> Iterator[str]:
+    """Each rule the job doesn't meet, in the order they are checked, as the Jobs tab says it."""
     title = _get(job, "title") or ""
     description = _get(job, "description") or ""
     has_description = bool(description.strip())
@@ -146,27 +152,48 @@ def exclusion_reason(job: Any, c: Criteria, stage: str = "full") -> Optional[str
     ind = _first_match(" | ".join(filter(None, [_get(job, "industry"), _get(job, "company"), title])),
                        c.dealbreaker_industries)
     if ind:
-        return f"dealbreaker industry: {ind}"
+        yield f"dealbreaker industry: {ind}"
     kw = _first_match(text, c.dealbreaker_keywords)
     if kw:
-        return f"dealbreaker keyword: {kw}"
+        yield f"dealbreaker keyword: {kw}"
     kw = _first_match(text, c.keywords_exclude)
     if kw:
-        return f"excluded keyword: {kw}"
+        yield f"excluded keyword: {kw}"
 
     if c.titles or c.keywords_include:
         matched = _first_match(title, c.titles) or _first_match(text, c.keywords_include)
         # At listing stage a keyword may still appear in the not-yet-fetched description.
         if not matched and (stage == "full" or has_description or not c.keywords_include):
-            return "no target title or include keyword"
+            yield "no target title or include keyword"
 
     if c.salary_floor:
         lo, hi = salary_range(job)
         top = hi or lo
         if top is not None and top < c.salary_floor:
-            return f"salary below floor (${top:,.0f} < ${c.salary_floor:,})"
+            yield f"salary below floor (${top:,.0f} < ${c.salary_floor:,})"
 
-    return _location_reason(job, c)
+    yield from _location_reasons(job, c)
+
+
+def exclusion_reason(job: Any, c: Criteria, stage: str = "full") -> Optional[str]:
+    """Why the filters leave the job out of the Jobs list (the first rule it doesn't meet), or None. Never for a job
+    the person included themselves (``included_by_user``)."""
+    if _get(job, "included_by_user"):
+        return None
+    return next(_unmet(job, c, stage), None)
+
+
+def mismatches(job: Any, c: Criteria, stage: str = "full") -> list[str]:
+    """Every rule the job doesn't meet, the first being ``exclusion_reason``'s for a job the filters decide on."""
+    return list(_unmet(job, c, stage))
+
+
+def filter_warnings(job: Any, c: Criteria) -> list[str]:
+    """The rules a job the person included themselves doesn't meet (its ⚠️ on the Jobs tab and the job page); []
+    for any other job, which the filters list or leave out."""
+    if not _get(job, "included_by_user"):
+        return []
+    return mismatches(job, c, stage="full" if _get(job, "detail_status") in ("full", "summary") else "listing")
 
 
 OFFICE_DAYS_REASON = "hybrid role needs "
@@ -200,7 +227,7 @@ def commute_pins(pins: list[dict]) -> list[dict]:
     return [p for p in pins if float(p.get("radius_km") or 0) < MAX_COMMUTE_RADIUS_KM]
 
 
-def _location_reason(job: Any, c: Criteria) -> Optional[str]:
+def _location_reasons(job: Any, c: Criteria) -> Iterator[str]:
     mode = (_get(job, "work_mode") or "unknown").lower()
     country = (_get(job, "country") or "").upper()
     where = _get(job, "location_text") or "unknown location"
@@ -208,35 +235,37 @@ def _location_reason(job: Any, c: Criteria) -> Optional[str]:
 
     if mode == "remote":
         if abroad and not c.remote_global_ok:
-            return f"remote role based in {country} (remote-global not enabled)"
+            yield f"remote role based in {country} (remote-global not enabled)"
         if not (c.remote_aus_ok or c.remote_global_ok):
-            return "remote roles not wanted"
-        return None
-    if mode == "hybrid" and not c.allow_hybrid:
-        return "hybrid roles not wanted"
+            yield "remote roles not wanted"
+        return
     office_days = _get(job, "office_days")
-    if mode == "hybrid" and c.max_office_days is not None and office_days and office_days > c.max_office_days:
-        return f"{OFFICE_DAYS_REASON}{office_days} office days a week (your max is {c.max_office_days})"
+    if mode == "hybrid" and not c.allow_hybrid:
+        yield "hybrid roles not wanted"
+    elif mode == "hybrid" and c.max_office_days is not None and office_days and office_days > c.max_office_days:
+        yield f"{OFFICE_DAYS_REASON}{office_days} office days a week (your max is {c.max_office_days})"
     if mode == "onsite" and not c.allow_onsite:
-        return "onsite roles not wanted"
+        yield "onsite roles not wanted"
     verdict = _get(job, "location_verdict")  # the user's own call on the office location
     if verdict == "too_far":
-        return "you marked the office as too far"
+        yield "you marked the office as too far"
+        return
     if verdict == "ok":
-        return None
+        return
     if abroad:
-        return f"based outside Australia ({where})"
+        yield f"based outside Australia ({where})"
+        return
 
     lat, lng = _get(job, "lat"), _get(job, "lng")
     pins = commute_pins(c.pins)
     if not pins or lat is None or lng is None:
-        return None
+        return
     covered = pins_in_range(lat, lng, pins)
     ok = {
         "hybrid": {"home", "hybrid", "onsite"},
         "onsite": {"home", "onsite"},
     }.get(mode, {"home", "hybrid", "onsite"})
     if covered & ok:
-        return None
+        return
     dist = home_distance(lat, lng, pins)
-    return f"{mode} role in {where} is outside your pin radii ({dist} km from home)"
+    yield f"{mode} role in {where} is outside your pin radii ({dist} km from home)"

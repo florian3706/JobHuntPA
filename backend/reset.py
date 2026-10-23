@@ -11,12 +11,12 @@ typing it, for scripts; without a terminal and without it, nothing is done), and
 app holds the key file's lock for as long as it runs, and ``running.json`` in the data folder names the launcher's
 process: backend/key_rotation.py ``refuse_while_running``). Then, in **one transaction**, it deletes every account and everything only an account
 could read: the users with their keys, recovery codes, sessions and browser-extension keys, every workspace and what
-is in it (jobs, scores, cover letters, documents, chats, search setup, pins, sources with their page layouts,
-schedules, runs), the job sites' page layouts the AI worked out (``site_mappings``) and the page cache
+is in it (jobs, scores, cover letters, documents, cover letter blocks, cover letter templates, chats, search setup, pins,
+sources with their page layouts, schedules, runs), the job sites' page layouts the AI worked out (``site_mappings``) and the page cache
 (sealed); usage counts are kept without saying whose they were. After the commit the
 write-ahead log is scrubbed (``db.scrub_wal``), then the files go: the uploads (sealed), the plaintext copies left
 from before encryption (overwritten first), the server key file (its KEK, pepper and signing key), the first-run
-token, and the temporary files a crash may have left of any of these. The next start is a first run, with a new key
+token, and the temporary files a crash may have left of any of these (and of a cover letter being turned into a PDF). The next start is a first run, with a new key
 file, in the same data folder (the reset never asks where the data lives again).
 
 **Kept:** the settings (``.env``: the AI provider, model and key, the public address and host names), the reasoning
@@ -47,8 +47,8 @@ WORD = "RESET"
 # Every table and what the reset does with it. tests/test_reset.py checks that every table the app defines is here,
 # so a new table has to be put in one list or the other.
 WIPED_TABLES = (  # children before parents (foreign keys are on)
-    "chat_messages", "chat_threads", "cover_letters", "fit_results", "job_duplicates", "jobs", "documents", "pins",
-    "company_sources", "search_runs", "search_schedules", "user_profile", "dealbreakers", "search_profile",
+    "chat_messages", "chat_threads", "cover_letters", "fit_results", "job_duplicates", "jobs", "documents", "letter_blocks",
+    "letter_templates", "pins", "company_sources", "search_runs", "search_schedules", "user_profile", "dealbreakers", "search_profile",
     "http_cache", "workspaces", "site_mappings", "sessions", "recovery_codes", "user_keys",
     # an install that wasn't started since the update may still have these (backend/db.py RETIRED_TABLES)
     "auth_tokens", "admin_key_grants", "admin_audit", "membership_grants", "memberships", "email_prefs", "commute_cache",
@@ -125,6 +125,9 @@ def wipe() -> dict[str, int]:
             files += 1
         except OSError as exc:
             log.warning("Could not delete an upload: %s", exc.__class__.__name__)
+    from backend.letter_templates import remove_temp_folders  # (a cover letter a crashed PDF conversion left)
+
+    remove_temp_folders()
     key_file = keys.key_file_path()
     for path in (key_file, key_file.with_name(key_file.name + ".new"), Path(DB_PATH).parent / FIRST_RUN_FILE,
                  *_crash_left_files(key_file)):

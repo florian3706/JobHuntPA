@@ -45,6 +45,9 @@ ACCESS = {
     ("POST", "/api/sources"): KEY, ("POST", "/api/sources/{source_id}/test"): KEY,
 }
 SIGNED_IN_ROUTES = """
+GET /api/letter-blocks; POST /api/letter-blocks; PATCH /api/letter-blocks/{block_id}; DELETE /api/letter-blocks/{block_id};
+PUT /api/letter-blocks/order;
+GET /api/letter-template; POST /api/letter-template; DELETE /api/letter-template;
 GET /api/account/background; GET /api/account/delete; GET /api/account/onboarding; PUT /api/account/onboarding; GET /api/account/prefs;
 PUT /api/account/prefs; GET /api/auth/me; POST /api/auth/password; POST /api/auth/reauth;
 POST /api/auth/recovery-codes/ack; POST /api/auth/recovery-codes/show; GET /api/auth/security;
@@ -56,9 +59,10 @@ PATCH /api/documents/{doc_id}; POST /api/documents/{doc_id}/concise; GET /api/do
 GET /api/duplicates; POST /api/duplicates/decide; POST /api/duplicates/scan; GET /api/encryption/status;
 GET /api/extension/keys; DELETE /api/extension/keys/{key_id}; GET /api/geo/lookup; POST /api/import/page;
 GET /api/jobs; PATCH /api/jobs/hidden; POST /api/jobs/merge; POST /api/jobs/refilter; PATCH /api/jobs/status;
-GET /api/jobs/{job_id}; GET /api/jobs/{job_id}/commute;
+GET /api/jobs/{job_id}; GET /api/jobs/{job_id}/commute; PATCH /api/jobs/{job_id}/included;
 GET /api/jobs/{job_id}/cover-letter; POST /api/jobs/{job_id}/cover-letter; PUT /api/jobs/{job_id}/cover-letter;
-GET /api/jobs/{job_id}/cover-letter.docx; POST /api/jobs/{job_id}/import-page; PUT /api/jobs/{job_id}/office;
+GET /api/jobs/{job_id}/cover-letter.{fmt}; POST /api/jobs/{job_id}/cover-letter/blocks/assemble;
+POST /api/jobs/{job_id}/cover-letter/blocks/suggest; POST /api/jobs/{job_id}/import-page; PUT /api/jobs/{job_id}/office;
 PATCH /api/jobs/{job_id}/status; POST /api/jobs/{job_id}/unmerge; GET /api/llm; POST /api/llm/detect-levels;
 PUT /api/llm/reasoning; GET /api/pins; POST /api/pins; DELETE /api/pins/{pin_id}; PUT /api/pins/{pin_id};
 GET /api/profile; PUT /api/profile; GET /api/runs/latest; GET /api/runs/{run_id}; GET /api/schedule;

@@ -33,9 +33,8 @@ the description as plain text (``JobIn``). No HTML and no whole-page text reach 
 or re-reads a page: the request is checked (types, limits), its values trimmed, and the address to store decided
 (``stored_url``), because that decides which job a save updates. The job is then stored like an imported page
 (``pool.import_private``, ``source`` ``browser:single:<site>``: backend.job_source): private to the workspace unless
-the shared pool already has the address; the exclusion
-filters, the pipeline's own derived values (country, office days, work mode) and the duplicate scan follow as for an
-import. The save's answer also says ``excluded_reason``: why the filters leave the job out of the Jobs list, or null.
+the shared pool already has the address; the pipeline's own derived values (country, office days, work mode) and the
+duplicate scan follow as for an import.
 
 **A page of results.** On a search results page the person has open (SEEK's, signed in, on any view or page of it)
 the extension reads the job cards and sends the ones the person ticked: for each its own address and the card's
@@ -44,6 +43,11 @@ address must be on the results page's own site (``listed_url``), and a batch onl
 already has is left exactly as it is, because a card says less than a stored ad; a posting the pool has is linked
 and read as the pool has it; anything else becomes a private job with the card's values (``pool.add_listed``,
 ``source`` ``browser:bulk:<site>``).
+
+**The person's own picks are always listed.** A job the extension adds, from its own page or ticked on a page of
+results, is included by the person (``pipeline.mark_included``): the filters never leave it out of the Jobs list.
+A save's answer says ``excluded_reason`` (why the filters leave the job out: null for these) and ``filter_warnings``,
+the rules of the person's filters the job doesn't meet, as the Jobs tab lists them under its ⚠️.
 """
 from __future__ import annotations
 
@@ -503,10 +507,11 @@ def save_job(response: Response, page: PageIn = Depends(page_body), user: AuthUs
              db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """Stores the job as this workspace's own (as ``/api/import/page`` does): a new job (201), or the workspace's job
     with that address brought up to date (200). When that job is a merged copy (backend.duplicates), the job it was
-    merged into is updated instead: the one the person sees in the list. The exclusion filters and the duplicate
-    scan run as for an import, and the job waits for its score like one. ``excluded_reason``: why the filters leave
-    the saved job out of the Jobs list (as the list says it), or null."""
+    merged into is updated instead: the one the person sees in the list. The duplicate scan runs as for an import,
+    and the job waits for its score like one. The person picked it, so the filters never leave it out
+    (``excluded_reason`` is null): ``filter_warnings`` are the rules it doesn't meet, as the Jobs tab says them."""
     from backend.duplicates import scan_workspace
+    from backend.filters import filter_warnings, load_criteria
     from backend.pipeline import import_one
 
     posting = posting_of(page)
@@ -522,7 +527,8 @@ def save_job(response: Response, page: PageIn = Depends(page_body), user: AuthUs
     response.status_code = 201 if created else 200
     log.info("Browser extension: job %s %s in workspace %s", job.id, "added" if created else "updated", ws)
     return {"job_id": job.id, "created": created, "title": job.title or "", "company": job.company or "",
-            "link": job_link(job.id, ws), "excluded_reason": job.excluded_reason or None}
+            "link": job_link(job.id, ws), "excluded_reason": job.excluded_reason or None,
+            "filter_warnings": filter_warnings(job, load_criteria(db, ws))}
 
 
 @router.post("/jobs/batch")
@@ -530,10 +536,12 @@ def save_listed(listing: ListIn = Depends(list_body), user: AuthUser = Depends(c
                 db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """Adds the jobs of a results page the person has open. Signed in (a key or a session), any workspace of the
     account. Only jobs the workspace doesn't have are added, each from its card's summary (a pool posting with the
-    address is linked instead); a job it has is left as it is. Nothing is stored unless every job has a title and
-    an address on the page's own site (422 ``invalid``). The filters and the duplicate scan run as for an import.
-    The answer lists the jobs in the order sent, each as the job that is listed for it."""
+    address is linked instead); a job it has keeps its ad as it is. Nothing is stored unless every job has a title
+    and an address on the page's own site (422 ``invalid``). The person ticked each one, so the filters never leave
+    any of them out (``filter_warnings`` say what each doesn't meet); the duplicate scan runs as for an import. The
+    answer lists the jobs in the order sent, each as the job that is listed for it."""
     from backend.duplicates import scan_workspace
+    from backend.filters import filter_warnings, load_criteria
     from backend.pipeline import add_listed
 
     postings = []
@@ -550,12 +558,13 @@ def save_listed(listing: ListIn = Depends(list_body), user: AuthUser = Depends(c
     if added:
         scan_workspace(ws)
     db.expire_all()
+    crit = load_criteria(db, ws)
     out = []
     for (job_id, is_new), posting in zip(stored, postings):
         job = _listed(db, db.get(Job, job_id))
         out.append({"url": posting.url, "job_id": job.id, "created": is_new, "title": job.title or "",
                     "company": job.company or "", "link": job_link(job.id, ws),
-                    "excluded_reason": job.excluded_reason or None})
+                    "excluded_reason": job.excluded_reason or None, "filter_warnings": filter_warnings(job, crit)})
     log.info("Browser extension: %s of %s jobs from a results page added in workspace %s", added, len(stored), ws)
     return {"added": added, "existing": len(stored) - added, "jobs": out}
 

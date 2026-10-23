@@ -87,6 +87,17 @@
     </div>
   </main>
 
+  <!-- The rules of the search filters a job the person added doesn't meet (its ⚠️): job.js showFilterWarnings -->
+  <dialog id="modal" class="modal" aria-labelledby="modal-title">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2 id="modal-title" class="modal-title"></h2>
+        <button id="modal-close" class="btn btn-ghost btn-sm" type="button"><span aria-hidden="true">✕ </span>Close</button>
+      </div>
+      <div id="modal-html" class="modal-html"></div>
+    </div>
+  </dialog>
+
   <div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
 
   <script src="./common.js"></script>

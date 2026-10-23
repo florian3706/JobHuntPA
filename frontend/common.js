@@ -607,9 +607,47 @@ function ghostMeter(job, href = '') {
   if (href) return `<a class="ghost-dot" href="${esc(href)}" title="${esc(ghostHover(job))}">${body}<span class="visually-hidden">: why this rating</span></a>`;
   return `<span class="ghost-dot" title="${esc(ghostHover(job))}">${body}</span>`;
 }
-// The fit score with the ghost-job rating under it (job cards, the map list, the job page).
+/* A job the person included themselves (added through the browser extension or a saved page of the one job, or its
+   "Always include" ticked: includeToggle) is listed whatever their filters say; job.filter_warnings are the rules it
+   doesn't meet. ⚠️ under its score says so, and opens a dialog that lists them (filterWarningsHtml; each page wires
+   data-act="filter-warnings" to its own dialog). */
+function filterWarnWords(job) {
+  const n = (job.filter_warnings || []).length;
+  return `Doesn't meet ${n === 1 ? 'one of your filters' : `${n} of your filters`}`;
+}
+function filterWarnButton(job) {
+  if (!(job.filter_warnings || []).length) return '';
+  return `<button class="filter-warn" type="button" data-act="filter-warnings" aria-haspopup="dialog" title="${esc(`${filterWarnWords(job)}. Select to see which.`)}"><span aria-hidden="true">⚠️</span><span class="visually-hidden">${filterWarnWords(job)}: show which</span></button>`;
+}
+const filterWarningsTitle = (job) => `${job.title || 'This job'}: filters it doesn't meet`;
+function filterWarningsHtml(job, searchHref = '#search') {
+  const list = job.filter_warnings || [];
+  const upper = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+  return `<p>You included this job yourself (you added it, or ticked <em>Always include</em>), so it is in your list even though it doesn't meet ${list.length === 1 ? 'this condition' : 'these conditions'} of your search filters:</p>
+    <ul class="filter-warnings">${list.map((w) => `<li><span aria-hidden="true">⚠️ </span>${esc(upper(w))}</li>`).join('')}</ul>
+    <p class="hint">Jobs your searches find are left out of the list when they don't meet your filters. Untick <em>Always include</em> to let the filters decide on this one too, or change the filters on the <a href="${esc(searchHref)}">Search setup</a> tab.</p>`;
+}
+/* "Always include": ticked, the job stays in the list whatever the search filters say (job.included_by_user, also set
+   for a job the person added); unticked, the filters decide again. PATCH /api/jobs/{id}/included; each page wires
+   data-act="include". `describedBy`: the id of the job's title, for a control on a card. */
+function includeToggle(job, describedBy = '') {
+  return `<label class="check-field include-toggle"><input type="checkbox" data-act="include"${describedBy ? ` aria-describedby="${esc(describedBy)}"` : ''}${job.included_by_user ? ' checked' : ''} /> <span>Always include</span></label>`;
+}
+// What became of a job whose "Always include" was just set (`job`: the server's answer), for a toast.
+function includedWords(job, showExcludedHint = false) {
+  if (job.included_by_user) {
+    const n = (job.filter_warnings || []).length;
+    return n ? `Always included: it stays in your list though it doesn't meet ${n === 1 ? 'one of your filters' : `${n} of your filters`} (the ⚠️).`
+      : 'Always included: it stays in your list whatever your filters say.';
+  }
+  if (job.softened_reason) return `Your filters decide on it again. Your saved filters leave it out (${job.softened_reason}), but the extra office days you allowed show it for now.`;
+  if (!job.excluded_reason) return 'Your filters decide on it again. It meets them, so it stays in your list.';
+  return `Your filters decide on it again and leave it out: ${job.excluded_reason}.${showExcludedHint ? ' Tick "Show excluded" to see it.' : ''}`;
+}
+// The fit score with the filter warning (a job the person added) and the ghost-job rating under it (job cards, the
+// map list, the job page).
 function ratingsHtml(job, ghostHref = '') {
-  return `<div class="ratings">${scoreBadge(job)}${ghostMeter(job, ghostHref)}</div>`;
+  return `<div class="ratings">${scoreBadge(job)}${filterWarnButton(job)}${ghostMeter(job, ghostHref)}</div>`;
 }
 // On the card of a flagged job: the signs that raised the flag, in words.
 function ghostWhy(job) {

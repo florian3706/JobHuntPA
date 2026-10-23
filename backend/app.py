@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +37,8 @@ from backend.db import (FOLDER_CHOSEN, CompanyProfile, CoverLetter, FitResult, J
                         get_db, init_db, scrub_wal)
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
+from backend.letter_blocks import router as letter_blocks_router
+from backend.letter_templates import router as letter_templates_router
 from backend.data_folder import router as data_folder_router
 from backend.data_import import router as import_router
 from backend.export import router as export_router
@@ -45,7 +47,7 @@ from backend.duplicates import employer_copy, job_boards, router as duplicates_r
 from backend.extension import router as extension_router
 from backend.mappings import router as mappings_router
 from backend.job_chat import router as chat_router
-from backend.filters import softened_job_ids
+from backend.filters import filter_warnings, load_criteria, softened_job_ids
 from backend.llm_settings import router as llm_router
 from backend.maintenance import router as maintenance_router
 from backend.offices import looks_like_recruiter, office_unknown
@@ -188,6 +190,8 @@ app.include_router(background_router)
 app.include_router(geo_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)
+app.include_router(letter_blocks_router)
+app.include_router(letter_templates_router)
 app.include_router(profile_router)
 app.include_router(sources_router)
 app.include_router(workspaces_router)
@@ -247,7 +251,8 @@ def _fit_dict(fit: Optional[FitResult], profile_hash: str) -> Optional[dict]:
 
 
 def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: bool = False,
-                has_letter: bool = False, recruiter: bool = False, signs: Optional[dict] = None) -> dict:
+                has_letter: bool = False, recruiter: bool = False, signs: Optional[dict] = None,
+                warnings: Optional[list[str]] = None) -> dict:
     out = {
         "id": job.id,
         "source": job.source,
@@ -270,6 +275,11 @@ def job_to_dict(job: Job, fit: Optional[FitResult], profile_hash: str, *, full: 
         # When it last moved to Applied (None: never, or before this was kept); the card shows it while it's there.
         "applied_at": job.applied_at.isoformat() if job.applied_at else None,
         "excluded_reason": job.excluded_reason,
+        # The person keeps it in their list (they added it themselves, or ticked its "Always include"): it is listed
+        # whatever the filters say, and ``filter_warnings`` are the rules it doesn't meet (backend.filters.filter_warnings),
+        # [] for any other job. The Jobs tab and the job page show a ⚠️ for them.
+        "included_by_user": bool(job.included_by_user),
+        "filter_warnings": warnings or [],
         "detail_status": job.detail_status,
         "posted_at": job.posted_at,
         "first_seen": job.first_seen.isoformat() if job.first_seen else None,
@@ -383,11 +393,17 @@ def list_jobs(office_slack: int = OfficeSlack,
     profiles = {p.key: p for p in db.query(CompanyProfile).all()}
     signs = ghost.assess_jobs(db, [job for job, _ in listed], profiles)
     boards = job_boards(db, ws) if copies else set()  # (only merged jobs can link to an employer's copy)
+    crit = load_criteria(db, ws)
+    # The filter warnings of the jobs the person added read what a card leaves out (the description, the industry):
+    # loaded for those jobs in one query, onto the same objects, instead of one query per job.
+    mine = [job.id for job, _ in listed if job.included_by_user]
+    for start in range(0, len(mine), 500):
+        jobs_query(db, descriptions=True).filter(Job.id.in_(mine[start:start + 500])).all()
     # Plain JSON values already: skip FastAPI's per-field encoder, which took most of the time for
     # thousands of jobs on a Raspberry Pi.
     return JSONResponse([_with_copies(_soften(job_to_dict(job, fit, phash, has_letter=job.id in letters,
                                                          recruiter=looks_like_recruiter(job.company or "", profiles),
-                                                         signs=signs[job.id]),
+                                                         signs=signs[job.id], warnings=filter_warnings(job, crit)),
                                               softened),
                                       copies.get(job.id, []), boards)
                          for job, fit in listed],
@@ -405,7 +421,8 @@ def get_job(job_id: int, office_slack: int = OfficeSlack, db: Session = Depends(
     letter = db.query(CoverLetter.id).filter(CoverLetter.job_id == job_id).first() is not None
     signs = ghost.assess_jobs(db, [job], profiles, explain=True)[job.id]
     out = _soften(job_to_dict(job, fit, _profile_hash(db, ws), full=True, has_letter=letter,
-                              recruiter=looks_like_recruiter(job.company or "", profiles), signs=signs),
+                              recruiter=looks_like_recruiter(job.company or "", profiles), signs=signs,
+                              warnings=filter_warnings(job, load_criteria(db, ws))),
                   softened_job_ids(db, ws, office_slack))
     out["office_candidates"] = known_offices(db, job)
     copies = db.query(Job).filter(Job.duplicate_of == job_id).all()
@@ -467,6 +484,28 @@ def update_status(job_id: int, payload: StatusUpdate, db: Session = Depends(get_
     db.commit()
     return {"ok": True, "id": job_id, "status": job.status,
             "applied_at": job.applied_at.isoformat() if job.applied_at else None}
+
+
+class IncludedUpdate(BaseModel):
+    included: bool
+
+
+@app.patch("/api/jobs/{job_id}/included")
+def set_included(job_id: int, payload: IncludedUpdate, office_slack: int = OfficeSlack,
+                 db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    """Signed in: a job's "Always include". Ticked, the job stays in the Jobs list whatever the search filters say
+    (``pipeline.mark_included``; its ``filter_warnings`` say what it doesn't meet); unticked, the filters decide again
+    (``pipeline.unmark_included``). For a merged copy, the job listed for it. Answers that job, as ``GET`` does."""
+    from backend.duplicates import root_of
+    from backend.pipeline import mark_included, unmark_included
+
+    job = root_of(db, owned(db, Job, job_id, ws, "Job"))
+    if payload.included:
+        mark_included(db, job)
+        db.commit()
+    else:
+        unmark_included(db, load_criteria(db, ws), job)
+    return get_job(job.id, office_slack, db, ws)
 
 
 @app.post("/api/jobs/refilter")
@@ -696,42 +735,89 @@ def start_research(payload: ResearchRequest, ws: int = Depends(current_workspace
 # Import pages saved from the user's own browser (e.g. SEEK)
 # ---------------------------------------------------------------------------
 
+SAVED_PAGE_MAX = 20 * 1024 * 1024  # bytes: a page saved as one file (MHTML) holds its pictures too
+NO_ADDRESS = "https://saved-page.invalid/"  # a page that doesn't say its address, read only to see if it is a job ad
+NO_ADDRESS_DETAIL = ("This page doesn't say its web address. Type the ad's address under \"Address of the ad\", then "
+                     "upload the page again.")
+NO_JOB_DETAIL = ("No job ad found in that page. Open the job's own page (not a list of jobs), wait until the whole ad "
+                 "has loaded, then save the page and upload it.")
+
+
+def _saved_page(file: UploadFile) -> bytes:
+    data = file.file.read(SAVED_PAGE_MAX + 1)
+    if len(data) > SAVED_PAGE_MAX:
+        raise HTTPException(status_code=413, detail=f"That page is over {SAVED_PAGE_MAX // (1024 * 1024)} MB. Save it "
+                                                    "as \"Webpage, HTML only\" and upload that.")
+    return data
+
+
 @app.post("/api/import/page")
-async def import_page(file: UploadFile = File(...), ws: int = Depends(current_workspace)):
-    """Jobs from a saved SEEK search or job page, or any page with JobPosting data. They're the user's own:
-    jobs the shared pool doesn't have stay private to this workspace (backend.pool.import_private)."""
+def import_page(file: UploadFile = File(...), url: str = Form(""), db: Session = Depends(get_db),
+                ws: int = Depends(current_workspace)):
+    """Signed in. Jobs from a page saved in the person's own browser: a SEEK search or job page, a page with
+    JobPosting data, or any other job ad, read like a careers site's job page (``generic.parse_detail``). They're the
+    user's own: jobs the shared pool doesn't have stay private to this workspace (backend.pool.import_private). A job
+    is stored under its own address, else the page's (``saved_pages.page_address``), else ``url``: the address the
+    person typed for a page that doesn't say it. A page of one job is the person's own pick, so the filters never
+    leave it out (``included_by_user``; its ``filter_warnings`` say what it doesn't meet); the jobs on a page of search
+    results are filtered like a search's. ``jobs``: each job stored, as it is listed (a merged copy's original)."""
+    from backend.adapters.base import Posting
+    from backend.adapters.generic import parse_detail
     from backend.adapters.seek import parse_seek_page
+    from backend.duplicates import scan_workspace
+    from backend.extension import _listed, job_link
     from backend.pipeline import import_postings
     from backend.scraping.jsonld import find_job_postings, posting_from_jsonld
+    from backend.scraping.saved_pages import read_saved_page, site_name, web_address
 
-    from backend.scraping.saved_pages import decode_saved_page
-
-    raw = decode_saved_page(await file.read())
+    typed = url.strip()
+    if typed and not web_address(typed):
+        raise HTTPException(status_code=422, detail="Type the ad's web address in full, starting with https://")
+    raw, address = read_saved_page(_saved_page(file))
+    address = address or typed
     postings = parse_seek_page(raw)
     source = "seek"
     if not postings:
-        postings = [p for p in (posting_from_jsonld(n, "") for n in find_job_postings(raw)) if p and p.url]
+        postings = [p for p in (posting_from_jsonld(n, address) for n in find_job_postings(raw))
+                    if p and web_address(p.url)]
         source = "import"
     if not postings:
-        raise HTTPException(status_code=422, detail="No job data found. Save a SEEK search/job page, or a page with JobPosting data.")
-    from backend.duplicates import scan_workspace
+        found = parse_detail(raw, Posting(url=address or NO_ADDRESS, title=""))
+        if found is not None and not address:
+            raise HTTPException(status_code=422, detail=NO_ADDRESS_DETAIL)
+        if found is not None:
+            found.company = found.company or site_name(raw)
+            postings = [found]
+    if not postings:
+        raise HTTPException(status_code=422, detail=NO_JOB_DETAIL)
 
-    result = import_postings(postings, source, ws)
+    result = import_postings(postings, source, ws, added=len(postings) == 1)
     result["duplicates"] = scan_workspace(ws)
+    db.expire_all()
+    crit = load_criteria(db, ws)
+    jobs = []
+    for job_id, created in result.pop("stored"):
+        job = _listed(db, db.get(Job, job_id))
+        jobs.append({"job_id": job.id, "created": created, "title": job.title or "", "company": job.company or "",
+                     "link": job_link(job.id, ws), "excluded_reason": job.excluded_reason or None,
+                     "filter_warnings": filter_warnings(job, crit)})
+    result["jobs"] = jobs
+    log.info("Saved page: %s job(s) imported in workspace %s", len(postings), ws)
     return result
 
 
 @app.post("/api/jobs/{job_id}/import-page")
-async def import_job_page(job_id: int, file: UploadFile = File(...), office_slack: int = OfficeSlack,
-                          db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+def import_job_page(job_id: int, file: UploadFile = File(...), office_slack: int = OfficeSlack,
+                    db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """Update one SEEK job with the full ad from its page, saved in the user's browser. The full ad is this
-    workspace's own: other workspaces with the same posting keep reading the shared summary."""
+    workspace's own: other workspaces with the same posting keep reading the shared summary. The person uploaded it,
+    so the filters never leave the job out from now on (``pipeline.mark_included``)."""
     from backend.adapters.seek import parse_job_page, parse_search_page
     from backend.pipeline import update_job_from_posting
     from backend.scraping.saved_pages import decode_saved_page
 
     job = owned(db, Job, job_id, ws, "Job")
-    raw = decode_saved_page(await file.read())
+    raw = decode_saved_page(_saved_page(file))
     posting = parse_job_page(raw)
     if posting is None:
         if parse_search_page(raw)[0]:

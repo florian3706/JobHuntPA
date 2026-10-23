@@ -3,7 +3,8 @@
 Its format is written down in docs/design/open-source.md, Part 7. In short: a JSON object with ``format``
 ("jobhuntpa-import") and ``format_version`` (``FORMAT_VERSION``), the app's version and the time of the export, then
 per workspace the search setup (with its starting points), pins, sources, schedule, documents (text, concise version,
-flags and the path in the zip of each one's original file), jobs (the ad, status and its dates, hidden, excluded,
+flags and the path in the zip of each one's original file), cover letter blocks, the cover letter template (its name,
+type and the path of its file in the zip), jobs (the ad, status and its dates, hidden, excluded,
 office, verdict, fit result, cover letter) and chats, and the research on the companies of those jobs. Never the
 password, keys, sessions, extension keys or the AI key: none of them is read here.
 
@@ -47,12 +48,15 @@ from backend.db import (
     Document,
     FitResult,
     Job,
+    LetterBlock,
+    LetterTemplate,
     Pin,
     UserProfile,
     Workspace,
     utcnow,
 )
 from backend.employment import EMPLOYMENT_TYPES
+from backend.letter_blocks import BLOCK_KINDS, _ordered as ordered_blocks
 
 FORMAT = "jobhuntpa-import"
 FORMAT_VERSION = 1
@@ -157,9 +161,11 @@ def _letter(letter: Optional[CoverLetter]) -> Optional[dict]:
             "updated_at": iso(letter.updated_at)}
 
 
-def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tuple[dict, set[str]]:
+def workspace_data(db: Session, ws: Workspace, originals: dict[int, str],
+                   templates: Optional[dict[int, str]] = None) -> tuple[dict, set[str]]:
     """One workspace for the import file, and the company keys of its jobs (for the research). ``originals``: each
-    document's original file, by document id, as its path inside the export's folder."""
+    document's original file, by document id, as its path inside the export's folder; ``templates``: the cover letter
+    template's file, by workspace id, the same way."""
     from backend.db import company_key
     from backend.pool import jobs_query
 
@@ -174,6 +180,8 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tup
     job_ref = {job_id: n for n, job_id in enumerate(job_ids, 1)}
     fits = {f.job_id: f for f in db.query(FitResult).join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws.id)}
     letters = {c.job_id: c for c in db.query(CoverLetter).join(Job, Job.id == CoverLetter.job_id).filter(Job.workspace_id == ws.id)}
+    blocks = ordered_blocks(db.query(LetterBlock).filter(LetterBlock.workspace_id == ws.id).all())
+    template = db.query(LetterTemplate).filter(LetterTemplate.workspace_id == ws.id).order_by(LetterTemplate.id.desc()).first()
     jobs, companies = [], set()
     for start in range(0, len(job_ids), CHUNK):
         ids = job_ids[start:start + CHUNK]
@@ -187,7 +195,8 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tup
             jobs.append({
                 "ref": job_ref[job.id], "origin": "pool" if job.posting is not None else "private",
                 "ad": _ad(job), "own": _own(job), "status": job.status or "to_review", "hidden": bool(job.hidden),
-                "excluded_reason": job.excluded_reason, "first_seen": iso(job.first_seen), "last_seen": iso(job.last_seen),
+                "included_by_user": bool(job.included_by_user), "excluded_reason": job.excluded_reason,
+                "first_seen": iso(job.first_seen), "last_seen": iso(job.last_seen),
                 "closed_at": iso(job.closed_at), "applied_at": iso(getattr(job, APPLIED_AT, None)),
                 "location_verdict": job.location_verdict, "office": office,
                 "lat": job.lat, "lng": job.lng, "distance_km": job.distance_km,
@@ -222,6 +231,14 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tup
             "summary_of": [doc_ref[i] for i in (d.summary_of or []) if isinstance(i, int) and i in doc_ref],
             "original": originals.get(d.id),
         } for d in documents],
+        "letter_blocks": [{
+            "kind": b.kind, "title": b.title, "text": b.text, "tags": list(b.tags or []), "position": b.position,
+            "created_at": iso(b.created_at), "updated_at": iso(b.updated_at),
+        } for b in blocks],
+        "letter_template": None if template is None else {
+            "filename": template.filename, "filetype": template.filetype, "created_at": iso(template.created_at),
+            "original": (templates or {}).get(ws.id),
+        },
         "jobs": jobs,
         "chats": chats,
     }
@@ -257,12 +274,12 @@ def site_mappings_data(db: Session, user_id: int) -> list[dict]:
 
 
 def build(db: Session, workspaces: list[Workspace], originals: dict[int, str], stamp: datetime,
-          user_id: Optional[int] = None) -> dict:
+          user_id: Optional[int] = None, templates: Optional[dict[int, str]] = None) -> dict:
     """The whole import file for these workspaces (the exporting person's own), with ``user_id``'s saved job-site
     mappings."""
     data, keys = [], set()
     for ws in workspaces:
-        one, companies = workspace_data(db, ws, originals)
+        one, companies = workspace_data(db, ws, originals, templates)
         data.append(one)
         keys |= companies
     ordered = sorted(keys)
@@ -441,6 +458,23 @@ class DocumentIn(_In):
     original: Optional[Annotated[str, StringConstraints(max_length=1_000)]] = None
 
 
+class LetterBlockIn(_In):
+    kind: Literal[BLOCK_KINDS] = "body"
+    title: Short = ""
+    text: Long = ""
+    tags: Annotated[list[Short], Field(max_length=30)] = Field(default_factory=list)
+    position: Annotated[int, Field(ge=0, le=1_000_000)] = 0
+    created_at: When = None
+    updated_at: When = None
+
+
+class LetterTemplateIn(_In):
+    filename: Short = ""
+    filetype: Literal[".docx", ".odt"]
+    created_at: When = None
+    original: Optional[Annotated[str, StringConstraints(max_length=1_000)]] = None
+
+
 class AdIn(_In):
     url: Optional[Url] = None
     source: Optional[Short] = None
@@ -533,6 +567,7 @@ class JobIn(_In):
     own: Annotated[list[Literal[JOB_CONTENT]], Field(max_length=len(JOB_CONTENT))] = Field(default_factory=list)
     status: Literal[STATUSES] = "to_review"
     hidden: bool = False
+    included_by_user: bool = False
     excluded_reason: Optional[Short] = None
     first_seen: When = None
     last_seen: When = None
@@ -579,6 +614,8 @@ class WorkspaceIn(_In):
     sources: Annotated[list[SourceIn], Field(max_length=MANY)] = Field(default_factory=list)
     schedule: Optional[ScheduleIn] = None
     documents: Annotated[list[DocumentIn], Field(max_length=MANY)] = Field(default_factory=list)
+    letter_blocks: Annotated[list[LetterBlockIn], Field(max_length=MANY)] = Field(default_factory=list)
+    letter_template: Optional[LetterTemplateIn] = None
     jobs: Annotated[list[JobIn], Field(max_length=MANY)] = Field(default_factory=list)
     chats: Annotated[list[ChatIn], Field(max_length=MANY)] = Field(default_factory=list)
 

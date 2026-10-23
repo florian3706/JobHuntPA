@@ -29,6 +29,7 @@ from backend.db import (  # noqa: E402
     FitResult,
     Job,
     JobDuplicate,
+    LetterTemplate,
     LlmUsage,
     Pin,
     Posting,
@@ -494,6 +495,7 @@ WORKSPACE_TABLES = {
     "fit_results": "job_id IN (SELECT id FROM jobs WHERE workspace_id IN ({ws}))",
     "cover_letters": "job_id IN (SELECT id FROM jobs WHERE workspace_id IN ({ws}))",
     "documents": "workspace_id IN ({ws})",
+    "letter_templates": "workspace_id IN ({ws})",
     "pins": "workspace_id IN ({ws})",
     "company_sources": "workspace_id IN ({ws})",
     "chat_threads": "workspace_id IN ({ws})",
@@ -538,6 +540,9 @@ class DeleteAccountTest(AccountTestCase):
                     files.append(stored)
                     db.add(Document(workspace_id=ws, filename=f"{tag}.pdf", filetype=".pdf", stored_name=stored,
                                     text=f"{tag} resume text", kind="resume"))
+                    stored = docs.save_upload(f"{tag} template bytes {ws}".encode())
+                    files.append(stored)
+                    db.add(LetterTemplate(workspace_id=ws, filename=f"{tag}.docx", filetype=".docx", stored_name=stored))
                     thread = ChatThread(workspace_id=ws, job_ids_json=f"[{first.id}]", title=f"{tag} chat")
                     db.add(thread)
                     db.flush()
@@ -735,7 +740,7 @@ class DeleteAccountTest(AccountTestCase):
             result = users.delete_account(db, bob.id)  # no key scope of the user's: it never opens a sealed value
         finally:
             db.close()
-        self.assertEqual(result, {"workspaces": 2, "files": 2})
+        self.assertEqual(result, {"workspaces": 2, "files": 4})  # a document and a letter template in each
         self.assertEqual({k: v for k, v in self.counts(mine["ws"], bob.id).items() if v}, {})
 
     def test_deleting_the_account_ends_every_session(self):

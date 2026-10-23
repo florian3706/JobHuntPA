@@ -137,6 +137,10 @@ class ResetTest(unittest.TestCase):
                           Path(cls.folder) / ".server-keys.json-k3j4.tmp",
                           Path(cls.folder) / ".server-keys.json.new-m5n6.tmp",
                           Path(cls.folder) / ".first-run.txt-p7q8.tmp"]
+        # ... and a PDF conversion's folder with the cover letter in it (backend/letter_templates.py).
+        pdf_folder = Path(cls.folder) / ".letter-pdf-q1w2"
+        pdf_folder.mkdir()
+        cls.crash_left.append(pdf_folder / "letter.docx")
         for path in cls.crash_left:
             path.write_bytes(b"left by a crash")
         cls.done = reset_command(cls.folder, "--confirm", "RESET")
@@ -181,6 +185,7 @@ class ResetTest(unittest.TestCase):
         self.assertEqual(self.after["uploads"], [])
         self.assertFalse(self.after["key_file"])
         self.assertEqual([p.name for p in self.crash_left if p.exists()], [], "crash-left temporary files")
+        self.assertFalse((Path(self.folder) / ".letter-pdf-q1w2").exists(), "a PDF conversion's folder")
         self.assertEqual(self.after["usage_owners"], 0, "usage is kept without saying whose it was")
         for key in ("server_keys_fingerprint", "encryption_migration"):
             self.assertNotIn(key, self.after["settings"])

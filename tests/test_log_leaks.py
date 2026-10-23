@@ -1,7 +1,8 @@
 """No log line may hold anything of a person's (accounts design §2.5: "Logs must never contain plaintext"; Phase L).
 
 One account goes through the whole app, end to end, with the network and the AI service mocked: sign-up, the search
-profile, documents, a search (mocked sources returning planted ads), scoring, chat, a cover letter, company research,
+profile, documents, a search (mocked sources returning planted ads), scoring, chat, a cover letter (from blocks, and
+filled into a template in each download format), company research,
 the browser extension, a data export (in every file type) and its import, merged and unmerged ads, a copied
 workspace, a password change, new recovery codes shown again, a scheduled search, and a password reset
 with a recovery code (and, in a process of its own, the first run's folder step). Every personal field holds a planted marker (``ZQX``), and every secret the run makes
@@ -19,6 +20,7 @@ import io
 import json
 import logging
 import os
+import re
 import time
 import unittest
 import zipfile
@@ -211,6 +213,12 @@ class FullRun(unittest.TestCase):
             return _Response(400, {"error": {"message": f"bad request, you sent: {prompt[:200]}"}})
         text = SCORE_REPLY if "response_format" in (json or {}) else (
             "Dear hiring team,\n\nZQX answer: I led delivery programs.\n\nZqx Quillon")
+        if "=== BLOCKS ===" in prompt:  # the AI picking cover letter blocks (backend/cover_letters.py)
+            import json as json_lib  # (``json`` is the request body here)
+
+            first = re.search(r"\[(\d+)\] \(", prompt)
+            text = json_lib.dumps({"blocks": [{"id": int(first.group(1)), "why": "fits"}] if first else [],
+                                   "missing": [{"title": "T", "requirement": "R", "bullets": ["B"]}]})
         if "PAGE OUTLINE" in prompt and self.mapping_reply is not None:  # an AI mapping (backend/mappings.py)
             text = self.mapping_reply["careers" if '"list" picks every job entry' in prompt else "job"]
         return _Response(200, {"choices": [{"message": {"content": text}, "finish_reason": "stop"}],
@@ -291,6 +299,8 @@ class FullRun(unittest.TestCase):
             self.sign_up_and_set_up(c)
             ads = self.search_and_score(c)
             self.talk_to_the_ai(c, ads)
+            self.write_letter_blocks(c)
+            self.cover_letter_template(c)
             self.documents_and_saved_pages(c)
             self.commute_links(c)
             self.browser_extension(c)
@@ -391,10 +401,60 @@ class FullRun(unittest.TestCase):
         self.assertEqual(self.run_to_end(c, r.json())["state"], "done")
         self.assertIn("zqx corp", c.get("/api/companies").json())
 
+    def write_letter_blocks(self, c):
+        """A cover letter block, the AI's pick of blocks for a job and a letter put together from them."""
+        job_id = self.job_id
+        r = c.post("/api/letter-blocks", json={"kind": "body", "title": "ZQX block title",
+                                               "text": "ZQX block text at {company}", "tags": ["zqx tag"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        block_id = r.json()["id"]
+        r = c.post(f"/api/jobs/{job_id}/cover-letter/blocks/suggest")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([p["id"] for p in r.json()["picked"]], [block_id])
+        r = c.post(f"/api/jobs/{job_id}/cover-letter/blocks/assemble", json={"block_ids": [block_id]})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = c.get(f"/api/jobs/{job_id}/cover-letter")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("ZQX block text", r.json()["text"])
+
+    def cover_letter_template(self, c):
+        """A cover letter template (its name and text the person's) uploaded, refused without its {letter} paragraph,
+        filled into the three downloads (the PDF without LibreOffice: plain text), removed, then uploaded again and kept
+        for the export, the import and the copied workspace."""
+        from backend import letter_templates
+
+        def template(marker: str) -> bytes:
+            import docx
+
+            document = docx.Document()
+            document.sections[0].header.paragraphs[0].text = "ZQX letterhead for {company}"
+            document.add_paragraph("ZQX street address, {date}")
+            document.add_paragraph(marker)
+            buffer = io.BytesIO()
+            document.save(buffer)
+            return buffer.getvalue()
+
+        def upload(name, data):
+            return c.post("/api/letter-template", files={"file": (name, data, "application/octet-stream")})
+
+        r = upload("ZQX no marker.docx", template("ZQX no letter here"))
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(upload("ZQX broken.odt", b"ZQX not an odt").status_code, 400)
+        r = upload("ZQX letterhead.docx", template("{letter}"))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn(MARK, c.get("/api/letter-template").json()["template"]["filename"])
+        with mock.patch.object(letter_templates, "pdf_backend", return_value="plain"):
+            for fmt in ("docx", "odt", "pdf"):
+                r = c.get(f"/api/jobs/{self.job_id}/cover-letter.{fmt}")
+                self.assertEqual(r.status_code, 200, f"{fmt}: {r.text[:200]}")
+        self.assertEqual(c.delete("/api/letter-template").status_code, 204)
+        self.assertEqual(upload("ZQX letterhead.docx", template("{letter}")).status_code, 200)
+
     def documents_and_saved_pages(self, c):
         """The AI's work on documents (a concise version, a summary of the ticked ones, title suggestions), a rename and
-        the text, a place looked up for the walkthrough (in the query string), and saved pages: one imported as jobs
-        and one uploaded as a job's full ad."""
+        the text, a place looked up for the walkthrough (in the query string), and saved pages: one imported as jobs,
+        a job's own page read without JobPosting data (refused without its address, then with a typed one) and one
+        uploaded as a job's full ad."""
         docs = c.get("/api/documents").json()
         cv = next(d for d in docs if d["kind"] == "resume")
         self.assertEqual(c.patch(f"/api/documents/{cv['id']}", json={"title": "ZQX renamed resume"}).status_code, 200)
@@ -414,6 +474,16 @@ class FullRun(unittest.TestCase):
         page = (f'<html><head><title>ZQX saved</title><script type="application/ld+json">{json.dumps(posting)}'
                 '</script></head><body>ZQX page body</body></html>').encode()
         r = c.post("/api/import/page", files={"file": ("ZQX saved page.html", page, "text/html")})
+        self.assertEqual(r.status_code, 200, r.text)
+        # Any job's own page, read without JobPosting data: once with no address (refused), then with a typed one
+        ad = ("<html><head><meta property='og:site_name' content='ZQX Own Site Co'></head><body><main>"
+              "<h1>ZQX Own Page Lead</h1><p>Location: Zqxtown NSW</p><p>"
+              + "About the role. You will lead ZQX delivery; key responsibilities include ZQX planning. " * 6
+              + "</p></main></body></html>").encode()
+        r = c.post("/api/import/page", files={"file": ("ZQX own page.html", ad, "text/html")})
+        self.assertEqual(r.status_code, 422, r.text)
+        r = c.post("/api/import/page", data={"url": "https://jobs.zqx-own.example/ZQX-lead"},
+                   files={"file": ("ZQX own page.html", ad, "text/html")})
         self.assertEqual(r.status_code, 200, r.text)
         r = c.post(f"/api/jobs/{self.job_id}/import-page", files={"file": ("ZQX full ad.html", page, "text/html")})
         self.assertLess(r.status_code, 500, r.text)

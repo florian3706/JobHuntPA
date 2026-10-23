@@ -37,7 +37,9 @@ listed underneath.
 
 ![The job chat panel next to the job cards, answering how well the candidate fits](docs/screenshots/chat.png)
 
-**Cover letter drafts** from your own documents, to edit, copy or download as a Word file.
+**Cover letter drafts** from your own documents, to edit, copy or download as a Word, OpenDocument or PDF file.
+Or build a letter from paragraphs you wrote yourself: the AI only picks and orders them, and never rewrites
+them. Your own letterhead template can be filled in too (PDFs with a template use LibreOffice, if installed).
 
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
@@ -68,6 +70,7 @@ previews on the Settings tab.
 ## What you need
 
 - A computer running Windows 10/11, macOS or Linux, and an internet connection.
+- Optional: [LibreOffice](https://www.libreoffice.org/), only for PDF cover letters made from your own template.
 - An **API key for an AI model (LLM)** from one of the major providers: [OpenAI](https://platform.openai.com/),
   [Anthropic (Claude)](https://platform.claude.com/), [Google Gemini](https://aistudio.google.com/),
   [Meta](https://dev.meta.ai/) (Muse Spark), Mistral, Groq, xAI (Grok), DeepSeek or OpenRouter, or
@@ -345,7 +348,7 @@ JobHuntPA, such as your AI provider.
   the clear);
 - each workspace's name, search setup (titles, keywords, salary, places, the commute's starting
   points), dealbreakers and map pins (their places and radii);
-- your jobs: their status, whether you hid them, why the filters excluded them, distance and
+- your jobs: their status, whether you hid them, why the filters excluded them, whether you included them yourself, distance and
   place, the office you set or that was found, your call on the location, and anything that is only
   yours, such as a full ad you uploaded or a job imported from a saved page (its address too);
 - fit scores and their evidence, cover letters, chats, and what each search run found;
@@ -354,7 +357,9 @@ JobHuntPA, such as your AI provider.
 - company careers pages you added and your theme.
 
 Even whether a job is hidden or excluded doesn't show: those fields are always stored encrypted,
-and an excluded job looks the same as one you kept.
+and an excluded job looks the same as one you kept. Whether you included a job yourself (added it with **Add a job**
+or the browser extension, or ticked its **Always include**) does show, though not how or anything about the job: that
+mark is encrypted, but a job you never included, or unticked again, has none.
 
 **Not encrypted**, because the app needs them without your key or they aren't yours. Someone with the
 database can see:
@@ -687,6 +692,20 @@ limits on searches. The AI features use the provider and key set on the Settings
   you upload stays private to your workspace: other workspaces with the same job keep seeing SEEK's
   summary. Jobs from pages you import (*Search setup → Import saved pages*) are private too,
   unless a search has already found them.
+- **Adding a job yourself**: **Add a job** on the Jobs tab takes the page of any job ad that you saved in
+  your browser (Ctrl+S / Cmd+S, any "Webpage" format, several at once if you like). JobHuntPA reads the job
+  from it (the job details most job sites include for search engines, SEEK's own page data, or the page's main
+  text) and stores it under the address the page was saved from. When a page doesn't say where it came from,
+  JobHuntPA asks you for the ad's address. A job you add yourself, here, with **Upload full ad** or with the
+  [browser extension](#browser-extension), is always in your list, even when it doesn't meet your search
+  filters: a ⚠️ under its score, on its card and on its job page, says so, and clicking it lists the conditions it
+  doesn't meet (an excluded keyword, the salary floor, a location outside your pins…). It is scored and
+  researched like the jobs your searches find. A saved page of search results is different: its jobs are
+  filtered like a search's, and the ones that don't meet your filters are under *Show excluded*.
+- **Always include**: to keep a job your filters leave out, tick *Show excluded* on the Jobs tab and then
+  **Always include** among the job's buttons. From then on it is in your list whatever your filters say, like a
+  job you added yourself (whose box is ticked already), with the ⚠️ listing the conditions it doesn't meet. Untick
+  it, on its card or on its job page (where the box always is), and your filters decide on the job again.
 - **Company info** (ⓘ next to the employer, and the job page): what company research found
   (business, ownership, offices, Employee sentiment and News/Controversies) is shared by all
   workspaces, so a company is researched once. **Fill missing info** researches companies with no
@@ -726,7 +745,11 @@ limits on searches. The AI features use the provider and key set on the Settings
   points to *Create summary*. It is a warning only: nothing stops you sending more.
 - **Cover letters**: *Draft cover letter* on any job writes a first draft from your documents
   (upload earlier cover letters as "Cover letter" documents to match your style). Edit it, then
-  copy it or download it as a Word file. Always check it before sending.
+  copy it or download it as a Word, OpenDocument or PDF file. Always check it before sending.
+  *Build from my blocks* assembles a letter from the paragraphs you wrote on the Documents tab (*Cover letter
+  blocks*, with `{company}`, `{role}`, `{location}` and `{date}` filled in from the job): the AI picks and
+  orders them, you tick and reorder, and your words are used exactly as written. It also suggests blocks worth
+  writing. A *Cover letter template* (.docx or .odt with a `{letter}` paragraph) is filled with the letter.
 - **Chat about jobs**: *Chat* on a job (or tick several and click **Chat about N jobs**) opens a
   chat on the right. The AI sees the ads, your documents, the fit assessment, the company info and
   any cover-letter draft, so you can ask what the role really involves, how to handle your gaps,
@@ -915,8 +938,10 @@ The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your curr
   and cookies, what you typed into its forms, other tabs and anything while the popup is closed never leave your
   browser. **Work out a site** and **Add as a company source** send a trimmed outline of the page instead
   (below). A job you already have (the same address) is brought up to date instead of added twice, and the popup
-  tells you before you save. If your filters leave the saved job out of the Jobs list (for example a location or keyword you
-  excluded), JobHuntPA tells the extension why; tick **Show excluded** in the Jobs tab to see it.
+  tells you before you save. A job you save is always in your Jobs list, even when it doesn't meet your filters (for
+  example a location or keyword you excluded): a ⚠️ under its score lists the conditions it doesn't meet, and the
+  popup lists them too once the job is saved (version 1.4 of the extension). To let your filters decide on it after
+  all, untick its **Always include**.
 - **Jobs on this page**: on a SEEK search results page the popup lists every job on the page with a tick
   box and adds the ticked ones in one go. It works on whichever view you have open in your own, signed-in
   browser: *New to you*, sorted by date, page 2 and beyond, which JobHuntPA's own SEEK search can't reach
@@ -926,7 +951,9 @@ The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your curr
   day), as JobHuntPA's own SEEK search stores it; for the full ad, open the job on SEEK and use **Add as a
   job**, or **Upload full ad** on its card. This only ever adds: a job you already have is left exactly as it is,
   so going over a page twice does no harm, and the popup says for each job whether it was added or was
-  already there. You move to the next page yourself and press the button again. The extension reads only
+  already there. Every job you tick is in your Jobs list, like a job you save, with a ⚠️ when it doesn't meet
+  your filters (also one you already had that your filters left out); from version 1.4 the popup shows the ⚠️ and
+  those conditions under each such job. You move to the next page yourself and press the button again. The extension reads only
   the page you have open; it never clicks, scrolls or opens anything on SEEK. Needs version 1.1 of the
   extension.
 
@@ -1436,8 +1463,8 @@ the owner hasn't turned on background access or the account is turned off.
   CAPTCHAs are never worked around.
 - SEEK's robots.txt allows search result pages but not job pages, so SEEK jobs carry the listing
   summary only. For a job you care about, click **Upload full ad** on its card: open the ad on
-  SEEK, save the page (Ctrl+S / Cmd+S) and upload the file; the job is updated with the full ad,
-  re-filtered and rescored. The uploaded ad is kept on your workspace's job only, never in the
+  SEEK, save the page (Ctrl+S / Cmd+S) and upload the file; the job is updated with the full ad
+  and rescored, and stays in your list even if the full ad doesn't meet your filters (its ⚠️ says which). The uploaded ad is kept on your workspace's job only, never in the
   shared pool. SEEK may also refuse automated access outright (HTTP 403); then save
   SEEK search pages yourself and use *Search setup → Import saved pages*. robots.txt also rules out every
   search address with options in it (further pages, *New to you*, sorting by date), so JobHuntPA's own search

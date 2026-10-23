@@ -537,6 +537,65 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
   border-radius: 8px; padding: 10px; font-family: var(--font-ui); font-size: 14px; line-height: 1.5; resize: vertical; }
 .letter-editor a.btn { text-decoration: none; }
 .letter-editor a.btn[hidden] { display: none; }
+/* Cover letter blocks: the Documents tab's editor and list (app.js renderBlocks), and the cover letter window's
+   "Build from my blocks" panel (initLetterBlocks). Colours are the card, field, border and text tokens already paired. */
+.blocks-card, .block-form, .block-form-fields { display: flex; flex-direction: column; gap: 12px; }
+.blocks-card h3, .blocks-card > .hint, .block-warn { margin: 0; }
+.template-card { display: flex; flex-direction: column; gap: 12px; }
+.template-card h3, .template-card > .hint, .template-card p { margin: 0; }
+.block-list { display: flex; flex-direction: column; gap: 12px; }
+.block-empty { margin-top: 0; padding: 18px; }
+.block-group-title { margin: 0 0 6px; font-size: 14px; }
+.block-ul, .block-tags, .cl-block-list, .cl-missing-list { list-style: none; margin: 0; padding: 0; }
+.block-ul { display: grid; gap: 8px; }
+.block-row {
+  display: flex; gap: 8px 12px; align-items: flex-start; flex-wrap: wrap;
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+}
+.block-main { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.block-title { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.block-preview, .block-row-warn { margin: 0; overflow-wrap: anywhere; }
+.block-row-warn { font-size: 13px; }
+.block-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.block-tag {
+  background: var(--field); border: 1px solid var(--border); border-radius: 999px; color: var(--text);
+  padding: 1px 8px; font-size: 12.5px; max-width: 100%; overflow-wrap: anywhere;
+}
+.block-actions, .cl-block-move { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.cl-blocks {
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+}
+.cl-blocks-heading { margin: 0; font-size: 15px; }
+.cl-blocks-note, .cl-blocks .hint { margin: 0; }
+.cl-block-list { display: flex; flex-direction: column; gap: 6px; }
+.cl-block-row {
+  display: flex; gap: 8px; align-items: flex-start; justify-content: space-between;
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+}
+.cl-block-row.is-ticked { border-color: var(--accent); }
+.cl-block-pick { flex: 1 1 auto; min-width: 0; }
+.cl-block-pick .check { align-items: flex-start; }
+.cl-block-pick .check input { margin-top: 2px; }
+.cl-block-name { font-weight: 600; overflow-wrap: anywhere; }
+.cl-block-why { margin: 2px 0 0 26px; overflow-wrap: anywhere; }
+.cl-block-move { flex: none; }
+.cl-missing { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
+.cl-missing-list { display: flex; flex-direction: column; gap: 12px; }
+.cl-missing-item { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.cl-missing-item p { margin: 0; overflow-wrap: anywhere; }
+.cl-newblock { align-self: stretch; display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+/* "Write this block": the facts from the documents beside the text field, one above the other on narrow screens. */
+.block-write { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 12px; align-items: start; }
+.block-bullets {
+  background: var(--field); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; font-size: 13.5px; overflow-wrap: anywhere;
+}
+.block-bullets-title { margin: 0 0 6px; font-size: 13.5px; }
+.block-bullets ul { margin: 0; padding-left: 18px; }
+.block-bullets li { margin-bottom: 4px; }
+.block-bullets p { margin: 0; }
+@media (max-width: 640px) { .block-write { grid-template-columns: minmax(0, 1fr); } }
 .titles-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
 .titles-ul { display: flex; flex-direction: column; gap: 6px; }
 .title-badges { display: inline-flex; gap: 6px; flex-wrap: wrap; }
@@ -548,9 +607,13 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 .badge.fit-strong { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); text-transform: none; }
 .badge.fit-good { color: var(--info); border-color: color-mix(in srgb, var(--info) 55%, transparent); text-transform: none; }
 .badge.fit-stretch { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); text-transform: none; }
-.upload-ad ol { padding-left: 20px; }
-.upload-ad li { margin-bottom: 6px; }
-.upload-ad kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; background: var(--field); font-size: 12px; }
+.upload-ad ol, .add-job ol { padding-left: 20px; }
+.upload-ad li, .add-job ol li { margin-bottom: 6px; }
+.upload-ad kbd, .add-job kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; background: var(--field); font-size: 12px; }
+/* "Add a job": the saved pages, an address for one that doesn't say it, and a line for each page added. */
+.add-job .add-job-url { margin: 12px 0; }
+.add-job-results { margin: 8px 0 0; padding-left: 0; list-style: none; }
+.add-job-results li { margin-bottom: 6px; overflow-wrap: anywhere; }
 .upload-ad a, .modal-html a { color: var(--accent-text); }
 .select-all-shown { font-size: 13px; white-space: nowrap; }
 
@@ -865,6 +928,7 @@ summary { cursor: pointer; min-height: 24px; }
   .check input, .check-field input, .job-top input[type="checkbox"], .title-row input { width: 24px; height: 24px; }
   .tag button, .info-btn, .link, .help-link { min-width: 36px; min-height: 36px; }
   a.ghost-dot { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .filter-warn { min-height: 44px; }
   .leaflet-touch .leaflet-bar a { width: 44px; height: 44px; line-height: 44px; }
 }
 
@@ -1094,6 +1158,16 @@ dialog.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 a.ghost-dot { cursor: pointer; }
 a.ghost-dot:hover { border-color: var(--border-strong); }
+/* ⚠️ under the score of a job the person included that doesn't meet their filters: a button opening the list of them. */
+.filter-warn {
+  font: inherit; font-size: 13px; line-height: 1.3; background: var(--field); color: var(--text); cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--warn) 60%, transparent); padding: 3px 8px; border-radius: 8px;
+}
+.filter-warn:hover { border-color: var(--warn); }
+.filter-warnings { margin: 6px 0 0; padding-left: 0; list-style: none; }
+.filter-warnings li { margin-bottom: 4px; overflow-wrap: anywhere; }
+/* "Always include" among a job's actions (common.js includeToggle). */
+.include-toggle { font-size: 13px; white-space: nowrap; cursor: pointer; }
 .ghost-why { margin-top: 6px; font-size: 13.5px; }
 .ghost-why summary { cursor: pointer; color: var(--accent-text); }
 .ghost-signs, .ghost-ask, .ghost-key { margin: 6px 0 0; padding-left: 18px; }

@@ -10,7 +10,8 @@ the projects' own statements, and for the AppImage's Python the libraries were c
 Every licence below may be combined with GPLv3. Apache-2.0 is compatible with version 3 of the GPL (not with
 version 2), which is one reason the app is GPL-3.0 and not GPL-2.0. MPL-2.0 allows combination with the GPL (its
 section 3.3; none of these files is marked "Incompatible With Secondary Licenses"). LGPL-2.1 allows conveying the
-code under the GPL.
+code under the GPL, and LGPL-3.0 is the GPLv3 with extra permissions, so it combines with GPLv3 code as it is. FreeType
+(in Pillow's wheels) is used under its GPL-2.0-or-later option.
 
 ## Python packages (requirements.txt and what they pull in)
 
@@ -24,6 +25,7 @@ Installed by setup and bundled into the AppImage. "Direct" means listed in `requ
 | python-multipart | 0.0.32 | Apache-2.0 | yes | |
 | pypdf | 6.20.1 | BSD-3-Clause | yes | |
 | python-docx | 1.2.0 | MIT | yes | |
+| fpdf2 | 2.8.9 | LGPL-3.0-only | yes | plain-text cover letter PDFs when LibreOffice isn't installed |
 | odfpy | 1.4.1 | Apache-2.0, or GPL-2.0-or-later, or LGPL-2.1-or-later (the files' headers); the metadata lists all three | yes | used under any of them |
 | httpx | 0.28.1 | BSD-3-Clause | yes | |
 | anthropic | 1.13.0 | MIT | yes | vendors `httpx_aiohttp` (Apache-2.0, with its NOTICE) |
@@ -44,6 +46,7 @@ Installed by setup and bundled into the AppImage. "Direct" means listed in `requ
 | click | 8.5.0 | BSD-3-Clause | | |
 | defusedxml | 0.7.1 | PSF-2.0 | | |
 | docstring_parser | 0.18.0 | MIT | | |
+| fonttools | 4.67.0 | MIT | | pulled in by fpdf2; the test fonts in its sources are under the SIL OFL 1.1 and Adobe's glyph list under BSD-3-Clause (its `LICENSE.external`) |
 | greenlet | 3.5.6 | MIT AND PSF-2.0 | | |
 | h11 | 0.16.0 | MIT | | |
 | httpcore | 1.0.9 | BSD-3-Clause | | |
@@ -52,6 +55,7 @@ Installed by setup and bundled into the AppImage. "Direct" means listed in `requ
 | idna | 3.20 | BSD-3-Clause | | |
 | jiter | 0.17.0 | MIT | | |
 | opentelemetry-api | 1.45.1 | Apache-2.0 | | |
+| Pillow | 13.0.0 | MIT-CMU | | pulled in by fpdf2; its binary wheels bundle libjpeg-turbo, libpng, libtiff, libwebp, libavif with dav1d and AOM, OpenJPEG, Little CMS, HarfBuzz, Brotli, XZ, zstd, zlib and libxcb under their own permissive licences, and FreeType (FTL or GPL-2.0-or-later); its `LICENSE` lists them all |
 | pycparser | 3.11 | BSD-3-Clause | | |
 | pydantic | 2.14.1 | MIT | | |
 | pydantic_core | 2.50.1 | MIT | | |
@@ -94,5 +98,5 @@ own key; neither is code in JobHuntPA.
 | --- | --- | --- |
 | [axe-core](https://github.com/dequelabs/axe-core) 4.14 | MPL-2.0 | `tools/a11y_audit.py` (you install it with npm; it is never shipped) |
 | Playwright's Chromium | as above | `tools/a11y_audit.py`, `tools/readme_screenshots.py` |
-| [Pillow](https://python-pillow.org/) | MIT-CMU (12.3, its metadata) | `tools/readme_screenshots.py` (`pip install pillow`; not in `requirements.txt`) |
+| [Pillow](https://python-pillow.org/) | MIT-CMU (its metadata) | `tools/readme_screenshots.py`; also an app package now, pulled in by fpdf2 (above) |
 | appimagetool | MIT | `installer/appimage.sh` (above) |

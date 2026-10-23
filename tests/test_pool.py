@@ -421,7 +421,8 @@ class ClosingRuleTest(PoolTestCase):
 class JobJsonShapeTest(PoolTestCase):
     KEYS = {"id", "source", "company", "company_key", "title", "location_text", "country", "lat", "lng", "work_mode",
             "employment_type", "office_days", "salary_text", "salary_min", "salary_max", "url", "distance_km",
-            "status", "applied_at", "excluded_reason", "detail_status", "posted_at", "first_seen", "last_seen", "closed", "hidden",
+            "status", "applied_at", "excluded_reason", "included_by_user", "filter_warnings", "detail_status",
+            "posted_at", "first_seen", "last_seen", "closed", "hidden",
             "fit", "has_cover_letter", "office_text", "office_source", "office_placed", "office_unknown",
             "location_verdict", "recruiter", "ghost", "also_on", "link"}
 
@@ -445,6 +446,42 @@ class JobJsonShapeTest(PoolTestCase):
         full = self.client.get(f"/api/jobs/{pooled['id']}", headers=self.h(ws)).json()
         self.assertEqual(set(full), self.KEYS | {"description", "office_candidates"})
         self.assertEqual(full["description"], FULL_AD)
+
+    def test_the_warnings_of_added_jobs_cost_no_query_per_job(self):
+        """The filter warnings read the description and industry the cards leave out: one query loads them for all
+        the jobs the person added, whether a pool posting's or their own."""
+        from sqlalchemy import event
+
+        ws = self.workspace(keywords_exclude=["blockchain"])
+
+        def add(n: int) -> None:
+            search(ws, FakeAdapter("workable:many", [self.ad(500 + i, url=f"https://many.example/{i}") for i in range(n)]))
+            db = SessionLocal()
+            db.add_all(Job(workspace_id=ws, url=f"https://own.example/{n}-{i}", title=self.role, company="Own Co",
+                           detail_status="full", description=FULL_AD + " blockchain", status="to_review",
+                           industry="Chains", included_by_user=True) for i in range(n))
+            for job in db.query(Job).filter(Job.workspace_id == ws, Job.posting_id.isnot(None)):
+                job.included_by_user = True
+            db.commit()
+            db.close()
+
+        def statements() -> int:
+            seen = []
+            record = lambda *a: seen.append(a[2])  # noqa: E731
+            event.listen(engine, "before_cursor_execute", record)
+            try:
+                listed = self.jobs(ws)
+            finally:
+                event.remove(engine, "before_cursor_execute", record)
+            self.assertTrue(all(j["included_by_user"] for j in listed.values()))
+            self.assertEqual({tuple(j["filter_warnings"]) for j in listed.values() if "own.example" in j["url"]},
+                             {("excluded keyword: blockchain",)})
+            return len(seen)
+
+        add(2)
+        few = statements()
+        add(6)
+        self.assertEqual(statements(), few)
 
 
 class MigrationTest(unittest.TestCase):

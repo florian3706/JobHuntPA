@@ -20,6 +20,8 @@ from backend.db import (
     CompanySource,
     Document,
     Job,
+    LetterBlock,
+    LetterTemplate,
     Posting,
     SessionLocal,
     Workspace,
@@ -186,9 +188,10 @@ class ExportFileTypesTest(Base):
     def test_only_the_chosen_types_are_written(self):
         names = list(entries(self.export(formats=["docx"])))
         self.assertTrue(any(n.endswith(".docx") for n in names))
-        self.assertFalse(any(n.endswith((".md", ".odt")) for n in names if "/Original files/" not in n))
+        uploads = ("/Original files/", "/Cover letter template/")  # (files as they were uploaded)
+        self.assertFalse(any(n.endswith((".md", ".odt")) for n in names if not any(u in n for u in uploads)))
         default = list(entries(self.export()))
-        self.assertFalse(any(n.endswith((".docx", ".odt")) for n in default if "/Original files/" not in n))
+        self.assertFalse(any(n.endswith((".docx", ".odt")) for n in default if not any(u in n for u in uploads)))
 
     def test_word_and_opendocument_files_are_made_in_memory(self):
         import tempfile
@@ -262,12 +265,18 @@ class RoundTripTest(Base):
         self.assertEqual([w["name"] for w in listed], ["My job search"])
         self.assertEqual(listed[0]["jobs"], 7)  # (the merged copy isn't counted)
         self.assertEqual((listed[0]["documents"], listed[0]["chats"], listed[0]["cover_letters"]), (3, 1, 1))
+        self.assertEqual(listed[0]["letter_blocks"], 2)
+        self.assertEqual(listed[0]["letter_template"], 1)
         r = self.do_import(blob)
         self.assertEqual(r.status_code, 200, r.text)
         made = r.json()["workspaces"][0]
         today = date.today().isoformat()
         self.assertEqual(made["name"], f"My job search (imported {today})")
         self.assertEqual(self.workspaces()[:-1], before, "nothing was merged into the old workspace")
+        self.assertEqual(made["letter_blocks"], 2)
+        self.assertEqual(made["letter_template"], 1)
+        self.assertEqual(self.expected()["letter_template"]["filename"], "MARK-template-bob.docx")
+        self.assertEqual(len(self.expected()["letter_blocks"]), 2, "the snapshot holds the planted blocks")
         self.assertEqual(self.snapshot(made["id"]), self.expected())
         # the original file came back byte for byte, sealed under a new name
         db = SessionLocal()
@@ -278,12 +287,17 @@ class RoundTripTest(Base):
                 self.assertEqual(len(new), 1)
                 self.assertNotEqual(new[0].stored_name, old[0].stored_name)
                 self.assertEqual(docs.read_upload(new[0].stored_name), self.upload)
+                # ... and so did the cover letter template
+                old_t = db.query(LetterTemplate).filter(LetterTemplate.workspace_id == self.bob.workspace_id).one()
+                new_t = db.query(LetterTemplate).filter(LetterTemplate.workspace_id == made["id"]).one()
+                self.assertNotEqual(new_t.stored_name, old_t.stored_name)
+                self.assertEqual(docs.read_upload(new_t.stored_name), self.template)
         finally:
             db.close()
 
     def test_starting_points_and_the_applied_date_come_back(self):
-        """Phase C's starting points (a pin start names the copy of its pin; a gone pin's start is left out) and
-        Phase D's applied date travel in the import file."""
+        """Phase C's starting points (a pin start names the copy of its pin; a gone pin's start is left out),
+        Phase D's applied date and a job's having been added by the person travel in the import file."""
         from backend import commute
         from backend.db import Pin, UserProfile
 
@@ -300,6 +314,7 @@ class RoundTripTest(Base):
                 ]
                 weird = next(j for j in db.query(Job).filter(Job.workspace_id == ws) if j.url == "https://ads.example/bob/weird")
                 weird.applied_at = when
+                weird.included_by_user, weird.excluded_reason = True, None
                 db.commit()
         finally:
             db.close()
@@ -323,7 +338,9 @@ class RoundTripTest(Base):
                 ])
                 self.assertIsNone(profile.commute_from)
                 job = next(j for j in db.query(Job).filter(Job.workspace_id == made) if j.url == "https://ads.example/bob/weird")
-                self.assertEqual(job.applied_at, when)
+                self.assertEqual((job.applied_at, job.included_by_user), (when, True))
+                self.assertFalse(any(j.included_by_user for j in db.query(Job).filter(Job.workspace_id == made)
+                                     if j.id != job.id))
         finally:
             db.close()
         self.assertEqual(self.snapshot(made), self.expected())
@@ -495,6 +512,92 @@ class RoundTripTest(Base):
             self.assertEqual((r.status_code, r.json()["code"]), (422, "import_damaged"), change)
             self.assertIn("workspaces.0.jobs.0", r.json()["detail"])
             self.assertNotIn("moon", r.json()["detail"], "the refusal never quotes the file's text")
+
+
+class LetterBlockTest(Base):
+    def test_a_bad_kind_is_refused_and_tags_are_cleaned(self):
+        with self.assertRaises(ValidationError):
+            import_file.LetterBlockIn.model_validate({"kind": "intro", "title": "x", "text": "y"})
+        with self.assertRaises(ValidationError):
+            import_file.LetterBlockIn.model_validate({"tags": ["t"] * 31})
+        self.assertEqual(import_file.LetterBlockIn.model_validate({}).kind, "body")
+        blob = self.export()
+        data = self.import_data(blob)
+        blocks = data["workspaces"][0]["letter_blocks"]
+        blocks[0]["kind"] = "intro"
+        r = self.check(self.replace_import_file(blob, data))
+        self.assertEqual(r.status_code, 422, r.text)
+        blocks[0]["kind"] = "body"
+        blocks[0]["tags"] = ["  SQL ", "sql", "", "Budget"]
+        blob = self.replace_import_file(blob, data)
+        made = self.do_import(blob).json()["workspaces"][0]
+        db = SessionLocal()
+        try:
+            with helpers.as_account(self.bob):
+                rows = db.query(LetterBlock).filter(LetterBlock.workspace_id == made["id"]).all()
+                self.assertEqual(sorted(len(b.tags) for b in rows), [2, 2])
+                self.assertIn(["SQL", "Budget"], [b.tags for b in rows])
+        finally:
+            db.close()
+
+    def test_a_file_without_blocks_brings_none(self):
+        blob = self.export()
+        data = self.import_data(blob)
+        del data["workspaces"][0]["letter_blocks"]
+        made = self.do_import(self.replace_import_file(blob, data)).json()["workspaces"][0]
+        self.assertEqual(made["letter_blocks"], 0)
+
+
+class LetterTemplateTest(Base):
+    def made(self, blob) -> dict:
+        r = self.do_import(blob)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["workspaces"][0]
+
+    def rows(self, ws_id) -> list:
+        db = SessionLocal()
+        try:
+            with helpers.as_account(self.bob):
+                return [(t.filename, t.filetype) for t in db.query(LetterTemplate).filter(LetterTemplate.workspace_id == ws_id)]
+        finally:
+            db.close()
+
+    def test_a_file_without_a_template_or_without_its_file_brings_none(self):
+        blob = self.export()
+        data = self.import_data(blob)
+        del data["workspaces"][0]["letter_template"]
+        made = self.made(self.replace_import_file(blob, data))
+        self.assertEqual((made["letter_template"], self.rows(made["id"])), (0, []))
+        data["workspaces"][0]["letter_template"] = {"filename": "x.docx", "filetype": ".docx", "original": "../x.docx"}
+        made = self.made(self.replace_import_file(blob, data))
+        self.assertEqual((made["letter_template"], self.rows(made["id"])), (0, []))
+
+    def test_a_file_that_isnt_a_template_is_left_out(self):
+        blob = self.export()
+        data = self.import_data(blob)
+        path = data["workspaces"][0]["letter_template"]["original"]
+        files = entries(blob)
+        name = next(n for n in files if n.endswith(path))
+        import docx
+
+        document = docx.Document()
+        document.add_paragraph("no marker in this one")
+        out = io.BytesIO()
+        document.save(out)
+        files[name] = out.getvalue()
+        made = self.made(zip_of(files))
+        self.assertEqual((made["letter_template"], self.rows(made["id"])), (0, []))
+        files[name] = b"PK\x03\x04 broken"
+        self.assertEqual(self.made(zip_of(files))["letter_template"], 0)
+
+    def test_a_wrong_type_is_refused_and_the_name_is_kept(self):
+        blob = self.export()
+        data = self.import_data(blob)
+        data["workspaces"][0]["letter_template"]["filetype"] = ".exe"
+        self.assertEqual(self.check(self.replace_import_file(blob, data)).status_code, 422)
+        data["workspaces"][0]["letter_template"]["filetype"] = ".docx"
+        made = self.made(self.replace_import_file(blob, data))
+        self.assertEqual(self.rows(made["id"]), [("MARK-template-bob.docx", ".docx")])
 
 
 class ShapeTest(Base):
@@ -844,7 +947,8 @@ class RefusalTest(Base):
         with self.assertLogs("backend.data_import", level="INFO") as logs:
             self.assertEqual(self.do_import(blob).status_code, 200)
         logged = "\n".join(logs.output)
-        self.assertRegex(logged, r"user \d+ imported 1 workspace\(s\): 7 jobs, 3 documents \(1 original files\), 1 chats")
+        self.assertRegex(logged, r"user \d+ imported 1 workspace\(s\): 7 jobs, 3 documents \(1 original files\), 1 cover letter "
+                                 r"templates, 1 chats")
         self.assertNotIn("MARK", logged)
         self.assertNotIn("My job search", logged)
 

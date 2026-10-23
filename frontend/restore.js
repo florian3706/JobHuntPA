@@ -26,7 +26,7 @@ async function postZip(url, file) {
 function plural(n, one, many = `${one}s`) { return `${n} ${n === 1 ? one : many}`; }
 
 function restoreCounts(w) {
-  return [plural(w.jobs, 'job'), plural(w.documents, 'document'), plural(w.chats, 'chat'),
+  return [plural(w.jobs, 'job'), plural(w.documents, 'document'), plural(w.letter_blocks, 'letter block'), plural(w.letter_template, 'letter template'), plural(w.chats, 'chat'),
     plural(w.cover_letters, 'cover letter'), plural(w.sources, 'source')].join(', ');
 }
 

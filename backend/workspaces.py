@@ -28,6 +28,8 @@ from backend.db import (
     DealbreakerSet,
     Document,
     Job,
+    LetterBlock,
+    LetterTemplate,
     Pin,
     SearchSchedule,
     UserProfile,
@@ -168,6 +170,14 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
         for copy in copies.values():  # a summary's sources: the copies of them
             if copy.summary_of:
                 copy.summary_of = [copies[i].id for i in copy.summary_of if i in copies]
+        for b in db.query(LetterBlock).filter(LetterBlock.workspace_id == src).order_by(LetterBlock.id):
+            db.add(LetterBlock(workspace_id=dst, kind=b.kind, position=b.position, title=b.title, text=b.text,
+                               tags=list(b.tags or []), created_at=b.created_at, updated_at=b.updated_at))
+        template = db.query(LetterTemplate).filter(LetterTemplate.workspace_id == src).first()
+        if template is not None and template.stored_name and (UPLOAD_DIR / template.stored_name).is_file():
+            db.add(LetterTemplate(workspace_id=dst, filename=template.filename, filetype=template.filetype,
+                                  stored_name=save_upload(read_upload(template.stored_name)),
+                                  created_at=template.created_at))
 
 
 @router.patch("/{ws_id}")
@@ -184,7 +194,9 @@ def delete_workspace(ws_id: int, user: AuthUser = Depends(current_user), db: Ses
     ws = owned_workspace(db, ws_id, user)
     if db.query(Workspace).filter(Workspace.owner_id == user.id).count() <= 1:
         raise HTTPException(status_code=409, detail="You can't delete the only workspace")
-    for (stored,) in db.query(Document.stored_name).filter(Document.workspace_id == ws_id):
+    uploads = [*db.query(Document.stored_name).filter(Document.workspace_id == ws_id),
+               *db.query(LetterTemplate.stored_name).filter(LetterTemplate.workspace_id == ws_id)]
+    for (stored,) in uploads:
         if stored:
             (UPLOAD_DIR / stored).unlink(missing_ok=True)
     for model in (UserProfile, DealbreakerSet):

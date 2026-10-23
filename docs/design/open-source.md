@@ -126,7 +126,8 @@ Rules:
 - One machine-readable file with a format version, holding everything needed to bring the data back: per workspace
   the search setup, sources, pins and starting points, documents (text, concise versions, their flags, and which
   original file in the zip belongs to each), jobs (the ad, status and its dates, notes, hidden, excluded, office and
-  verdict, fit results, cover letters), chats and the schedule; plus the research on those jobs' companies. Never the
+  verdict, fit results, cover letters), cover letter blocks, the cover letter template (and which file in the zip it
+  is), chats and the schedule; plus the research on those jobs' companies. Never the
   password, keys, sessions, extension keys or the AI key.
 
 **Import** (Settings tab):
@@ -621,6 +622,8 @@ file (not a row id). Other fields point at them by that number.
 | `sources` | `[{ref, label, url, type, enabled, mapping}]`: careers pages and feeds; `url` is http(s); `mapping` is the page's layout the AI worked out (a Part 8 mapping of kind `careers`), or null |
 | `schedule` | `{enabled, times: ["10:00", …], days: [0-6, Monday = 0], skip_holidays, state: "NSW" …}` |
 | `documents` | below |
+| `letter_blocks` | below |
+| `letter_template` | `null`, or the object below |
 | `jobs` | below |
 | `chats` | below |
 
@@ -641,6 +644,20 @@ concise_at, created_at, updated_at, summary_of, original}`. `filetype` is the up
 the export's folder (`Workspaces/<workspace>/Documents/Original files/<name>`), or null. The original files are
 plain bytes in the zip, exactly as uploaded.
 
+**`letter_blocks`:** the paragraphs cover letters are built from (one list per workspace, in
+letter order), each `{kind, title, text, tags, position, created_at, updated_at}`: `kind` is `opening`, `body` or
+`closing` (default `body`); `title` and `text` are text; `tags` is a list of at most 30 short texts (an import trims
+them and drops empty and repeated ones); `position` is the block's order within its kind. A file without the list
+(made before blocks existed) brings in none. Blocks have no `ref`: nothing points at them. They are also written as
+`Workspaces/<workspace>/Cover letter blocks.md` when there are any.
+
+**`letter_template`:** the workspace's cover letter template, `{filename, filetype, created_at, original}`, or `null`
+when it has none: `filetype` is `.docx` or `.odt`; `original` is the path of the uploaded file inside the export's
+folder (`Workspaces/<workspace>/Cover letter template/<name>`), the bytes exactly as uploaded. An import takes it only
+when that file is in the zip and is a template the app can fill (it opens as that type and has a `{letter}`
+paragraph, the same check as an upload); otherwise the workspace comes in without one. A file without the field (made
+before templates existed) brings in none.
+
 **`jobs`:** one entry per job, merged copies included:
 
 | Field | Meaning |
@@ -653,7 +670,8 @@ plain bytes in the zip, exactly as uploaded.
 | `first_seen`, `last_seen`, `closed_at` | when the job was first linked to the workspace, last listed by its search, and when the ad closed |
 | `applied_at` | when the job was last moved to Applied (§1.12), or null when that isn't stored |
 | `hidden` | the person hid it |
-| `excluded_reason` | why the search filters left it out, or null |
+| `included_by_user` | the person keeps it in their list (added it themselves through the browser extension or a saved page of the one job, or ticked its *Always include*), so the search filters never leave it out; false when left out of the file |
+| `excluded_reason` | why the search filters left it out, or null (always null for a job the person added) |
 | `location_verdict` | the person's call on the location: `ok`, `too_far` or null |
 | `office` | `{text, lat, lng, source, checked_at}`: where the office is (`source`: `ad`, `company` or `user`), or null |
 | `lat`, `lng`, `distance_km` | where the job was placed for this workspace |
@@ -717,7 +735,7 @@ A `page` is `{title, url}` with an http(s) `url`. A `year` or `rating` written a
   more than 200 times its packed size; a zip with an entry whose path leaves its folder is refused whole. A
   document's `text` and `concise_text` may be as long as an export can hold (an uploaded .txt keeps all of its text,
   and a DOCX or PDF can unpack to more text than its upload); an ad, a letter or a message at most 2,000,000
-  characters. The whole file holds at most 200,000 jobs, documents, chats, chat messages, sources, pins and companies
+  characters. The whole file holds at most 200,000 jobs, documents, letter blocks, chats, chat messages, sources, pins and companies
   together (each becomes objects in memory before anything is written). An upload still arriving after ten minutes
   plus the time the largest zip needs at 100 KB/s is cut off. One import runs at a time.
 
@@ -827,9 +845,14 @@ on with use (60 days without use, a year at most). `expires_at` here and the map
 - **Preview** stores nothing: `{"url": <the address a save would store>, "existing": {"id", "title", "status",
   "link"} | null}`.
 - **Save** needs a title (422 `invalid`, `field: "title"`): 201 for a new job, 200 for the workspace's job with that
-  address brought up to date: `{"job_id", "created", "title", "company", "link", "excluded_reason"}`. `link` is
-  relative to the server (`/job.html?id=12&ws=1`); `excluded_reason` is why the person's filters leave the job out
-  of the Jobs list, or null.
+  address brought up to date: `{"job_id", "created", "title", "company", "link", "excluded_reason",
+  "filter_warnings"}`. `link` is relative to the server (`/job.html?id=12&ws=1`). A job the extension adds is the
+  person's own pick, so the filters never leave it out of the Jobs list: `excluded_reason` (why they would) is null,
+  and `filter_warnings` lists the rules of the person's filters the job doesn't meet, as the Jobs tab says them under
+  the job's ⚠️ (`["dealbreaker keyword: crypto", "salary below floor ($90,000 < $120,000)"]`), or `[]`. A job the
+  workspace had that the filters left out is listed from then on too. That is the job's *Always include*, ticked; the
+  person unticks it in the app (`PATCH /api/jobs/{id}/included` `{"included": false}`, a signed-in browser only, not
+  an extension key), and the filters decide on the job again.
 - **The address stored:** a SEEK job (`/job/<digits>` or `?jobId=<digits>` on `seek.com.au`, `seek.co.nz`,
   `seek.com` or a subdomain) as `https://www.seek.com.au/job/<id>`; else `job.url`, then `canonical_url`, when on
   exactly the same host and port as `url`; else `url`.
@@ -839,8 +862,9 @@ on with use (60 days without use, a year at most). `expires_at` here and the map
 "description"}, ...]}`; 1 to 50 jobs (413 `too_large`, `field: "jobs"` past 50); each job's `url` on the results
 page's own host and port (relative is fine) and a title, else the whole request is 422 `invalid` (`field` `url` or
 `title`); `industry` at most 200 characters, `description` (the card's summary, plain text) at most 5,000; the rest
-as for a job. It only adds; the answer: `{"added", "existing", "jobs": [{"url", "job_id", "created", "title",
-"company", "link", "excluded_reason"}, ...]}` in the order sent.
+as for a job. It only adds: a job the workspace has keeps its ad as it is. Every job sent was ticked by the person, so
+each is listed whatever the filters say, as for a save. The answer: `{"added", "existing", "jobs": [{"url", "job_id",
+"created", "title", "company", "link", "excluded_reason", "filter_warnings"}, ...]}` in the order sent.
 
 ## 8.5 Company sources
 

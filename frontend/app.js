@@ -13,6 +13,7 @@ const state = {
   details: new Map(), // job id -> full job (with description)
   filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
   selected: new Set(),
+  includeTouched: new Set(), // jobs whose "Always include" was set here: their cards keep it, ticked or not
   profile: null,
   pins: [],
   startingPoints: [], // Search setup > Commute: where the job page's Google Maps links start (besides home pins)
@@ -38,6 +39,10 @@ const state = {
   // Documents tab: the list, which rows are open, their texts, unsaved edits ("id:field"), status lines
   // ("id:area") and actions under way ("id:act"), all for workspace `ws`.
   docs: { ws: null, list: [], open: new Set(), text: new Map(), drafts: new Map(), status: new Map(), busy: new Set() },
+  // Cover letter blocks (Documents tab): the list in letter order, for workspace `blocksWs`, and the one being edited.
+  blocks: [],
+  blocksWs: null,
+  blockEdit: null,
 };
 
 /* ---------- the dialog (#modal, a native <dialog>) ----------
@@ -372,6 +377,7 @@ function renderJobCard(job) {
       <button class="btn btn-ghost btn-sm" type="button" data-act="desc" aria-describedby="${titleId}">Description</button>
       ${isSeekJob(job) && job.detail_status === 'summary' ? `<button class="btn btn-sm" type="button" data-act="upload-ad" aria-describedby="${titleId}" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>` : ''}
       <button class="btn btn-ghost btn-sm" type="button" data-act="hide" aria-describedby="${titleId}">${job.hidden ? 'Unhide' : 'Hide'}</button>
+      ${showsInclude(job) ? includeToggle(job, titleId) : ''}
       <button class="btn btn-ghost btn-sm" type="button" data-act="letter" aria-describedby="${titleId}">${job.has_cover_letter ? 'Cover letter<span aria-hidden="true"> ✓</span><span class="visually-hidden"> (drafted)</span>' : 'Draft cover letter'}</button>
       <button class="btn btn-ghost btn-sm" type="button" data-act="chat" aria-describedby="${titleId}" title="Ask questions about this job in a chat on the right">Chat</button>
       <a class="btn btn-ghost btn-sm" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" aria-describedby="${titleId}" title="Full page in a new tab: the whole ad, the office with commute links, and company details">Open${NEW_TAB}</a>
@@ -394,6 +400,8 @@ function renderJobCard(job) {
   card.querySelector('[data-act="hide"]').addEventListener('click', () => setHidden([job.id], !job.hidden));
   card.querySelector('[data-act="upload-ad"]')?.addEventListener('click', () => showUploadAd(job));
   card.querySelector('[data-act="company"]')?.addEventListener('click', () => showCompany(job));
+  card.querySelector('[data-act="filter-warnings"]')?.addEventListener('click', () => showFilterWarnings(job));
+  card.querySelector('[data-act="include"]')?.addEventListener('change', (e) => setIncluded(job, e.currentTarget));
   card.querySelector('details[data-section="fit"]').addEventListener('toggle', (e) => {
     if (e.target.open) e.target.querySelector('.fit-body').innerHTML = fitHtml(job);
   });
@@ -401,6 +409,36 @@ function renderJobCard(job) {
     if (e.target.open) e.target.querySelector('.gaps-body').innerHTML = gapsHtml(job);
   });
   return card;
+}
+
+// A card has "Always include" where the filters and the person may disagree: a job the filters leave out (or only the
+// office-days what-if shows), one the person included, and one whose box was set here (so it can be ticked again).
+const showsInclude = (job) => !!(job.excluded_reason || job.softened_reason || job.included_by_user || state.includeTouched.has(job.id));
+
+async function setIncluded(job, box) {
+  const back = focusFinder(box);
+  box.disabled = true;
+  try {
+    const updated = await api(`/api/jobs/${job.id}/included${slackQuery()}`, { method: 'PATCH', body: JSON.stringify({ included: box.checked }) });
+    state.includeTouched.add(job.id);
+    Object.assign(job, updated);
+    state.details.set(job.id, updated);
+    renderJobs();
+    (back() || $('#tab-jobs')).focus({ preventScroll: true });
+    toast(includedWords(job, !state.filter.showExcluded), 'ok', 6000);
+  } catch (e) {
+    box.checked = !box.checked;
+    toast(`Could not change "Always include": ${e.message}`, 'err');
+  } finally {
+    box.disabled = false;
+  }
+}
+
+// The ⚠️ of a job the person included: the rules of their filters it doesn't meet. The link to the Search setup tab
+// closes the dialog on its way there.
+function showFilterWarnings(job) {
+  openHtmlModal(filterWarningsTitle(job), filterWarningsHtml(job));
+  $('#modal-html a[href="#search"]').addEventListener('click', closeModal);
 }
 
 async function showDescription(job) {
@@ -470,12 +508,9 @@ function showUploadAd(job) {
       const updated = await api(`/api/jobs/${job.id}/import-page${slackQuery()}`, { method: 'POST', body: fd });
       Object.assign(job, updated);
       state.details.set(job.id, updated);
-      if (updated.excluded_reason) {
-        status.innerHTML = `Updated. With the full ad this job is now excluded: ${esc(updated.excluded_reason)}.`;
-        renderJobs();
-        return;
-      }
-      status.textContent = 'Updated with the full ad. Rescoring…';
+      // An ad you upload stays in your list; the ⚠️ under its score says which filters it doesn't meet.
+      const warn = (updated.filter_warnings || []).length ? ` ${filterWarnWords(updated)} (see the ⚠️ on its card), but it stays in your list.` : '';
+      status.textContent = `Updated with the full ad.${warn} Rescoring…`;
       renderJobs();
       try {
         Object.assign(job, await api(`/api/score/${job.id}${slackQuery()}`, { method: 'POST' }));
@@ -573,6 +608,7 @@ function initJobs() {
   $('#bulk-chat').addEventListener('click', () => openChat(Array.from(state.selected)));
   $('#bulk-merge').addEventListener('click', mergeSelected);
   $('#dupes-open').addEventListener('click', showDuplicates);
+  $('#add-job-open').addEventListener('click', showAddJob);
 }
 
 /* ================= BACKGROUND RUNS ================= */
@@ -752,6 +788,9 @@ function showCompany(job) {
 function currentWorkspace() { return state.ws; }
 
 /* ================= COVER LETTERS ================= */
+// Two ways to a letter: the AI drafts one (POST …/cover-letter), or it is put together word for word from the
+// user's blocks (Build from my blocks): the AI suggests which blocks and in what order, and which blocks are worth
+// writing for this job; the user ticks, orders, writes, then Assemble joins them (POST …/blocks/assemble).
 async function showCoverLetter(job) {
   let letter = null;
   try { letter = await api(`/api/jobs/${job.id}/cover-letter`); } catch { letter = null; }
@@ -761,24 +800,49 @@ async function showCoverLetter(job) {
         <textarea id="cl-instructions" rows="2" placeholder="e.g. Mention I can start in two weeks. Keep it under 300 words.">${esc(letter?.instructions || '')}</textarea></label>
       <div class="toolbar-row">
         <button id="cl-draft" class="btn btn-primary btn-sm" type="button">${letter ? 'Redraft' : 'Draft cover letter'}</button>
+        <button id="cl-build" class="btn btn-sm" type="button">Build from my blocks</button>
         <span id="cl-status" class="muted" role="status"></span>
       </div>
+      <section id="cl-blocks" class="cl-blocks" aria-labelledby="cl-blocks-title" hidden></section>
       <div class="field"><label class="field-label" for="cl-text">Cover letter</label>
         <textarea id="cl-text" rows="16" placeholder="Your draft appears here. You can edit it before saving.">${esc(letter?.text || '')}</textarea></div>
       <div class="toolbar-row">
         <button id="cl-save" class="btn btn-sm" type="button">Save edits</button>
         <button id="cl-copy" class="btn btn-ghost btn-sm" type="button">Copy<span class="visually-hidden"> the letter</span></button>
         <a id="cl-docx" class="btn btn-ghost btn-sm" href="/api/jobs/${job.id}/cover-letter.docx?ws=${state.ws}" ${letter ? '' : 'hidden'}>Download .docx</a>
+        <a id="cl-odt" class="btn btn-ghost btn-sm" href="/api/jobs/${job.id}/cover-letter.odt?ws=${state.ws}" ${letter ? '' : 'hidden'}>Download .odt</a>
+        <a id="cl-pdf" class="btn btn-ghost btn-sm" href="/api/jobs/${job.id}/cover-letter.pdf?ws=${state.ws}" ${letter ? '' : 'hidden'}>Download .pdf</a>
+        <span id="cl-template-note" class="muted"></span>
         <span id="cl-meta" class="muted"></span>
       </div>
-      <p class="hint">Drafts use only facts from your documents, but always check them before sending.
-        Upload earlier cover letters as "Cover letter" documents and drafts will follow your style.</p>
+      <p class="hint">Two ways to a letter: <strong>Draft cover letter</strong> has the AI write one from your documents, reusing
+        your cover letter blocks where they fit; <strong>Build from my blocks</strong> puts together the paragraphs you wrote
+        on the Documents tab, word for word, with the AI only choosing and ordering them. Drafts use only facts from your
+        documents, but always check them before sending. Upload earlier cover letters as "Cover letter" documents and
+        drafts will follow your style.</p>
     </div>`);
   const meta = (l) => {
     if (!l) return '';
+    if (l.source === 'blocks') return `${l.edited ? 'Edited' : 'Put together'} ${fmtDate(l.updated_at)} · Built from your blocks`;
     const effort = l.reasoning_effort ? `, reasoning ${l.reasoning_effort}` : '';
     return `${l.edited ? 'Edited' : 'Drafted'} ${fmtDate(l.updated_at)} · ${l.model || ''}${effort}`;
   };
+  const showLetter = (l) => {
+    letter = l;
+    $('#cl-text').value = l.text;
+    $('#cl-meta').textContent = meta(l);
+    for (const x of ['docx', 'odt', 'pdf']) $(`#cl-${x}`).hidden = false;
+    $('#cl-draft').textContent = 'Redraft';
+    job.has_cover_letter = true;
+    renderJobs();
+  };
+  const templateNote = () => {
+    const t = state.letterTemplate;
+    $('#cl-template-note').textContent = t?.template
+      ? `Downloads use your template${t.pdf === 'plain' ? ' (not the PDF: install LibreOffice)' : ''}` : '';
+  };
+  templateNote();
+  if (!state.letterTemplate) loadLetterTemplate().then(templateNote);
   $('#cl-meta').textContent = meta(letter);
   $('#cl-draft').addEventListener('click', async () => {
     const btn = $('#cl-draft');
@@ -786,22 +850,17 @@ async function showCoverLetter(job) {
     setBusy(btn, true);
     $('#cl-status').textContent = 'Drafting… this can take a minute.';
     try {
-      letter = await api(`/api/jobs/${job.id}/cover-letter`, { method: 'POST', body: JSON.stringify({ instructions: $('#cl-instructions').value }) });
-      $('#cl-text').value = letter.text;
+      showLetter(await api(`/api/jobs/${job.id}/cover-letter`, { method: 'POST', body: JSON.stringify({ instructions: $('#cl-instructions').value }) }));
       $('#cl-status').textContent = '';
-      $('#cl-meta').textContent = meta(letter);
-      $('#cl-docx').hidden = false;
-      btn.textContent = 'Redraft';
-      job.has_cover_letter = true;
-      renderJobs();
     } catch (e) { $('#cl-status').textContent = `Failed: ${e.message}`; }
     setBusy(btn, false);
   });
+  initLetterBlocks(job, showLetter);
   $('#cl-save').addEventListener('click', async () => {
     try {
       letter = await api(`/api/jobs/${job.id}/cover-letter`, { method: 'PUT', body: JSON.stringify({ text: $('#cl-text').value }) });
       $('#cl-meta').textContent = meta(letter);
-      $('#cl-docx').hidden = false;
+      for (const x of ['docx', 'odt', 'pdf']) $(`#cl-${x}`).hidden = false;
       job.has_cover_letter = true;
       toast('Cover letter saved', 'ok', 2000);
     } catch (e) { toast(`Save failed: ${e.message}`, 'err'); }
@@ -809,6 +868,211 @@ async function showCoverLetter(job) {
   $('#cl-copy').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText($('#cl-text').value); toast('Copied', 'ok', 1500); }
     catch { $('#cl-text').select(); toast('Press Ctrl+C to copy', '', 2500); }
+  });
+}
+
+// A tag from a requirement the AI named: tags are split at commas and hold up to BLOCK_TAG_MAX characters.
+function tagFromRequirement(req) {
+  const t = String(req || '').replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+  if (t.length <= BLOCK_TAG_MAX) return t;
+  const cut = t.slice(0, BLOCK_TAG_MAX);
+  return (cut.lastIndexOf(' ') > 20 ? cut.slice(0, cut.lastIndexOf(' ')) : cut).trim();
+}
+
+// The "Build from my blocks" panel (#cl-blocks) of one job's cover letter window. `rows` is the checklist in display
+// order ({ block, ticked, why }); `missing` the blocks worth writing; `writing` the one whose form is open.
+function initLetterBlocks(job, showLetter) {
+  const panel = $('#cl-blocks');
+  const status = $('#cl-status');
+  let rows = [];
+  let missing = [];
+  let writing = null;
+  let note = ''; // a message at the top of the panel (HTML, built from escaped text)
+
+  const render = () => {
+    const saved = rememberFocus(panel);
+    const checklist = rows.length ? `
+      <ul class="cl-block-list">${rows.map((r, i) => {
+        const name = blockName(r.block);
+        return `<li class="cl-block-row${r.ticked ? ' is-ticked' : ''}">
+          <div class="cl-block-pick">
+            <label class="check"><input type="checkbox" data-pick="${i}" data-focus="pick-${r.block.id}"${r.ticked ? ' checked' : ''} />
+              <span><span class="cl-block-name">${esc(name)}</span> <span class="muted">(${esc(BLOCK_KIND_LABEL[r.block.kind] || r.block.kind)})</span></span></label>
+            ${r.why ? `<p class="muted cl-block-why">${esc(r.why)}</p>` : ''}
+          </div>
+          <div class="cl-block-move">
+            <button class="btn btn-ghost btn-sm" type="button" data-move="${i}" data-dir="-1" data-focus="up-${r.block.id}" aria-label="Move ${esc(name)} up"${i === 0 ? ' disabled' : ''}><span aria-hidden="true">↑</span></button>
+            <button class="btn btn-ghost btn-sm" type="button" data-move="${i}" data-dir="1" data-focus="down-${r.block.id}" aria-label="Move ${esc(name)} down"${i === rows.length - 1 ? ' disabled' : ''}><span aria-hidden="true">↓</span></button>
+          </div>
+        </li>`;
+      }).join('')}</ul>` : '';
+    const suggestions = missing.length ? `
+      <section class="cl-missing" aria-labelledby="cl-missing-title">
+        <h3 id="cl-missing-title" class="cl-blocks-heading">Blocks worth writing</h3>
+        <p class="hint">This job asks for these, and none of your blocks covers them yet.</p>
+        <ul class="cl-missing-list">${missing.map((m, i) => `<li class="cl-missing-item">
+          <p class="cl-missing-name"><strong>${esc(m.title)}</strong></p>
+          <p class="muted cl-missing-req">${esc(m.requirement)}</p>
+          ${writing === i ? `<form id="cl-newblock" class="cl-newblock" aria-label="Write the block ${esc(m.title)}" novalidate>
+            ${blockFormHtml('cl-nb', { title: m.title, kind: 'body', tags: tagFromRequirement(m.requirement), bullets: m.bullets || [] })}
+            <p class="hint">Write it in your own words; the bullets are facts from your documents, not text to copy.</p>
+            <div class="toolbar-row">
+              <button id="cl-nb-save" class="btn btn-primary btn-sm" type="submit">Save block</button>
+              <button id="cl-nb-skip" class="btn btn-sm" type="button" data-focus="skip">Skip</button>
+              <span id="cl-nb-status" class="muted" role="status"></span>
+            </div>
+          </form>` : `<button class="btn btn-sm" type="button" data-write="${i}" data-focus="write-${i}">Write this block</button>`}
+        </li>`).join('')}</ul>
+      </section>` : '';
+    panel.innerHTML = `
+      <h3 id="cl-blocks-title" class="cl-blocks-heading" tabindex="-1">Your blocks for this letter</h3>
+      ${note ? `<p class="cl-blocks-note">${note}</p>` : ''}
+      ${rows.length ? '<p class="hint">Tick the blocks to use and put them in order: they are joined word for word, with {company}, {role}, {location} and {date} filled in.</p>' : ''}
+      ${checklist}
+      <div class="toolbar-row">
+        ${rows.length ? '<button id="cl-assemble" class="btn btn-primary btn-sm" type="button">Assemble letter</button>' : ''}
+        <button id="cl-blocks-cancel" class="btn btn-sm" type="button">Cancel</button>
+      </div>
+      ${suggestions}`;
+    panel.hidden = false;
+    restoreFocus(panel, saved);
+  };
+
+  const open = ({ list, picked = [], unpicked = [], gaps = [], message = '' }) => {
+    const byId = new Map(list.map((b) => [b.id, b]));
+    const used = new Set();
+    const take = (id, ticked, why = '') => {
+      const block = byId.get(id);
+      if (!block || used.has(id)) return null;
+      used.add(id);
+      return { block, ticked, why };
+    };
+    rows = [...picked.map((p) => take(p.id, true, p.why || '')), ...unpicked.map((id) => take(id, false))].filter(Boolean);
+    rows.push(...list.filter((b) => !used.has(b.id)).map((b) => ({ block: b, ticked: false, why: '' }))); // any the answer left out
+    missing = gaps;
+    writing = null;
+    note = message || (rows.length ? '' : 'You have no blocks yet. Write the suggested ones below, or on the Documents tab.');
+    render();
+    $('#cl-blocks-title').focus();
+  };
+
+  $('#cl-build').addEventListener('click', async () => {
+    const btn = $('#cl-build');
+    if ($('#cl-text').value.trim() && !confirm('Replace the current letter?')) return;
+    setBusy(btn, true);
+    status.textContent = 'Choosing blocks…';
+    try {
+      const res = await api(`/api/jobs/${job.id}/cover-letter/blocks/suggest`, { method: 'POST' });
+      state.blocks = sortBlocks(res.blocks || []);
+      renderBlocks();
+      status.textContent = '';
+      open({ list: res.blocks || [], picked: res.picked || [], unpicked: res.unpicked || [], gaps: res.missing || [] });
+    } catch (e) {
+      if (e.status === 400 || e.status === 502) {
+        try { state.blocks = await api('/api/letter-blocks'); renderBlocks(); } catch { /* keep what was loaded */ }
+        const detail = e.message.replace(/[.\s]+$/, '');
+        if (state.blocks.length) {
+          status.textContent = `${detail}: tick the blocks yourself.`;
+          open({ list: state.blocks });
+        } else {
+          status.textContent = '';
+          open({ list: [], message: `${esc(detail)}. Write your blocks on the <a href="#docs" data-act="to-docs">Documents tab</a> first.` });
+        }
+      } else status.textContent = `Failed: ${e.message}`;
+    }
+    setBusy(btn, false);
+  });
+
+  panel.addEventListener('change', (e) => {
+    const i = e.target.dataset?.pick;
+    if (i === undefined || !rows[i]) return;
+    rows[i].ticked = e.target.checked;
+    e.target.closest('.cl-block-row').classList.toggle('is-ticked', e.target.checked);
+  });
+
+  panel.addEventListener('click', async (e) => {
+    const el = e.target.closest('button, a');
+    if (!el || !panel.contains(el)) return;
+    if (el.dataset.act === 'to-docs') { closeModal(); return; } // the address (#docs) then switches the tab
+    if (el.dataset.move !== undefined) {
+      const i = Number(el.dataset.move);
+      const j = i + Number(el.dataset.dir);
+      if (j < 0 || j >= rows.length) return;
+      [rows[i], rows[j]] = [rows[j], rows[i]];
+      const id = rows[j].block.id;
+      render();
+      if (!panel.contains(document.activeElement)) (panel.querySelector(`[data-focus="${j === 0 ? 'down' : 'up'}-${id}"]`))?.focus();
+      announce(`Moved "${blockName(rows[j].block)}" to number ${j + 1} of ${rows.length}.`);
+    } else if (el.dataset.write !== undefined) {
+      writing = Number(el.dataset.write);
+      render();
+      $('#cl-nb-text').focus();
+    } else if (el.id === 'cl-nb-skip') {
+      const i = writing;
+      writing = null;
+      render();
+      panel.querySelector(`[data-focus="write-${i}"]`)?.focus();
+    } else if (el.id === 'cl-blocks-cancel') {
+      panel.hidden = true;
+      panel.innerHTML = '';
+      status.textContent = '';
+      $('#cl-build').focus();
+    } else if (el.id === 'cl-assemble') {
+      const ids = rows.filter((r) => r.ticked).map((r) => r.block.id);
+      if (!ids.length) { status.textContent = 'Tick at least one block.'; return; }
+      setBusy(el, true);
+      status.textContent = 'Putting the letter together…';
+      try {
+        const l = await api(`/api/jobs/${job.id}/cover-letter/blocks/assemble`, { method: 'POST', body: JSON.stringify({ block_ids: ids }) });
+        showLetter(l);
+        panel.hidden = true;
+        panel.innerHTML = '';
+        const unfilled = l.unfilled || [];
+        status.textContent = unfilled.length
+          ? `Left as written: ${unfilled.map((n) => `{${n}}`).join(', ')} — fill ${unfilled.length === 1 ? 'it' : 'them'} in before sending.`
+          : `Put together from ${ids.length} block${ids.length === 1 ? '' : 's'}. Check it, then save any edits.`;
+        $('#cl-text').focus();
+      } catch (err) {
+        setBusy(el, false);
+        status.textContent = `Failed: ${err.message}`;
+      }
+    }
+  });
+
+  panel.addEventListener('submit', async (e) => {
+    if (e.target.id !== 'cl-newblock') return;
+    e.preventDefault();
+    const form = e.target;
+    const payload = readBlockForm(form);
+    if (!payload) return;
+    const btn = $('#cl-nb-save');
+    setBusy(btn, true);
+    $('#cl-nb-status').textContent = 'Saving…';
+    try {
+      const block = await saveBlock(payload);
+      const last = (pred) => rows.reduce((at, r, i) => (r.ticked && pred(r.block.kind) ? i : at), -1);
+      let at;
+      if (block.kind === 'opening') at = last((k) => k === 'opening') + 1;
+      else if (block.kind === 'closing') at = last(() => true) + 1;
+      else {
+        const body = last((k) => k === 'body');
+        const closing = rows.findIndex((r) => r.ticked && r.block.kind === 'closing');
+        at = body >= 0 ? body + 1 : closing >= 0 ? closing : last((k) => k === 'opening') + 1;
+      }
+      rows.splice(at, 0, { block, ticked: true, why: '' });
+      missing.splice(writing, 1);
+      writing = null;
+      const warn = unknownPlaceholdersText(block.unknown_placeholders);
+      note = warn ? `<span class="warn-text"><span aria-hidden="true">⚠ </span>${esc(warn)}</span>` : '';
+      render();
+      panel.querySelector(`[data-focus="pick-${block.id}"]`)?.focus();
+      toast('Block saved', 'ok', 2500);
+      if (warn) announce(warn);
+    } catch (err) {
+      setBusy(btn, false);
+      $('#cl-nb-status').textContent = `Not saved: ${err.message}`;
+      announce(`Not saved: ${err.message}`, true);
+    }
   });
 }
 
@@ -1474,9 +1738,91 @@ async function importPages(e) {
       total = { imported: total.imported + r.imported, new: total.new + r.new, kept: total.kept + r.kept };
     } catch (err) { toast(`${f.name}: ${err.message}`, 'err', 8000); }
   }
-  status.textContent = `Imported ${total.imported} job(s): ${total.new} new, ${total.kept} pass your filters`;
+  status.textContent = `Imported ${total.imported} job(s): ${total.new} new, ${total.kept} in your list`;
   $('#import-input').value = '';
   loadJobs();
+}
+
+/* ---------- "Add a job": pages the person saved in their browser ----------
+   Each file goes to POST /api/import/page on its own. A page of one job is the person's own pick, so it is listed
+   whatever their filters say (its ⚠️ says what it doesn't meet); a page of search results is filtered like a search.
+   Each file gets a line saying what came of it, and the status line counts them. */
+function showAddJob() {
+  const mac = /Mac/i.test(navigator.platform);
+  openHtmlModal('Add a job from its saved page', `
+    <form id="add-job-form" class="add-job" novalidate>
+      <p>A job you add yourself is always in your list, even when it doesn't meet your search filters. A
+        <span aria-hidden="true">⚠️</span><span class="visually-hidden">warning sign</span> under its score then says which ones.</p>
+      <ol>
+        <li>Open the job ad in your browser and wait until it has fully loaded.</li>
+        <li>Save the page: press <kbd>${mac ? 'Cmd' : 'Ctrl'}</kbd>+<kbd>S</kbd> (any "Webpage" format works).</li>
+        <li><label for="add-job-file">Choose the saved page here (or several):</label></li>
+      </ol>
+      <input id="add-job-file" type="file" accept=".html,.htm,.mhtml,.mht,text/html" multiple />
+      <div class="form-group add-job-url">
+        <label for="add-job-url">Address of the ad <span class="muted">(only if JobHuntPA asks for it)</span></label>
+        <input id="add-job-url" type="url" inputmode="url" autocomplete="off" placeholder="https://" aria-describedby="add-job-url-hint" />
+        <small id="add-job-url-hint" class="hint">Saved pages usually say where they came from. For one that doesn't, copy the ad's address from your browser's address bar, choose that page on its own and add it again.</small>
+      </div>
+      <button class="btn btn-primary" type="submit">Add</button>
+      <p id="add-job-status" class="muted" role="status"></p>
+      <ul id="add-job-results" class="add-job-results"></ul>
+      <p class="hint">The browser extension (Settings) adds the job in the tab you have open in one click, without saving the page.</p>
+    </form>`);
+  $('#add-job-file').addEventListener('change', () => setFieldError($('#add-job-file'), ''));
+  $('#add-job-url').addEventListener('input', () => setFieldError($('#add-job-url'), ''));
+  $('#add-job-form').addEventListener('submit', addJobPages);
+}
+
+function addJobResult(name, r) {
+  if (r.jobs.length !== 1) {
+    return `<span aria-hidden="true">✓ </span>${esc(name)}: ${r.imported} jobs read, ${r.new} new, ${r.kept} in your list. A page of search results is filtered like a search.`;
+  }
+  const j = r.jobs[0];
+  const what = `${esc(j.title || 'Job')}${j.company ? ` at ${esc(j.company)}` : ''}`;
+  const warn = (j.filter_warnings || []).length
+    ? ` <span class="warn-text"><span aria-hidden="true">⚠️ </span>${esc(filterWarnWords(j))}: ${esc(j.filter_warnings.join('; '))}.</span>` : '';
+  return `<span aria-hidden="true">✓ </span>${j.created ? 'Added' : 'Already in your list, brought up to date'}: <a href="${esc(j.link)}" target="_blank" rel="noopener">${what}${NEW_TAB}</a>.${warn}`;
+}
+
+async function addJobPages(e) {
+  e.preventDefault();
+  const input = $('#add-job-file');
+  const files = Array.from(input.files);
+  if (!files.length) { setFieldError(input, 'Choose the page you saved (.html or .mhtml) first.'); return; }
+  const typed = $('#add-job-url').value.trim();
+  if (typed && files.length > 1) { setFieldError($('#add-job-url'), 'An address belongs to one page: choose only that page, then add it.'); return; }
+  const status = $('#add-job-status');
+  const results = $('#add-job-results');
+  const button = $('#add-job-form button[type="submit"]');
+  results.innerHTML = '';
+  button.disabled = true;
+  let added = 0, updated = 0, failed = 0;
+  for (const f of files) {
+    setText(status, `Adding ${f.name}…`);
+    const fd = new FormData();
+    fd.append('file', f, f.name);
+    if (typed) fd.append('url', typed);
+    const li = document.createElement('li');
+    try {
+      const r = await api('/api/import/page', { method: 'POST', body: fd });
+      li.innerHTML = addJobResult(f.name, r);
+      added += r.new;
+      updated += r.imported - r.new;
+    } catch (err) {
+      failed += 1;
+      li.className = 'err-text';
+      li.innerHTML = `<span aria-hidden="true">✕ </span>${esc(f.name)}: ${esc(err.message)}`;
+    }
+    if (!results.isConnected) break; // the dialog was closed: the other pages aren't sent
+    results.appendChild(li);
+  }
+  if (results.isConnected) {
+    button.disabled = false;
+    setText(status, `Done: ${added} added, ${updated} brought up to date${failed ? `, ${failed} not added (see below)` : ''}.`);
+    input.value = '';
+  }
+  if (added || updated) loadJobs();
 }
 
 /* ---------- scheduled searches ---------- */
@@ -2191,7 +2537,273 @@ async function saveNote(e) {
   } catch (err) { status.textContent = `Not saved: ${err.message}`; announce(`Not saved: ${err.message}`, true); }
 }
 
+/* ---------- cover letter blocks (backend/letter_blocks.py) ----------
+   Paragraphs the user wrote, put together into a letter word for word. The list is grouped by kind (openings first,
+   closings last) and ordered by a workspace-wide position, so a move sends the full new order of every id. The
+   form's fields come from blockFormHtml(), which the cover letter window's "Write this block" form uses too. */
+const BLOCK_KINDS = [['opening', 'Opening'], ['body', 'Body'], ['closing', 'Closing']];
+const BLOCK_KIND_LABEL = Object.fromEntries(BLOCK_KINDS);
+const BLOCK_PLACEHOLDERS = '{company}, {role}, {location} and {date}';
+const BLOCK_TAG_MAX = 60;
+const BLOCK_TAGS_MAX = 30;
+const blockKindIndex = (kind) => Math.max(0, BLOCK_KINDS.findIndex(([k]) => k === kind));
+const sortBlocks = (list) => list.slice().sort((a, b) => blockKindIndex(a.kind) - blockKindIndex(b.kind) || a.position - b.position || a.id - b.id);
+const blockPreview = (text, n = 120) => { const t = String(text || '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t; };
+const blockName = (b) => b.title || blockPreview(b.text, 60) || 'Untitled block';
+const unknownPlaceholdersText = (names) => (names?.length
+  ? `Unknown placeholder${names.length === 1 ? '' : 's'}: ${names.map((n) => `{${n}}`).join(', ')} — only ${BLOCK_PLACEHOLDERS} are filled in.` : '');
+
+// The fields of a block's form: title, kind, tags and text. `p` prefixes the ids (one form on the Documents tab, one
+// in the cover letter window). With `bullets`, the evidence the AI found sits beside the text field (.block-write).
+function blockFormHtml(p, { title = '', kind = 'body', tags = '', text = '', bullets = null } = {}) {
+  const tagText = Array.isArray(tags) ? tags.join(', ') : tags;
+  const textField = `<div class="field block-text-field"><label class="field-label" for="${p}-text">Text</label>
+      <textarea id="${p}-text" class="doc-textarea" rows="${bullets ? 9 : 6}" maxlength="8000" data-block="text">${esc(text)}</textarea></div>`;
+  return `
+    <div class="note-grid">
+      <div class="field"><label class="field-label" for="${p}-title">Title</label>
+        <input id="${p}-title" type="text" maxlength="200" autocomplete="off" data-block="title" value="${esc(title)}" /></div>
+      <div class="field"><label class="field-label" for="${p}-kind">Part of the letter</label>
+        <select id="${p}-kind" data-block="kind">${BLOCK_KINDS.map(([v, l]) => `<option value="${v}"${v === kind ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+      <div class="field"><label class="field-label" for="${p}-tags">Tags (comma-separated)</label>
+        <input id="${p}-tags" type="text" autocomplete="off" data-block="tags" value="${esc(tagText)}" /></div>
+    </div>
+    ${bullets ? `<div class="block-write">
+      <div class="block-bullets"><h4 class="block-bullets-title">From your documents</h4>
+        ${bullets.length ? `<ul>${bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : '<p class="muted">Nothing found in your documents for this one.</p>'}</div>
+      ${textField}
+    </div>` : textField}`;
+}
+
+// The block in a form made by blockFormHtml(), or null (with the fields' errors shown) when it can't be saved.
+function readBlockForm(root) {
+  const field = (name) => root.querySelector(`[data-block="${name}"]`);
+  const text = field('text').value;
+  const tags = field('tags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  setFieldError(field('text'), '');
+  setFieldError(field('tags'), '');
+  let ok = true;
+  const longTag = tags.find((t) => t.length > BLOCK_TAG_MAX);
+  if (longTag || tags.length > BLOCK_TAGS_MAX) {
+    setFieldError(field('tags'), longTag ? `A tag can be up to ${BLOCK_TAG_MAX} characters: shorten "${blockPreview(longTag, 30)}".`
+      : `Up to ${BLOCK_TAGS_MAX} tags a block.`, { focus: false });
+    ok = false;
+  }
+  if (!text.trim()) {
+    setFieldError(field('text'), 'Write the paragraph here: a block needs some text.', { focus: false });
+    ok = false;
+  }
+  if (!ok) { root.querySelector('[aria-invalid="true"]')?.focus(); return null; }
+  return { title: field('title').value.trim(), kind: field('kind').value, tags, text };
+}
+
+// Creates (no id) or changes a block, and keeps state.blocks and the Documents tab's list up to date.
+async function saveBlock(payload, id = null) {
+  const block = await api(id ? `/api/letter-blocks/${id}` : '/api/letter-blocks',
+    { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+  state.blocks = sortBlocks([...state.blocks.filter((b) => b.id !== block.id), block]);
+  renderBlocks();
+  return block;
+}
+
+async function loadBlocks() {
+  if (state.blocksWs !== state.ws) { state.blocksWs = state.ws; state.blocks = []; resetBlockForm(); renderBlocks(); }
+  const ws = state.ws;
+  try {
+    const list = await api('/api/letter-blocks');
+    if (ws !== state.ws) return;
+    state.blocks = list;
+    renderBlocks();
+  } catch (e) {
+    if (ws === state.ws) $('#block-list').innerHTML = `<p class="err-text">Could not load your blocks: ${esc(e.message)}</p>`;
+  }
+}
+
+function blockRowHtml(b, first, last) {
+  const name = blockName(b);
+  const nameId = `block-${b.id}-name`;
+  const warn = unknownPlaceholdersText(b.unknown_placeholders);
+  return `<li class="block-row" data-block-id="${b.id}">
+    <div class="block-main">
+      <p id="${nameId}" class="block-title">${esc(name)}</p>
+      ${b.tags.length ? `<ul class="block-tags" aria-label="Tags">${b.tags.map((t) => `<li class="block-tag">${esc(t)}</li>`).join('')}</ul>` : ''}
+      <p class="block-preview muted">${esc(blockPreview(b.text))}</p>
+      ${warn ? `<p class="warn-text block-row-warn"><span aria-hidden="true">⚠ </span>${esc(warn)}</p>` : ''}
+    </div>
+    <div class="block-actions">
+      <button class="btn btn-ghost btn-sm" type="button" data-act="edit" data-focus="edit-${b.id}" aria-describedby="${nameId}">Edit</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="up" data-focus="up-${b.id}" aria-label="Move ${esc(name)} up"${first ? ' disabled' : ''}><span aria-hidden="true">↑</span></button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="down" data-focus="down-${b.id}" aria-label="Move ${esc(name)} down"${last ? ' disabled' : ''}><span aria-hidden="true">↓</span></button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="delete" data-focus="delete-${b.id}" aria-describedby="${nameId}">Delete</button>
+    </div>
+  </li>`;
+}
+
+function renderBlocks() {
+  const root = $('#block-list');
+  if (!root) return;
+  const saved = rememberFocus(root);
+  if (!state.blocks.length) {
+    root.innerHTML = '<p class="empty block-empty">No blocks yet. Write your first one above: an opening, a paragraph about a project or a result, a closing.</p>';
+    return;
+  }
+  root.innerHTML = BLOCK_KINDS.map(([kind, label]) => {
+    const group = state.blocks.filter((b) => b.kind === kind);
+    if (!group.length) return '';
+    return `<section class="block-group" aria-labelledby="block-group-${kind}">
+      <h4 id="block-group-${kind}" class="block-group-title">${esc(label)}</h4>
+      <ul class="block-ul">${group.map((b, i) => blockRowHtml(b, i === 0, i === group.length - 1)).join('')}</ul>
+    </section>`;
+  }).join('');
+  restoreFocus(root, saved);
+  // A move to the top or bottom disables the button that had focus: the other one of the pair takes it.
+  if (saved && !root.contains(document.activeElement)) {
+    const id = saved.key.split('-').pop();
+    (root.querySelector(`[data-focus="up-${id}"]:not(:disabled)`) || root.querySelector(`[data-focus="down-${id}"]:not(:disabled)`)
+      || root.querySelector(`[data-focus="edit-${id}"]`))?.focus();
+  }
+}
+
+function resetBlockForm() {
+  state.blockEdit = null;
+  const fields = $('#block-form-fields');
+  if (!fields) return;
+  fields.innerHTML = blockFormHtml('block');
+  $('#block-save').textContent = 'Save block';
+  $('#block-cancel').hidden = true;
+}
+
+function editBlock(b) {
+  state.blockEdit = b.id;
+  $('#block-form-fields').innerHTML = blockFormHtml('block', b);
+  $('#block-save').textContent = 'Save changes';
+  $('#block-cancel').hidden = false;
+  $('#block-form-warn').hidden = true;
+  $('#block-status').textContent = `Editing "${blockName(b)}".`;
+  $('#block-form').scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
+  $('#block-title').focus({ preventScroll: true });
+}
+
+async function submitBlockForm(e) {
+  e.preventDefault();
+  const status = $('#block-status');
+  const warn = $('#block-form-warn');
+  const payload = readBlockForm($('#block-form'));
+  if (!payload) { status.textContent = ''; return; }
+  const btn = $('#block-save');
+  setBusy(btn, true);
+  try {
+    const editing = state.blockEdit;
+    const block = await saveBlock(payload, editing);
+    resetBlockForm();
+    status.textContent = editing ? `Saved your changes to "${blockName(block)}".` : `Saved "${blockName(block)}": it's in the list below.`;
+    warn.textContent = unknownPlaceholdersText(block.unknown_placeholders);
+    warn.hidden = !warn.textContent;
+    if (!warn.hidden) announce(warn.textContent);
+  } catch (err) { status.textContent = `Not saved: ${err.message}`; announce(`Not saved: ${err.message}`, true); }
+  setBusy(btn, false);
+}
+
+async function moveBlock(b, dir) {
+  const ids = state.blocks.map((x) => x.id);
+  const i = ids.indexOf(b.id);
+  const j = i + dir;
+  if (j < 0 || j >= ids.length || state.blocks[j].kind !== b.kind) return;
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  try {
+    state.blocks = await api('/api/letter-blocks/order', { method: 'PUT', body: JSON.stringify({ ids }) });
+    renderBlocks();
+    announce(`Moved "${blockName(b)}" ${dir < 0 ? 'up' : 'down'}.`);
+  } catch (err) { toast(`Not moved: ${err.message}`, 'err'); }
+}
+
+async function deleteBlock(b) {
+  if (!confirm(`Delete the block "${blockName(b)}"? This can't be undone.`)) return;
+  try {
+    await api(`/api/letter-blocks/${b.id}`, { method: 'DELETE' });
+    state.blocks = state.blocks.filter((x) => x.id !== b.id);
+    if (state.blockEdit === b.id) resetBlockForm();
+    renderBlocks();
+    $('#block-status').textContent = `Deleted "${blockName(b)}".`;
+    if (!document.activeElement || document.activeElement === document.body) $('#blocks-card-title').focus();
+  } catch (err) { toast(`Not deleted: ${err.message}`, 'err'); }
+}
+
+function initBlocks() {
+  resetBlockForm();
+  renderBlocks();
+  $('#block-form').addEventListener('submit', submitBlockForm);
+  $('#block-cancel').addEventListener('click', () => {
+    resetBlockForm();
+    $('#block-status').textContent = '';
+    $('#block-title').focus();
+  });
+  $('#block-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-act]');
+    const b = btn && state.blocks.find((x) => x.id === Number(btn.closest('[data-block-id]').dataset.blockId));
+    if (!b) return;
+    if (btn.dataset.act === 'edit') editBlock(b);
+    else if (btn.dataset.act === 'up') moveBlock(b, -1);
+    else if (btn.dataset.act === 'down') moveBlock(b, 1);
+    else if (btn.dataset.act === 'delete') deleteBlock(b);
+  });
+}
+
+/* The cover letter template: one .docx/.odt file the downloads are poured into. */
+async function loadLetterTemplate() {
+  try { state.letterTemplate = await api('/api/letter-template'); }
+  catch { state.letterTemplate = state.letterTemplate || null; }
+  renderLetterTemplate();
+  return state.letterTemplate;
+}
+
+function renderLetterTemplate() {
+  const box = $('#template-current');
+  if (!box) return;
+  const t = state.letterTemplate;
+  if (t?.template) {
+    box.innerHTML = `Using <strong>${esc(t.template.filename)}</strong> (uploaded ${esc(fmtDate(t.template.created_at))}) <button id="template-remove" class="btn btn-ghost btn-sm" type="button">Remove<span class="visually-hidden"> the template</span></button>`;
+    $('#template-remove').addEventListener('click', async () => {
+      if (!confirm('Remove the cover letter template? Downloads will be plain documents again.')) return;
+      try { await api('/api/letter-template', { method: 'DELETE' }); toast('Template removed', 'ok', 2000); }
+      catch (e) { $('#template-status').textContent = `Failed: ${e.message}`; return; }
+      $('#template-status').textContent = '';
+      loadLetterTemplate();
+    });
+  } else {
+    box.textContent = 'No template: downloads are plain documents.';
+  }
+  $('#template-pdf').textContent = !t ? '' : t.pdf === 'libreoffice'
+    ? 'PDFs are made with LibreOffice, so they use your template.'
+    : 'PDFs are plain text. Install LibreOffice to get PDFs with your template.';
+}
+
+function initLetterTemplate() {
+  $('#template-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = $('#template-input').files[0];
+    if (!f) { setFieldError($('#template-input'), 'Choose a Word (.docx) or OpenDocument (.odt) file first.'); return; }
+    const btn = $('#template-upload');
+    setBusy(btn, true);
+    $('#template-status').textContent = `Uploading ${f.name}…`;
+    try {
+      const fd = new FormData();
+      fd.append('file', f, f.name);
+      state.letterTemplate = await api('/api/letter-template', { method: 'POST', body: fd });
+      $('#template-input').value = '';
+      $('#template-status').textContent = 'Template saved.';
+      renderLetterTemplate();
+    } catch (err) {
+      $('#template-status').textContent = err.status === 413 ? 'That file is too large (20 MB at most).' : `Failed: ${err.message}`;
+    }
+    setBusy(btn, false);
+  });
+  $('#template-input').addEventListener('change', () => { setFieldError($('#template-input'), ''); $('#template-status').textContent = ''; });
+}
+
 function initDocs() {
+  initBlocks();
+  initLetterTemplate();
   $('#note-form').addEventListener('submit', saveNote);
   $('#summary-make').addEventListener('click', makeSummary);
   $('#summary-suggest').addEventListener('click', onSummarySuggestion);
@@ -2376,6 +2988,10 @@ function renderMapJobs() {
       <button class="btn btn-ghost btn-sm" type="button" id="mapjob-${j.id}-show" data-act="show" title="Show it on the map">Show<span class="visually-hidden"> ${esc(j.title || 'job')} on the map</span></button>
       <a class="btn btn-ghost btn-sm" id="mapjob-${j.id}-open" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener">Open<span class="visually-hidden"> ${esc(j.title || 'job')}</span>${NEW_TAB}</a>
     </li>`).join('')}</ul>`;
+  box.querySelectorAll('[data-act="filter-warnings"]').forEach((b) => b.addEventListener('click', () => {
+    const job = state.jobs.find((j) => j.id === Number(b.closest('.map-job-row').dataset.id));
+    if (job) showFilterWarnings(job);
+  }));
   box.querySelectorAll('[data-act="show"]').forEach((b) => b.addEventListener('click', () => {
     const marker = state.jobMarkers.get(Number(b.closest('.map-job-row').dataset.id));
     if (!marker) return;
@@ -2567,6 +3183,7 @@ async function switchWorkspace(id) {
   state.schedule = null;
   state.selected.clear();
   state.details.clear();
+  state.includeTouched.clear();
   state.jobs = []; // the old workspace's jobs must not show under the new one's name
   state.jobsStatus = 'loading';
   state.jobsRefreshing = false;
@@ -2602,6 +3219,8 @@ function loadAll() {
   loadSchedule();
   loadSources();
   loadDocs();
+  loadBlocks();
+  loadLetterTemplate();
   loadScorerStatus();
   loadLatestRun();
   if (state.map) loadPins();

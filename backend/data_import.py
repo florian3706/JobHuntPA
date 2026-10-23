@@ -18,7 +18,8 @@ bounded on the way in (backend/import_file.py) and stored as data; pages show it
 
 **What an import does.** Each picked workspace becomes a new workspace of the signed-in account (nothing is merged
 into an existing one), named as in the file, or with " (imported 2026-10-13)" when the name is taken, then ", 2", ", 3".
-Documents (originals sealed again under this account's key), jobs, chats, the search setup, pins, sources (with their
+Documents (originals sealed again under this account's key), cover letter blocks, the cover letter template (sealed
+again too, when it is one the app can fill), jobs, chats, the search setup, pins, sources (with their
 page layouts; never one on the local network or this computer) and schedule come with it. The account's saved job-site
 layouts come in for the sites it has none for. A job whose address the shared pool already has is linked to that posting, with the workspace's own
 values on top; any other job is a private job. Nothing is written to the pool. Company research from the file is
@@ -56,6 +57,8 @@ from backend.db import (
     Document,
     FitResult,
     Job,
+    LetterBlock,
+    LetterTemplate,
     Pin,
     Posting,
     SearchSchedule,
@@ -66,6 +69,7 @@ from backend.db import (
     utcnow,
 )
 from backend.export import MAX_EXPORT_BYTES
+from backend.letter_blocks import clean_tags
 from backend.import_file import (
     APPLIED_AT,
     FILE_NAME,
@@ -88,7 +92,7 @@ router = APIRouter(prefix="/api/account", tags=["account"])
 MAX_ZIP_BYTES = MAX_EXPORT_BYTES + 50 * 1024 * 1024   # the uploaded zip (and the zip's own headers)
 MAX_FILE_BYTES = MAX_EXPORT_BYTES                    # the import file, unpacked
 MAX_UNPACKED_BYTES = MAX_EXPORT_BYTES + 20 * 1024 * 1024  # the import file and the originals together, unpacked
-# Jobs, documents, chat messages, sources, pins and companies in the whole file: each becomes objects in memory before
+# Jobs, documents, letter blocks, chat messages, sources, pins and companies in the whole file: each becomes objects in memory before
 # anything is written, so a file of a great many tiny ones is refused before they are made (a Raspberry Pi has little).
 MAX_ITEMS = 200_000
 MAX_RATIO = 200                          # unpacked / packed, for an entry over RATIO_FROM bytes unpacked
@@ -235,7 +239,7 @@ def items(data: dict) -> int:
     for ws in workspaces if isinstance(workspaces, list) else []:
         if not isinstance(ws, dict):
             continue
-        total += sum(size(ws.get(name)) for name in ("jobs", "documents", "chats", "sources", "pins"))
+        total += sum(size(ws.get(name)) for name in ("jobs", "documents", "letter_blocks", "chats", "sources", "pins"))
         sched = ws.get("schedule")
         if isinstance(sched, dict):
             total += size(sched.get("days")) + size(sched.get("times"))
@@ -252,6 +256,7 @@ def too_large_unpacked() -> AuthProblem:
 def counts(ws: WorkspaceIn) -> dict:
     """What the file holds for a workspace (the check's list). An import says what it brought in instead."""
     return {"jobs": sum(1 for j in ws.jobs if j.duplicate_of is None), "documents": len(ws.documents),
+            "letter_blocks": len(ws.letter_blocks), "letter_template": int(ws.letter_template is not None),
             "chats": len(ws.chats), "cover_letters": sum(1 for j in ws.jobs if j.cover_letter is not None),
             "sources": len(ws.sources), "pins": len(ws.pins)}
 
@@ -310,7 +315,7 @@ class Importer:
         self.db, self.user_id, self.data, self.archive = db, user_id, data, archive
         self.stored: list[str] = []   # uploads sealed so far (deleted again if the import fails)
         self.company_keys: set[str] = set()
-        self.totals = {"jobs": 0, "documents": 0, "chats": 0, "originals": 0}
+        self.totals = {"jobs": 0, "documents": 0, "chats": 0, "originals": 0, "templates": 0}
 
     def run(self, picked: list[int], today: date) -> dict:
         taken = {_fold(w.name) for w in self.db.query(Workspace).filter(Workspace.owner_id == self.user_id)}
@@ -349,7 +354,8 @@ class Importer:
     def workspace(self, ws: int, data: WorkspaceIn) -> dict:
         """Writes one workspace's rows; returns what it brought in (as ``counts`` names them)."""
         db = self.db
-        made = {"jobs": 0, "documents": 0, "chats": 0, "cover_letters": 0, "sources": 0, "pins": len(data.pins)}
+        made = {"jobs": 0, "documents": 0, "letter_blocks": 0, "letter_template": 0, "chats": 0, "cover_letters": 0,
+                "sources": 0, "pins": len(data.pins)}
         pin_ids: dict[int, int] = {}  # (pins first: a starting point names its pin's new row)
         for p in data.pins:
             pin = Pin(workspace_id=ws, label=p.label or p.kind.capitalize(), kind=p.kind, lat=p.lat, lng=p.lng,
@@ -393,6 +399,8 @@ class Importer:
             if s.ref is not None:
                 sources[s.ref] = row
         made["documents"] = self.documents(ws, data)
+        made["letter_blocks"] = self.letter_blocks(ws, data.letter_blocks)
+        made["letter_template"] = self.letter_template(ws, data.letter_template)
         db.flush()
         jobs = self.jobs(ws, data, {ref: row.id for ref, row in sources.items()}, made)
         made["chats"] = self.chats(ws, data, jobs)
@@ -425,6 +433,33 @@ class Importer:
         self.totals["documents"] += len(rows)
         return len(rows)
 
+    def letter_blocks(self, ws: int, items: list) -> int:
+        for b in items:
+            self.db.add(LetterBlock(workspace_id=ws, kind=b.kind, position=b.position, title=b.title.strip(), text=b.text,
+                                    tags=clean_tags(b.tags), created_at=b.created_at or utcnow(),
+                                    updated_at=b.updated_at or b.created_at or utcnow()))
+        return len(items)
+
+    def letter_template(self, ws: int, item) -> int:
+        """The cover letter template, sealed again under a new name: only when its file is in the zip and is a
+        template this app can fill (the same check as an upload)."""
+        from backend.letter_templates import FILENAME_MAX, TemplateError, check_template
+
+        name = self.archive.original(item.original) if item is not None else None
+        if name is None or self.archive.infos[name].file_size > docs.MAX_UPLOAD_BYTES:
+            return 0
+        content = self.archive.read(name, docs.MAX_UPLOAD_BYTES)
+        try:
+            check_template(content, item.filetype)
+        except TemplateError:
+            return 0
+        stored = docs.save_upload(content)
+        self.stored.append(stored)
+        self.totals["templates"] += 1
+        self.db.add(LetterTemplate(workspace_id=ws, filename=(item.filename or "").strip()[:FILENAME_MAX] or "Template",
+                                   filetype=item.filetype, stored_name=stored, created_at=item.created_at or utcnow()))
+        return 1
+
     def _postings(self, data: WorkspaceIn) -> dict[str, Posting]:
         """The pool's postings for the jobs' addresses (looked up, never written)."""
         urls = sorted({_web(j.ad.url) for j in data.jobs if _web(j.ad.url)})
@@ -448,7 +483,9 @@ class Importer:
             ad = j.ad
             posting = postings.get(url) if url else None
             job = Job(workspace_id=ws, status=j.status, first_seen=j.first_seen or now, last_seen=j.last_seen or now,
-                      hidden=j.hidden, excluded_reason=j.excluded_reason or None, location_verdict=j.location_verdict,
+                      hidden=j.hidden, included_by_user=True if j.included_by_user else None,
+                      excluded_reason=None if j.included_by_user else j.excluded_reason or None,
+                      location_verdict=j.location_verdict,
                       lat=j.lat, lng=j.lng, distance_km=j.distance_km, source_id=source_ids.get(j.source))
             if posting is not None:
                 job.posting, job.origin = posting, "pool"
@@ -674,7 +711,7 @@ def run_import(pick: str = Query(..., max_length=4000), upload: tuple[AuthUser, 
         importer.undo_uploads()
         raise
     t = importer.totals
-    log.info("user %s imported %d workspace(s): %d jobs, %d documents (%d original files), %d chats, research for %d "
-             "companies, %d job sites' layouts", user.id, len(result["workspaces"]), t["jobs"], t["documents"],
-             t["originals"], t["chats"], result["companies"], result["site_mappings"])
+    log.info("user %s imported %d workspace(s): %d jobs, %d documents (%d original files), %d cover letter templates, "
+             "%d chats, research for %d companies, %d job sites' layouts", user.id, len(result["workspaces"]), t["jobs"],
+             t["documents"], t["originals"], t["templates"], t["chats"], result["companies"], result["site_mappings"])
     return result

@@ -67,6 +67,8 @@ from backend.db import (
     CoverLetter,
     DealbreakerSet,
     Document,
+    LetterBlock,
+    LetterTemplate,
     FitResult,
     Job,
     JobDuplicate,
@@ -1015,7 +1017,7 @@ def _check_deletable(db: Session, user_id: int) -> None:
 
 def _remove_workspace_data(db: Session, user_id: int, ws_ids: list[int]) -> list[str]:
     """Everything the account saved in its workspaces, in ``db``'s transaction (not committed): jobs with their
-    scores, cover letters and merge decisions, documents, chats, profile, dealbreakers, pins, sources, schedules, runs,
+    scores, cover letters and merge decisions, documents, cover letter blocks and template, chats, profile, dealbreakers, pins, sources, schedules, runs,
     the workspaces themselves and the pre-accounts search profile when this account holds it.
     Returns the stored names of the sealed upload files: delete them (``_remove_uploads``) after the commit. The
     caller holds ``tasks.start_lock`` and the database's write lock."""
@@ -1024,13 +1026,15 @@ def _remove_workspace_data(db: Session, user_id: int, ws_ids: list[int]) -> list
     jobs = select(Job.id).where(Job.workspace_id.in_(ws_ids))
     threads = select(ChatThread.id).where(ChatThread.workspace_id.in_(ws_ids))
     files = [name for (name,) in db.query(Document.stored_name).filter(Document.workspace_id.in_(ws_ids)) if name]
+    files += [name for (name,) in db.query(LetterTemplate.stored_name).filter(LetterTemplate.workspace_id.in_(ws_ids))
+              if name]
     db.execute(delete(ChatMessage).where(ChatMessage.thread_id.in_(threads)))
     db.execute(delete(ChatThread).where(ChatThread.workspace_id.in_(ws_ids)))
     db.execute(delete(CoverLetter).where(CoverLetter.job_id.in_(jobs)))
     db.execute(delete(FitResult).where(FitResult.job_id.in_(jobs)))
     db.execute(delete(JobDuplicate).where(JobDuplicate.workspace_id.in_(ws_ids)))
     db.execute(delete(Job).where(Job.workspace_id.in_(ws_ids)))
-    for model in (Document, Pin, CompanySource, SearchRun):
+    for model in (Document, LetterBlock, LetterTemplate, Pin, CompanySource, SearchRun):
         db.execute(delete(model).where(model.workspace_id.in_(ws_ids)))
     for model in (SearchSchedule, UserProfile, DealbreakerSet):  # one row per workspace, id = workspace id
         db.execute(delete(model).where(model.id.in_(ws_ids)))

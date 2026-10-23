@@ -279,6 +279,34 @@ class FilterTest(unittest.TestCase):
         self.c.pins = PINS + [{"kind": "home", "lat": -33.39, "lng": 151.35, "radius_km": 999999999}]
         self.assertIn("outside your pin radii", exclusion_reason(far, self.c))
 
+    def test_mismatches_lists_every_rule_the_job_fails_first_the_one_that_excludes_it(self):
+        from backend.filters import filter_warnings, mismatches
+
+        c = Criteria(titles=["Product Manager"], keywords_exclude=["sales"], salary_floor=140000,
+                     dealbreaker_keywords=["crypto"], allow_hybrid=True, max_office_days=2, pins=PINS)
+        bad = _job(title="Sales Lead", description="Crypto sales.", salary_text="$90k", office_days=4,
+                   location_text="Parramatta NSW", lat=-33.8150, lng=151.0011)
+        self.assertEqual(mismatches(bad, c), [
+            "dealbreaker keyword: crypto", "excluded keyword: sales", "no target title or include keyword",
+            "salary below floor ($90,000 < $140,000)", "hybrid role needs 4 office days a week (your max is 2)",
+            "hybrid role in Parramatta NSW is outside your pin radii (53.6 km from home)"])
+        self.assertEqual(exclusion_reason(bad, c), mismatches(bad, c)[0])
+        self.assertEqual(mismatches(_job(), c), [])
+        # Hybrid not wanted at all: its office-days limit isn't a second rule
+        self.assertEqual(mismatches(_job(office_days=4), Criteria(allow_hybrid=False, max_office_days=2)),
+                         ["hybrid roles not wanted"])
+        # The person's own call on the location ends the location rules, as it does for exclusion_reason
+        self.assertEqual(mismatches({**bad, "location_verdict": "too_far"}, c)[-1], "you marked the office as too far")
+        self.assertNotIn("outside", " ".join(mismatches({**bad, "location_verdict": "ok"}, c)))
+        # A job the person added is never left out; its warnings are the same list. Any other job has none.
+        added = {**bad, "included_by_user": True, "detail_status": "full"}
+        self.assertIsNone(exclusion_reason(added, c))
+        self.assertEqual(filter_warnings(added, c), mismatches(bad, c))
+        self.assertEqual(filter_warnings({**bad, "detail_status": "full"}, c), [])
+        # Without a description yet, the include rule waits for it (the listing stage), as the filters do
+        self.assertEqual(filter_warnings({**added, "description": "", "detail_status": "none"},
+                                         Criteria(titles=["Product Manager"], keywords_include=["SaaS"])), [])
+
 
 class GeoTest(unittest.TestCase):
     def test_country(self):
@@ -640,7 +668,7 @@ class CoverLetterTest(unittest.TestCase):
         from backend.cover_letters import build_prompt
         prompt = build_prompt(db, db.get(Job, job_id), "Mention I start in 2 weeks")
         db.close()
-        self.assertLess(prompt.index("RESUME"), prompt.index("EARLIER COVER LETTER"))
+        self.assertLess(prompt.index("RESUME"), prompt.index("HOW THE CANDIDATE WRITES"))
         for part in ("Led steering groups", "No PMP", "Mention I start in 2 weeks", "Stakeholder management"):
             self.assertIn(part, prompt)
 
@@ -786,6 +814,130 @@ class SeekJobUploadTest(unittest.TestCase):
         self.assertIn("- Run the delivery program", j["description"])
         self.assertEqual((j["work_mode"], j["office_days"], j["salary_text"]), ("hybrid", 3, "$160,000 - $180,000 per year"))
         self.assertEqual(j["location_text"], "Surry Hills, Sydney NSW")
+        self.assertTrue(j["included_by_user"])  # the person uploaded it: the filters never leave it out from now on
+
+
+class SavedJobPageTest(unittest.TestCase):
+    """Any job's own page, saved in the browser (POST /api/import/page): read wherever it is from, stored under the
+    address the file says, and listed whatever the filters say, with what it doesn't meet."""
+    AD = ("About the role. You will run delivery for our enterprise customers and report to the COO. Key "
+          "responsibilities: plan releases, coordinate the engineering and product teams, manage risks and budgets. "
+          "About you: five years of experience leading delivery in a software company. ") * 2
+    CANONICAL = '<link rel="canonical" href="https://careers.example.org/jobs/4242-delivery-lead">'
+
+    def page(self, head: str = "", saved_from: str = "https://careers.example.org/jobs/4242-delivery-lead?src=x",
+             body: str = "") -> bytes:
+        note = f"<!-- saved from url=({len(saved_from):04d}){saved_from} -->\n" if saved_from else ""
+        return (f"<!DOCTYPE html>\n{note}<html><head><title>Delivery Lead</title>{head}</head><body><header><a "
+                f"href='/'>Example Org</a></header><main><h1>Delivery Lead</h1><p>Location: Sydney NSW</p>"
+                f"<p>{self.AD}</p>{body}</main></body></html>").encode()
+
+    def setUp(self):
+        from contextlib import ExitStack
+        from unittest import mock
+        import backend.pipeline as pipeline
+
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(pipeline, "geocode", return_value=None))  # no network in tests
+        self.c = stack.enter_context(helpers.client())
+        ws = self.c.post("/api/workspaces", json={"name": "Saved pages"}).json()["id"]
+        stack.callback(self.c.delete, f"/api/workspaces/{ws}")
+        self.h = {"X-Workspace": str(ws)}
+        self.c.put("/api/profile", headers=self.h, json={"titles": ["Product Manager"]})
+
+    def upload(self, data: bytes, name: str = "ad.html", url: str | None = None):
+        return self.c.post("/api/import/page", headers=self.h, data=None if url is None else {"url": url},
+                           files={"file": (name, data, "text/html")})
+
+    def listed(self, include: str = "") -> dict:
+        return {j["url"]: j for j in self.c.get(f"/api/jobs?include={include}", headers=self.h).json()}
+
+    def test_any_job_page_is_read_and_listed_with_what_it_does_not_meet(self):
+        r = self.upload(self.page(self.CANONICAL + '<meta property="og:site_name" content="Example Org">'))
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual((body["imported"], body["new"], body["kept"], len(body["jobs"])), (1, 1, 1, 1))
+        saved = body["jobs"][0]
+        self.assertEqual((saved["created"], saved["title"], saved["company"], saved["excluded_reason"],
+                          saved["filter_warnings"]),
+                         (True, "Delivery Lead", "Example Org", None, ["no target title or include keyword"]))
+        # Under the page's own address (the same site as where it was saved from, without the tracking)
+        job = self.listed()["https://careers.example.org/jobs/4242-delivery-lead"]
+        self.assertEqual((job["id"], job["source"], job["included_by_user"], job["detail_status"], job["location_text"],
+                          job["filter_warnings"]),
+                         (saved["job_id"], "import", True, "full", "Sydney NSW", saved["filter_warnings"]))
+        detail = self.c.get(f"/api/jobs/{job['id']}", headers=self.h).json()
+        self.assertIn("Key responsibilities", detail["description"])
+        self.assertEqual(detail["filter_warnings"], ["no target title or include keyword"])
+        # Saved again: the same job, brought up to date
+        again = self.upload(self.page(self.CANONICAL)).json()
+        self.assertEqual((again["new"], again["jobs"][0]["job_id"], again["jobs"][0]["created"]),
+                         (0, saved["job_id"], False))
+        # The filters change: still listed, its warnings as the filters now are
+        self.c.put("/api/profile", headers=self.h, json={"titles": ["Delivery Lead"]})
+        self.assertEqual(self.listed()["https://careers.example.org/jobs/4242-delivery-lead"]["filter_warnings"], [])
+
+    def test_the_address_is_the_files_else_the_one_the_person_types(self):
+        from email.message import EmailMessage
+
+        msg = EmailMessage()
+        msg["From"] = "<Saved by Blink>"
+        msg["Snapshot-Content-Location"] = "https://careers.example.org/jobs/9"
+        msg.set_content(self.page(saved_from="").decode(), subtype="html", cte="quoted-printable")
+        r = self.upload(bytes(msg), name="ad.mhtml")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("https://careers.example.org/jobs/9", self.listed())
+
+        bare = self.page(saved_from="")
+        r = self.upload(bare)
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("doesn't say its web address", r.json()["detail"])
+        for bad in ("javascript:alert(1)", "careers.example.org/jobs/1", "https://user:pw@example.org/1"):
+            r = self.upload(bare, url=bad)
+            self.assertEqual(r.status_code, 422, bad)
+            self.assertIn("starting with https://", r.json()["detail"])
+        self.assertEqual(self.upload(bare, url=" https://jobs.example.net/77 ").status_code, 200)
+        self.assertTrue(self.listed()["https://jobs.example.net/77"]["included_by_user"])
+        # What the file says wins over what was typed
+        self.upload(self.page(saved_from="https://careers.example.org/jobs/5"), url="https://elsewhere.example/1")
+        self.assertIn("https://careers.example.org/jobs/5", self.listed())
+        self.assertNotIn("https://elsewhere.example/1", self.listed("excluded,hidden"))
+
+    def test_job_posting_data_without_an_address_takes_the_pages(self):
+        node = {"@type": "JobPosting", "title": "Product Manager", "hiringOrganization": {"name": "Dataco"},
+                "description": f"<p>{self.AD}</p>"}
+        html = (f'<html><head>{self.CANONICAL}<script type="application/ld+json">{json.dumps(node)}</script></head>'
+                "<body></body></html>").encode()
+        r = self.upload(html)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["jobs"][0]["company"], r.json()["jobs"][0]["filter_warnings"]), ("Dataco", []))
+        self.assertTrue(self.listed()["https://careers.example.org/jobs/4242-delivery-lead"]["included_by_user"])
+        # A JobPosting whose address isn't a web address is never stored under it
+        node["url"] = "javascript:alert(1)"
+        html = f'<html><script type="application/ld+json">{json.dumps(node)}</script></html>'.encode()
+        self.assertEqual(self.upload(html).status_code, 422)
+        self.assertNotIn("javascript:alert(1)", self.listed("excluded,hidden"))
+
+    def test_a_page_that_is_no_job_ad_or_too_big_is_refused(self):
+        from backend.app import SAVED_PAGE_MAX
+
+        r = self.upload(b"<html><body><h1>Hello</h1><p>Nothing to see here.</p></body></html>")
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("No job ad found", r.json()["detail"])
+        self.assertEqual(self.upload(b" " * (SAVED_PAGE_MAX + 1)).status_code, 413)
+        self.assertEqual(self.listed("excluded,hidden"), {})
+
+    def test_the_jobs_on_a_page_of_search_results_are_filtered_like_a_search(self):
+        results = {"results": {"totalPages": 1, "results": {"jobs": [
+            {"id": "61000001", "title": "Product Manager", "teaser": "Own the roadmap."},
+            {"id": "61000002", "title": "Head Chef", "teaser": "Run the kitchen."}]}}}
+        r = self.upload(_seek_html(results).encode())
+        self.assertEqual((r.status_code, r.json()["kept"], r.json()["excluded"]), (200, 1, 1), r.text)
+        self.assertEqual(list(self.listed()), ["https://www.seek.com.au/job/61000001"])
+        chef = self.listed("excluded")["https://www.seek.com.au/job/61000002"]
+        self.assertEqual((chef["included_by_user"], chef["excluded_reason"], chef["filter_warnings"]),
+                         (False, "no target title or include keyword", []))
 
 
 class OfficeDaySofteningTest(unittest.TestCase):
@@ -1274,6 +1426,20 @@ class AppliedDateTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(self.shown(r.json()["id"])["applied_at"], datetime(2026, 9, 5, 8, 0).isoformat())
 
+    def test_a_merge_keeps_a_job_the_person_added_listed(self):
+        """A search's copy the filters leave out, merged with the person's own pick: the card stays in the list, with
+        the rules it doesn't meet."""
+        self.client.put("/api/profile", headers=self.h, json={"titles": ["Product Manager"]})
+        found = self.add("merge-found", description=LONG_AD, excluded_reason="no target title or include keyword")
+        mine = self.add("merge-mine", included_by_user=True, source="seek")  # a job board's: the employer's ad is listed
+        r = self.client.post("/api/jobs/merge", headers=self.h, json={"ids": [found, mine]})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["id"], found, "the employer's own ad is the one listed")
+        listed = {j["id"]: j for j in self.client.get("/api/jobs", headers=self.h).json()}
+        self.assertEqual(list(listed), [found])
+        self.assertEqual((listed[found]["included_by_user"], listed[found]["excluded_reason"],
+                          listed[found]["filter_warnings"]), (True, None, ["no target title or include keyword"]))
+
     def test_who_may_move_a_job(self):
         job = self.add("access")
         anonymous = helpers.TestClient(helpers.app)
@@ -1285,6 +1451,109 @@ class AppliedDateTest(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
         self.assertIsNone(self.shown(job)["applied_at"])
 
+
+
+class AlwaysIncludeTest(unittest.TestCase):
+    """A job's "Always include" (PATCH /api/jobs/{id}/included, signed in): ticked, the filters never leave the job
+    out and its card lists what it doesn't meet; unticked, the filters decide on it again."""
+    MISS = "no target title or include keyword"
+
+    def setUp(self):
+        self.client = helpers.client()
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+        self.ws = self.client.post("/api/workspaces", json={"name": "Always include"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{self.ws}"))
+        self.h = {"X-Workspace": str(self.ws)}
+        self.client.put("/api/profile", headers=self.h, json={"titles": ["Product Manager"]})
+
+    def add(self, name: str, **kw) -> int:
+        from backend.db import Job, SessionLocal
+
+        db = SessionLocal()
+        job = Job(workspace_id=self.ws, url=f"https://include.example/{name}", title=kw.pop("title", f"Analyst {name}"),
+                  company="Includeco", status="to_review", detail_status="full", description=LONG_AD, **kw)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        db.close()
+        return job_id
+
+    def include(self, job_id: int, included: bool, headers=None) -> dict:
+        r = self.client.patch(f"/api/jobs/{job_id}/included", headers=headers or self.h, json={"included": included})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def listed(self, include: str = "") -> dict:
+        r = self.client.get(f"/api/jobs{'?include=' + include if include else ''}", headers=self.h)
+        return {j["id"]: j for j in r.json()}
+
+    def state(self, job: dict) -> tuple:
+        return job["included_by_user"], job["excluded_reason"], job["filter_warnings"]
+
+    def test_ticked_a_job_the_filters_left_out_is_listed_and_unticked_it_is_left_out_again(self):
+        job = self.add("left-out", excluded_reason=self.MISS)
+        self.assertNotIn(job, self.listed())
+        self.assertEqual(self.state(self.include(job, True)), (True, None, [self.MISS]))
+        self.assertEqual(self.state(self.listed()[job]), (True, None, [self.MISS]))
+        self.client.post("/api/jobs/refilter", headers=self.h)  # the filters applied again: still listed
+        self.assertEqual(self.state(self.listed()[job]), (True, None, [self.MISS]))
+        self.assertEqual(self.state(self.include(job, False)), (False, self.MISS, []))
+        self.assertNotIn(job, self.listed())
+        self.assertEqual(self.state(self.listed("excluded")[job]), (False, self.MISS, []))
+        self.assertEqual(self.state(self.include(job, True)), (True, None, [self.MISS]), "and ticked again")
+
+    def test_unticked_a_job_the_filters_list_stays_listed(self):
+        job = self.add("fits", title="Product Manager", included_by_user=True)
+        self.assertEqual(self.state(self.listed()[job]), (True, None, []))
+        self.assertEqual(self.state(self.include(job, False)), (False, None, []))
+        self.assertEqual(self.state(self.listed()[job]), (False, None, []))
+
+    def test_a_merged_card_is_ticked_and_unticked_with_its_copies(self):
+        from backend.db import Job, SessionLocal
+
+        root = self.add("card", excluded_reason=self.MISS)
+        copy = self.add("copy", duplicate_of=root, included_by_user=True)
+        self.assertEqual(self.include(copy, True)["id"], root, "a copy's box is its card's")
+        self.assertEqual(self.state(self.listed()[root]), (True, None, [self.MISS]))
+        self.assertEqual(self.include(root, False)["excluded_reason"], self.MISS)
+        db = SessionLocal()
+        try:  # a copy keeping the mark would include the card again at the next merge
+            self.assertEqual([db.get(Job, i).included_by_user for i in (root, copy)], [None, None])
+        finally:
+            db.close()
+
+    def test_unticked_a_page_that_isnt_a_job_ad_is_left_out_again(self):
+        from backend.db import Job, Posting, SessionLocal
+        from backend.pipeline import NOT_A_JOB
+
+        db = SessionLocal()
+        posting = Posting(url="https://include.example/careers", source="site:include.example", title="Careers",
+                          company="Includeco", detail_status="full", description=LONG_AD, not_a_job=True)
+        db.add(posting)
+        db.commit()
+        link = Job(workspace_id=self.ws, posting_id=posting.id, url=posting.url, status="to_review",
+                   excluded_reason=NOT_A_JOB)
+        db.add(link)
+        db.commit()
+        job = link.id
+        self.addCleanup(lambda: (db.query(Posting).filter(Posting.id == posting.id).delete(), db.commit(), db.close()))
+        self.assertEqual(self.include(job, True)["excluded_reason"], None)
+        self.assertIn(job, self.listed())
+        self.assertEqual(self.include(job, False)["excluded_reason"], NOT_A_JOB)
+        self.assertNotIn(job, self.listed())
+
+    def test_only_the_workspace_s_own_jobs(self):
+        job = self.add("mine", excluded_reason=self.MISS)
+        other = self.client.post("/api/workspaces", json={"name": "Not this one"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{other}"))
+        r = self.client.patch(f"/api/jobs/{job}/included", headers={"X-Workspace": str(other)}, json={"included": True})
+        self.assertEqual(r.status_code, 404)
+        self.assertNotIn(job, self.listed())
+        anonymous = helpers.TestClient(helpers.app)
+        self.assertEqual(anonymous.patch(f"/api/jobs/{job}/included", headers=self.h, json={"included": True}).status_code, 401)
+        self.assertEqual(self.client.patch(f"/api/jobs/{job}/included", headers=self.h, json={}).status_code, 422)
+        self.assertNotIn(job, self.listed())
 
 class JobChatTest(unittest.TestCase):
     def test_chat_context_links_history_and_web_search(self):

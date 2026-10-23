@@ -79,6 +79,7 @@
           <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
           <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
           <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
+          <button id="add-job-open" class="btn" type="button" aria-haspopup="dialog" title="Add a job from its page, saved in your browser. A job you add is listed even when it doesn't meet your search filters.">Add a job</button>
           <span id="run-status" class="muted" role="status"></span>
         </div>
         <div id="next-scheduled" class="muted" hidden></div>
@@ -236,7 +237,8 @@
         </div>
         <p class="hint">SEEK's robots.txt allows the first page of each search but not job pages or further result pages, so SEEK jobs are scored on the listing summary (about 20 newest-relevant results per title and location).
           SEEK may also refuse automated access altogether. Either way you can save SEEK search or job pages from your own browser (Ctrl+S)
-          and import them here. A saved job page gives the full description. The browser extension (Settings) adds the jobs of a SEEK results
+          and import them here. A saved job page gives the full description, and a job from any other site can be added the same way
+          (<em>Add a job</em> on the Jobs tab). The browser extension (Settings) adds the jobs of a SEEK results
           page you have open in one go, also from SEEK's <em>New to you</em> view or a later page.</p>
         <form id="import-form" class="toolbar-row" novalidate>
           <label class="field"><span class="field-label">Import saved pages (.html)</span>
@@ -359,6 +361,38 @@
           <span id="note-status" class="muted" role="status" aria-live="polite"></span>
         </div>
       </form>
+      <!-- Cover letter blocks (backend/letter_blocks.py): the form's fields come from blockFormHtml() in app.js, which
+           the cover letter window's "Write this block" form uses too. -->
+      <section id="blocks-card" class="card form-card blocks-card" aria-labelledby="blocks-card-title">
+        <h3 id="blocks-card-title" tabindex="-1">Cover letter blocks</h3>
+        <p class="hint">Paragraphs in your own words. Build a letter from them on any job's cover letter window; the AI only
+          picks and orders them, it never rewrites them. You can use <code>{company}</code>, <code>{role}</code>,
+          <code>{location}</code> and <code>{date}</code>: they are filled in from the job when the letter is put together.</p>
+        <form id="block-form" class="block-form" aria-label="Cover letter block" novalidate>
+          <div id="block-form-fields" class="block-form-fields"></div>
+          <p id="block-form-warn" class="callout block-warn" hidden></p>
+          <div class="toolbar-row block-form-actions">
+            <button id="block-save" class="btn btn-primary" type="submit">Save block</button>
+            <button id="block-cancel" class="btn" type="button" hidden>Cancel</button>
+            <span id="block-status" class="muted" role="status" aria-live="polite"></span>
+          </div>
+        </form>
+        <div id="block-list" class="block-list"></div>
+      </section>
+      <section id="template-card" class="card form-card template-card" aria-labelledby="template-card-title">
+        <h3 id="template-card-title" tabindex="-1">Cover letter template</h3>
+        <p class="hint">A Word (.docx) or OpenDocument (.odt) file with your letterhead and signature. Put <code>{letter}</code>
+          in the paragraph where the letter goes; <code>{company}</code>, <code>{role}</code>, <code>{location}</code> and
+          <code>{date}</code> are filled in anywhere in the file. Every cover letter download then uses it.</p>
+        <form id="template-form" class="toolbar-row" aria-label="Cover letter template" novalidate>
+          <label class="field-label" for="template-input">Template file</label>
+          <input id="template-input" type="file" accept=".docx,.odt" />
+          <button id="template-upload" class="btn btn-primary" type="submit">Upload</button>
+          <span id="template-status" class="muted" role="status" aria-live="polite"></span>
+        </form>
+        <p id="template-current" class="template-current"></p>
+        <p id="template-pdf" class="muted"></p>
+      </section>
       <p class="hint">The scorer reads resumes first, then cover letters, then other documents and notes, and treats everything but resumes as supporting evidence only.
         <strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
         the chat and title suggestions use them, and cover letters never see them.
