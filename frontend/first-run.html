@@ -18,22 +18,22 @@
 </head>
 <body class="auth-page" data-page="first-run">
   <a class="skip-link" href="#main">Skip to main content</a>
-  <header class="app-header auth-header">
-    <div class="header-inner">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">◎</span>
-        <span class="brand-text"><span class="brand-name">JobHuntPA</span><span class="subtitle">Personal job-hunt dashboard</span></span>
-      </div>
+  <header class="p-navigation auth-header">
+    <div class="p-navigation__row">
+      <span class="p-navigation__banner">
+        <span class="p-navigation__logo-tag" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="#ffffff" stroke-width="2"><circle cx="10" cy="10" r="7"></circle><circle cx="10" cy="10" r="2.5" fill="#ffffff" stroke="none"></circle></svg></span>
+        <span class="brand-text"><span class="p-navigation__title">JobHuntPA</span><span class="p-navigation__sub">Personal job-hunt dashboard</span></span>
+      </span>
     </div>
   </header>
 
-  <main id="main" class="main auth-main" tabindex="-1">
-    <section class="card auth-card" aria-labelledby="page-title">
+  <main id="main" class="main auth-main auth-split" tabindex="-1">
+    <section class="p-card auth-card" aria-labelledby="page-title">
       <h1 id="page-title" tabindex="-1">Create your account</h1>
-      <p id="auth-status" class="muted" role="status">Checking whether JobHuntPA is set up…</p>
-      <div id="error-summary" class="error-summary" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
-        <h2 id="error-summary-title">There is a problem</h2>
-        <ul id="error-summary-list"></ul>
+      <p id="auth-status" class="u-muted" role="status">Checking whether JobHuntPA is set up…</p>
+      <div id="error-summary" class="p-notification p-notification--negative" tabindex="-1" role="alert" aria-labelledby="error-summary-title" hidden>
+        <svg class="p-notification__icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M9 9l6 6M15 9l-6 6"></path></svg>
+        <div class="p-notification__body"><p id="error-summary-title" class="p-notification__title">There is a problem</p><ul id="error-summary-list" class="error-summary-list"></ul></div>
       </div>
 
       <div id="folder-step" class="auth-step" hidden>
@@ -41,25 +41,25 @@
           encrypts them. A new or empty folder is best; a folder that already holds JobHuntPA's data is used as it is,
           and you sign in to it.</p>
         <form id="folder-form" class="auth-form" novalidate>
-          <div id="folder-token-field" class="auth-field" hidden>
-            <label for="folder-token">Setup code</label>
-            <p id="folder-token-hint" class="hint">JobHuntPA printed a setup link in its window when it started. Open that
+          <div id="folder-token-field" class="p-field" hidden>
+            <label class="p-label" for="folder-token">Setup code</label>
+            <p id="folder-token-hint" class="p-form-help-text">JobHuntPA printed a setup link in its window when it started. Open that
               link, or copy the code after <code>token=</code> and paste it here.</p>
-            <input id="folder-token" name="folder-token" type="text" autocomplete="off" autocapitalize="none"
+            <input id="folder-token" class="p-input" name="folder-token" type="text" autocomplete="off" autocapitalize="none"
                    spellcheck="false" aria-describedby="folder-token-hint" />
           </div>
-          <div class="auth-field">
-            <label for="data-folder">Data folder</label>
-            <p id="data-folder-hint" class="hint">The whole path of a folder on this computer. JobHuntPA creates it if
+          <div class="p-field">
+            <label class="p-label" for="data-folder">Data folder</label>
+            <p id="data-folder-hint" class="p-form-help-text">The whole path of a folder on this computer. JobHuntPA creates it if
               it isn't there yet. The suggestion is fine for most people; you can't move the folder from inside the app
               later.</p>
-            <input id="data-folder" name="data-folder" type="text" autocomplete="off" autocapitalize="none"
+            <input id="data-folder" class="p-input" name="data-folder" type="text" autocomplete="off" autocapitalize="none"
                    spellcheck="false" aria-describedby="data-folder-hint data-folder-check" />
-            <p id="data-folder-check" class="hint" role="status"></p>
+            <p id="data-folder-check" class="p-form-help-text" role="status"></p>
           </div>
-          <div class="toolbar-row">
-            <button id="folder-check" class="btn" type="button">Check this folder</button>
-            <button id="folder-submit" class="btn btn-primary auth-submit" type="submit">Use this folder</button>
+          <div class="u-row">
+            <button id="folder-check" class="p-button" type="button">Check this folder</button>
+            <button id="folder-submit" class="p-button p-button--positive auth-submit" type="submit">Use this folder</button>
           </div>
         </form>
       </div>
@@ -68,41 +68,41 @@
         <p>JobHuntPA has one account: yours. The jobs, documents, searches and settings already in JobHuntPA move into it.
           Later, Settings &gt; <strong>Download your data</strong> saves a copy of everything: it is your safety net.</p>
         <form id="setup-form" class="auth-form" novalidate>
-          <div id="token-field" class="auth-field" hidden>
-            <label for="token">Setup code</label>
-            <p id="token-hint" class="hint">JobHuntPA printed a setup link when it started. Open that link, or copy the
+          <div id="token-field" class="p-field" hidden>
+            <label class="p-label" for="token">Setup code</label>
+            <p id="token-hint" class="p-form-help-text">JobHuntPA printed a setup link when it started. Open that link, or copy the
               code from the file <code>first-run.txt</code> in JobHuntPA's data folder and paste it here.</p>
-            <input id="token" name="token" type="text" autocomplete="off" autocapitalize="none" spellcheck="false"
+            <input id="token" class="p-input" name="token" type="text" autocomplete="off" autocapitalize="none" spellcheck="false"
                    aria-describedby="token-hint" />
           </div>
-          <div class="auth-field">
-            <label for="name">Name</label>
-            <p id="name-hint" class="hint">You sign in with it: your name, a nickname, anything you'll remember. It stays on
+          <div class="p-field">
+            <label class="p-label" for="name">Name</label>
+            <p id="name-hint" class="p-form-help-text">You sign in with it: your name, a nickname, anything you'll remember. It stays on
               this computer, encrypted, and you can change it in Settings.</p>
-            <input id="name" name="name" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"
+            <input id="name" class="p-input" name="name" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"
                    maxlength="254" aria-describedby="name-hint" required />
           </div>
-          <div class="auth-field">
-            <label for="password">Password</label>
-            <p id="password-hint" class="hint">At least 10 characters. A few random words work well; a password manager
+          <div class="p-field">
+            <label class="p-label" for="password">Password</label>
+            <p id="password-hint" class="p-form-help-text">At least 10 characters. A few random words work well; a password manager
               can make and remember one for you.</p>
             <div class="pw-row">
-              <input id="password" name="password" type="password" autocomplete="new-password" spellcheck="false"
+              <input id="password" class="p-input" name="password" type="password" autocomplete="new-password" spellcheck="false"
                      aria-describedby="password-hint" required />
-              <button class="btn pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show password</button>
+              <button class="p-button pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show password</button>
             </div>
           </div>
-          <div class="auth-field">
-            <label class="check"><input id="background" name="background" type="checkbox" checked aria-describedby="background-hint" /> Keep scheduled searches running while I'm signed out</label>
-            <p id="background-hint" class="hint">Recommended, because you run this server. JobHuntPA then keeps a key on
+          <div class="p-field">
+            <label class="p-check"><input class="p-switch" role="switch" id="background" name="background" type="checkbox" checked aria-describedby="background-hint" /> Keep scheduled searches running while I'm signed out</label>
+            <p id="background-hint" class="p-form-help-text">Recommended, because you run this server. JobHuntPA then keeps a key on
               this server so it can work with your data while you're away; whoever runs the server could technically
               read it, and that's you.</p>
           </div>
-          <div class="auth-field">
-            <label class="check"><input id="remember" name="remember" type="checkbox" aria-describedby="remember-hint" /> Keep me signed in</label>
-            <p id="remember-hint" class="hint">On this device, until you sign out or haven't used JobHuntPA for 30 days.</p>
+          <div class="p-field">
+            <label class="p-check"><input class="p-checkbox" id="remember" name="remember" type="checkbox" aria-describedby="remember-hint" /> Keep me signed in</label>
+            <p id="remember-hint" class="p-form-help-text">On this device, until you sign out or haven't used JobHuntPA for 30 days.</p>
           </div>
-          <button id="setup-submit" class="btn btn-primary auth-submit" type="submit">Create account</button>
+          <button id="setup-submit" class="p-button p-button--positive auth-submit" type="submit">Create account</button>
         </form>
       </div>
 
@@ -110,14 +110,14 @@
         <p>Your recovery codes are shown only until you confirm you've saved them. Each one can set a new password, so
           enter your password to see them again.</p>
         <form id="show-form" class="auth-form" novalidate>
-          <div class="auth-field">
-            <label for="show-password">Password</label>
+          <div class="p-field">
+            <label class="p-label" for="show-password">Password</label>
             <div class="pw-row">
-              <input id="show-password" name="show-password" type="password" autocomplete="current-password" spellcheck="false" required />
-              <button class="btn pw-toggle" type="button" aria-controls="show-password" aria-pressed="false">Show password</button>
+              <input id="show-password" class="p-input" name="show-password" type="password" autocomplete="current-password" spellcheck="false" required />
+              <button class="p-button pw-toggle" type="button" aria-controls="show-password" aria-pressed="false">Show password</button>
             </div>
           </div>
-          <button id="show-submit" class="btn btn-primary auth-submit" type="submit">Show my recovery codes</button>
+          <button id="show-submit" class="p-button p-button--positive auth-submit" type="submit">Show my recovery codes</button>
         </form>
       </div>
 
@@ -127,22 +127,22 @@
           works once. Keep them somewhere safe, such as your password manager or a printed copy: JobHuntPA shows them
           only until you confirm you've saved them.</p>
         <ol id="codes-list" class="codes-list" aria-label="Your recovery codes"></ol>
-        <div class="toolbar-row codes-actions">
-          <button id="codes-copy" class="btn" type="button">Copy all</button>
-          <button id="codes-download" class="btn" type="button">Download .txt</button>
-          <button id="codes-print" class="btn" type="button">Print</button>
-          <span id="codes-status" class="muted" role="status"></span>
+        <div class="u-row codes-actions">
+          <button id="codes-copy" class="p-button" type="button">Copy all</button>
+          <button id="codes-download" class="p-button" type="button">Download .txt</button>
+          <button id="codes-print" class="p-button" type="button">Print</button>
+          <span id="codes-status" class="u-muted" role="status"></span>
         </div>
-        <div class="auth-field">
-          <label class="check"><input id="codes-saved" type="checkbox" /> I've saved my recovery codes</label>
+        <div class="p-field">
+          <label class="p-check"><input class="p-checkbox" id="codes-saved" type="checkbox" /> I've saved my recovery codes</label>
         </div>
-        <button id="codes-continue" class="btn btn-primary auth-submit" type="button">Continue to JobHuntPA</button>
+        <button id="codes-continue" class="p-button p-button--positive auth-submit" type="button">Continue to JobHuntPA</button>
       </div>
     </section>
 
     <section class="auth-help" aria-labelledby="help-title">
       <h2 id="help-title">Trouble signing in?</h2>
-      <ul>
+      <ul class="p-list p-list--divided">
         <li>The setup link works only until the first account is made, and only on this server. If it doesn't work,
           restart JobHuntPA: it shows the link again, and once the data folder is chosen the code is also in the file
           <code>first-run.txt</code> in that folder.</li>

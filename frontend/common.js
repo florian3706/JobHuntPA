@@ -81,23 +81,34 @@ function toast(msg, kind = '', ms = 5000) {
 /* ---------- form errors (WCAG 3.3.1, 3.3.3) ----------
    Marks a field invalid and shows the message under it, tied to the field with aria-describedby, so it
    is read with the field. setFieldError(input, '') clears it; typing in the field clears it too. */
+const ERROR_ICON = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5v.5"></path></svg>';
+// The message under a field, as Vanilla's validation message: an icon, and "Error:" for screen readers.
+function fieldErrorEl(input, id, msg) {
+  const el = document.createElement('p');
+  el.id = id;
+  el.className = 'p-form-validation__message field-error';
+  el.innerHTML = `${ERROR_ICON}<span><span class="u-sr">Error: </span>${esc(msg)}</span>`;
+  input.closest('.p-field')?.classList.add('is-error');
+  return el;
+}
+
 function setFieldError(input, msg, { focus = true } = {}) {
   const id = `${input.id}-error`;
   let el = document.getElementById(id);
   const described = (input.getAttribute('aria-describedby') || '').split(/\s+/).filter((x) => x && x !== id);
   if (!msg) {
     el?.remove();
+    input.closest('.p-field')?.classList.remove('is-error');
     input.removeAttribute('aria-invalid');
     if (described.length) input.setAttribute('aria-describedby', described.join(' ')); else input.removeAttribute('aria-describedby');
     return;
   }
   if (!el) {
-    el = document.createElement('p');
-    el.id = id;
-    el.className = 'field-error';
+    el = fieldErrorEl(input, id, msg);
     (input.closest('.key-row, .tag-input, .sched-add, .pw-row') || input).insertAdjacentElement('afterend', el);
+  } else {
+    el.innerHTML = `${ERROR_ICON}<span><span class="u-sr">Error: </span>${esc(msg)}</span>`;
   }
-  el.innerHTML = `<span aria-hidden="true">⚠ </span>${esc(msg)}`;
   input.setAttribute('aria-invalid', 'true');
   input.setAttribute('aria-describedby', [id, ...described].join(' '));
   input.addEventListener('input', () => setFieldError(input, ''), { once: true });
@@ -683,6 +694,11 @@ function linkList(sources) {
 
 // For a link that opens in a new tab: the arrow people see, and words for screen readers.
 const NEW_TAB = '<span aria-hidden="true"> ↗</span><span class="visually-hidden"> (opens in a new tab)</span>';
+
+/* A removable chip, as in the tag fields and the scheduled times: a list item (.tag keeps its value for the code that
+   reads the fields back) with a real button to remove it. The button's name says what it removes. */
+const CHIP_X = '<svg aria-hidden="true" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4l8 8M12 4l-8 8"></path></svg>';
+const chipHtml = (value) => `<li class="tag p-chip p-chip--dismiss" data-value="${esc(value)}"><span>${esc(value)}</span><button class="p-chip__x" type="button" aria-label="Remove ${esc(value)}">${CHIP_X}</button></li>`;
 
 function glassdoorLink(p, name) {
   if (p?.glassdoor_url) {

@@ -51,7 +51,7 @@ async function detectLevels() {
   try { renderLlmSettings(await api('/api/llm/detect-levels', { method: 'POST' })); }
   catch (e) { $('#levels-status').textContent = `Detection failed: ${e.message}`; }
   setBusy(btn, false);
-  btn.classList.remove('btn-primary');
+  btn.classList.remove('p-button--positive');
 }
 
 function initLlmSettings() {
@@ -93,7 +93,7 @@ function updateLlmProviderInfo() {
   $('#llm-note').innerHTML = `${esc(preset.note)}${link}`;
   const web = $('#llm-web-notice');
   web.hidden = preset.web_search;
-  web.textContent = preset.web_search ? '' : `${preset.label} can't search the web, so company research, finding offices and "Search the web" in job chats `
+  $('#llm-web-notice-text').textContent = preset.web_search ? '' : `${preset.label} can't search the web, so company research, finding offices and "Search the web" in job chats `
     + 'won\'t work with it. Scoring, cover letters, job titles and job chat will.';
   const key = $('#llm-key');
   key.placeholder = preset.key_required ? 'Paste the API key' : 'Not needed (optional)';
@@ -154,7 +154,7 @@ async function saveLlmProvider(e) {
     await loadLlmSettings(); // levels for this model
     $('#llm-save-status').textContent = changed
       ? 'Saved. Reasoning levels differ per model: run "Detect supported levels" below.' : 'Saved.';
-    if (changed) $('#detect-levels').classList.add('btn-primary');
+    if (changed) $('#detect-levels').classList.add('p-button--positive');
     toast('LLM settings saved', 'ok', 2500);
   } catch (ex) {
     $('#llm-save-status').textContent = '';
@@ -194,9 +194,9 @@ function usageTable(caption, rows) {
   const body = rows.map((r) => `<tr role="row"><th role="rowheader" scope="row" data-label="Task">${esc(r.name)}</th>${
     [num(r.f.requests), num(r.f.input), num(r.f.output), `${num(r.f.cached)} (${pct(r.f.cache_hit_rate)})`]
       .map((v, i) => `<td role="cell" data-label="${esc(heads[i + 1])}">${v}</td>`).join('')}</tr>`).join('');
-  return `<table class="report stack-table usage-table" role="table"><caption class="visually-hidden">${esc(caption)}</caption>
+  return `<div class="p-table-wrap"><table class="p-table tab-stack-table usage-table" role="table"><caption class="u-sr">${esc(caption)}</caption>
     <thead role="rowgroup"><tr role="row">${heads.map((h) => `<th role="columnheader" scope="col">${esc(h)}</th>`).join('')}</tr></thead>
-    <tbody role="rowgroup">${body}</tbody></table>`;
+    <tbody role="rowgroup">${body}</tbody></table></div>`;
 }
 
 async function loadUsage() {
@@ -204,7 +204,7 @@ async function loadUsage() {
   let u;
   try { u = await api('/api/settings/usage'); } catch (e) { setText(status, `Could not load the figures: ${e.message}`); return; }
   setText(status, u.since ? `Counted since ${new Date(u.since).toLocaleDateString([], { dateStyle: 'medium' })}.` : '');
-  const tile = (name, f) => `<div class="tile"><dt>${esc(name)}</dt><dd>${num(f.requests)}<span class="tile-hint"> requests,
+  const tile = (name, f) => `<div class="p-tile"><dt>${esc(name)}</dt><dd>${num(f.requests)}<span class="tile-hint"> requests,
     ${num(f.input + f.output)} tokens</span></dd></div>`;
   $('#usage-tiles').innerHTML = tile('Last 7 days', u.last_7_days) + tile('Last 30 days', u.last_30_days) + tile('In all', u.totals);
   const rows = (which) => u.by_task.filter((t) => t[which].requests).map((t) => ({ name: taskLabel(t.task), f: t[which] }));
@@ -278,7 +278,7 @@ async function loadPlaintext() {
   card.hidden = !p.leftovers.length;
   if (!p.leftovers.length) return;
   setText($('#plain-summary'), `${p.leftovers.length === 1 ? 'A file' : `${p.leftovers.length} files`} from before encryption still ${p.leftovers.length === 1 ? 'holds' : 'hold'} your data unencrypted.`);
-  $('#plain-details').innerHTML = `<p class="hint">Backups made before encryption and the old page cache. You only need the backup to go back to an older version of JobHuntPA. Delete the <code>.bak-*</code> files you don't need: they also hold keys from before, and anyone who gets them with the key file can read what they held.</p>
+  $('#plain-details').innerHTML = `<p class="p-form-help-text">Backups made before encryption and the old page cache. You only need the backup to go back to an older version of JobHuntPA. Delete the <code>.bak-*</code> files you don't need: they also hold keys from before, and anyone who gets them with the key file can read what they held.</p>
     <ul class="leftover-files">${p.leftovers.map((f) => `<li><code>${esc(f.path)}</code> (${esc(fmtBytes(f.bytes))})</li>`).join('')}</ul>`;
   $('#plain-delete').hidden = false;
 }

@@ -23,8 +23,8 @@
 
   /* ---------- the skeleton, drawn once; each card's body is redrawn from the server's state ---------- */
   function card(id, title, hint) {
-    return `<div id="${id}-card" class="card form-card account-card">
-      <div class="card-head"><h3 id="${id}-heading" tabindex="-1">${title} <span class="scope-tag">This account</span></h3></div>
+    return `<div id="${id}-card" class="p-card u-stack account-card">
+      <div class="p-card__head"><h3 id="${id}-heading" tabindex="-1">${title} <span class="p-scope-tag">This account</span></h3></div>
       ${hint ? `<p class="hint">${hint}</p>` : ''}
       <div id="${id}-body" class="account-body"></div>
       <p id="${id}-status" class="account-status" role="status"></p>
@@ -37,7 +37,7 @@
       ${hint ? `<p id="${hintId}" class="hint">${hint}</p>` : ''}
       <div class="pw-row">
         <input id="${id}" type="password" autocomplete="${autocomplete}" spellcheck="false"${hint ? ` aria-describedby="${hintId}"` : ''} required />
-        <button class="btn pw-toggle" type="button" aria-controls="${id}" aria-pressed="false">Show password</button>
+        <button class="p-button pw-toggle" type="button" aria-controls="${id}" aria-pressed="false">Show password</button>
       </div>
     </div>`;
   }
@@ -55,8 +55,8 @@
       + card('acct-rc', 'Recovery codes', 'If you forget your password, a recovery code sets a new one and keeps your data. It is the only way back in: keep them safe. Each code works once.')
       + card('acct-ses', 'Signed-in devices');
     $('#account-delete-slot').innerHTML =
-      `<div id="acct-del-card" class="card form-card account-card account-danger">
-        <div class="card-head"><h3 id="acct-del-heading" tabindex="-1">Delete account <span class="scope-tag">This account</span></h3></div>
+      `<div id="acct-del-card" class="p-card u-stack account-card account-danger">
+        <div class="p-card__head"><h3 id="acct-del-heading" tabindex="-1">Delete account <span class="p-scope-tag">This account</span></h3></div>
         <div id="acct-del-body"><p class="muted">Loading…</p></div>
         <p id="acct-del-status" class="account-status" role="status"></p>
       </div>`;
@@ -149,7 +149,7 @@
                aria-describedby="acct-name-hint" value="${esc(userName())}" required />
       </div>
       ${errorBox}
-      <div><button id="acct-name-submit" class="btn" type="submit">Change name</button></div>
+      <div><button id="acct-name-submit" class="p-button" type="submit">Change name</button></div>
     </form>`;
     $('#acct-name-form').addEventListener('submit', changeName);
   }
@@ -181,7 +181,7 @@
       ${pwField('acct-pw-new', 'New password', 'new-password', 'acct-pw-new-hint', 'At least 10 characters. A few random words work well; a password manager can make and remember one for you.')}
       <label class="check"><input id="acct-pw-others" type="checkbox" checked /> Sign out other devices</label>
       ${errorBox}
-      <button id="acct-pw-submit" class="btn btn-primary" type="submit">Change password</button>
+      <button id="acct-pw-submit" class="p-button p-button--positive" type="submit">Change password</button>
     </form>`;
     $('#acct-pw-form').addEventListener('submit', changePassword);
   }
@@ -225,7 +225,7 @@
         ${usernameField()}
         ${pwField('acct-rc-password', 'Your password', 'current-password')}
         ${errorBox}
-        <div><button id="acct-rc-new" class="btn" type="submit">Make new recovery codes</button></div>
+        <div><button id="acct-rc-new" class="p-button" type="submit">Make new recovery codes</button></div>
       </form>`;
     $('#acct-rc-form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -251,7 +251,7 @@
       : `You're signed in on this device and <strong>${n} other ${n === 1 ? 'device' : 'devices'}</strong>.`}</p>
       <p class="hint">Use this if you signed in on a shared or lost device. This device stays signed in; connected browser extensions are disconnected too.</p>
       ${errorBox}
-      <div><button id="acct-ses-end" class="btn" type="button">Sign out everywhere else</button></div>`;
+      <div><button id="acct-ses-end" class="p-button" type="button">Sign out everywhere else</button></div>`;
     $('#acct-ses-end').addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       const box = $('#acct-ses-body .acct-error');
@@ -292,7 +292,7 @@
         ${usernameField()}
         ${pwField('acct-del-password', 'Your password', 'current-password')}
         ${errorBox}
-        <button id="acct-del-submit" class="btn btn-danger" type="submit">Delete my account</button>
+        <button id="acct-del-submit" class="p-button p-button--negative" type="submit">Delete my account</button>
       </form>`;
     $('#acct-del-form').addEventListener('submit', deleteAccount);
   }

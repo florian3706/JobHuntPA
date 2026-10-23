@@ -33,7 +33,7 @@ function restoreCounts(w) {
 function initRestoreCard() {
   const slot = document.getElementById('account-import-slot');
   if (!slot) return;
-  slot.innerHTML = `<div class="card form-card" id="restore-card">
+  slot.innerHTML = `<div class="p-card u-stack" id="restore-card">
     <h3 id="restore-title">Import from an export</h3>
     <p>Bring workspaces back from a zip file that <strong>Download your data</strong> made, here or on another
       JobHuntPA. Each workspace you pick becomes a new workspace with its search setup, sources, documents, jobs, cover
@@ -46,7 +46,7 @@ function initRestoreCard() {
       <input id="restore-file" type="file" accept=".zip,application/zip" />
     </div>
     <div class="toolbar-row">
-      <button id="restore-check" class="btn" type="button">Look inside</button>
+      <button id="restore-check" class="p-button" type="button">Look inside</button>
       <span id="restore-status" class="muted" role="status"></span>
     </div>
     <div id="restore-pick" hidden>
@@ -56,7 +56,7 @@ function initRestoreCard() {
       </fieldset>
       <p id="restore-pick-error" class="field-error" hidden></p>
       <div class="toolbar-row">
-        <button id="restore-go" class="btn btn-primary" type="button">Import the ticked workspaces</button>
+        <button id="restore-go" class="p-button p-button--positive" type="button">Import the ticked workspaces</button>
       </div>
     </div>
   </div>`;

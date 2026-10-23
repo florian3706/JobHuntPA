@@ -478,7 +478,7 @@ class AccountCardsTest(unittest.TestCase):
         self.assertIn("pwField('acct-rc-password', 'Your password', 'current-password')", self.js)
         self.assertIn('autocomplete="username"', self.js, "a hidden username field for password managers")
         self.assertNotIn('autocomplete="one-time-code"', self.js, "no code field: there is no second step")
-        self.assertIn('class="btn pw-toggle" type="button" aria-controls="${id}" aria-pressed="false">Show password', self.js)
+        self.assertIn('class="p-button pw-toggle" type="button" aria-controls="${id}" aria-pressed="false">Show password', self.js)
 
     def test_sign_out_others_is_ticked_by_default(self):
         self.assertRegex(self.js, r'<input id="acct-pw-others" type="checkbox" checked />\s*Sign out other devices')
@@ -630,24 +630,24 @@ class InstallSettingsCardsTest(unittest.TestCase):
             start = self.src.index(f'id="{ident}"')
             card = self.src[start:start + 600]
             with self.subTest(card=ident):
-                self.assertRegex(card, r"<h3[^>]*>[^<]+<span class=\"scope-tag\">This JobHuntPA</span></h3>")
+                self.assertRegex(card, r"<h3[^>]*>[^<]+<span class=\"p-scope-tag\">This JobHuntPA</span></h3>")
 
     def test_the_address_fields_are_labelled_and_described(self):
         for ident, hint in (("public-url", "public-url-hint"), ("allowed-hosts", "allowed-hosts-hint")):
             field = self.ids[ident]["attrs"]
             self.assertEqual(field.get("aria-describedby"), hint)
             self.assertIn(hint, self.ids)
-            self.assertIn(f'<label class="field-label" for="{ident}">', self.src)
+            self.assertIn(f'<label class="p-label" for="{ident}">', self.src)
         self.assertEqual(self.ids["address-error"]["attrs"].get("role"), "alert")
         self.assertEqual(self.ids["address-status"]["attrs"].get("role"), "status")
         self.assertIn("setFieldError($('#public-url')", self.js)
         self.assertIn("setFieldError($('#allowed-hosts')", self.js)
 
     def test_the_usage_tables_have_captions_and_header_scopes_and_stack_on_phones(self):
-        self.assertIn('<caption class="visually-hidden">${esc(caption)}</caption>', self.js)
+        self.assertIn('<caption class="u-sr">${esc(caption)}</caption>', self.js)
         self.assertIn('scope="col"', self.js)
         self.assertIn('scope="row"', self.js)
-        self.assertIn("report stack-table usage-table", self.js)
+        self.assertIn("p-table tab-stack-table usage-table", self.js)
         self.assertIn('data-label="${esc(heads[i + 1])}"', self.js)
         self.assertEqual(self.ids["usage-status"]["attrs"].get("role"), "status")
         self.assertEqual(self.ids["usage-tiles"]["tag"], "dl")
@@ -689,7 +689,7 @@ class ExportCardTest(unittest.TestCase):
 
     def test_heading_button_and_a_live_status(self):
         self.assertIn('<h3 id="export-title">', self.js)
-        self.assertIn('<button id="export-btn" class="btn btn-primary" type="button">Download my data (.zip)</button>', self.js)
+        self.assertIn('<button id="export-btn" class="p-button p-button--positive" type="button">Download my data (.zip)</button>', self.js)
         self.assertIn('<span id="export-status" class="muted" role="status"></span>', self.js)
         self.assertIn("setBusy(btn, true)", self.js, "a working button uses aria-disabled, so focus stays on it")
         self.assertIn("not encrypted", self.js)
@@ -890,7 +890,7 @@ class PageLayoutsTest(unittest.TestCase):
 
     def test_a_source_says_it_is_read_with_a_layout_and_its_forget_button_names_it(self):
         self.assertIn("Read with a page layout the AI worked out", self.app)
-        self.assertIn('data-act="forget" type="button">Forget layout<span class="visually-hidden"> of ${name}</span>',
+        self.assertIn('data-act="forget" type="button">Forget layout<span class="u-sr"> of ${name}</span>',
                       self.app)
         self.assertIn("announce(`${src.label || src.url} is read the usual ways again.`)", self.app)
         forget = self.app[self.app.index("async function forgetLayout("):]
@@ -925,7 +925,7 @@ class WelcomePageTest(unittest.TestCase):
         self.assertEqual(self.by_id("wiz-steps")["tag"], "ol")
         self.assertIn("Step ${wiz.idx + 1} of ${total}", self.js, "the count is written as words")
         self.assertIn('aria-current="step"', self.js, "the current mark is exposed")
-        self.assertIn("✓", self.js, "a finished step shows a tick, not only a colour")
+        self.assertIn(">Done</span>", self.js, "a finished step says Done in words, not only a colour")
 
     def test_every_step_is_a_fieldset_with_a_legend_and_a_focusable_heading(self):
         shell = re.search(r"\$\('#wiz-body'\)\.innerHTML = `(.*?)`;", self.js, re.S)
@@ -963,9 +963,8 @@ class WelcomePageTest(unittest.TestCase):
         self.assertIn("min-height: 44px", field)
         self.assertIn("font-size: 16px", field)
         self.assertIn("min-height: 44px", re.search(r"\.wiz-actions \.btn \{([^}]*)\}", self.css).group(1))
-        mark = re.search(r"\.wiz-mark span:first-child \{([^}]*)\}", self.css).group(1)
-        self.assertRegex(mark, r"min-width: (2[4-9]|[3-9]\d)px")
-        self.assertRegex(mark, r"[^-]height: (2[4-9]|[3-9]\d)px")
+        mark = re.search(r"\.wiz-steps \.p-side-navigation__link \{([^}]*)\}", self.css).group(1)
+        self.assertIn("min-height: 2.75rem", mark)
 
     def test_unbuilt_features_are_hidden_behind_a_feature_check(self):
         self.assertNotIn("digest", self.js, "there are no digest emails")
@@ -1099,7 +1098,7 @@ class GhostJobPagesTest(unittest.TestCase):
         for src in (self.app, self.job):
             self.assertNotIn("scoreBadge(", src)  # nowhere a score without the circle under it
         # The map list has no "why?" line, so a flagged job is said in words there (the circle alone is colour).
-        self.assertIn("${j.ghost?.level ? ` · possible ghost job (${GHOST_STRENGTH[j.ghost.level]})` : ''}", self.app)
+        self.assertIn("possible ghost job (${GHOST_STRENGTH[j.ghost.level]})", self.app)
 
     def test_the_circles_pill_is_plain_text_on_the_field_ground(self):
         rule = re.search(r"(?m)^\.ghost-dot \{([^}]*)\}", self.css).group(1)
@@ -1426,18 +1425,18 @@ class CommuteLinksMarkupTest(unittest.TestCase):
 
     def test_the_add_form_is_a_labelled_group(self):
         self.assertIn('aria-labelledby="starts-title"', self.card)
-        self.assertIn("<legend>Add a starting point</legend>", self.card)
+        self.assertIn("<summary>Add a starting point</summary>", self.card)
         for ident in ("start-from", "start-place", "start-label", "start-use"):
-            self.assertIn(f'<label for="{ident}">', self.card, ident)
+            self.assertIn(f'<label class="p-label" for="{ident}">', self.card, ident)
         self.assertIn('aria-describedby="start-place-hint"', self.card)
         self.assertIn('<option value="transit">Public transport</option>', self.card)  # words, not icons
 
     def test_each_row_names_its_controls_and_changes_are_announced(self):
         block = self.app[self.app.index("function renderStarts()"):self.app.index("function showStartPlace()")]
-        self.assertIn('<span class="visually-hidden">Used for, ${esc(name)}</span>', block)
-        self.assertIn('Remove<span class="visually-hidden"> ${esc(name)}</span>', block)
+        self.assertIn('<span class="u-sr">Used for, ${esc(name)}</span>', block)
+        self.assertIn('Remove<span class="u-sr"> ${esc(name)}</span>', block)
         self.assertIn("announce(`Removed the starting point", block)
-        self.assertIn("$('#start-from').focus(); // the row with the button is gone", block)
+        self.assertIn("focusStartFrom(); // the row with the button is gone", block)
         adding = self.app[self.app.index("function initStarts()"):]
         self.assertIn("setFieldError($('#start-place'), 'Type an address, a station or a stop, or choose a pin under From.')",
                       adding)
@@ -1583,7 +1582,7 @@ class FirstRunStepsTest(unittest.TestCase):
         step = js[start:js.index("  theme: {", start)]
         for ident, hint in (("wz-ai-provider", "wz-ai-note"), ("wz-ai-url", "wz-ai-url-hint"),
                             ("wz-ai-model", "wz-ai-model-hint"), ("wz-ai-key", "wz-ai-key-hint")):
-            self.assertIn(f'<label for="{ident}">', step, ident)
+            self.assertIn(f'<label class="p-label" for="{ident}">', step, ident)
             self.assertIn(f'id="{ident}"', step)
             self.assertIn(f'aria-describedby="{hint}"', step, ident)
             self.assertIn(f'id="{hint}"', step, ident)
@@ -1606,3 +1605,44 @@ class FirstRunStepsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TabJumpListsTest(unittest.TestCase):
+    """Search setup, Documents and Settings each have a labelled jump list whose links lead to cards that exist, with
+    the card in view marked aria-current (app.js initJumpLists); at phone width the list is a strip."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        cls.app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        cls.css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+
+    def test_each_list_is_a_labelled_nav_and_every_link_has_a_target(self):
+        navs = re.findall(r'<nav class="tab-jump" aria-label="([^"]+)">(.*?)</nav>', self.html, re.S)
+        self.assertEqual(len(navs), 3)
+        self.assertEqual(len({label for label, _ in navs}), 3, "the labels tell the lists apart")
+        for label, body in navs:
+            links = re.findall(r'<a class="p-side-navigation__link" href="#([\w-]+)"', body)
+            self.assertGreaterEqual(len(links), 4, label)
+            for target in links:
+                self.assertIn(f'id="{target}"', self.html, f"{label}: #{target} is not on the page")
+            self.assertEqual(body.count('aria-current="true"'), 1, label)
+
+    def test_the_card_in_view_is_marked_and_a_link_moves_focus_to_its_heading(self):
+        self.assertIn("IntersectionObserver", self.app)
+        self.assertIn("setAttribute('aria-current', 'true')", self.app)
+        self.assertIn("heading.focus(", self.app)
+
+    def test_on_a_phone_the_list_is_a_scrolling_strip(self):
+        strip = self.css[self.css.index("Settings and the others: the jump list"):]
+        self.assertRegex(strip, r"\.tab-jump \.p-side-navigation[^{]*\{[^}]*flex-direction: row; overflow-x: auto")
+
+
+class CsFreeTabsTest(unittest.TestCase):
+    """The reworked tabs and pages add no inline styles or handlers (Content-Security-Policy)."""
+
+    def test_no_style_attributes_or_event_handlers(self):
+        for name in ("index.html", "login.html", "recover.html", "first-run.html", "welcome.html"):
+            html = (FRONTEND / name).read_text(encoding="utf-8")
+            self.assertNotRegex(html, r'\sstyle="', name)
+            self.assertNotRegex(html, r'\son[a-z]+="', name)

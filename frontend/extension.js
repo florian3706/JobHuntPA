@@ -26,8 +26,8 @@
   };
 
   function mount(slot) {
-    slot.innerHTML = `<div id="ext-card" class="card form-card account-card">
-      <div class="card-head"><h3 id="ext-heading" tabindex="-1">Browser extension <span class="scope-tag">This account</span></h3></div>
+    slot.innerHTML = `<div id="ext-card" class="p-card u-stack account-card">
+      <div class="p-card__head"><h3 id="ext-heading" tabindex="-1">Browser extension <span class="p-scope-tag">This account</span></h3></div>
       <p>Add the job ad you are looking at, the jobs on a SEEK results page, or a company's careers page, to
         JobHuntPA in one click from Chrome or Firefox. The extension reads the page in your own browser, so ads
         behind a sign-in work too.</p>
@@ -45,7 +45,7 @@
           <input id="ext-label" type="text" maxlength="80" autocomplete="off" aria-describedby="ext-label-hint" />
         </div>
         <div class="error ext-error" hidden></div>
-        <div><button id="ext-connect" class="btn btn-primary" type="submit">Connect a browser extension</button></div>
+        <div><button id="ext-connect" class="p-button p-button--positive" type="submit">Connect a browser extension</button></div>
       </form>
       <div id="ext-result" class="callout ext-result" hidden>
         <h4 id="ext-result-title" tabindex="-1">Paste these into the extension's options</h4>
@@ -54,14 +54,14 @@
         <label for="ext-server" class="field-label">Server address</label>
         <div class="key-row">
           <input id="ext-server" class="key-input" type="text" readonly spellcheck="false" />
-          <button id="ext-copy-server" class="btn btn-sm" type="button">Copy address</button>
+          <button id="ext-copy-server" class="p-button is-dense" type="button">Copy address</button>
         </div>
         <label for="ext-key" class="field-label">Extension key</label>
         <div class="key-row">
           <input id="ext-key" class="key-input" type="text" readonly spellcheck="false" autocomplete="off" />
-          <button id="ext-copy-key" class="btn btn-sm" type="button">Copy key</button>
+          <button id="ext-copy-key" class="p-button is-dense" type="button">Copy key</button>
         </div>
-        <div><button id="ext-done" class="btn" type="button">Done</button></div>
+        <div><button id="ext-done" class="p-button" type="button">Done</button></div>
       </div>
       <p id="ext-status" class="account-status" role="status"></p>
     </div>`;
@@ -94,7 +94,7 @@
     box.innerHTML = `<ul class="ext-keys" aria-labelledby="ext-sites-heading">${sites.list.map((m) => `<li class="ext-key">
       <div><strong>${esc(m.site)}</strong>
         <div class="muted">Saved ${esc(day(m.updated_at))}</div></div>
-      <button class="btn btn-sm" type="button" data-ext-forget="${esc(m.site)}">Forget<span class="visually-hidden"> ${esc(m.site)}</span></button>
+      <button class="p-button is-dense" type="button" data-ext-forget="${esc(m.site)}">Forget<span class="visually-hidden"> ${esc(m.site)}</span></button>
     </li>`).join('')}</ul>`;
   }
 
@@ -144,7 +144,7 @@
       <div><strong>${esc(k.label || 'Browser extension')}</strong>
         <div class="muted">Connected ${esc(day(k.created_at))} · ${k.last_used_at ? `last used ${esc(day(k.last_used_at))}` : 'not used yet'}
           · stops working ${esc(day(k.expires_at))} unless used</div></div>
-      <button class="btn btn-sm" type="button" data-ext-revoke="${esc(k.id)}">Disconnect<span class="visually-hidden"> ${esc(k.label || 'this extension')}</span></button>
+      <button class="p-button is-dense" type="button" data-ext-revoke="${esc(k.id)}">Disconnect<span class="visually-hidden"> ${esc(k.label || 'this extension')}</span></button>
     </li>`).join('')}</ul>
     <p class="hint">An extension stops working after 60 days without use, a year after you connect it, or when you sign out everywhere else or change your password and sign out the other devices.</p>`;
   }
