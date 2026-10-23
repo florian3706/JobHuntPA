@@ -8,9 +8,19 @@
   <script>
     // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
     (function () {
-      var t = "vanilla-dark";
-      try { t = localStorage.getItem("jobhunt.theme") || "vanilla-dark"; } catch (e) {}
-      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark" : "vanilla-light";
+      var t = "vanilla-dark-aa";
+      try {
+        t = localStorage.getItem("jobhunt.theme") || t;
+        // Once: a family theme saved before the exact palettes came in was its AA version (see common.js).
+        if (localStorage.getItem("jobhunt.themeMigrated") !== "aa") {
+          if (/^(vanilla-(dark|light)|catppuccin-(latte|frappe|macchiato|mocha)|rose-pine(-moon|-dawn)?|nord(-light)?|kanagawa-(wave|dragon|lotus)|everforest-(dark|light))$/.test(t)) {
+            t += "-aa";
+            localStorage.setItem("jobhunt.theme", t);
+          }
+          localStorage.setItem("jobhunt.themeMigrated", "aa");
+        }
+      } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark-aa" : "vanilla-light-aa";
       document.documentElement.setAttribute("data-theme", t);
     })();
   </script>
@@ -581,8 +591,9 @@
           <div id="theme-card" class="p-card u-stack theme-card-section">
             <h3 id="theme-heading">Theme <span class="p-scope-tag">This browser</span></h3>
             <p class="p-form-help-text">Each card shows the app in that theme. Pick one with a click or tap, or with the arrow keys:
-              it applies at once and is remembered in this browser. Every theme meets the WCAG AA contrast minimums, and
-              labels or shapes always go with colours.</p>
+              it applies at once and is remembered in this browser. Themes marked WCAG 2.0 AA meet the AA contrast
+              minimums; the others are a project's exact colours, shown as they are, beside their AA version. Labels or
+              shapes always go with colours.</p>
             <div id="theme-picker-slot"></div>
           </div>
 

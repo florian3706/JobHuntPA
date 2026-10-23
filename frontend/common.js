@@ -889,45 +889,83 @@ function officeHtml(job) {
 // paint, and initTheme() keeps it in step afterwards (and across open tabs).
 // The Settings tab chooses it with createThemePicker(), which the sign-up wizard
 // (docs/design/accounts.md, Phase K) reuses as its first step.
+// Each family theme comes twice: '<id>-aa', adjusted to WCAG AA, and the plain id, the
+// project's exact palette. aa: true marks the themes that meet AA (the picker's badge);
+// tools/theme_contrast.py checks exactly these and the tests check the flag matches.
 const DYSLEXIA_FONT = 'Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400';
 const THEMES = [
-  { id: 'system', label: 'System', family: 'Vanilla', mode: 'auto', note: 'follows this device' },
+  { id: 'system', label: 'System', family: 'Vanilla', mode: 'auto', note: 'follows this device', aa: true },
+  { id: 'vanilla-dark-aa', label: 'Vanilla Dark', family: 'Vanilla', mode: 'dark', aa: true },
   { id: 'vanilla-dark', label: 'Vanilla Dark', family: 'Vanilla', mode: 'dark' },
+  { id: 'vanilla-light-aa', label: 'Vanilla Light', family: 'Vanilla', mode: 'light', aa: true },
   { id: 'vanilla-light', label: 'Vanilla Light', family: 'Vanilla', mode: 'light' },
-  { id: 'dark', label: 'Dark', family: 'JobHuntPA', mode: 'dark' },
-  { id: 'light', label: 'Light', family: 'JobHuntPA', mode: 'light' },
+  { id: 'dark', label: 'Dark', family: 'JobHuntPA', mode: 'dark', aa: true },
+  { id: 'light', label: 'Light', family: 'JobHuntPA', mode: 'light', aa: true },
+  { id: 'catppuccin-latte-aa', label: 'Catppuccin Latte', family: 'Catppuccin', mode: 'light', aa: true },
   { id: 'catppuccin-latte', label: 'Catppuccin Latte', family: 'Catppuccin', mode: 'light' },
+  { id: 'catppuccin-frappe-aa', label: 'Catppuccin Frappé', family: 'Catppuccin', mode: 'dark', aa: true },
   { id: 'catppuccin-frappe', label: 'Catppuccin Frappé', family: 'Catppuccin', mode: 'dark' },
+  { id: 'catppuccin-macchiato-aa', label: 'Catppuccin Macchiato', family: 'Catppuccin', mode: 'dark', aa: true },
   { id: 'catppuccin-macchiato', label: 'Catppuccin Macchiato', family: 'Catppuccin', mode: 'dark' },
+  { id: 'catppuccin-mocha-aa', label: 'Catppuccin Mocha', family: 'Catppuccin', mode: 'dark', aa: true },
   { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', family: 'Catppuccin', mode: 'dark' },
+  { id: 'rose-pine-aa', label: 'Rosé Pine', family: 'Rosé Pine', mode: 'dark', aa: true },
   { id: 'rose-pine', label: 'Rosé Pine', family: 'Rosé Pine', mode: 'dark' },
+  { id: 'rose-pine-moon-aa', label: 'Rosé Pine Moon', family: 'Rosé Pine', mode: 'dark', aa: true },
   { id: 'rose-pine-moon', label: 'Rosé Pine Moon', family: 'Rosé Pine', mode: 'dark' },
+  { id: 'rose-pine-dawn-aa', label: 'Rosé Pine Dawn', family: 'Rosé Pine', mode: 'light', aa: true },
   { id: 'rose-pine-dawn', label: 'Rosé Pine Dawn', family: 'Rosé Pine', mode: 'light' },
+  { id: 'nord-aa', label: 'Nord', family: 'Nord', mode: 'dark', aa: true },
   { id: 'nord', label: 'Nord', family: 'Nord', mode: 'dark' },
+  { id: 'nord-light-aa', label: 'Nord Light', family: 'Nord', mode: 'light', aa: true },
   { id: 'nord-light', label: 'Nord Light', family: 'Nord', mode: 'light' },
+  { id: 'kanagawa-wave-aa', label: 'Kanagawa Wave', family: 'Kanagawa', mode: 'dark', aa: true },
   { id: 'kanagawa-wave', label: 'Kanagawa Wave', family: 'Kanagawa', mode: 'dark' },
+  { id: 'kanagawa-dragon-aa', label: 'Kanagawa Dragon', family: 'Kanagawa', mode: 'dark', aa: true },
   { id: 'kanagawa-dragon', label: 'Kanagawa Dragon', family: 'Kanagawa', mode: 'dark' },
+  { id: 'kanagawa-lotus-aa', label: 'Kanagawa Lotus', family: 'Kanagawa', mode: 'light', aa: true },
   { id: 'kanagawa-lotus', label: 'Kanagawa Lotus', family: 'Kanagawa', mode: 'light' },
+  { id: 'everforest-dark-aa', label: 'Everforest Dark', family: 'Everforest', mode: 'dark', aa: true },
   { id: 'everforest-dark', label: 'Everforest Dark', family: 'Everforest', mode: 'dark' },
+  { id: 'everforest-light-aa', label: 'Everforest Light', family: 'Everforest', mode: 'light', aa: true },
   { id: 'everforest-light', label: 'Everforest Light', family: 'Everforest', mode: 'light' },
-  { id: 'dyslexia', label: 'Dyslexia', family: 'Built for reading', mode: 'light', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing' },
-  { id: 'dyslexia-dark', label: 'Dyslexia (dark)', family: 'Built for reading', mode: 'dark', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing' },
-  { id: 'protanomaly', label: 'Protanomaly', family: 'Built for colour vision', mode: 'light', note: 'red-weak' },
-  { id: 'protanomaly-dark', label: 'Protanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'red-weak' },
-  { id: 'deuteranomaly', label: 'Deuteranomaly', family: 'Built for colour vision', mode: 'light', note: 'green-weak' },
-  { id: 'deuteranomaly-dark', label: 'Deuteranomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'green-weak' },
-  { id: 'tritanomaly', label: 'Tritanomaly', family: 'Built for colour vision', mode: 'light', note: 'blue-weak' },
-  { id: 'tritanomaly-dark', label: 'Tritanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'blue-weak' },
-  { id: 'dichromacy', label: 'Dichromacy', family: 'Built for colour vision', mode: 'light', note: 'any kind' },
-  { id: 'dichromacy-dark', label: 'Dichromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'any kind' },
-  { id: 'monochromacy', label: 'Monochromacy', family: 'Built for colour vision', mode: 'light', note: 'greys only' },
-  { id: 'monochromacy-dark', label: 'Monochromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'greys only' },
+  { id: 'dyslexia', label: 'Dyslexia', family: 'Built for reading', mode: 'light', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing', aa: true },
+  { id: 'dyslexia-dark', label: 'Dyslexia (dark)', family: 'Built for reading', mode: 'dark', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing', aa: true },
+  { id: 'protanomaly', label: 'Protanomaly', family: 'Built for colour vision', mode: 'light', note: 'red-weak', aa: true },
+  { id: 'protanomaly-dark', label: 'Protanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'red-weak', aa: true },
+  { id: 'deuteranomaly', label: 'Deuteranomaly', family: 'Built for colour vision', mode: 'light', note: 'green-weak', aa: true },
+  { id: 'deuteranomaly-dark', label: 'Deuteranomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'green-weak', aa: true },
+  { id: 'tritanomaly', label: 'Tritanomaly', family: 'Built for colour vision', mode: 'light', note: 'blue-weak', aa: true },
+  { id: 'tritanomaly-dark', label: 'Tritanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'blue-weak', aa: true },
+  { id: 'dichromacy', label: 'Dichromacy', family: 'Built for colour vision', mode: 'light', note: 'any kind', aa: true },
+  { id: 'dichromacy-dark', label: 'Dichromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'any kind', aa: true },
+  { id: 'monochromacy', label: 'Monochromacy', family: 'Built for colour vision', mode: 'light', note: 'greys only', aa: true },
+  { id: 'monochromacy-dark', label: 'Monochromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'greys only', aa: true },
 ];
 const THEME_KEY = 'jobhunt.theme';
-const DEFAULT_THEME = 'vanilla-dark'; // also in each page's first-paint script
+const DEFAULT_THEME = 'vanilla-dark-aa'; // also in each page's first-paint script
+// Before the exact palettes came in, the plain family ids were the AA-adjusted palettes. A browser that
+// saved one keeps what it chose: once, the saved id becomes '<id>-aa' (the first-paint script in each
+// page does the same, with the same list as a pattern; tests/test_accessibility.py checks they agree).
+const THEME_MIGRATED_KEY = 'jobhunt.themeMigrated';
+const EXACT_THEMES = THEMES.filter((t) => !t.aa).map((t) => t.id);
+
+function migrateStoredTheme() {
+  try {
+    if (localStorage.getItem(THEME_MIGRATED_KEY) === 'aa') return;
+    const t = localStorage.getItem(THEME_KEY);
+    if (EXACT_THEMES.includes(t)) localStorage.setItem(THEME_KEY, `${t}-aa`);
+    localStorage.setItem(THEME_MIGRATED_KEY, 'aa');
+  } catch { /* private mode: nothing saved to migrate */ }
+}
 const MODE_LABEL = { light: 'Light', dark: 'Dark', auto: 'Light or dark' };
+// The picker's mark of a theme that meets WCAG AA (a status label with the words in it, so screen readers
+// hear it), and the line under an exact palette instead.
+const AA_BADGE = '<span class="badge p-status-label p-status-label--positive theme-aa">WCAG 2.0 AA</span>';
+const EXACT_NOTE = 'The project\'s exact colours; some text is under 4.5:1';
 
 function storedTheme() {
+  migrateStoredTheme();
   try {
     const t = localStorage.getItem(THEME_KEY);
     return THEMES.some((x) => x.id === t) ? t : DEFAULT_THEME;
@@ -935,7 +973,7 @@ function storedTheme() {
 }
 
 function resolveTheme(pref) {
-  return pref === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'vanilla-dark' : 'vanilla-light') : pref;
+  return pref === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'vanilla-dark-aa' : 'vanilla-light-aa') : pref;
 }
 
 function applyTheme(pref = storedTheme()) {
@@ -1008,14 +1046,15 @@ function createThemePicker({ legend = 'Theme', name = 'theme', onChange = null }
   const card = (t) => {
     const id = `${name}-opt-${t.id}`;
     const preview = t.id === 'system'
-      ? `<span class="theme-split">${themePreviewHtml('vanilla-light')}${themePreviewHtml('vanilla-dark')}</span>`
+      ? `<span class="theme-split">${themePreviewHtml('vanilla-light-aa')}${themePreviewHtml('vanilla-dark-aa')}</span>`
       : themePreviewHtml(t.id);
     return `<label class="theme-card" for="${id}">
         ${preview}
         <span class="theme-card-text">
           <input type="radio" name="${esc(name)}" id="${id}" value="${esc(t.id)}" />
-          <span class="theme-name">${esc(t.label)}</span>
+          <span class="theme-name">${esc(t.label)}${t.aa ? ` ${AA_BADGE}` : ''}</span>
           <span class="theme-mode">${MODE_LABEL[t.mode]}${t.note ? `, ${esc(t.note)}` : ''}</span>
+          ${t.aa ? '' : `<span class="theme-mode theme-exact">${EXACT_NOTE}</span>`}
           <span class="theme-chosen" aria-hidden="true">✓ Selected</span>
         </span>
       </label>`;
@@ -1034,7 +1073,7 @@ function createThemePicker({ legend = 'Theme', name = 'theme', onChange = null }
     if (!radio) return;
     setTheme(radio.value);
     const t = THEMES.find((x) => x.id === radio.value);
-    announce(`Theme: ${t.label}${t.id === 'system' ? `, now ${resolveTheme('system') === 'vanilla-dark' ? 'Vanilla Dark' : 'Vanilla Light'}` : ''}.`);
+    announce(`Theme: ${t.label}${t.aa ? ', WCAG 2.0 AA' : ', exact colours'}${t.id === 'system' ? `, now ${resolveTheme('system') === 'vanilla-dark-aa' ? 'Vanilla Dark' : 'Vanilla Light'}` : ''}.`);
     onChange?.(radio.value);
   });
   document.addEventListener('themechange', sync); // chosen in another tab

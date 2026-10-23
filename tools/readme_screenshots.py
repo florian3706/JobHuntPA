@@ -69,7 +69,7 @@ ALLOWED_HOSTS = ("unpkg.com", "tile.openstreetmap.org", "fonts.googleapis.com", 
 DEMO_EMAIL, DEMO_PASSWORD = "demo@example.invalid", "demo-password-not-real"
 
 # theme id -> shown in themes.png, in this order
-MONTAGE_THEMES = ["light", "catppuccin-mocha", "catppuccin-latte", "dyslexia", "deuteranomaly-dark", "monochromacy"]
+MONTAGE_THEMES = ["light", "catppuccin-mocha-aa", "catppuccin-latte-aa", "dyslexia", "deuteranomaly-dark", "monochromacy"]
 ALL_SHOTS = ["jobs", "run-report", "job-page", "map", "search-setup", "company-sources", "settings", "search-schedule",
              "theme-picker", "themes", "chat", "cover-letter", "ghost-job", "settings-account", "settings-data",
              "settings-install", "sign-in"]

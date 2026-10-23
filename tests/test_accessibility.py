@@ -69,17 +69,24 @@ class ThemeContrastTest(unittest.TestCase):
     def test_the_vanilla_themes_set_every_slot_and_fill_their_labels(self):
         css = (FRONTEND / "themes.css").read_text(encoding="utf-8")
         themes = theme_contrast.parse_themes(css)
-        for theme in ("vanilla-light", "vanilla-dark"):
+        vanilla = ("vanilla-light", "vanilla-dark", "vanilla-light-aa", "vanilla-dark-aa")
+        for theme in vanilla:
             block = re.search(r'\[data-theme="%s"\] \{([^}]*)\}' % theme, css).group(1)
             own = set(re.findall(r"--([\w-]+)\s*:", block))
             self.assertEqual(set(FALLBACK_SLOTS) - own, set(), f"{theme} sets every new slot itself")
             self.assertEqual(set(LABEL_SLOTS) - own, set(), f"{theme} fills its status labels")
             for slot in LABEL_SLOTS + list(FALLBACK_SLOTS):
                 self.assertTrue(theme_contrast.is_set(themes[theme], slot), f"{theme}: --{slot}")
-        # Vanilla's own values where AA allows (themes.css lists the few that were moved, and why)
-        dark = themes["vanilla-dark"]
-        self.assertEqual((dark["accent"], dark["accent-edge"], dark["card"]), ("#008013", "#939393", "#262626"))
-        self.assertEqual(themes["vanilla-light"]["warn-fill"], "#cc7900")
+        # The exact palettes are the design's vanilla.css values; the AA versions differ only where AA needed it.
+        exact_dark, aa_dark = themes["vanilla-dark"], themes["vanilla-dark-aa"]
+        self.assertEqual((exact_dark["accent"], exact_dark["accent-edge"], exact_dark["ok"], exact_dark["accent-text"]),
+                         ("#008013", "#008013", "#62a36c", "#6699cc"))
+        self.assertEqual((aa_dark["accent"], aa_dark["accent-edge"], aa_dark["card"]), ("#008013", "#939393", "#262626"))
+        exact_light = themes["vanilla-light"]
+        self.assertEqual((exact_light["warn"], exact_light["focus"], exact_light["accent-text"]),
+                         ("#a86300", "#2e96ff", "#0066cc"))
+        for theme in ("vanilla-light", "vanilla-light-aa"):
+            self.assertEqual(themes[theme]["warn-fill"], "#cc7900")
         # The other themes leave the label fills unset (initial), so a preview inside a Vanilla page stays outlined,
         # and their new slots resolve to the slot they fall back to.
         shared = re.search(r"\n\[data-theme\] \{([^}]*)\}", css).group(1)
@@ -88,9 +95,62 @@ class ThemeContrastTest(unittest.TestCase):
         for slot, fallback in FALLBACK_SLOTS.items():
             self.assertRegex(shared, r"--%s:\s*var\(--%s\);" % (slot, fallback))
         for theme, tokens in themes.items():
-            if not theme.startswith("vanilla-"):
+            if theme not in vanilla:
                 self.assertFalse(any(theme_contrast.is_set(tokens, slot) for slot in LABEL_SLOTS), theme)
                 self.assertEqual(theme_contrast.token(tokens, "accent-edge"), theme_contrast.token(tokens, "accent"), theme)
+
+    def test_the_aa_badge_is_earned(self):
+        """aa: true (the picker's "WCAG 2.0 AA" badge) is set on exactly the themes whose pairs all meet AA; every
+        theme without it is a project's exact palette with its AA version right before it in its family."""
+        common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        listing = common[common.index("const THEMES = ["):common.index("];", common.index("const THEMES = ["))]
+        entries = [(m.group(1), m.group(0)) for m in re.finditer(r"\{ id: '([\w-]+)'[^}]*\}", listing)]
+        info = {tid: {**dict(re.findall(r"(\w+): '([^']*)'", src)), "aa": "aa: true" in src} for tid, src in entries}
+        order = [tid for tid, _ in entries]
+        flagged = {t for t, i in info.items() if i["aa"]}
+        self.assertEqual(flagged - {"system"}, theme_contrast.aa_themes(common))
+        self.assertEqual(theme_contrast.aa_themes(), theme_contrast.passing_themes(),
+                         "the badge is on exactly the themes that pass tools/theme_contrast.py")
+        exact = [t for t in order if not info[t]["aa"]]
+        self.assertEqual(len(exact), 16)
+        for t in exact:
+            sibling = f"{t}-aa"
+            self.assertIn(sibling, flagged, f"{t} has an AA version")
+            for key in ("label", "family", "mode"):
+                self.assertEqual(info[t][key], info[sibling][key], f"{t}: {key}")
+            self.assertEqual(order.index(sibling) + 1, order.index(t), f"{t} sits right after its AA version")
+        for t in ("dark", "light", "dyslexia", "dyslexia-dark", "protanomaly", "monochromacy-dark"):
+            self.assertIn(t, flagged, "the app's own palettes are built AA")
+        # The default and System's two targets carry the badge
+        self.assertIn("const DEFAULT_THEME = 'vanilla-dark-aa';", common)
+        self.assertIn("? 'vanilla-dark-aa' : 'vanilla-light-aa') : pref;", common)
+        self.assertTrue({"vanilla-dark-aa", "vanilla-light-aa", "system"} <= flagged)
+        # The picker: the badge is a positive status label with the words in it; the exact ones get the muted line
+        self.assertIn("const AA_BADGE = '<span class=\"badge p-status-label p-status-label--positive theme-aa\">"
+                      "WCAG 2.0 AA</span>';", common)
+        self.assertIn("${t.aa ? ` ${AA_BADGE}` : ''}", common)
+        self.assertIn("const EXACT_NOTE = 'The project\\'s exact colours; some text is under 4.5:1';", common)
+        self.assertIn("${t.aa ? '' : `<span class=\"theme-mode theme-exact\">${EXACT_NOTE}</span>`}", common)
+
+    def test_saved_family_themes_move_to_their_aa_version_once(self):
+        common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        offered = re.findall(r"\{ id: '([\w-]+)'", common)
+        exact = {t for t in offered if f"{t}-aa" in offered}
+        self.assertIn("migrateStoredTheme();", common[common.index("function storedTheme()"):])
+        self.assertIn("const EXACT_THEMES = THEMES.filter((t) => !t.aa).map((t) => t.id);", common)
+        self.assertIn("const THEME_MIGRATED_KEY = 'jobhunt.themeMigrated';", common)
+        scripts = set()
+        for page in PAGES:
+            src = (FRONTEND / page).read_text(encoding="utf-8")
+            head = src[src.index("<script>"):src.index("</script>")]
+            scripts.add(head)
+            pattern = re.search(r"if \((/\^.*\$/)\.test\(t\)\)", head).group(1).strip("/")
+            matched = {t for t in offered if re.fullmatch(pattern, t)}
+            self.assertEqual(matched, exact, f"{page}: the first-paint migration covers exactly the exact palettes")
+            self.assertIn('localStorage.getItem("jobhunt.themeMigrated") !== "aa"', head)
+            self.assertIn('localStorage.setItem("jobhunt.theme", t);', head)
+            self.assertIn('localStorage.setItem("jobhunt.themeMigrated", "aa");', head)
+        self.assertEqual(len(scripts), 1, "every page has the same first-paint script")
 
     def test_ubuntu_sans_in_every_theme_but_the_dyslexia_ones(self):
         css = (FRONTEND / "themes.css").read_text(encoding="utf-8")
@@ -108,18 +168,20 @@ class ThemeContrastTest(unittest.TestCase):
 
     def test_vanilla_dark_is_the_default_and_system_follows_the_vanilla_pair(self):
         common = (FRONTEND / "common.js").read_text(encoding="utf-8")
-        self.assertIn("const DEFAULT_THEME = 'vanilla-dark';", common)
-        self.assertIn("? 'vanilla-dark' : 'vanilla-light') : pref;", common)
+        self.assertIn("const DEFAULT_THEME = 'vanilla-dark-aa';", common)
+        self.assertIn("? 'vanilla-dark-aa' : 'vanilla-light-aa') : pref;", common)
         ids = re.findall(r"\{ id: '([\w-]+)', label: '([^']+)', family: '([^']+)'", common)
-        self.assertEqual(ids[:3], [("system", "System", "Vanilla"), ("vanilla-dark", "Vanilla Dark", "Vanilla"),
+        self.assertEqual(ids[:5], [("system", "System", "Vanilla"), ("vanilla-dark-aa", "Vanilla Dark", "Vanilla"),
+                                   ("vanilla-dark", "Vanilla Dark", "Vanilla"),
+                                   ("vanilla-light-aa", "Vanilla Light", "Vanilla"),
                                    ("vanilla-light", "Vanilla Light", "Vanilla")], "the Vanilla family is listed first")
         self.assertIn(("dark", "Dark", "JobHuntPA"), ids)
         self.assertIn(("light", "Light", "JobHuntPA"), ids)
         for page in PAGES:
             src = (FRONTEND / page).read_text(encoding="utf-8")
-            self.assertIn('var t = "vanilla-dark";', src, page)
-            self.assertIn('localStorage.getItem("jobhunt.theme") || "vanilla-dark"', src, page)
-            self.assertIn('matches ? "vanilla-dark" : "vanilla-light";', src, page)
+            self.assertIn('var t = "vanilla-dark-aa";', src, page)
+            self.assertIn('t = localStorage.getItem("jobhunt.theme") || t;', src, page)
+            self.assertIn('matches ? "vanilla-dark-aa" : "vanilla-light-aa";', src, page)
             self.assertNotIn('|| "dark"', src, page)
 
 
