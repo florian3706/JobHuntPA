@@ -168,6 +168,9 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
         for copy in copies.values():  # a summary's sources: the copies of them
             if copy.summary_of:
                 copy.summary_of = [copies[i].id for i in copy.summary_of if i in copies]
+        template_id = db.query(Workspace.letter_template_id).filter(Workspace.id == src).scalar()
+        if template_id in copies:  # the letter template cover letters use: the copy of it
+            db.get(Workspace, dst).letter_template_id = copies[template_id].id
 
 
 @router.patch("/{ws_id}")

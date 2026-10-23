@@ -14,8 +14,18 @@ Notes and summaries have no file (``filetype`` "note" / "summary"): the title is
 concise version (``concise_text``, editable); ``use_concise`` picks which one the LLM gets (Document.text_for_llm).
 Changing what the LLM gets changes the profile hash, so earlier scores show as stale.
 
-Kinds (DOCUMENT_KINDS): resume, cover_letter, preferences, other. Preferences say what the candidate wants: the
-scorer, the chat and title suggestions read them, cover letters never do (backend/cover_letters.py).
+Kinds (DOCUMENT_KINDS): resume, cover_letter, preferences, other, letter_template. Preferences say what the candidate
+wants: the scorer, the chat and title suggestions read them, cover letters never do (backend/cover_letters.py).
+
+A letter template (kind letter_template) is a .docx or .odt letterhead with a {{letter}} marker, checked at upload
+(backend/letter_files.py). Its file is what the cover-letter downloads are poured into; its text is shown but never
+sent to the AI: ``use_for_scoring`` stays off, the kind can't be changed into or out of it, and every prompt builder
+skips the kind. The workspace's current template (``workspaces.letter_template_id``):
+
+    GET    /api/documents/letter-template   the template in use, the formats it gives and its fonts (export_options)
+    PUT    /api/documents/letter-template   {id} chooses a template of this workspace; {id: null} the plain layout
+
+Both signed in, like the rest.
 
 The concise version and the summary are written by the configured LLM at the cover-letter task's reasoning
 level (both write from the documents), and must keep every fact: the scorer quotes them as evidence.
@@ -33,8 +43,17 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import crypto, llm_providers
-from backend.db import DOCUMENT_KINDS, NOTE_FILETYPE, SUMMARY_FILETYPE, UPLOAD_DIR, Document, get_db
+from backend import crypto, letter_files, llm_providers
+from backend.db import (
+    DOCUMENT_KINDS,
+    LETTER_TEMPLATE_KIND,
+    NOTE_FILETYPE,
+    SUMMARY_FILETYPE,
+    UPLOAD_DIR,
+    Document,
+    Workspace,
+    get_db,
+)
 from backend.workspaces import current_workspace, owned
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -128,9 +147,19 @@ def source_of(d: Document) -> str:
     return d.filetype if d.filetype in EDITABLE_FILETYPES else "file"
 
 
+def _current_template_id(db: Session, ws: int) -> Optional[int]:
+    return db.query(Workspace.letter_template_id).filter(Workspace.id == ws).scalar()
+
+
 def doc_to_dict(d: Document) -> dict:
+    from sqlalchemy.orm import object_session
+
     concise = (d.concise_text or "").strip()
+    is_template = d.kind == LETTER_TEMPLATE_KIND
+    db = object_session(d) if is_template else None
     return {
+        # a letter template: whether cover-letter downloads use this one (backend/cover_letters.py)
+        "current_template": bool(is_template and db is not None and _current_template_id(db, d.workspace_id) == d.id),
         "id": d.id,
         "filename": d.filename,
         "filetype": d.filetype,
@@ -184,24 +213,41 @@ def upload_document(file: UploadFile = File(...), kind: str = Form("resume"), db
     _kind(kind)
     original = file.filename or "upload"
     suffix = Path(original).suffix.lower()
+    template = kind == LETTER_TEMPLATE_KIND
+    if template and suffix not in letter_files.TEMPLATE_SUFFIXES:
+        raise HTTPException(status_code=400, detail="A letter template is a .docx or .odt file with a {{letter}} marker "
+                                                    "where the letter should go.")
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file type {suffix!r}. Allowed: {sorted(ALLOWED_EXTENSIONS)}")
     data = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail=f"That file is over {MAX_UPLOAD_BYTES // (1024 * 1024)} MB. "
                                                     "Upload a smaller copy (for example, without images).")
+    if template:
+        try:
+            letter_files.check_template(data, suffix)  # refused unless it has the marker and can be filled
+        except letter_files.TemplateError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     try:
         text = extract_text(data, suffix)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not extract text: {exc}")
-    if not text:
+        if template:
+            text = ""
+        else:
+            raise HTTPException(status_code=400, detail=f"Could not extract text: {exc}")
+    if not text and not template:  # a template may be a letterhead of pictures and a marker: its text doesn't matter
         raise HTTPException(status_code=400, detail="No text found in the file (scanned PDF?)")
     stored = save_upload(data)
-    doc = Document(workspace_id=ws, filename=original, filetype=suffix, stored_name=stored, text=text, kind=kind)
+    doc = Document(workspace_id=ws, filename=original, filetype=suffix, stored_name=stored, text=text, kind=kind,
+                   use_for_scoring=not template)
     db.add(doc)
     try:
+        db.flush()
+        if template and not _current_template_id(db, ws):  # the first template becomes the one in use
+            db.get(Workspace, ws).letter_template_id = doc.id
         db.commit()
     except Exception:
+        db.rollback()
         delete_upload(stored)
         raise
     return doc_to_dict(doc)
@@ -228,8 +274,14 @@ def update_document(doc_id: int, payload: DocumentUpdate, db: Session = Depends(
     doc = owned(db, Document, doc_id, ws, "Document")
     edited = False
     if payload.kind is not None:
+        if (payload.kind == LETTER_TEMPLATE_KIND) != (doc.kind == LETTER_TEMPLATE_KIND) and payload.kind != doc.kind:
+            raise HTTPException(status_code=400, detail="A letter template is uploaded as one (its file is checked for "
+                                                        "the {{letter}} marker); a document's type can't be changed "
+                                                        "into or out of it.")
         doc.kind = _kind(payload.kind)
     if payload.use_for_scoring is not None:
+        if payload.use_for_scoring and doc.kind == LETTER_TEMPLATE_KIND:
+            raise HTTPException(status_code=400, detail="A letter template is never sent to the AI.")
         doc.use_for_scoring = payload.use_for_scoring
     if payload.title is not None:
         if not payload.title.strip():
@@ -267,10 +319,40 @@ def document_text(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(
 def delete_document(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     doc = owned(db, Document, doc_id, ws, "Document")
     stored = doc.stored_name  # notes and summaries have no file
+    if _current_template_id(db, ws) == doc_id:  # the template in use: cover letters go back to the plain layout
+        db.get(Workspace, ws).letter_template_id = None
     db.delete(doc)
     db.commit()
     delete_upload(stored)
     return {"ok": True, "id": doc_id}
+
+
+# --------------------------------------------------------------------------
+# The letter template in use (per workspace)
+# --------------------------------------------------------------------------
+
+class TemplateChoice(BaseModel):
+    id: Optional[int] = None  # None: the plain layout
+
+
+@router.get("/letter-template")
+def letter_template(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    from backend.cover_letters import export_options
+
+    return export_options(db, ws)
+
+
+@router.put("/letter-template")
+def choose_letter_template(payload: TemplateChoice, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    from backend.cover_letters import export_options
+
+    if payload.id is not None:
+        doc = owned(db, Document, payload.id, ws, "Document")
+        if doc.kind != LETTER_TEMPLATE_KIND or not doc.stored_name:
+            raise HTTPException(status_code=400, detail="That document isn't a letter template.")
+    db.get(Workspace, ws).letter_template_id = payload.id
+    db.commit()
+    return export_options(db, ws)
 
 
 # --------------------------------------------------------------------------
@@ -368,6 +450,8 @@ def make_concise(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(c
     from backend.scorer import document_heading
 
     doc = owned(db, Document, doc_id, ws, "Document")
+    if doc.kind == LETTER_TEMPLATE_KIND:
+        raise HTTPException(status_code=400, detail="A letter template is never sent to the AI, so it has no concise version.")
     original = (doc.text or "").strip()
     if not original:
         raise HTTPException(status_code=400, detail="This document has no text to shorten.")
@@ -388,7 +472,7 @@ def make_summary(db: Session = Depends(get_db), ws: int = Depends(current_worksp
     from backend.scorer import _KIND_ORDER, document_heading
 
     docs = [d for d in db.query(Document).filter(Document.workspace_id == ws)
-            if d.use_for_scoring and d.kind != "preferences" and (d.text or "").strip()]
+            if d.use_for_scoring and d.kind not in ("preferences", LETTER_TEMPLATE_KIND) and (d.text or "").strip()]
     if not docs:
         raise HTTPException(status_code=400, detail="Tick \"use for scoring\" on the documents to summarise "
                                                     "first (preferences are kept separate).")
