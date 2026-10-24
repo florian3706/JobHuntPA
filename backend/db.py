@@ -1267,7 +1267,9 @@ def _ensure_indexes() -> None:
 # build's cover letter templates (a table of their own; a template is now a document of kind letter_template): their
 # sealed upload files are deleted with the table.
 RETIRED_TABLES = ("membership_grants", "memberships", "email_prefs", "admin_key_grants", "admin_audit", "auth_tokens",
-                  "commute_cache", "letter_templates")
+                  "commute_cache")
+# Not here: ``letter_templates`` (a development build's table) holds the user's uploaded template, sealed under their
+# key, so it is carried into the documents at their sign-in instead (backend/migrate_templates.py).
 # Two-step sign-in: the secrets (under the server key) and what they were checked against. The admin panel: each
 # account's details sealed to the admin details key, and the role that set the admins apart.
 _USERS_CLEARED = {"mfa_enabled": "0", "totp_secret_enc": "NULL", "totp_pending_enc": "NULL", "totp_last_step": "NULL",
@@ -1310,9 +1312,6 @@ def _retire_removed_features() -> bool:
                               "WHERE skipped_reason = 'membership_required'"))
         if "app_settings" in tables:
             counts["settings"] = conn.execute(text(f"DELETE FROM app_settings WHERE key IN ({names})")).rowcount
-        uploads = []
-        if "letter_templates" in tables:  # (their files go after the commit, as a deleted document's do)
-            uploads = [name for (name,) in conn.execute(text("SELECT stored_name FROM letter_templates"))]
         for name in RETIRED_TABLES:
             if name in tables:
                 conn.execute(text(f"DROP TABLE {name}"))
@@ -1320,12 +1319,6 @@ def _retire_removed_features() -> bool:
     if not any(counts.values()):
         return False
     scrub_wal()
-    for name in uploads:
-        if name and os.path.basename(name) == name:
-            try:
-                (UPLOAD_DIR / name).unlink(missing_ok=True)
-            except OSError as exc:
-                log.warning("Could not delete a retired cover letter template's file: %s", exc.__class__.__name__)
     log.info("removed what memberships, email, digests, two-step sign-in, the admin panel and the commute services "
              "left: %d account(s) cleaned, %d waiting sign-in(s) and %d link(s) or invitation(s) deleted, %d setting(s) "
              "and %d table(s) dropped", counts["accounts"], counts["pending"], counts["links"], counts["settings"], counts["tables"])

@@ -48,7 +48,7 @@ WORD = "RESET"
 # so a new table has to be put in one list or the other.
 WIPED_TABLES = (  # children before parents (foreign keys are on)
     "chat_messages", "chat_threads", "cover_letters", "fit_results", "job_duplicates", "jobs", "documents", "letter_blocks",
-    "letter_templates",  # (retired, backend/db.py RETIRED_TABLES; a child of workspaces, so it goes before them)
+    "letter_templates",  # (a development build's, moved at sign-in: backend/migrate_templates.py; a child of workspaces)
     "pins", "company_sources", "search_runs", "search_schedules", "user_profile", "dealbreakers", "search_profile",
     "http_cache", "workspaces", "site_mappings", "sessions", "recovery_codes", "user_keys",
     # an install that wasn't started since the update may still have these (backend/db.py RETIRED_TABLES)

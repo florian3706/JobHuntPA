@@ -124,14 +124,23 @@ _lock = threading.Lock()
 _warming: Optional[Future] = None
 _warm_lock = threading.Lock()
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jobhunt-fonts")
+# Fonts installed while the app runs: the folders' modification times are compared, at most every CHECK_EVERY_S, with
+# those at the last scan, and a change starts a scan in the background (requests keep the old list meanwhile).
+_signature: Optional[tuple] = None   # the folders at the last scan
+_checked_at = 0.0
+_refreshing: Optional[Future] = None
+CHECK_EVERY_S = 30.0
 
 
 def catalogue(refresh: bool = False, wait: bool = True) -> dict[str, dict[tuple[bool, bool], Path]]:
     """Every TrueType family on this computer: {family (lower-case): {(bold, italic): file}}. Scanned once (a Raspberry
-    Pi with many fonts takes seconds). ``wait=False`` (requests): before the scan has ended, starts it in the background
-    if it isn't running and answers {} (the core fonts) instead of waiting."""
-    global _catalogue
+    Pi with many fonts takes seconds) and again in the background when a font folder changes. ``wait=False``
+    (requests): before the scan has ended, starts it in the background if it isn't running and answers {} (the core
+    fonts) instead of waiting."""
+    global _catalogue, _signature
     if _catalogue is not None and not refresh:
+        if not wait:
+            _refresh_if_changed()
         return _catalogue
     if not wait and not refresh:
         warm_up()
@@ -139,8 +148,41 @@ def catalogue(refresh: bool = False, wait: bool = True) -> dict[str, dict[tuple[
     with _lock:
         if _catalogue is not None and not refresh:
             return _catalogue
+        signature = _dir_signature()
         _catalogue = _scan()
+        _signature = signature
         return _catalogue
+
+
+def _dir_signature() -> tuple:
+    """(folder, modification time) for every font folder and sub-folder: what changes when fonts are added."""
+    found = []
+    for base in font_dirs():
+        if not base.is_dir():
+            continue
+        for root, _dirs, _files in os.walk(base):
+            try:
+                found.append((root, os.stat(root).st_mtime_ns))
+            except OSError:
+                continue
+    return tuple(found)
+
+
+def _refresh_if_changed() -> None:
+    """Starts a background rescan when a font folder changed since the last scan (checked at most every
+    CHECK_EVERY_S, so a request costs a stat per folder at most that often)."""
+    from backend import threads
+
+    global _checked_at, _refreshing
+    now = time.monotonic()
+    if now - _checked_at < CHECK_EVERY_S:
+        return
+    with _warm_lock:
+        if now - _checked_at < CHECK_EVERY_S or (_refreshing is not None and not _refreshing.done()):
+            return
+        _checked_at = now
+        if _dir_signature() != _signature:
+            _refreshing = threads.submit(_pool, catalogue, True)
 
 
 def warm_up() -> None:

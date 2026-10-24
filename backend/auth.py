@@ -45,7 +45,7 @@ from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend import account, crypto, lockout, migrate_encryption, sessions, users
+from backend import account, crypto, lockout, migrate_encryption, migrate_templates, sessions, users
 from backend import db as database
 from backend.db import AuthSession, SessionLocal, User, UserKeys, get_db, scrub_wal, utcnow
 from backend.sessions import REAUTH_REQUIRED, AuthProblem, AuthUser, current_user, require_recent_auth  # noqa: F401
@@ -175,6 +175,11 @@ def _login(body: LoginIn, request: Request, db: Session):
 def _after_sign_in(user_id: int, dek: bytes) -> None:
     if not migrate_encryption.known_done():  # their key may be the one the encryption run is waiting for
         migrate_encryption.ensure_started(user_id, dek, wait_s=0)
+    if migrate_templates.pending():  # a development build's letter templates: theirs become documents now
+        try:
+            migrate_templates.run(user_id, dek)
+        except Exception as exc:  # never in the way of signing in; tried again at the next sign-in
+            log.warning("Carrying the old letter templates into the documents failed: %s", exc.__class__.__name__)
 
 
 class RecoverIn(BaseModel):

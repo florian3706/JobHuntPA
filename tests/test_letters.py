@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import pathlib
 import tempfile
 import unittest
 from unittest import mock
@@ -26,6 +27,7 @@ from tests import helpers  # noqa: E402  (signed-in clients; sets the test envir
 from fastapi.testclient import TestClient  # noqa: E402
 
 import backend.scorer as sc  # noqa: E402
+from backend import crypto  # noqa: E402
 from backend import letter_files as lf  # noqa: E402
 from backend import letter_pdf as lp  # noqa: E402
 from backend.app import app  # noqa: E402
@@ -395,6 +397,76 @@ class EndpointTest(unittest.TestCase):
         r = self.client.put(f"/api/jobs/{self.job_id}/cover-letter", headers=self.h, json={"text": letter["draft_text"]})
         self.assertEqual((r.json()["edited"], r.json()["text"]), (False, letter["draft_text"]))  # back to the draft
 
+    def test_a_development_builds_templates_become_documents_at_sign_in(self):
+        """A build of 2026-10-23 kept templates in ``letter_templates``. Its rows are the owner's data: at their sign-in
+        each becomes a letter_template document (the workspace's current one), the file stays, a row without a file
+        or workspace is deleted, and the table is dropped once empty (backend/migrate_templates.py)."""
+        from sqlalchemy import inspect, text
+
+        from backend import db as db_module
+        from backend import docs, migrate_templates
+
+        uid, dek = helpers.key_of()
+        with crypto.as_user(uid, dek):
+            stored = docs.save_upload(docx_template(header="OLD LETTERHEAD"))
+            name = crypto.SealedText("letter_templates.filename").process_bind_param("Old letterhead.docx", None)
+        stray = db_module.UPLOAD_DIR / "0123456789abcdef-orphan.sealed"
+        stray.write_bytes(b"sealed bytes of a workspace that is gone")
+        with db_module.engine.begin() as conn:
+            conn.execute(text("CREATE TABLE letter_templates (id INTEGER PRIMARY KEY, workspace_id INTEGER, filename BLOB, "
+                              "filetype VARCHAR NOT NULL, stored_name VARCHAR NOT NULL, created_at DATETIME)"))
+            conn.execute(text("INSERT INTO letter_templates (workspace_id, filename, filetype, stored_name, created_at) "
+                              "VALUES (:ws, :name, '.docx', :stored, '2026-10-23 11:29:48')"),
+                         {"ws": self.ws, "name": name, "stored": stored})
+            conn.execute(text("INSERT INTO letter_templates (workspace_id, filename, filetype, stored_name) "
+                              "VALUES (:ws, :name, '.docx', 'missing-file.sealed')"), {"ws": self.ws, "name": name})
+            conn.execute(text("INSERT INTO letter_templates (workspace_id, filename, filetype, stored_name) "
+                              "VALUES (987654321, :name, '.odt', :stored)"), {"name": name, "stored": stray.name})
+        migrate_templates._gone = False
+        self.assertTrue(migrate_templates.pending())
+        self.assertNotIn("letter_templates", db_module.RETIRED_TABLES, "start-up must not drop the user's template")
+        with helpers.client() as again:  # signing in carries them over (backend/auth.py _after_sign_in)
+            self.assertEqual(again.get("/api/auth/me").status_code, 200)
+        docs_listed = self.client.get("/api/documents", headers=self.h).json()
+        self.assertEqual([(d["filename"], d["kind"], d["use_for_scoring"], d["current_template"]) for d in docs_listed],
+                         [("Old letterhead.docx", "letter_template", False, True)])
+        self.assertEqual(docs_listed[0]["created_at"][:10], "2026-10-23")
+        info = self.client.get("/api/documents/letter-template", headers=self.h).json()
+        self.assertEqual(info["template"]["filename"], "Old letterhead.docx")
+        r = self.download("docx")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("OLD LETTERHEAD", " ".join(p.text for p in lf.docx_letter(r.content).header))
+        self.assertTrue((db_module.UPLOAD_DIR / stored).exists(), "the upload file stays")
+        self.assertFalse(stray.exists(), "an orphan row's file goes")
+        self.assertNotIn("letter_templates", inspect(db_module.engine).get_table_names(), "dropped once empty")
+        self.assertFalse(migrate_templates.pending())
+
+    def test_the_font_list_follows_the_font_folders(self):
+        """Fonts installed while the app runs: a changed font folder starts a rescan in the background."""
+        folder = pathlib.Path(tempfile.mkdtemp())
+        scans = []
+
+        def scan():
+            scans.append(1)
+            lp._names["ubuntu"] = "Ubuntu"
+            return {"ubuntu": {(False, False): folder / "Ubuntu-R.ttf"}} if len(scans) > 1 else {}
+
+        with mock.patch.object(lp, "font_dirs", return_value=[folder]), mock.patch.object(lp, "_scan", side_effect=scan), \
+                mock.patch.object(lp, "_catalogue", None), mock.patch.object(lp, "_signature", None), \
+                mock.patch.object(lp, "_checked_at", 0.0), mock.patch.object(lp, "_refreshing", None), \
+                mock.patch.object(lp, "CHECK_EVERY_S", 0.0):
+            self.assertEqual(lp.catalogue(), {})  # the start-up scan
+            self.assertEqual(lp.families(), [])
+            self.assertIsNone(lp._refreshing, "nothing changed: no rescan")
+            (folder / "ubuntu").mkdir()  # a new font package
+            import time as _time
+            _time.sleep(0.02)  # a folder's mtime has a coarse resolution on some file systems
+            lp.catalogue(wait=False)
+            self.assertIsNotNone(lp._refreshing, "the change was seen and a rescan started")
+            lp._refreshing.result(timeout=10)
+            self.assertEqual(lp.families(), ["Ubuntu"])
+            self.assertEqual(len(scans), 2)
+
     def test_access_is_the_job_workspace_signed_in(self):
         other = self.client.post("/api/workspaces", json={"name": "other"}).json()["id"]
         self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{other}"))
@@ -663,29 +735,6 @@ class ReviewFixTest(unittest.TestCase):
                 self.assertIs(lp._warming, warming, "once")
                 warming.result(timeout=10)
             self.assertEqual(lp._catalogue, {})
-
-
-class RetiredTemplateTableTest(unittest.TestCase):
-    def test_a_development_builds_template_table_is_dropped_with_its_files(self):
-        """A build before this merge kept templates in a table of their own (``letter_templates``): start-up drops it
-        (backend/db.py RETIRED_TABLES) and deletes the sealed files its rows named."""
-        from sqlalchemy import inspect, text
-
-        from backend import db as db_module
-
-        stray = db_module.UPLOAD_DIR / "0123456789abcdef-retired.sealed"
-        db_module.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        stray.write_bytes(b"sealed template bytes")
-        with db_module.engine.begin() as conn:
-            conn.execute(text("CREATE TABLE letter_templates (id INTEGER PRIMARY KEY, workspace_id INTEGER, filename BLOB, "
-                              "filetype VARCHAR NOT NULL, stored_name VARCHAR NOT NULL, created_at DATETIME)"))
-            conn.execute(text("INSERT INTO letter_templates (workspace_id, filetype, stored_name) VALUES (1, '.docx', :n)"),
-                         {"n": stray.name})
-        self.assertIn("letter_templates", db_module.RETIRED_TABLES)
-        self.assertTrue(db_module._retire_removed_features())
-        self.assertNotIn("letter_templates", inspect(db_module.engine).get_table_names())
-        self.assertFalse(stray.exists())
-        self.assertFalse(db_module._retire_removed_features(), "nothing left to do the next time")
 
 
 # --------------------------------------------------------------------------
