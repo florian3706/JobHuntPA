@@ -266,6 +266,43 @@ class EndpointTest(unittest.TestCase):
             self.assertIn(f'filename="Cover letter - Acme - Program Manager.{fmt}"', r.headers["content-disposition"])
         self.assertEqual(json.loads(self.download("pdf").headers["x-font-substitutions"]), [])
 
+    def test_the_plain_layouts_font_can_be_chosen(self):
+        info = self.client.get("/api/documents/letter-template", headers=self.h).json()
+        self.assertIsNone(info["font_setting"])
+        self.assertIsInstance(info["font_choices"], list)
+        default = info["letter_font"]
+        r = self.client.put("/api/documents/letter-font", headers=self.h, json={"family": " Liberation Serif ", "size": 12})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["letter_font"], {"family": "Liberation Serif", "size": 12.0})
+        self.assertEqual(r.json()["font_setting"], {"family": "Liberation Serif", "size": 12.0})
+        body = lf.docx_letter(self.download("docx").content).body
+        self.assertEqual({(p.font, p.size) for p in body if p.text.strip()}, {("Liberation Serif", 12.0)})
+        body = lf.odt_letter(self.download("odt").content).body
+        self.assertEqual({(p.font, p.size) for p in body if p.text.strip()}, {("Liberation Serif", 12.0)})
+        self.assertEqual(self.download("pdf").status_code, 200)
+        # the size alone, the family alone; bad values are refused; both null is the default again
+        r = self.client.put("/api/documents/letter-font", headers=self.h, json={"size": 10.5})
+        self.assertEqual(r.json()["letter_font"], {"family": default["family"], "size": 10.5})
+        r = self.client.put("/api/documents/letter-font", headers=self.h, json={"family": "Georgia"})
+        self.assertEqual(r.json()["letter_font"], {"family": "Georgia", "size": default["size"]})
+        for bad in ({"size": 7}, {"size": 19}, {"family": "x" * 81}):
+            self.assertEqual(self.client.put("/api/documents/letter-font", headers=self.h, json=bad).status_code, 422, bad)
+        self.assertEqual(self.client.put("/api/documents/letter-font", headers=self.h, json={"family": "<b>Arial</b>"}).status_code, 400)
+        r = self.client.put("/api/documents/letter-font", headers=self.h, json={"family": None, "size": None})
+        self.assertEqual((r.json()["letter_font"], r.json()["font_setting"]), (default, None))
+        # a template's letter keeps the template's font
+        self.client.put("/api/documents/letter-font", headers=self.h, json={"family": "Georgia", "size": 9})
+        self.upload("letterhead.docx", docx_template(font=MISSING_FONT))
+        info = self.client.get("/api/documents/letter-template", headers=self.h).json()
+        self.assertEqual(info["letter_font"], {"family": MISSING_FONT, "size": 12.5})
+        self.assertEqual(info["font_setting"], {"family": "Georgia", "size": 9.0})
+        # other workspaces: the default; anonymous: refused
+        other = self.client.post("/api/workspaces", json={"name": "other"}).json()["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{other}"))
+        self.assertIsNone(self.client.get("/api/documents/letter-template", headers={"X-Workspace": str(other)}).json()["font_setting"])
+        with TestClient(app) as anonymous:
+            self.assertEqual(anonymous.put("/api/documents/letter-font", json={"size": 12}).status_code, 401)
+
     def test_docx_template_gives_docx_and_pdf_with_the_substitution_header(self):
         r = self.upload("letterhead.docx", docx_template(font=MISSING_FONT))
         self.assertEqual(r.status_code, 200, r.text)

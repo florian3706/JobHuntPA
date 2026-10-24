@@ -1781,6 +1781,10 @@ dialog.modal.modal--letter { width: min(1120px, calc(100% - 32px)); height: fit-
 .cl-template { gap: 6px; }
 .cl-fonts { color: var(--text); }
 .cl-change { color: var(--accent-text); }
+.cl-font-row { gap: 8px 12px; }
+.cl-font-field { display: inline-flex; align-items: center; gap: 6px; }
+.cl-font-field .p-select { width: auto; max-width: 14rem; }
+.cl-font-size { width: 4.5rem; }
 .cl-versions { margin: 0; gap: 0; }
 .cl-version { gap: 2px; padding: 6px 0; }
 .cl-view-draft { align-self: flex-start; padding-left: 0; }

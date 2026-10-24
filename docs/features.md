@@ -384,7 +384,8 @@ ranks a job down because of them, and never puts a number on it.
   This is never applied to the text of your own blocks.
 - **Downloads** as `.pdf`, OpenDocument `.odt` or Word `.docx`. With a letter template the letter is poured
   into it (a `.docx` template gives `.docx` and PDF, an `.odt` one `.odt` and PDF; the other format is greyed
-  out with the reason); without one it is a plain A4 document. The PDF is made from the filled file: by
+  out with the reason); without one it is a plain A4 document in the font and size chosen in the window's
+  *Template* section (a font this computer has; the default is a sans at 11 pt). The PDF is made from the filled file: by
   LibreOffice when it is installed, otherwise drawn by the app with the fonts this computer has (the window
   names any font that stood in). The window says which template is used and which way PDFs are made.
 - **Discard my edits**: the model's draft is kept beside your edits, so you can go back to it. *Mark this job

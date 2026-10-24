@@ -411,7 +411,9 @@ def export_options(db: Session, ws: int) -> dict:
     """What the cover-letter window shows about downloads: the template (or the plain layout), which formats it
     gives, the font the letter takes, which of the template's fonts this computer lacks (what reportlab stands in
     with), and what makes the PDF (``pdf``: "libreoffice" or "reportlab"). ``problem``: why the template can't be
-    used (its file is gone, or no longer reads as a template: one brought in by an import, or a library update)."""
+    used (its file is gone, or no longer reads as a template: one brought in by an import, or a library update).
+    ``font_setting``: the plain layout's font the user chose (None: the default) and ``font_choices`` the families
+    this computer has to choose from (``PUT /api/documents/letter-font``)."""
     template = current_template(db, ws)
     out = {"template": None, "formats": {}, "fonts": [], "letter_font": None, "problem": None,
            "pdf": letter_pdf.pdf_backend()}
@@ -427,12 +429,25 @@ def export_options(db: Session, ws: int) -> dict:
         except letter_files.TemplateError as exc:
             out["problem"] = str(exc)
     else:
-        font = letter_pdf.plain_font()
-        out["letter_font"] = {"family": font, "size": letter_files.DEFAULT_SIZE}
+        family, size = plain_font_for(db, ws)
+        out["letter_font"] = {"family": family, "size": size}
+    row = db.query(Workspace.letter_font, Workspace.letter_font_size).filter(Workspace.id == ws).first()
+    out["font_setting"] = ({"family": row[0] or letter_pdf.plain_font(), "size": row[1] or letter_files.DEFAULT_SIZE}
+                           if row and (row[0] or row[1]) else None)
+    out["font_choices"] = letter_pdf.families()
     for fmt, (_media, label) in FORMATS.items():
         problem = out["problem"] or format_problem(fmt, template)
         out["formats"][fmt] = {"label": label, "available": problem is None, "reason": problem}
     return out
+
+
+def plain_font_for(db: Session, ws: int) -> tuple[str, float]:
+    """The plain layout's (family, size) for this workspace: what the user chose (backend/docs.py, the letter window)
+    or the default, a sans this computer has at ``DEFAULT_SIZE``."""
+    row = db.query(Workspace.letter_font, Workspace.letter_font_size).filter(Workspace.id == ws).first()
+    family = (row[0] if row else None) or letter_pdf.plain_font()
+    size = (row[1] if row else None) or letter_files.DEFAULT_SIZE
+    return family, float(size)
 
 
 def _template_bytes(template: Document) -> bytes:
@@ -463,7 +478,7 @@ def build_file(db: Session, ws: int, job: Job, text: str, fmt: str) -> tuple[byt
                                                         "your word processor and upload it once more.")
     else:
         suffix = ".odt" if fmt == "odt" else ".docx"
-        filled = letter_files.plain(suffix, text, letter_pdf.plain_font())
+        filled = letter_files.plain(suffix, text, *plain_font_for(db, ws))
     if fmt != "pdf":
         return filled, []
     if letter_pdf.pdf_backend() == "libreoffice":

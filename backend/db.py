@@ -205,6 +205,10 @@ class Workspace(Base):
     # The letter template (a ``documents`` row of kind letter_template in this workspace) that cover-letter downloads
     # use; NULL: the plain built-in layout. An id, so plaintext; cleared when that document goes (backend.docs).
     letter_template_id = Column(Integer, nullable=True)
+    # The plain layout's font family and size (points) for cover-letter downloads; NULL: the app's default (a sans
+    # this computer has, 11 pt). A font name, so plaintext. A template's letter takes its {letter} paragraph's font.
+    letter_font = Column(String, nullable=True)
+    letter_font_size = Column(Float, nullable=True)
 
 
 def _workspace_fk():

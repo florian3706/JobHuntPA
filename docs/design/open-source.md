@@ -624,6 +624,7 @@ file (not a row id). Other fields point at them by that number.
 | `documents` | below |
 | `letter_blocks` | below |
 | `letter_template` | `null`, or the `ref` of the document cover-letter downloads are filled into (below) |
+| `letter_font` | `null`, or `{family, size}`: the plain layout's font (a font name, 8 to 18 points) |
 | `jobs` | below |
 | `chats` | below |
 
@@ -655,6 +656,9 @@ them and drops empty and repeated ones); `position` is the block's order within 
 downloads are filled into, or `null` for the plain layout. An import points the new workspace at that document's copy
 when it came in with its original file; otherwise the workspace uses the plain layout. Anything but a number (a
 development build wrote an object here) counts as `null`.
+
+**`letter_font`:** the font the plain layout (no template) is set in: `{"family": "Liberation Serif", "size": 12}`, or
+`null` for the default. The name must be letters, digits, spaces, dots, apostrophes and hyphens; the size 8 to 18.
 
 **`jobs`:** one entry per job, merged copies included:
 

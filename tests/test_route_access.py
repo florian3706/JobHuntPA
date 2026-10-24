@@ -55,7 +55,7 @@ GET /api/chats/{chat_id}; POST /api/chats/{chat_id}/messages; GET /api/companies
 GET /api/dealbreakers; PUT /api/dealbreakers; GET /api/documents; POST /api/documents; POST /api/documents/notes;
 POST /api/documents/suggest-titles; POST /api/documents/summary; DELETE /api/documents/{doc_id};
 PATCH /api/documents/{doc_id}; POST /api/documents/{doc_id}/concise; GET /api/documents/{doc_id}/text;
-GET /api/documents/letter-template; PUT /api/documents/letter-template;
+GET /api/documents/letter-template; PUT /api/documents/letter-template; PUT /api/documents/letter-font;
 GET /api/duplicates; POST /api/duplicates/decide; POST /api/duplicates/scan; GET /api/encryption/status;
 GET /api/extension/keys; DELETE /api/extension/keys/{key_id}; GET /api/geo/lookup; POST /api/import/page;
 GET /api/jobs; PATCH /api/jobs/hidden; POST /api/jobs/merge; POST /api/jobs/refilter; PATCH /api/jobs/status;

@@ -24,6 +24,8 @@ skips the kind. The workspace's current template (``workspaces.letter_template_i
 
     GET    /api/documents/letter-template   the template in use, the formats it gives and its fonts (export_options)
     PUT    /api/documents/letter-template   {id} chooses a template of this workspace; {id: null} the plain layout
+    PUT    /api/documents/letter-font       {family, size} the plain layout's font (``workspaces.letter_font``,
+                                            ``letter_font_size``); both null: the default. A template keeps its own.
 
 Both signed in, like the rest.
 
@@ -349,6 +351,30 @@ def choose_letter_template(payload: TemplateChoice, db: Session = Depends(get_db
         if doc.kind != LETTER_TEMPLATE_KIND or not doc.stored_name:
             raise HTTPException(status_code=400, detail="That document isn't a letter template.")
     db.get(Workspace, ws).letter_template_id = payload.id
+    db.commit()
+    return export_options(db, ws)
+
+
+class FontChoice(BaseModel):
+    family: Optional[str] = Field(default=None, max_length=80)
+    size: Optional[float] = Field(default=None, ge=8, le=18)
+
+
+FONT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'\-]*$")
+
+
+@router.put("/letter-font")
+def choose_letter_font(payload: FontChoice, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    """The plain layout's font for cover-letter downloads: a family name as a word processor shows it (a font this
+    computer has, or any name: the .docx/.odt name it and the PDF stands in) and a size in points, 8 to 18. Both null:
+    the default again. A template's letter keeps its {letter} paragraph's font, whatever is set here."""
+    from backend.cover_letters import export_options
+
+    family = (payload.family or "").strip() or None
+    if family is not None and not FONT_NAME.match(family):
+        raise HTTPException(status_code=400, detail="A font name is letters, digits, spaces, dots and hyphens.")
+    row = db.get(Workspace, ws)
+    row.letter_font, row.letter_font_size = family, payload.size
     db.commit()
     return export_options(db, ws)
 

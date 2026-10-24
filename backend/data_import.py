@@ -406,6 +406,9 @@ class Importer:
             template = db.get(Document, self.document_ids[data.letter_template])
             if template is not None and template.kind == LETTER_TEMPLATE_KIND and template.stored_name:
                 db.get(Workspace, ws).letter_template_id = template.id
+        if data.letter_font is not None:
+            row = db.get(Workspace, ws)
+            row.letter_font, row.letter_font_size = data.letter_font.family, data.letter_font.size
         jobs = self.jobs(ws, data, {ref: row.id for ref, row in sources.items()}, made)
         made["chats"] = self.chats(ws, data, jobs)
         return made

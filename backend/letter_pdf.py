@@ -119,6 +119,7 @@ def read_names(path: Path) -> Optional[tuple[str, str]]:
 
 
 _catalogue: Optional[dict[str, dict[tuple[bool, bool], Path]]] = None
+_names: dict[str, str] = {}  # family (lower-case) -> the name its files give (for the font list)
 _lock = threading.Lock()
 _warming: Optional[Future] = None
 _warm_lock = threading.Lock()
@@ -170,7 +171,20 @@ def _scan() -> dict[str, dict[tuple[bool, bool], Path]]:
                 style_l = style.lower()
                 key = ("bold" in style_l, "italic" in style_l or "oblique" in style_l)
                 found.setdefault(family.lower(), {}).setdefault(key, path)
+                _names.setdefault(family.lower(), family)
     return found
+
+
+NOT_FOR_LETTERS = ("emoji", "symbol", "math", "braille", "dingbat", "music", "icons", "awesome")
+
+
+def families() -> list[str]:
+    """The families this computer has that a letter could be set in: those with a regular face, sorted, less the
+    symbol and emoji fonts. Empty before the scan has ended (the window then offers the default only)."""
+    cat = catalogue(wait=False)
+    out = [_names.get(low, low) for low, faces in cat.items()
+           if (False, False) in faces and not any(h in low for h in NOT_FOR_LETTERS)]
+    return sorted(out, key=str.lower)
 
 
 def classify(family: str) -> str:

@@ -844,8 +844,8 @@ def fill(data: bytes, suffix: str, letter_text: str, values: dict) -> bytes:
     raise TemplateError("A letter template is a .docx or .odt file.")
 
 
-def plain(suffix: str, letter_text: str, font: str) -> bytes:
-    return plain_docx(letter_text, font) if suffix == ".docx" else plain_odt(letter_text, font)
+def plain(suffix: str, letter_text: str, font: str, size: float = DEFAULT_SIZE) -> bytes:
+    return plain_docx(letter_text, font, size) if suffix == ".docx" else plain_odt(letter_text, font, size)
 
 
 def letter_model(data: bytes, suffix: str) -> Letter:

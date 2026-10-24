@@ -175,6 +175,8 @@ def _copy_settings(db: Session, src: int, dst: int, documents: bool) -> None:
         template_id = db.query(Workspace.letter_template_id).filter(Workspace.id == src).scalar()
         if template_id in copies:  # the letter template cover letters use: the copy of it
             db.get(Workspace, dst).letter_template_id = copies[template_id].id
+        source, target = db.get(Workspace, src), db.get(Workspace, dst)  # the plain layout's font
+        target.letter_font, target.letter_font_size = source.letter_font, source.letter_font_size
 
 
 @router.patch("/{ws_id}")

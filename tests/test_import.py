@@ -572,6 +572,22 @@ class LetterTemplateTest(Base):
         self.assertEqual(self.current(made["id"]), ("MARK-template-bob.docx", "letter_template", self.template))
         self.assertEqual(self.current(self.bob.workspace_id), self.current(made["id"]), "the old one is still there")
 
+    def test_the_plain_layouts_font_comes_back(self):
+        with helpers.client(self.bob.email) as c:
+            self.assertEqual(c.put("/api/documents/letter-font", json={"family": "Liberation Serif", "size": 12}).status_code, 200)
+        blob = self.export()
+        self.assertEqual(self.import_data(blob)["workspaces"][0]["letter_font"], {"family": "Liberation Serif", "size": 12.0})
+        made = self.made(blob)
+        db = SessionLocal()
+        try:
+            row = db.query(Workspace.letter_font, Workspace.letter_font_size).filter(Workspace.id == made["id"]).one()
+            self.assertEqual(tuple(row), ("Liberation Serif", 12.0))
+        finally:
+            db.close()
+        data = self.import_data(blob)
+        data["workspaces"][0]["letter_font"] = {"family": "<script>", "size": 40}  # refused as a whole
+        self.assertNotEqual(self.do_import(self.replace_import_file(blob, data)).status_code, 200)
+
     def test_no_pointer_or_an_older_shape_brings_the_plain_layout(self):
         blob = self.export()
         data = self.import_data(blob)

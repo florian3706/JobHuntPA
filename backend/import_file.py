@@ -235,6 +235,9 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tup
         "chats": chats,
         # The letter template cover-letter downloads use (one of the documents above); None: the plain layout.
         "letter_template": doc_ref.get(ws.letter_template_id) if ws.letter_template_id else None,
+        # The plain layout's font (family, size in points); None: the default.
+        "letter_font": ({"family": ws.letter_font, "size": ws.letter_font_size}
+                        if ws.letter_font or ws.letter_font_size else None),
     }
     return data, companies
 
@@ -599,6 +602,11 @@ class ChatIn(_In):
     messages: Annotated[list[MessageIn], Field(max_length=MANY)] = Field(default_factory=list)
 
 
+class LetterFontIn(_In):
+    family: Annotated[Optional[str], StringConstraints(max_length=80, pattern=r"^[A-Za-z0-9][A-Za-z0-9 .'\-]*$")] = None
+    size: Annotated[Optional[float], Field(ge=8, le=18)] = None
+
+
 class WorkspaceIn(_In):
     name: Short
     created_at: When = None
@@ -612,6 +620,7 @@ class WorkspaceIn(_In):
     chats: Annotated[list[ChatIn], Field(max_length=MANY)] = Field(default_factory=list)
     # The document (its ref) cover-letter downloads use.
     letter_template: Annotated[Optional[Ref], BeforeValidator(_ref_or_none)] = None
+    letter_font: Optional[LetterFontIn] = None  # the plain layout's font; None: the default
 
 
 def _web_page(url: str) -> str:

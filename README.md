@@ -782,7 +782,8 @@ limits on searches. The AI features use the provider and key set on the Settings
   it in that paragraph's font (`{date}`, `{company}`, `{job_title}` or `{role}`, `{location}` and `{name}` are
   filled in too, the same markers as in blocks; `{{letter}}` with double braces works as well). The AI never reads a
   template. Several can be uploaded: the one marked *current template* is used, and **Use the plain layout** goes
-  back to an A4 letter with one inch margins. A .docx template gives .docx and PDF, an .odt one .odt and PDF. With
+  back to an A4 letter with one inch margins, in the font and size you pick in the cover letter window. A .docx
+  template gives .docx and PDF, an .odt one .odt and PDF. With
   LibreOffice installed, the PDF is LibreOffice's conversion of the filled file; without it, the app draws it with
   the fonts this computer has.
   chat on the right. The AI sees the ads, your documents, the fit assessment, the company info and

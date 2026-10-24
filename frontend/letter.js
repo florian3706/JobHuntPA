@@ -236,16 +236,26 @@ async function openLetterWindow(job, host) {
   const renderTemplate = (note = '') => {
     const box = $('#cl-template');
     if (!options) { box.innerHTML = '<p class="u-muted">The template could not be looked up.</p>'; renderMenu(); return; }
-    const font = options.letter_font ? `${options.letter_font.family} ${Number(options.letter_font.size).toLocaleString(undefined, { maximumFractionDigits: 1 })} pt` : '';
-    const change = `<a class="cl-change" href="${host.docsHref}">Change<span class="u-sr"> the template on the Documents tab</span></a>`;
+    const fmtSize = (n) => Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 });
+    const font = options.letter_font ? `${options.letter_font.family} ${fmtSize(options.letter_font.size)} pt` : '';
+    const change = `<a class="cl-change" href="${host.docsHref}">Change the template<span class="u-sr"> on the Documents tab</span></a>`;
     // The fonts a template asks for that this computer lacks matter only when the app draws the PDF itself.
     const missing = options.pdf === 'reportlab' ? (options.fonts || []).filter((f) => !f.found) : [];
     let html;
     if (options.template) {
-      html = `<p><strong>${esc(options.template.filename)}</strong>: your header, footer and signature; the letter goes where its {letter} marker is${font ? `, in that paragraph's font (${esc(font)})` : ''}. ${change}</p>
+      html = `<p><strong>${esc(options.template.filename)}</strong>: your header, footer and signature; the letter goes where its {letter} marker is${font ? `, in that paragraph's font (${esc(font)})` : ''}. To change the font, change that paragraph in the template file and upload it again. ${change}</p>
         <p class="u-muted">A .docx template gives .docx and PDF; an .odt template gives .odt and PDF.</p>`;
     } else {
+      // The plain layout's font: the families this computer has (empty until the start-up scan has ended), plus
+      // whatever is set or in use, so the select always shows the current one. Saved on change (PUT letter-font).
+      const current = options.letter_font?.family || '';
+      const families = [...new Set([...(options.font_choices || []), current].filter(Boolean))].sort((a, b) => a.localeCompare(b));
       html = `<p><strong>Plain letter</strong>: A4, one inch margins${font ? `, ${esc(font)}` : ''}. ${change}</p>
+        <div class="u-row cl-font-row">
+          <label class="cl-font-field">Font <select id="cl-font-family" class="p-select">${families.map((f) => `<option value="${esc(f)}"${f === current ? ' selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
+          <label class="cl-font-field">Size <input id="cl-font-size" class="p-input cl-font-size" type="number" min="8" max="18" step="0.5" value="${esc(fmtSize(options.letter_font?.size || 11))}" /> pt</label>
+          ${options.font_setting ? '<button id="cl-font-default" class="p-button p-button--base is-dense" type="button">Back to the default</button>' : ''}
+        </div>
         <p class="u-muted">To use your own letterhead, upload a .docx or .odt with a {letter} marker as a "Letter template" on the Documents tab.</p>`;
     }
     html += options.pdf === 'libreoffice' ? '<p class="u-muted">PDFs are made with LibreOffice.</p>'
@@ -255,6 +265,16 @@ async function openLetterWindow(job, host) {
     if (note) html += `<p class="cl-fonts" role="status">${esc(note)}</p>`;
     box.innerHTML = html;
     box.querySelector('.cl-change').addEventListener('click', () => host.close()); // the tab shows behind the dialog
+    const saveFont = async (body) => {
+      try {
+        options = await api('/api/documents/letter-font', { method: 'PUT', body: JSON.stringify(body) });
+        renderTemplate(body.family === null && body.size === null ? 'The default font again.' : 'Font saved: every download uses it.');
+      } catch (e) { renderTemplate(`The font could not be saved: ${e.message}`); }
+    };
+    const fromForm = () => ({ family: $('#cl-font-family').value || null, size: Number($('#cl-font-size').value) || null });
+    $('#cl-font-family')?.addEventListener('change', () => saveFont(fromForm()));
+    $('#cl-font-size')?.addEventListener('change', (e) => { if (e.target.checkValidity()) saveFont(fromForm()); });
+    $('#cl-font-default')?.addEventListener('click', () => saveFont({ family: null, size: null }));
     renderMenu();
   };
 
