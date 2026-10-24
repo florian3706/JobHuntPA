@@ -55,8 +55,10 @@ from backend.db import SessionLocal, Workspace, init_db  # noqa: E402
 from backend import letter_pdf  # noqa: E402
 
 # Cover letter PDFs in tests are reportlab's, whether or not this computer has LibreOffice (the tests of the LibreOffice
-# path put a fake ``soffice`` in ``letter_pdf._backend`` themselves).
+# path put a fake ``soffice`` in ``letter_pdf._backend`` themselves), with the fonts scanned up front: a request
+# doesn't wait for the background scan, so a PDF would otherwise depend on how far it got.
 letter_pdf._backend = ("reportlab", None)
+letter_pdf.catalogue()
 
 _passwords = {ADMIN_EMAIL: ADMIN_PASSWORD}
 _numbers = itertools.count(1)

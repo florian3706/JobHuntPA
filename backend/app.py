@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from starlette.formparsers import MultiPartParser
 
 from backend import config  # noqa: F401  (loads .env first)
-from backend import crypto, ghost, hosts, llm_providers, migrate_encryption, schedule, tasks, users
+from backend import crypto, ghost, hosts, letter_pdf, llm_providers, migrate_encryption, schedule, tasks, users
 from backend import app_settings
 from backend.account import router as account_router
 from backend.app_settings import router as app_settings_router
@@ -167,6 +167,7 @@ async def lifespan(app: FastAPI):
     # An encryption run the last process left running waits for its account's next sign-in; after it, strict mode.
     migrate_encryption.at_startup()
     tasks.mark_interrupted()
+    letter_pdf.warm_up()  # this computer's fonts for cover letter PDFs, scanned in the background (seconds on a Pi)
     schedule.start_scheduler(lambda ws: start_search_run(ws, scheduled=True))
     yield
     schedule.stop_scheduler()

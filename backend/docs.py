@@ -151,15 +151,12 @@ def _current_template_id(db: Session, ws: int) -> Optional[int]:
     return db.query(Workspace.letter_template_id).filter(Workspace.id == ws).scalar()
 
 
-def doc_to_dict(d: Document) -> dict:
-    from sqlalchemy.orm import object_session
-
+def doc_to_dict(d: Document, template_id: Optional[int] = None) -> dict:
+    """``template_id``: the workspace's current letter template (``_current_template_id``, read once by the caller)."""
     concise = (d.concise_text or "").strip()
-    is_template = d.kind == LETTER_TEMPLATE_KIND
-    db = object_session(d) if is_template else None
     return {
         # a letter template: whether cover-letter downloads use this one (backend/cover_letters.py)
-        "current_template": bool(is_template and db is not None and _current_template_id(db, d.workspace_id) == d.id),
+        "current_template": bool(d.kind == LETTER_TEMPLATE_KIND and template_id is not None and template_id == d.id),
         "id": d.id,
         "filename": d.filename,
         "filetype": d.filetype,
@@ -204,7 +201,8 @@ class DocumentUpdate(BaseModel):
 @router.get("")
 def list_documents(db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     rows = db.query(Document).filter(Document.workspace_id == ws).order_by(Document.created_at.desc())
-    return [doc_to_dict(d) for d in rows]
+    template_id = _current_template_id(db, ws)
+    return [doc_to_dict(d, template_id) for d in rows]
 
 
 @router.post("")
@@ -250,7 +248,7 @@ def upload_document(file: UploadFile = File(...), kind: str = Form("resume"), db
         db.rollback()
         delete_upload(stored)
         raise
-    return doc_to_dict(doc)
+    return doc_to_dict(doc, _current_template_id(db, ws))
 
 
 @router.post("/notes", status_code=201)
@@ -306,13 +304,13 @@ def update_document(doc_id: int, payload: DocumentUpdate, db: Session = Depends(
     if edited:
         doc.updated_at = datetime.utcnow()
     db.commit()
-    return doc_to_dict(doc)
+    return doc_to_dict(doc, _current_template_id(db, ws))
 
 
 @router.get("/{doc_id}/text")
 def document_text(doc_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     doc = owned(db, Document, doc_id, ws, "Document")
-    return {**doc_to_dict(doc), "text": doc.text or "", "concise_text": doc.concise_text or ""}
+    return {**doc_to_dict(doc, _current_template_id(db, ws)), "text": doc.text or "", "concise_text": doc.concise_text or ""}
 
 
 @router.delete("/{doc_id}")

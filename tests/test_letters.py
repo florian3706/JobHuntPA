@@ -459,6 +459,16 @@ def single_brace_odt() -> bytes:
     return out.getvalue()
 
 
+def table_marker_docx() -> bytes:
+    import docx
+
+    d = docx.Document()
+    d.add_table(rows=1, cols=1).cell(0, 0).paragraphs[0].add_run("{letter}")
+    out = io.BytesIO()
+    d.save(out)
+    return out.getvalue()
+
+
 class MarkerTest(unittest.TestCase):
     from datetime import date as _date
 
@@ -509,6 +519,113 @@ class MarkerTest(unittest.TestCase):
         self.assertEqual(texts[:2], ["Application to Acme", "Sent on 3 October 2026"])
         self.assertEqual(texts[2:5], lf.split_paragraphs(LETTER))
         self.assertEqual(texts[5], "Role: Program Manager in Sydney")
+
+    def test_an_empty_letter_keeps_a_paragraph_in_the_cell(self):
+        import docx
+        from docx.oxml.ns import qn
+
+        d = docx.Document(io.BytesIO(lf.fill_docx(table_marker_docx(), "", self.values)))
+        cells = list(d.element.body.iter(qn("w:tc")))
+        self.assertTrue(cells and all(tc.findall(qn("w:p")) for tc in cells), "Word refuses a cell without a paragraph")
+        self.assertEqual(d.tables[0].cell(0, 0).text, "")
+        from odf.opendocument import load
+        from odf.table import TableCell
+        from odf.text import P
+
+        doc = load(io.BytesIO(lf.fill_odt(single_brace_odt(), "", self.values)))
+        self.assertTrue(all(c.getElementsByType(P) for c in doc.text.getElementsByType(TableCell)))
+
+    def test_a_section_break_moves_to_the_last_letter_paragraph(self):
+        import docx
+        from docx.oxml.ns import qn
+
+        template = single_brace_docx(section_break=True)
+        before = len(list(docx.Document(io.BytesIO(template)).element.body.iter(qn("w:sectPr"))))
+        d = docx.Document(io.BytesIO(lf.fill_docx(template, LETTER, self.values)))
+        self.assertEqual(len(list(d.element.body.iter(qn("w:sectPr")))), before, "no section break per paragraph")
+        letter = d.paragraphs[1:4]
+        self.assertEqual([p.text for p in letter], lf.split_paragraphs(LETTER))
+        self.assertEqual([p._p.find(qn("w:pPr")).find(qn("w:sectPr")) is not None for p in letter], [False, False, True])
+
+
+class ReviewFixTest(unittest.TestCase):
+    def setUp(self):
+        self.client = helpers.client()
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+        self.ws = self.client.post("/api/workspaces", json={"name": self._testMethodName[:80]}).json()["id"]
+        self.h = {"X-Workspace": str(self.ws)}
+        self.addCleanup(lambda: self.client.delete(f"/api/workspaces/{self.ws}"))
+
+    def plant_template(self, data: bytes, filename="imported.docx") -> int:
+        """A letter template document that never went through the upload check (an import brings them in so)."""
+        from backend import docs
+
+        db = SessionLocal()
+        try:
+            doc = Document(workspace_id=self.ws, filename=filename, filetype=".docx", kind="letter_template",
+                           stored_name=docs.save_upload(data), text="", use_for_scoring=False)
+            db.add(doc)
+            db.flush()
+            db.get(Workspace, self.ws).letter_template_id = doc.id
+            db.commit()
+            return doc.id
+        finally:
+            db.close()
+
+    def test_a_template_that_no_longer_reads_says_why(self):
+        import docx
+
+        d = docx.Document()
+        d.add_paragraph("no marker")
+        out = io.BytesIO()
+        d.save(out)
+        self.plant_template(out.getvalue())
+        r = self.client.get("/api/documents/letter-template", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("{letter}", r.json()["problem"])
+        self.assertFalse(any(f["available"] for f in r.json()["formats"].values()))
+        self.plant_template(b"PK not a zip", "broken.docx")
+        r = self.client.get("/api/documents/letter-template", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["problem"])
+
+    def test_the_document_list_reads_the_current_template_once(self):
+        from sqlalchemy import event
+
+        from backend.db import engine
+
+        for n in range(3):
+            self.assertEqual(self.client.post("/api/documents", headers=self.h, data={"kind": "letter_template"},
+                                              files={"file": (f"t{n}.docx", docx_template(), "application/octet-stream")}
+                                              ).status_code, 200)
+        seen = []
+
+        def count(_conn, _cursor, statement, *_args):
+            if statement.startswith("SELECT workspaces.letter_template_id"):  # (_current_template_id)
+                seen.append(statement)
+
+        event.listen(engine, "before_cursor_execute", count)
+        try:
+            listed = self.client.get("/api/documents", headers=self.h).json()
+        finally:
+            event.remove(engine, "before_cursor_execute", count)
+        self.assertEqual(len(seen), 1, seen)
+        self.assertEqual(sum(d["current_template"] for d in listed), 1)
+
+    def test_a_request_never_waits_for_the_font_scan(self):
+        empty = tempfile.mkdtemp()
+        with mock.patch.object(lp, "_catalogue", None), mock.patch.object(lp, "_warming", None), \
+                mock.patch.object(lp, "font_dirs", return_value=[__import__("pathlib").Path(empty)]):
+            with mock.patch.object(lp, "_scan", side_effect=lambda: __import__("time").sleep(0.3) or {}):
+                self.assertEqual(lp.pick("Garamond"), ("Times-Roman", None), "the core font while the scan runs")
+                self.assertEqual(lp.plain_font(), "Helvetica")
+                warming = lp._warming
+                self.assertIsNotNone(warming, "the scan was started in the background")
+                lp.warm_up()
+                self.assertIs(lp._warming, warming, "once")
+                warming.result(timeout=10)
+            self.assertEqual(lp._catalogue, {})
 
 
 class RetiredTemplateTableTest(unittest.TestCase):

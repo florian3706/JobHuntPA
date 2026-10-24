@@ -14,7 +14,9 @@ once (the TrueType ``name`` table, read here without any library: reportlab embe
 OpenType CFF fonts and collections are left out) and ``pick()`` finds the family, or a stand-in: Liberation Serif,
 Sans or Mono when the computer has them (the same metrics as Times New Roman, Arial and Courier New), else the PDF
 core fonts (Times, Helvetica, Courier), which need no file. ``render`` reports every substitution, so the window can
-say "the template asks for Garamond, which this computer does not have; the PDF uses Liberation Serif".
+say "the template asks for Garamond, which this computer does not have; the PDF uses Liberation Serif". The font
+folders are scanned once, in the background from start-up (``warm_up``): a request never waits for the scan, and until
+it ends the PDF uses the core fonts.
 
 Nothing here logs: font names come from the user's template, the text is the letter (backend/cover_letters.py logs a
 failed conversion by its ``PdfError`` alone).
@@ -31,6 +33,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 from xml.sax.saxutils import escape
@@ -117,32 +120,57 @@ def read_names(path: Path) -> Optional[tuple[str, str]]:
 
 _catalogue: Optional[dict[str, dict[tuple[bool, bool], Path]]] = None
 _lock = threading.Lock()
+_warming: Optional[Future] = None
+_warm_lock = threading.Lock()
+_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jobhunt-fonts")
 
 
-def catalogue(refresh: bool = False) -> dict[str, dict[tuple[bool, bool], Path]]:
-    """Every TrueType family on this computer: {family (lower-case): {(bold, italic): file}}. Scanned once."""
+def catalogue(refresh: bool = False, wait: bool = True) -> dict[str, dict[tuple[bool, bool], Path]]:
+    """Every TrueType family on this computer: {family (lower-case): {(bold, italic): file}}. Scanned once (a Raspberry
+    Pi with many fonts takes seconds). ``wait=False`` (requests): before the scan has ended, starts it in the background
+    if it isn't running and answers {} (the core fonts) instead of waiting."""
     global _catalogue
+    if _catalogue is not None and not refresh:
+        return _catalogue
+    if not wait and not refresh:
+        warm_up()
+        return {}
     with _lock:
         if _catalogue is not None and not refresh:
             return _catalogue
-        found: dict[str, dict[tuple[bool, bool], Path]] = {}
-        for base in font_dirs():
-            if not base.is_dir():
-                continue
-            for root, _dirs, files in os.walk(base):
-                for name in files:
-                    if not name.lower().endswith((".ttf", ".otf")):
-                        continue
-                    path = Path(root) / name
-                    names = read_names(path)
-                    if names is None:
-                        continue
-                    family, style = names
-                    style_l = style.lower()
-                    key = ("bold" in style_l, "italic" in style_l or "oblique" in style_l)
-                    found.setdefault(family.lower(), {}).setdefault(key, path)
-        _catalogue = found
-        return found
+        _catalogue = _scan()
+        return _catalogue
+
+
+def warm_up() -> None:
+    """Scans the font folders in the background (once; at start-up, backend/app.py)."""
+    from backend import threads
+
+    global _warming
+    with _warm_lock:
+        if _warming is None and _catalogue is None:
+            _warming = threads.submit(_pool, catalogue)
+
+
+def _scan() -> dict[str, dict[tuple[bool, bool], Path]]:
+    """Every TrueType family in the font folders (see ``catalogue``)."""
+    found: dict[str, dict[tuple[bool, bool], Path]] = {}
+    for base in font_dirs():
+        if not base.is_dir():
+            continue
+        for root, _dirs, files in os.walk(base):
+            for name in files:
+                if not name.lower().endswith((".ttf", ".otf")):
+                    continue
+                path = Path(root) / name
+                names = read_names(path)
+                if names is None:
+                    continue
+                family, style = names
+                style_l = style.lower()
+                key = ("bold" in style_l, "italic" in style_l or "oblique" in style_l)
+                found.setdefault(family.lower(), {}).setdefault(key, path)
+    return found
 
 
 def classify(family: str) -> str:
@@ -157,7 +185,7 @@ def classify(family: str) -> str:
 def pick(family: str) -> tuple[str, Optional[dict[tuple[bool, bool], Path]]]:
     """The family to draw ``family`` with: (name used, its files or None for a core font). The name used is the
     family itself when the computer has it."""
-    cat = catalogue()
+    cat = catalogue(wait=False)
     files = cat.get(family.lower())
     if files:
         return family, files
@@ -170,7 +198,7 @@ def pick(family: str) -> tuple[str, Optional[dict[tuple[bool, bool], Path]]]:
 
 def plain_font() -> str:
     """The plain layout's font: a sans this computer has, so its PDF and its .docx/.odt agree."""
-    cat = catalogue()
+    cat = catalogue(wait=False)
     return next((f for f in PLAIN_FONTS if cat.get(f.lower())), "Helvetica")
 
 
@@ -229,13 +257,16 @@ class _Fonts:
 
     def __init__(self) -> None:
         self.names: dict[str, tuple[str, str, str, str]] = {}
+        self.used: dict[str, str] = {}
         self.substitutions: list[dict] = []
 
     def family(self, family: str, record: bool = True) -> tuple[str, str, str, str]:
         """``record``: a stand-in counts as a substitution (not for an empty paragraph's font: nothing shows)."""
         if family not in self.names:
-            self.names[family] = _register(*pick(family))
-        used = pick(family)[0]
+            used, files = pick(family)  # (once: the scan may end during the render)
+            self.names[family] = _register(used, files)
+            self.used[family] = used
+        used = self.used[family]
         if record and used != family and not any(s["asked"] == family for s in self.substitutions):
             self.substitutions.append({"asked": family, "used": used})
         return self.names[family]

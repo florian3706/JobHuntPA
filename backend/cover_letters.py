@@ -410,7 +410,8 @@ def format_problem(fmt: str, template: Optional[Document]) -> Optional[str]:
 def export_options(db: Session, ws: int) -> dict:
     """What the cover-letter window shows about downloads: the template (or the plain layout), which formats it
     gives, the font the letter takes, which of the template's fonts this computer lacks (what reportlab stands in
-    with), and what makes the PDF (``pdf``: "libreoffice" or "reportlab")."""
+    with), and what makes the PDF (``pdf``: "libreoffice" or "reportlab"). ``problem``: why the template can't be
+    used (its file is gone, or no longer reads as a template: one brought in by an import, or a library update)."""
     template = current_template(db, ws)
     out = {"template": None, "formats": {}, "fonts": [], "letter_font": None, "problem": None,
            "pdf": letter_pdf.pdf_backend()}
@@ -423,6 +424,8 @@ def export_options(db: Session, ws: int) -> dict:
             out["letter_font"] = {"family": font[0], "size": font[1]} if font else None
         except HTTPException as exc:
             out["problem"] = exc.detail
+        except letter_files.TemplateError as exc:
+            out["problem"] = str(exc)
     else:
         font = letter_pdf.plain_font()
         out["letter_font"] = {"family": font, "size": letter_files.DEFAULT_SIZE}

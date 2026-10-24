@@ -3,12 +3,13 @@
 A **letter template** is a .docx or .odt document of the user's own (a letterhead: header, footer, signature image,
 fonts) with a ``{letter}`` marker in a paragraph of its own. Filling it replaces that paragraph with one paragraph
 per letter paragraph, each a copy of the marker paragraph's paragraph style and of the run formatting the marker
-had, so the font, size, alignment and spacing carry over; everything else in the file is left as it is. The optional
-markers ``{date}``, ``{company}``, ``{job_title}`` (or ``{role}``: the same), ``{location}`` and ``{name}`` are
-filled wherever they appear (body, tables, headers, footers); a marker with no value is left out. Markers are the
-same as in cover letter blocks (backend/letter_blocks.py), and each may also be written in double braces
-(``{{letter}}``). The template's bytes are what matters: they are the uploaded file, sealed like every upload
-(backend/docs.py), and never sent to the AI.
+had, so the font, size, alignment and spacing carry over (a section break the marker paragraph ended goes to the
+last letter paragraph); everything else in the file is left as it is. The optional markers ``{date}``,
+``{company}``, ``{job_title}`` (or ``{role}``: the same), ``{location}`` and ``{name}`` are filled wherever they
+appear (body, tables, headers, footers); a marker with no value is left out. Markers are the same as in cover letter
+blocks (backend/letter_blocks.py), and each may also be written in double braces (``{{letter}}``). The template's
+bytes are what matters: they are the uploaded file, sealed like every upload (backend/docs.py), and never sent to
+the AI.
 
 Without a template, the plain layout builds a .docx and an .odt of the same shape (A4, one inch margins, one sans
 font the computer has).
@@ -257,23 +258,35 @@ def _docx_marker_run(paragraph):
 
 
 def _docx_pour(paragraph, paragraphs: list[str]) -> None:
-    """Replaces the marker paragraph with one paragraph per letter paragraph, same style and run formatting."""
+    """Replaces the marker paragraph with one paragraph per letter paragraph, same style and run formatting. A
+    section break the marker paragraph held (it ended a section) goes to the last of them only; an empty letter still
+    leaves one (empty) paragraph, so a table cell keeps the paragraph Word requires in it."""
     from docx.oxml.ns import qn
     from docx.text.paragraph import Paragraph
 
     run = _docx_marker_run(paragraph)
     rPr = copy.deepcopy(run._r.rPr) if run is not None and run._r.rPr is not None else None
     anchor = paragraph._p
-    for text in paragraphs:
+    ppr = anchor.find(qn("w:pPr"))
+    sect = ppr.find(qn("w:sectPr")) if ppr is not None else None
+    last = None
+    for text in paragraphs or [""]:
         p_el = copy.deepcopy(anchor)
         for child in list(p_el):  # keep the paragraph properties, drop the marker's runs and everything else
             if child.tag != qn("w:pPr"):
                 p_el.remove(child)
+        p_ppr = p_el.find(qn("w:pPr"))
+        if p_ppr is not None:
+            for extra in p_ppr.findall(qn("w:sectPr")):
+                p_ppr.remove(extra)
         new = Paragraph(p_el, paragraph._parent)
         new_run = new.add_run(text)  # line breaks and tabs become w:br / w:tab
         if rPr is not None:
             new_run._r.insert(0, copy.deepcopy(rPr))
         anchor.addprevious(p_el)
+        last = p_el
+    if sect is not None:
+        last.find(qn("w:pPr")).append(copy.deepcopy(sect))
     anchor.getparent().remove(anchor)
 
 
@@ -584,7 +597,7 @@ def _odt_pour(paragraph, paragraphs: list[str]) -> None:
     span = _odt_marker_span(paragraph)
     span_style = span.getAttrNS(_TEXT_NS, "style-name") if span is not None else None
     parent = paragraph.parentNode
-    for text in paragraphs:
+    for text in paragraphs or [""]:  # (an empty letter: one empty paragraph, so a table cell keeps one)
         new = Element(qname=paragraph.qname)
         for (ns, local), value in paragraph.attributes.items():
             if (ns, local) != (_TEXT_NS, "id"):
