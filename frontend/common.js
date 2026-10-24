@@ -923,7 +923,7 @@ const RESEARCHED = ['done', 'error', 'skipped'];
    whole profile, whatever its age) and, on a researched profile, one per section (sectionResearch). */
 function companyProfileHtml(p, name) {
   if (p && !RESEARCHED.includes(p.status)) p = null; // only offices known so far
-  const researchBtn = `<button id="company-research" class="btn btn-sm" type="button" data-research-part="all">${p ? 'Research the whole profile again' : 'Research this company'}</button>`;
+  const researchBtn = `<button id="company-research" class="btn btn-sm research-btn" type="button" data-research-part="all">${p ? 'Research the whole profile again' : 'Research this company'}</button>`;
   if (!p) {
     return `<p class="modal-links">${glassdoorLink(p, name)}</p>
       <p class="muted">Not researched yet. <strong>Fill missing info</strong> researches every company in your list, or research just this one:</p>${researchBtn}`;

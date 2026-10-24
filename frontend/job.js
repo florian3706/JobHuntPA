@@ -500,12 +500,13 @@ async function loadCompany() {
 }
 
 function researchNote(p) {
-  const btn = (text) => `<button id="company-research" class="p-button p-button--base is-dense jp-inline-btn" type="button" data-research-part="all">${text}</button>`;
+  // The research button is a real bordered button on its own line, not a link-like word inside the sentence.
+  const note = (tone, text, btnText) => `<div class="p-notification p-notification--${tone}" role="note"><div class="p-notification__body u-small"><p>${text}</p><p><button id="company-research" class="p-button is-dense" type="button" data-research-part="all">${btnText}</button></p></div></div>`;
   if (!job.company) return '';
-  if (!p) return `<div class="p-notification p-notification--information" role="note"><div class="p-notification__body u-small">Not researched yet. <strong>Fill missing info</strong> on the dashboard researches every company in your list, or research just this one: ${btn('Research this company')}</div></div>`;
-  if (p.status === 'error') return `<div class="p-notification p-notification--negative" role="note"><div class="p-notification__body u-small">Research failed: ${esc(p.error || '')} ${btn('Research this company again')}</div></div>`;
-  if (p.status === 'skipped') return `<div class="p-notification p-notification--information" role="note"><div class="p-notification__body u-small">"${esc(p.name)}" isn't an identifiable organisation (for example an anonymous advertiser). ${btn('Research it anyway')}</div></div>`;
-  return `<div class="p-notification p-notification--information" role="note"><div class="p-notification__body u-small">Researched ${esc(fmtDate(p.researched_at))} with web search. Only links the search actually returned are shown${p.unverified_dropped ? `; ${p.unverified_dropped} unverifiable link(s) and their claims were removed` : ''}. Automated research can be wrong: check the linked pages. ${btn('Research the whole profile again')}</div></div>`;
+  if (!p) return note('information', 'Not researched yet. <strong>Fill missing info</strong> on the dashboard researches every company in your list, or research just this one.', 'Research this company');
+  if (p.status === 'error') return note('negative', `Research failed: ${esc(p.error || '')}`, 'Research this company again');
+  if (p.status === 'skipped') return note('information', `"${esc(p.name)}" isn't an identifiable organisation (for example an anonymous advertiser).`, 'Research it anyway');
+  return note('information', `Researched ${esc(fmtDate(p.researched_at))} with web search. Only links the search actually returned are shown${p.unverified_dropped ? `; ${p.unverified_dropped} unverifiable link(s) and their claims were removed` : ''}. Automated research can be wrong: check the linked pages.`, 'Research the whole profile again');
 }
 
 function hostOf(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } }
