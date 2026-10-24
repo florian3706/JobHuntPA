@@ -41,6 +41,9 @@ const state = {
   // Documents tab: the list, which rows are open, their texts, unsaved edits ("id:field"), status lines
   // ("id:area") and actions under way ("id:act"), all for workspace `ws`.
   docs: { ws: null, list: [], open: new Set(), text: new Map(), drafts: new Map(), status: new Map(), busy: new Set() },
+  // Documents tab > Cover letter blocks: the list (sorted as the letter takes them), its workspace, the block being edited.
+  blocks: [], blocksWs: null, blockEdit: null,
+  includeTouched: new Set(), // jobs whose "Always include" was set on this page (their box stays, to set it back)
 };
 
 /* ---------- the dialog (#modal, a native <dialog>) ----------
@@ -493,18 +496,6 @@ const shortDate = (iso) => fmtDate(iso).split(',')[0];
 const statusOptions = (current) => STATUSES.map((s) => `<option value="${s}" ${current === s ? 'selected' : ''}>${STATUS_LABEL[s]}</option>`).join('');
 const OPEN_TITLE = 'Full page in a new tab: the whole ad, the office with commute links, and company details';
 
-// The fit score as a status label (the cards keep the 🎯 score with the ghost-job circle under it: ratingsHtml).
-function fitLabel(job) {
-  const fit = job.fit;
-  if (!fit) return '<span class="p-status-label" title="Not scored yet">Not scored</span>';
-  if (fit.status === 'error') return `<span class="p-status-label p-status-label--negative" title="${esc(fit.error || 'Scoring failed')}">Scoring failed</span>`;
-  const tone = fit.score >= 75 ? 'positive' : fit.score >= 45 ? 'caution' : 'negative';
-  const title = fit.stale ? 'Scored against older documents' : `Scored ${fmtDate(fit.scored_at)}`;
-  return `<span class="p-status-label p-status-label--${tone}" title="${esc(title)}"><span class="visually-hidden">Fit score </span>${fit.score}${
-    fit.stale ? '<span aria-hidden="true">*</span><span class="visually-hidden"> of 100, scored against older documents</span>' : '<span class="visually-hidden"> of 100</span>'}</span>`;
-}
-
-const MODE_TONE = { remote: 'positive', hybrid: 'caution', onsite: 'information', unknown: '' };
 function modeLabel(job) {
   const m = modeOf(job);
   return `<span class="p-status-label${MODE_TONE[m] ? ` p-status-label--${MODE_TONE[m]}` : ''}"><span class="visually-hidden">Work mode: </span>${m}</span>`;
@@ -552,6 +543,8 @@ function wireJobControls(root, job) {
   on('[data-act="hide"]', 'click', () => setHidden([job.id], !job.hidden));
   on('[data-act="upload-ad"]', 'click', () => showUploadAd(job));
   on('[data-act="company"]', 'click', () => showCompany(job));
+  on('[data-act="filter-warnings"]', 'click', () => showFilterWarnings(job));
+  on('[data-act="include"]', 'change', (e) => setIncluded(job, e.currentTarget));
   on('details[data-section="fit"]', 'toggle', (e) => { if (e.target.open) e.target.querySelector('.fit-body').innerHTML = fitHtml(job); });
 }
 
@@ -610,6 +603,7 @@ function renderJobCard(job) {
         ${statusOptions(job.status)}
       </select>
       <button class="p-button is-dense" type="button" data-act="rescore" aria-describedby="${titleId}">${job.fit && job.fit.status === 'ok' ? 'Rescore' : 'Score'}</button>
+      ${showsInclude(job) ? includeToggle(job, titleId) : ''}
     </div>
     <div class="job-actions job-actions--base">
       <button class="p-button p-button--base is-dense" type="button" data-act="desc" aria-describedby="${titleId}">Description</button>
@@ -637,6 +631,8 @@ function renderJobCard(job) {
   card.querySelector('[data-act="hide"]').addEventListener('click', () => setHidden([job.id], !job.hidden));
   card.querySelector('[data-act="upload-ad"]')?.addEventListener('click', () => showUploadAd(job));
   card.querySelector('[data-act="company"]')?.addEventListener('click', () => showCompany(job));
+  card.querySelector('[data-act="filter-warnings"]')?.addEventListener('click', () => showFilterWarnings(job));
+  card.querySelector('[data-act="include"]')?.addEventListener('change', (e) => setIncluded(job, e.currentTarget));
   card.querySelector('details[data-section="fit"]').addEventListener('toggle', (e) => {
     if (e.target.open) e.target.querySelector('.fit-body').innerHTML = fitHtml(job);
   });
@@ -689,7 +685,7 @@ function tableRowHtml(job) {
       <div class="u-small u-muted jobs-table__place">${esc(place)}</div>
       ${flags ? `<div class="jobs-table__flags">${flags}</div>` : ''}
     </td>
-    <td class="u-num col-fit">${fitLabel(job)}</td>
+    <td class="u-num col-fit"><span class="fit-cell">${fitLabel(job)}${filterWarnButton(job)}</span></td>
     <td class="col-mode">${modeLabel(job)}</td>
     <td class="u-num col-dist">${job.distance_km === null ? '<span class="u-muted">n/a</span>' : `${job.distance_km} km`}</td>
     <td class="col-salary">${job.salary_text ? esc(job.salary_text) : '<span class="u-muted">Not stated</span>'}</td>
@@ -740,6 +736,7 @@ function detailHtml(job) {
       ${isSeekJob(job) && job.detail_status === 'summary' ? `<button class="p-button p-button--base is-dense" type="button" data-act="upload-ad" aria-describedby="${titleId}" title="Replace the listing summary with the full ad from a page you save on SEEK">Upload full ad</button>` : ''}
       <button class="p-button p-button--base is-dense" type="button" data-act="hide" aria-describedby="${titleId}">${job.hidden ? 'Unhide' : 'Hide'}</button>
       <a class="p-button p-button--base is-dense" data-act="open" href="./job.html?id=${job.id}&ws=${state.ws}" target="_blank" rel="noopener" aria-describedby="${titleId}" title="${OPEN_TITLE}">Full page${NEW_TAB}</a>
+      ${showsInclude(job) ? includeToggle(job, titleId) : ''}
     </div>
   </div>`;
 }
@@ -841,9 +838,10 @@ function boardCardHtml(job, closedCol = false) {
   const place = `${job.company || '—'}, ${job.location_text || 'location unknown'}${job.distance_km === null ? '' : `, ${job.distance_km} km`}`;
   const chat = `<button class="p-button p-button--base is-dense" type="button" data-act="chat" aria-describedby="${titleId}" title="Ask questions about this job in a chat on the right">Chat</button>`;
   const letter = `<button class="p-button is-dense" type="button" data-act="letter" aria-describedby="${titleId}">${job.has_cover_letter ? 'Cover letter<span aria-hidden="true"> ✓</span><span class="visually-hidden"> (drafted)</span>' : 'Cover letter'}</button>`;
-  const stage = job.status === 'shortlisted' ? letter + chat : ['applied', 'interviewing'].includes(job.status) ? chat : '';
+  const stage = (job.status === 'shortlisted' ? letter + chat : ['applied', 'interviewing'].includes(job.status) ? chat : '')
+    + (showsInclude(job) ? includeToggle(job, titleId) : '');
   return `<article class="p-card board-card${job.excluded_reason ? ' is-excluded' : ''}" data-job-id="${job.id}" aria-labelledby="${titleId}">
-    <div class="board-card__head"><h4 id="${titleId}" class="board-card__title">${esc(job.title || '—')}</h4>${fitLabel(job)}</div>
+    <div class="board-card__head"><h4 id="${titleId}" class="board-card__title">${esc(job.title || '—')}</h4><span class="fit-cell">${fitLabel(job)}${filterWarnButton(job)}</span></div>
     <p class="u-small u-muted board-card__place">${esc(place)}</p>
     <div class="board-card__labels">${closedCol ? `<span class="p-status-label">${esc(STATUS_LABEL[job.status])}</span>` : ''}${modeLabel(job)}${
       job.posted_at ? `<span class="p-status-label"><span class="visually-hidden">posted </span>${esc(shortDate(job.posted_at))}</span>` : ''}${flagLabels(job)}</div>
@@ -866,6 +864,36 @@ async function moveJob(job, next, sel) {
   if (target && target.offsetParent !== null) target.focus({ preventScroll: true });
   else ($(`#board-tab-${col}`) || $('#jobs-board [data-act="closed-toggle"]'))?.focus({ preventScroll: true });
   announce(`${job.title} moved to ${STATUS_LABEL[job.status]}.`);
+}
+
+// A job has "Always include" where the filters and the person may disagree: a job the filters leave out (or only the
+// office-days what-if shows), one the person included, and one whose box was set here (so it can be ticked again).
+const showsInclude = (job) => !!(job.excluded_reason || job.softened_reason || job.included_by_user || state.includeTouched.has(job.id));
+
+async function setIncluded(job, box) {
+  const back = focusFinder(box);
+  box.disabled = true;
+  try {
+    const updated = await api(`/api/jobs/${job.id}/included${slackQuery()}`, { method: 'PATCH', body: JSON.stringify({ included: box.checked }) });
+    state.includeTouched.add(job.id);
+    Object.assign(job, updated);
+    state.details.set(job.id, updated);
+    renderJobs();
+    (back() || $('#tab-jobs')).focus({ preventScroll: true });
+    toast(includedWords(job, !state.filter.showExcluded), 'ok', 6000);
+  } catch (e) {
+    box.checked = !box.checked;
+    toast(`Could not change "Always include": ${e.message}`, 'err');
+  } finally {
+    box.disabled = false;
+  }
+}
+
+// The ⚠️ of a job the person included: the rules of their filters it doesn't meet. The link to the Search setup tab
+// closes the dialog on its way there.
+function showFilterWarnings(job) {
+  openHtmlModal(filterWarningsTitle(job), filterWarningsHtml(job));
+  $('#modal-html a[href="#search"]').addEventListener('click', closeModal);
 }
 
 async function showDescription(job) {
@@ -964,6 +992,90 @@ function showUploadAd(job) {
   });
 }
 
+/* ---------- "Add a job": pages the person saved in their browser ----------
+   Each file goes to POST /api/import/page on its own. A page of one job is the person's own pick, so it is listed
+   whatever their filters say (its ⚠️ says what it doesn't meet); a page of search results is filtered like a search.
+   Each file gets a line saying what came of it, and the status line counts them. */
+function showAddJob() {
+  const mac = /Mac/i.test(navigator.platform);
+  openHtmlModal('Add a job from its saved page', `
+    <form id="add-job-form" class="u-stack add-job" novalidate>
+      <p>A job you add yourself is always in your list, even when it doesn't meet your search filters. A
+        <span aria-hidden="true">⚠️</span><span class="visually-hidden">warning sign</span> under its score then says which ones.</p>
+      <ol>
+        <li>Open the job ad in your browser and wait until it has fully loaded.</li>
+        <li>Save the page: press <kbd>${mac ? 'Cmd' : 'Ctrl'}</kbd>+<kbd>S</kbd> (any "Webpage" format works).</li>
+        <li><label for="add-job-file">Choose the saved page here (or several):</label></li>
+      </ol>
+      <div class="p-field"><input id="add-job-file" type="file" class="p-input tab-file" accept=".html,.htm,.mhtml,.mht,text/html" multiple /></div>
+      <div class="p-field add-job-url">
+        <label class="p-label" for="add-job-url">Address of the ad <span class="u-muted">(only if JobHuntPA asks for it)</span></label>
+        <input id="add-job-url" class="p-input" type="url" inputmode="url" autocomplete="off" placeholder="https://" aria-describedby="add-job-url-hint" />
+        <p id="add-job-url-hint" class="p-form-help-text">Saved pages usually say where they came from. For one that doesn't, copy the ad's address from your browser's address bar, choose that page on its own and add it again.</p>
+      </div>
+      <div class="u-row">
+        <button class="p-button p-button--positive" type="submit">Add</button>
+        <p id="add-job-status" class="u-small u-muted" role="status"></p>
+      </div>
+      <ul id="add-job-results" class="p-list add-job-results"></ul>
+      <p class="p-form-help-text">The browser extension (Settings) adds the job in the tab you have open in one click, without saving the page.</p>
+    </form>`);
+  $('#add-job-file').addEventListener('change', () => setFieldError($('#add-job-file'), ''));
+  $('#add-job-url').addEventListener('input', () => setFieldError($('#add-job-url'), ''));
+  $('#add-job-form').addEventListener('submit', addJobPages);
+}
+
+function addJobResult(name, r) {
+  if (r.jobs.length !== 1) {
+    return `<span aria-hidden="true">✓ </span>${esc(name)}: ${r.imported} jobs read, ${r.new} new, ${r.kept} in your list. A page of search results is filtered like a search.`;
+  }
+  const j = r.jobs[0];
+  const what = `${esc(j.title || 'Job')}${j.company ? ` at ${esc(j.company)}` : ''}`;
+  const warn = (j.filter_warnings || []).length
+    ? ` <span class="warn-text"><span aria-hidden="true">⚠️ </span>${esc(filterWarnWords(j))}: ${esc(j.filter_warnings.join('; '))}.</span>` : '';
+  return `<span aria-hidden="true">✓ </span>${j.created ? 'Added' : 'Already in your list, brought up to date'}: <a href="${esc(j.link)}" target="_blank" rel="noopener">${what}${NEW_TAB}</a>.${warn}`;
+}
+
+async function addJobPages(e) {
+  e.preventDefault();
+  const input = $('#add-job-file');
+  const files = Array.from(input.files);
+  if (!files.length) { setFieldError(input, 'Choose the page you saved (.html or .mhtml) first.'); return; }
+  const typed = $('#add-job-url').value.trim();
+  if (typed && files.length > 1) { setFieldError($('#add-job-url'), 'An address belongs to one page: choose only that page, then add it.'); return; }
+  const status = $('#add-job-status');
+  const results = $('#add-job-results');
+  const button = $('#add-job-form button[type="submit"]');
+  results.innerHTML = '';
+  setBusy(button, true);
+  let added = 0, updated = 0, failed = 0;
+  for (const f of files) {
+    setText(status, `Adding ${f.name}…`);
+    const fd = new FormData();
+    fd.append('file', f, f.name);
+    if (typed) fd.append('url', typed);
+    const li = document.createElement('li');
+    try {
+      const r = await api('/api/import/page', { method: 'POST', body: fd });
+      li.innerHTML = addJobResult(f.name, r);
+      added += r.new;
+      updated += r.imported - r.new;
+    } catch (err) {
+      failed += 1;
+      li.className = 'err-text';
+      li.innerHTML = `<span aria-hidden="true">✕ </span>${esc(f.name)}: ${esc(err.message)}`;
+    }
+    if (!results.isConnected) break; // the dialog was closed: the other pages aren't sent
+    results.appendChild(li);
+  }
+  if (results.isConnected) {
+    setBusy(button, false);
+    setText(status, `Done: ${added} added, ${updated} brought up to date${failed ? `, ${failed} not added (see below)` : ''}.`);
+    input.value = '';
+  }
+  if (added || updated) loadJobs();
+}
+
 async function setHidden(ids, hidden) {
   try {
     await api('/api/jobs/hidden', { method: 'PATCH', body: JSON.stringify({ ids, hidden }) });
@@ -1052,6 +1164,7 @@ function initJobs() {
   $('#bulk-chat').addEventListener('click', () => openChat(Array.from(state.selected)));
   $('#bulk-merge').addEventListener('click', mergeSelected);
   $('#dupes-open').addEventListener('click', showDuplicates);
+  $('#add-job-open').addEventListener('click', showAddJob);
   renderViewToggle();
 }
 
@@ -1248,7 +1361,8 @@ function currentWorkspace() { return state.ws; }
 /* ================= COVER LETTERS ================= */
 // The cover letter window is letter.js's, shared with the job page; here it opens in the #modal dialog.
 function showCoverLetter(job) {
-  return openLetterWindow(job, { dialog: $('#modal'), open: openHtmlModal, close: closeModal, docsHref: '#docs', onChange: renderJobs });
+  return openLetterWindow(job, { dialog: $('#modal'), open: openHtmlModal, close: closeModal, docsHref: '#docs', onChange: renderJobs,
+    onBlocksChanged: loadBlocks });
 }
 
 /* ================= DUPLICATE ADS ================= */
@@ -2071,22 +2185,6 @@ function docStatusHtml(id, area) {
   return `<span id="doc-${id}-${area}-status" class="${s?.isError ? 'err-text' : 'u-small u-muted'}">${esc(s?.text || '')}</span>`;
 }
 
-function rememberFocus(root) {
-  const el = document.activeElement;
-  if (!el || !root.contains(el) || !el.dataset.focus) return null;
-  const typed = el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text');
-  return { key: el.dataset.focus, start: typed ? el.selectionStart : null, end: typed ? el.selectionEnd : null, scroll: el.scrollTop };
-}
-
-function restoreFocus(root, saved) {
-  if (!saved) return;
-  const el = Array.from(root.querySelectorAll('[data-focus]')).find((x) => x.dataset.focus === saved.key);
-  if (!el) return;
-  el.focus({ preventScroll: true });
-  if (saved.start !== null && el.setSelectionRange) el.setSelectionRange(saved.start, saved.end);
-  el.scrollTop = saved.scroll;
-}
-
 async function loadDocs() {
   if (state.docs.ws !== state.ws) { // another workspace: forget what was open, typed or said
     Object.assign(state.docs, { ws: state.ws, list: [], open: new Set(), text: new Map(), drafts: new Map(), status: new Map(), busy: new Set() });
@@ -2510,6 +2608,164 @@ function initDocs() {
     loadScorerStatus();
   });
   $('#upload-input').addEventListener('change', () => setFieldError($('#upload-input'), ''));
+  initBlocks();
+}
+
+/* ---------- Documents tab > Cover letter blocks (backend/letter_blocks.py) ----------
+   Paragraphs the user wrote, put together into a letter word for word (the cover letter window's Build from my
+   blocks: letter.js, which also holds the form's fields and the other block helpers). The table lists them as the
+   letter takes them: openings first, closings last, each kind in its own order (a workspace-wide position), so a
+   move sends the full new order of every id. On a phone each row stacks (.tab-stack-table). */
+async function saveBlock(payload, id = null) {
+  const block = await saveLetterBlock(payload, id);
+  state.blocks = sortBlocks([...state.blocks.filter((b) => b.id !== block.id), block]);
+  renderBlocks();
+  return block;
+}
+
+async function loadBlocks() {
+  if (state.blocksWs !== state.ws) { state.blocksWs = state.ws; state.blocks = []; resetBlockForm(); renderBlocks(); }
+  const ws = state.ws;
+  try {
+    const list = await api('/api/letter-blocks');
+    if (ws !== state.ws) return;
+    state.blocks = sortBlocks(list);
+    renderBlocks();
+  } catch (e) {
+    if (ws === state.ws) $('#block-list').innerHTML = `<p class="err-text">Could not load your blocks: ${esc(e.message)}</p>`;
+  }
+}
+
+function blockRowHtml(b, first, last) {
+  const name = blockName(b);
+  const nameId = `block-${b.id}-name`;
+  const warn = unknownPlaceholdersText(b.unknown_placeholders);
+  return `<tr class="block-row" data-block-id="${b.id}">
+    <th scope="row" data-label="Block">
+      <span id="${nameId}" class="block-title">${esc(name)}</span>
+      <span class="block-preview u-small u-muted">${esc(blockPreview(b.text))}</span>
+      ${warn ? `<span class="warn-text u-small block-row-warn"><span aria-hidden="true">⚠ </span>${esc(warn)}</span>` : ''}
+    </th>
+    <td data-label="Part">${esc(BLOCK_KIND_LABEL[b.kind] || b.kind)}</td>
+    <td data-label="Tags">${b.tags.length ? `<ul class="block-tags" aria-label="Tags">${b.tags.map((t) => `<li class="block-tag">${esc(t)}</li>`).join('')}</ul>` : '<span class="u-muted">None</span>'}</td>
+    <td class="tab-actions"><span class="u-row">
+      <button class="p-button p-button--base is-dense" type="button" data-act="edit" data-focus="edit-${b.id}" aria-describedby="${nameId}">Edit</button>
+      <button class="p-button p-button--base is-dense" type="button" data-act="up" data-focus="up-${b.id}" aria-label="Move ${esc(name)} up"${first ? ' disabled' : ''}><span aria-hidden="true">↑</span></button>
+      <button class="p-button p-button--base is-dense" type="button" data-act="down" data-focus="down-${b.id}" aria-label="Move ${esc(name)} down"${last ? ' disabled' : ''}><span aria-hidden="true">↓</span></button>
+      <button class="p-button p-button--base is-dense" type="button" data-act="delete" data-focus="delete-${b.id}" aria-describedby="${nameId}">Delete</button></span></td>
+  </tr>`;
+}
+
+function renderBlocks() {
+  const root = $('#block-list');
+  if (!root) return;
+  const saved = rememberFocus(root);
+  const n = state.blocks.length;
+  $('#blocks-count').textContent = n ? `${n} block${n === 1 ? '' : 's'}` : '';
+  if (!n) {
+    root.innerHTML = '<p class="u-muted block-empty">No blocks yet. Write your first one above: an opening, a paragraph about a project or a result, a closing.</p>';
+    return;
+  }
+  // Up and down move a block within its own kind: the first and last of each kind can't go further.
+  const rows = state.blocks.map((b, i) => blockRowHtml(b, state.blocks[i - 1]?.kind !== b.kind, state.blocks[i + 1]?.kind !== b.kind));
+  root.innerHTML = `<div class="p-table-wrap"><table class="p-table tab-stack-table blocks-table">
+    <caption class="u-sr">Your cover letter blocks, in the order a letter takes them</caption>
+    <thead><tr><th scope="col">Block</th><th scope="col">Part</th><th scope="col">Tags</th><th scope="col"><span class="u-sr">Actions</span></th></tr></thead>
+    <tbody>${rows.join('')}</tbody></table></div>`;
+  restoreFocus(root, saved);
+  // A move to the top or bottom disables the button that had focus: the other one of the pair takes it.
+  if (saved && (!root.contains(document.activeElement) || document.activeElement.disabled)) {
+    const id = saved.key.split('-').pop();
+    (root.querySelector(`[data-focus="up-${id}"]:not(:disabled)`) || root.querySelector(`[data-focus="down-${id}"]:not(:disabled)`)
+      || root.querySelector(`[data-focus="edit-${id}"]`))?.focus();
+  }
+}
+
+function resetBlockForm() {
+  state.blockEdit = null;
+  const fields = $('#block-form-fields');
+  if (!fields) return;
+  fields.innerHTML = blockFormHtml('block');
+  $('#block-form-title').textContent = 'Write a block';
+  $('#block-save').textContent = 'Save block';
+  $('#block-cancel').hidden = true;
+}
+
+function editBlock(b) {
+  state.blockEdit = b.id;
+  $('#block-form-fields').innerHTML = blockFormHtml('block', b);
+  $('#block-form-title').textContent = 'Change a block';
+  $('#block-save').textContent = 'Save changes';
+  $('#block-cancel').hidden = false;
+  $('#block-form-warn').hidden = true;
+  $('#block-status').textContent = `Editing "${blockName(b)}".`;
+  $('#block-form').scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
+  $('#block-title').focus({ preventScroll: true });
+}
+
+async function submitBlockForm(e) {
+  e.preventDefault();
+  const status = $('#block-status');
+  const warn = $('#block-form-warn');
+  const payload = readBlockForm($('#block-form'));
+  if (!payload) { status.textContent = ''; return; }
+  const btn = $('#block-save');
+  setBusy(btn, true);
+  try {
+    const editing = state.blockEdit;
+    const block = await saveBlock(payload, editing);
+    resetBlockForm();
+    status.textContent = editing ? `Saved your changes to "${blockName(block)}".` : `Saved "${blockName(block)}": it's in the list below.`;
+    warn.textContent = unknownPlaceholdersText(block.unknown_placeholders);
+    warn.hidden = !warn.textContent;
+    if (!warn.hidden) announce(warn.textContent);
+  } catch (err) { status.textContent = `Not saved: ${err.message}`; announce(`Not saved: ${err.message}`, true); }
+  setBusy(btn, false);
+}
+
+async function moveBlock(b, dir) {
+  const ids = state.blocks.map((x) => x.id);
+  const i = ids.indexOf(b.id);
+  const j = i + dir;
+  if (j < 0 || j >= ids.length || state.blocks[j].kind !== b.kind) return;
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  try {
+    state.blocks = sortBlocks(await api('/api/letter-blocks/order', { method: 'PUT', body: JSON.stringify({ ids }) }));
+    renderBlocks();
+    announce(`Moved "${blockName(b)}" ${dir < 0 ? 'up' : 'down'}.`);
+  } catch (err) { toast(`Not moved: ${err.message}`, 'err'); }
+}
+
+async function deleteBlock(b) {
+  if (!confirm(`Delete the block "${blockName(b)}"? This can't be undone.`)) return;
+  try {
+    await api(`/api/letter-blocks/${b.id}`, { method: 'DELETE' });
+    state.blocks = state.blocks.filter((x) => x.id !== b.id);
+    if (state.blockEdit === b.id) resetBlockForm();
+    renderBlocks();
+    $('#block-status').textContent = `Deleted "${blockName(b)}".`;
+    if (!document.activeElement || document.activeElement === document.body) $('#blocks-card-title').focus();
+  } catch (err) { toast(`Not deleted: ${err.message}`, 'err'); }
+}
+
+function initBlocks() {
+  resetBlockForm();
+  renderBlocks();
+  $('#block-form').addEventListener('submit', submitBlockForm);
+  $('#block-cancel').addEventListener('click', () => {
+    resetBlockForm();
+    $('#block-status').textContent = '';
+    $('#block-title').focus();
+  });
+  $('#block-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-act]');
+    const b = btn && state.blocks.find((x) => x.id === Number(btn.closest('[data-block-id]').dataset.blockId));
+    if (!b) return;
+    if (btn.dataset.act === 'edit') editBlock(b);
+    else if (btn.dataset.act === 'up') moveBlock(b, -1);
+    else if (btn.dataset.act === 'down') moveBlock(b, 1);
+    else if (btn.dataset.act === 'delete') deleteBlock(b);
+  });
 }
 
 /* ================= MAP ================= */
@@ -2650,7 +2906,6 @@ function renderMapLegend() {
     <span class="u-muted">Dots with several jobs show a count. ${onMap} of ${all} filtered job${all === 1 ? '' : 's'} on the map${all > onMap ? ` (${all - onMap} remote or without a location)` : ''}.</span>`;
 }
 
-const MODE_LABEL_CLASS = { remote: 'positive', hybrid: 'caution', onsite: 'information' };
 
 function renderMapJobs() {
   const box = $('#map-jobs');
@@ -2673,10 +2928,14 @@ function renderMapJobs() {
         <td data-label="Job"><a class="map-job-title" id="mapjob-${j.id}-title" href="./job.html?id=${j.id}&ws=${state.ws}" target="_blank" rel="noopener" title="Open the full page in a new tab">${esc(j.title || '—')}<span class="u-sr"> (opens in a new tab)</span></a>
           <span class="u-small u-muted">${esc(j.company || '—')}${j.excluded_reason ? `. Excluded: ${esc(j.excluded_reason)}` : ''}</span></td>
         <td data-label="Fit">${ratingsHtml(j)}</td>
-        <td data-label="Mode"><span class="p-status-label${MODE_LABEL_CLASS[modeOf(j)] ? ` p-status-label--${MODE_LABEL_CLASS[modeOf(j)]}` : ''}">${modeOf(j)}</span></td>
+        <td data-label="Mode"><span class="p-status-label${MODE_TONE[modeOf(j)] ? ` p-status-label--${MODE_TONE[modeOf(j)]}` : ''}">${modeOf(j)}</span></td>
         <td data-label="Status">${esc(STATUS_LABEL[j.status] || j.status)}${j.ghost?.level ? ` <span class="u-small u-muted">· possible ghost job (${GHOST_STRENGTH[j.ghost.level]})</span>` : ''}</td>
         <td class="tab-actions"><button class="p-button p-button--base is-dense" type="button" id="mapjob-${j.id}-show" data-act="show" title="Show it on the map">Show<span class="u-sr"> ${esc(j.title || 'job')} on the map</span></button></td>
       </tr>`).join('')}</tbody></table></div>`;
+  box.querySelectorAll('[data-act="filter-warnings"]').forEach((b) => b.addEventListener('click', () => {
+    const job = state.jobs.find((j) => j.id === Number(b.closest('.map-job-row').dataset.id));
+    if (job) showFilterWarnings(job);
+  }));
   box.querySelectorAll('[data-act="show"]').forEach((b) => b.addEventListener('click', () => {
     const marker = state.jobMarkers.get(Number(b.closest('.map-job-row').dataset.id));
     if (!marker) return;
@@ -2876,6 +3135,7 @@ async function switchWorkspace(id) {
   state.lastRun = null;
   state.schedule = null;
   state.selected.clear();
+  state.includeTouched.clear();
   state.expanded.clear();
   state.boardMore.clear();
   state.details.clear();
@@ -2914,6 +3174,7 @@ function loadAll() {
   loadSchedule();
   loadSources();
   loadDocs();
+  loadBlocks();
   loadScorerStatus();
   loadLatestRun();
   if (state.map) loadPins();

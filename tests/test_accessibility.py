@@ -1296,8 +1296,9 @@ class GhostJobPagesTest(unittest.TestCase):
                       ratings)
         self.assertIn("${ratingsHtml(job)}", self.app)
         self.assertIn("${ratingsHtml(j)}", self.app)
-        # The job page's summary says both in words (fitLabelHtml, ghostLabelHtml); the rating links to the explanation.
-        self.assertIn('<span class="visually-hidden">Fit score </span>${fit.score}<span class="visually-hidden"> out of 100', self.job)
+        # The job page's summary says both in words (common.js fitLabel, ghostLabelHtml); the rating links to the explanation.
+        self.assertIn('<span class="visually-hidden">Fit score </span>${fit.score}<span class="visually-hidden"> out of 100', self.common)
+        self.assertIn("fitLabel(job, { large: true })", self.job)
         self.assertIn('href="#ghost-title" title="${esc(ghostHover(j))}">${esc(words)}<span class="visually-hidden">: why this rating</span>', self.job)
         self.assertIn("const words = level ? ghostWords(j) : 'Real vacancy: likely';", self.job)
         self.assertIn('<h2 id="ghost-title" class="jp-h2" tabindex="-1">', self.job_html)  # ... which can take the focus
@@ -1307,8 +1308,6 @@ class GhostJobPagesTest(unittest.TestCase):
         # The map list has no "why?" line, so a flagged job is said in words there (the circle alone is colour).
         self.assertIn("possible ghost job (${GHOST_STRENGTH[j.ghost.level]})", self.app)
 
-    @unittest.skip("PR #4 merge: the redesigned pages don't have main's Always include / filter warning / Add a job "
-                   "UI yet; the frontend pass re-adds it and takes this skip out")
     def test_the_filter_warning_is_a_named_button_above_the_circle_that_opens_a_dialog(self):
         """A job the person included that doesn't meet their filters: ⚠️ between the score and the ghost-job circle, a
         real button whose name says what it is (the emoji is hidden from screen readers), opening a dialog on the Jobs
@@ -1334,8 +1333,6 @@ class GhostJobPagesTest(unittest.TestCase):
         self.assertIn("initModal();", self.job)
         self.assertRegex(self.css, r"(?m)^  \.filter-warn \{ min-height: 44px; \}")  # a touch-sized target
 
-    @unittest.skip("PR #4 merge: the redesigned pages don't have main's Always include / filter warning / Add a job "
-                   "UI yet; the frontend pass re-adds it and takes this skip out")
     def test_always_include_is_a_labelled_checkbox_that_keeps_focus(self):
         """"Always include": a real checkbox inside its label (a touch-sized .check-field), named on a card by the job's
         title too; after the card or the job page's header is redrawn, focus is back on it (or on the Jobs tab when the
@@ -1353,16 +1350,14 @@ class GhostJobPagesTest(unittest.TestCase):
         self.assertIn("renderHead();\n    $('#job-head [data-act=\"include\"]').focus();", page)
         self.assertIn("toast(includedWords(job), 'ok', 6000);", page)
 
-    @unittest.skip("PR #4 merge: the redesigned pages don't have main's Always include / filter warning / Add a job "
-                   "UI yet; the frontend pass re-adds it and takes this skip out")
     def test_add_a_job_opens_a_dialog_with_labelled_fields(self):
-        self.assertIn('<button id="add-job-open" class="btn" type="button" aria-haspopup="dialog"', self.index)
+        self.assertIn('<button id="add-job-open" class="p-button is-dense" type="button" aria-haspopup="dialog"', self.index)
         dialog = self.app[self.app.index("function showAddJob"):self.app.index("function addJobResult")]
         self.assertIn('<label for="add-job-file">', dialog)
         self.assertIn('<input id="add-job-file" type="file"', dialog)
-        self.assertIn('<label for="add-job-url">', dialog)
+        self.assertIn('<label class="p-label" for="add-job-url">', dialog)
         self.assertIn('aria-describedby="add-job-url-hint"', dialog)
-        self.assertIn('<p id="add-job-status" class="muted" role="status"></p>', dialog)  # the outcome is announced
+        self.assertIn('<p id="add-job-status" class="u-small u-muted" role="status"></p>', dialog)  # the outcome is announced
         result = self.app[self.app.index("function addJobResult"):self.app.index("async function addJobPages")]
         for value in ("esc(name)", "esc(j.title || 'Job')", "esc(j.company)", "esc(j.link)", "esc(j.filter_warnings.join('; '))"):
             self.assertIn(value, result)
@@ -1983,7 +1978,7 @@ class JobPageTabsTest(unittest.TestCase):
         self.assertIn("applyHash({ focus: null });", self.js)  # at load: no focus is moved
 
     def test_gaps_come_before_matches_everywhere(self):
-        groups = self.js[self.js.index("function requirementGroups"):self.js.index("/* The fit score as a status label")]
+        groups = self.js[self.js.index("function requirementGroups"):self.js.index("/* The ghost-job rating as a label")]
         self.assertIn("gaps: [...unmatched.sort(mustFirst), ...notes], matched:", groups)
         overview = self.js[self.js.index("function renderVerdict"):self.js.index("/* ---------- is this a real vacancy?")]
         self.assertLess(overview.index("Gaps: what to prepare for"), overview.index("Matched: what to lean on"))
@@ -2011,7 +2006,7 @@ class JobPageTabsTest(unittest.TestCase):
 
     def test_the_summary_says_the_score_mode_and_rating_in_words(self):
         head = self.js[self.js.index("function renderHead()"):self.js.index("function initStatus()")]
-        self.assertIn("fitLabelHtml(job)", head)
+        self.assertIn("fitLabel(job, { large: true })", head)
         self.assertIn('<span class="visually-hidden">Work mode: </span>${esc(modeWords(job))}', head)
         self.assertIn("ghostLabelHtml(job)", head)
         self.assertIn('<label class="u-sr" for="job-status">Application status</label>', self.html)

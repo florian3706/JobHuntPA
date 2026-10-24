@@ -129,6 +129,25 @@ document.addEventListener('click', (e) => {
   if (btn) { e.preventDefault(); e.stopImmediatePropagation(); }
 }, true);
 
+/* ---------- focus across a redraw ----------
+   A list drawn again from scratch (innerHTML) loses the focused control: each control that can have it carries a
+   data-focus key, and the one with the same key gets the focus back (with the caret, in a text field). */
+function rememberFocus(root) {
+  const el = document.activeElement;
+  if (!el || !root.contains(el) || !el.dataset.focus) return null;
+  const typed = el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text');
+  return { key: el.dataset.focus, start: typed ? el.selectionStart : null, end: typed ? el.selectionEnd : null, scroll: el.scrollTop };
+}
+
+function restoreFocus(root, saved) {
+  if (!saved) return;
+  const el = Array.from(root.querySelectorAll('[data-focus]')).find((x) => x.dataset.focus === saved.key);
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  if (saved.start !== null && el.setSelectionRange) el.setSelectionRange(saved.start, saved.end);
+  el.scrollTop = saved.scroll;
+}
+
 /* ---------- motion ---------- */
 const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const scrollBehavior = () => (reducedMotion() ? 'auto' : 'smooth');
@@ -269,8 +288,10 @@ async function api(url, opts = {}) {
   return (await apiResponse(url, opts)).data;
 }
 
-// Like api(), plus the response headers ({ data, headers }).
+// Like api(), plus the response headers ({ data, headers }). With `blob: true` the data is the body's bytes (a Blob:
+// a download), read only when the answer is OK; a refusal is handled as for any other call.
 async function apiResponse(url, opts = {}, retried = false) {
+  const { blob: asBlob = false, ...fetchOpts } = opts;
   const isForm = opts.body instanceof FormData;
   const method = (opts.method || 'GET').toUpperCase();
   const ws = currentWorkspace(); // 0 before the page knows one: the server then uses the account's first
@@ -278,7 +299,8 @@ async function apiResponse(url, opts = {}, retried = false) {
   if (UNSAFE_METHODS.has(method)) headers['X-CSRF-Token'] = (SESSION.me || await loadSession())?.csrf || '';
   // A change may start AI work: the tasks tray (tasks-tray.js) looks again soon.
   if (UNSAFE_METHODS.has(method)) document.dispatchEvent(new Event('jobhunt:api-write'));
-  const res = await fetch(url, { ...opts, headers });
+  const res = await fetch(url, { ...fetchOpts, headers });
+  if (asBlob && res.ok) return { data: await res.blob(), headers: res.headers };
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -679,6 +701,23 @@ function ghostWhy(job) {
     <p class="hint">This may still be a real job. Ask the employer whether the role is open now. Open the job to see everything that was checked.</p></details>`;
 }
 function modeOf(job) { return ['remote', 'hybrid', 'onsite'].includes(job.work_mode) ? job.work_mode : 'unknown'; }
+// The work mode's status-label tone (Jobs tab, map list, job page). Unknown is the plain label.
+const MODE_TONE = { remote: 'positive', hybrid: 'caution', onsite: 'information', unknown: '' };
+
+/* The fit score as a status label (the Jobs tab's table and board, the job page's summary; the cards keep the 🎯 score
+   with the ghost-job circle under it: ratingsHtml). The number is the score and its colour only repeats it; screen
+   readers get "Fit score 82 out of 100". A score against older documents carries a * (`star: false` leaves it out,
+   where an "Older documents" label stands beside it). `large`: the job page's size. */
+const fitTone = (score) => (score >= 75 ? 'positive' : score >= 45 ? 'caution' : 'negative');
+function fitLabel(job, { large = false, star = !large } = {}) {
+  const fit = job.fit;
+  const cls = `p-status-label${large ? ' is-large' : ''}`;
+  if (!fit) return `<span class="${cls}" title="Not scored yet">Not scored yet</span>`;
+  if (fit.status === 'error') return `<span class="${cls} p-status-label--negative" title="${esc(fit.error || 'Scoring failed')}">Scoring failed</span>`;
+  const title = fit.stale ? 'Scored against older documents' : `Scored ${fmtDate(fit.scored_at)}`;
+  return `<span class="${cls} p-status-label--${fitTone(fit.score)}" title="${esc(title)}"><span class="visually-hidden">Fit score </span>${fit.score}<span class="visually-hidden"> out of 100${
+    fit.stale ? ', scored against older documents' : ''}</span>${fit.stale && star ? '<span aria-hidden="true">*</span>' : ''}</span>`;
+}
 
 // 🎯 and the fit score. The number is the score; its colour only repeats it. Screen readers get "Fit score 82 of 100".
 const SCORE_ICON = '<span aria-hidden="true">🎯 </span>';

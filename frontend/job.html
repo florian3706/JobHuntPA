@@ -71,6 +71,7 @@
         <p id="job-where" class="u-upper u-muted jp-summary__where"></p>
         <h1 id="job-title" class="jp-summary__title">Loading the job…</h1>
         <p id="job-sub" class="u-small u-muted jp-summary__sub"></p>
+        <div id="job-include" class="jp-summary__include"></div>
       </div>
       <div id="job-labels" class="u-row jp-summary__labels"></div>
       <div class="u-row jp-summary__actions">
@@ -252,14 +253,15 @@
 
   <div id="job-bar" class="jp-bar" role="region" aria-label="Actions for this job" hidden></div>
 
-  <!-- The cover letter (a native dialog: focus moves in and stays, Escape closes). -->
-  <dialog id="letter-dialog" class="modal" aria-labelledby="letter-title">
+  <!-- The page's dialog (a native dialog element: focus moves in and stays, Escape closes): the cover letter window
+       (letter.js) and the filters a job the person included doesn't meet (its ⚠️: job.js showFilterWarnings). -->
+  <dialog id="modal" class="modal" aria-labelledby="modal-title">
     <div class="modal-box">
       <div class="modal-head">
-        <h2 id="letter-title" class="modal-title">Cover letter</h2>
-        <button id="letter-close" class="btn btn-ghost btn-sm" type="button"><span aria-hidden="true">✕ </span>Close</button>
+        <h2 id="modal-title" class="modal-title"></h2>
+        <button id="modal-close" class="btn btn-ghost btn-sm" type="button"><span aria-hidden="true">✕ </span>Close</button>
       </div>
-      <div id="letter-body" class="modal-html"></div>
+      <div id="modal-html" class="modal-html"></div>
     </div>
   </dialog>
 

@@ -32,12 +32,11 @@ function showPageError(msg) {
 
 /* ---------- small helpers ---------- */
 const MODE_WORDS = { remote: 'Remote', hybrid: 'Hybrid', onsite: 'On-site', unknown: 'Work mode unknown' };
-const MODE_LABEL_CLASS = { remote: 'p-status-label--positive', hybrid: 'p-status-label--caution', onsite: 'p-status-label--information', unknown: '' };
 const dayWords = (n) => `${n} day${n === 1 ? '' : 's'}`;
 const dateOnly = (iso) => (iso ? fmtDate(iso).split(',')[0] : '');
 const mustFirst = (a, b) => (b.must_have !== false) - (a.must_have !== false);
 const byId = (id) => document.getElementById(id);
-const scoreClass = (score) => (score >= 75 ? 'p-status-label--positive' : score >= 45 ? 'p-status-label--caution' : 'p-status-label--negative');
+const scoreClass = (score) => `p-status-label--${fitTone(score)}`; // (the same steps as common.js fitLabel)
 const label = (text, kind = '', extra = '') => `<span class="p-status-label${kind ? ` p-status-label--${kind}` : ''}${extra ? ` ${extra}` : ''}">${text}</span>`;
 const svgTick = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>';
 const svgCross = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"></path></svg>';
@@ -58,15 +57,6 @@ function requirementGroups(fit) {
   const notes = (fit.gaps || []).filter((g) => !unmatched.some((r) => r.point.toLowerCase() === g.toLowerCase()))
     .map((g, k) => ({ point: g, must_have: true, matched: false, evidence: [], note: true, i: `g${k}` }));
   return { reqs: [...reqs, ...notes], gaps: [...unmatched.sort(mustFirst), ...notes], matched: reqs.filter((r) => r.matched).sort(mustFirst) };
-}
-
-/* The fit score as a status label: the number, with "Fit score N out of 100" for screen readers. */
-function fitLabelHtml(j, large = true) {
-  const fit = j.fit;
-  const size = large ? ' is-large' : '';
-  if (!fit) return label('Not scored yet', '', size.trim());
-  if (fit.status === 'error') return label('Scoring failed', 'negative', size.trim());
-  return `<span class="p-status-label ${scoreClass(fit.score)}${size}" title="${esc(fit.stale ? 'Scored against older documents' : `Scored ${fmtDate(fit.scored_at)}`)}"><span class="visually-hidden">Fit score </span>${fit.score}<span class="visually-hidden"> out of 100${fit.stale ? ', scored against older documents' : ''}</span></span>`;
 }
 
 /* The ghost-job rating as a label that links to the explanation in the Overview. */
@@ -104,15 +94,20 @@ function renderHead() {
     <span class="applied-slot">${appliedHtml(job)}</span>
     ${job.excluded_reason ? `<span class="jp-sub__excluded">Excluded: ${esc(job.excluded_reason)}</span>` : ''}`;
   $('#job-labels').innerHTML = [
-    fitLabelHtml(job),
+    fitLabel(job, { large: true }),
+    filterWarnButton(job),
     job.fit?.stale ? label('Older documents', 'caution', 'jp-phone-hide') : '',
-    label(`<span class="visually-hidden">Work mode: </span>${esc(modeWords(job))}`, MODE_LABEL_CLASS[mode] ? mode === 'remote' ? 'positive' : mode === 'hybrid' ? 'caution' : 'information' : '', 'jp-phone-hide'),
+    label(`<span class="visually-hidden">Work mode: </span>${esc(modeWords(job))}`, MODE_TONE[mode], 'jp-phone-hide'),
     ghostLabelHtml(job) ? `<span class="jp-phone-hide">${ghostLabelHtml(job)}</span>` : '',
     job.closed ? label('Closed', 'negative', 'jp-phone-hide') : '',
     job.recruiter ? label('Recruitment agency', '', 'jp-phone-hide') : '',
     job.hidden ? label('Hidden', '', 'jp-phone-hide') : '',
   ].join('');
+  // "Always include": ticked, the filters never leave this job out (a job the person added is ticked already).
+  $('#job-include').innerHTML = `${includeToggle(job)}`;
   document.title = `${job.title} · ${job.company} · JobHuntPA`;
+  $('#job-head [data-act="filter-warnings"]')?.addEventListener('click', showFilterWarnings);
+  $('#job-head [data-act="include"]').addEventListener('change', setIncluded);
   // The rating's label links to the Overview's section; its reasons are collapsed, so following the link opens them.
   $('#job-head a.jp-ghost-link')?.addEventListener('click', () => { const why = $('#ghost-why'); if (why) why.open = true; });
   const sel = $('#job-status');
@@ -128,6 +123,33 @@ function renderHead() {
     ...opens.map((o) => `<li><a class="p-button p-button--base is-dense jp-more__item" href="${esc(o.url)}" target="_blank" rel="noopener">Open on ${esc(sourceLabel(o.source))}${NEW_TAB}</a></li>`),
     '<li><a class="p-button p-button--base is-dense jp-more__item" href="./#jobs">Back to the dashboard</a></li>',
   ].join('');
+}
+
+/* "Always include" (common.js includeToggle): the summary is redrawn for the job's new excluded reason and ⚠️, with
+   focus back on the box. */
+async function setIncluded(e) {
+  const box = e.currentTarget;
+  box.disabled = true;
+  try {
+    const updated = await api(`/api/jobs/${job.id}/included`, { method: 'PATCH', body: JSON.stringify({ included: box.checked }) });
+    for (const k of ['included_by_user', 'excluded_reason', 'softened_reason', 'filter_warnings']) job[k] = updated[k];
+    renderHead();
+    $('#job-head [data-act="include"]').focus();
+    toast(includedWords(job), 'ok', 6000);
+  } catch (err) {
+    box.checked = !box.checked;
+    box.disabled = false;
+    toast(`Could not change "Always include": ${err.message}`, 'err');
+  }
+}
+
+/* ---------- the filters a job the person included doesn't meet (its ⚠️) ----------
+   In the page's #modal: focus goes back to the ⚠️ when it closes (or to its redrawn copy, the summary having been
+   drawn again meanwhile). */
+function showFilterWarnings(e) {
+  const back = e.currentTarget;
+  openModal(filterWarningsTitle(job), filterWarningsHtml(job, './#search'),
+    () => (back.isConnected ? back : $('#job-head [data-act="filter-warnings"]')));
 }
 
 function initStatus() {
@@ -420,7 +442,7 @@ function renderFit() {
     <section class="p-card u-stack jp-card" aria-labelledby="gaps-title">
       <h2 id="gaps-title" class="jp-h2 jp-h2--gap">Gaps: ${gaps.length ? `${gaps.length} requirement${gaps.length === 1 ? '' : 's'} without evidence` : 'none'}</h2>
       ${gaps.length ? `<ul class="p-list p-list--divided jp-reqs">${gaps.map((r) => reqRow(r, 'gap')).join('')}</ul>` : '<p>Every requirement the scorer found has evidence in your documents.</p>'}
-      ${gaps.length ? '<div class="u-row"><a class="p-button is-dense" href="./#documents">Add a note to your documents</a><button class="p-button p-button--base is-dense" type="button" data-act="ask:How should I address my gaps in an interview?">Ask the chat how to present this</button></div>' : ''}
+      ${gaps.length ? '<div class="u-row"><a class="p-button is-dense" href="./#docs">Add a note to your documents</a><button class="p-button p-button--base is-dense" type="button" data-act="ask:How should I address my gaps in an interview?">Ask the chat how to present this</button></div>' : ''}
     </section>
     <section class="p-card u-stack jp-card" aria-labelledby="matched-title">
       <h2 id="matched-title" class="jp-h2 jp-h2--match">Matched: ${matched.length ? `${matched.length} requirement${matched.length === 1 ? '' : 's'} with evidence` : 'none'}</h2>
@@ -974,35 +996,43 @@ function initActions() {
   document.addEventListener('chat:changed', () => { chatThreads = chatState.chat?.threads || chatThreads; renderChatCount(); renderNext(); });
 }
 
-/* ---------- the cover letter: letter.js's window, in this page's #letter-dialog ---------- */
-let letterReturn = null;
-function showCoverLetter() {
-  const dialog = $('#letter-dialog');
-  return openLetterWindow(job, {
-    dialog,
-    open(title, html) {
-      $('#letter-title').textContent = title;
-      $('#letter-body').innerHTML = html;
-      $('#letter-body').scrollTop = 0;
-      if (dialog.open) return;
-      letterReturn = document.activeElement;
-      dialog.showModal();
-    },
-    close: () => dialog.close(),
-    docsHref: './#docs',
-    onChange: () => { renderHead(); renderNext(); renderFacts(); },
+/* ---------- the dialog (#modal, a native <dialog>) ----------
+   showModal() moves focus in, keeps it there (the page behind is inert) and closes on Escape; a click on the backdrop
+   closes it too. When it closes, its content goes and focus goes back to `back()` (by default the control that
+   opened it, while it is still in the page). The cover letter window (letter.js) and the ⚠️ list open in it. */
+let modalReturn = null;
+function openModal(title, html, back = null) {
+  const dlg = $('#modal');
+  $('#modal-title').textContent = title;
+  $('#modal-html').innerHTML = html;
+  $('#modal-html').scrollTop = 0;
+  if (dlg.open) return;
+  const opener = document.activeElement;
+  modalReturn = back || (() => (opener?.isConnected ? opener : null));
+  dlg.showModal();
+}
+
+function initModal() {
+  const dlg = $('#modal');
+  $('#modal-close').addEventListener('click', () => dlg.close());
+  // A click on the backdrop lands on the <dialog> itself (its box fills it otherwise).
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+  dlg.addEventListener('close', () => {
+    $('#modal-html').innerHTML = ''; // nothing of the old content stays reachable
+    (modalReturn?.() || $('#main')).focus();
+    modalReturn = null;
   });
 }
 
-function initLetterDialog() {
-  const dialog = $('#letter-dialog');
-  $('#letter-close').addEventListener('click', () => dialog.close());
-  // A click on the backdrop lands on the <dialog> itself (its box fills it otherwise).
-  dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
-  dialog.addEventListener('close', () => {
-    $('#letter-body').innerHTML = ''; // nothing of the old content stays reachable
-    if (letterReturn?.isConnected) letterReturn.focus();
-    letterReturn = null;
+/* ---------- the cover letter: letter.js's window, in #modal ---------- */
+function showCoverLetter() {
+  const dialog = $('#modal');
+  return openLetterWindow(job, {
+    dialog,
+    open: (title, html) => openModal(title, html),
+    close: () => dialog.close(),
+    docsHref: './#docs',
+    onChange: () => { renderHead(); renderNext(); renderFacts(); },
   });
 }
 
@@ -1053,7 +1083,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initStatus();
   initMore();
   initActions();
-  initLetterDialog();
+  initModal();
   initChat({ findJob: (id) => (id === job.id ? job : null) });
   renderAll();
   applyHash({ focus: null });

@@ -914,6 +914,7 @@ summary { cursor: pointer; min-height: 24px; }
   .tag button, .p-chip__x, .info-btn, .link, .help-link { min-width: 36px; min-height: 36px; }
   .help-link { min-height: 44px; }
   a.ghost-dot { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .filter-warn { min-height: 44px; }
   .leaflet-touch .leaflet-bar a { width: 44px; height: 44px; line-height: 44px; }
 }
 
@@ -1800,3 +1801,81 @@ dialog.modal.modal--letter { width: min(1120px, calc(100% - 32px)); height: fit-
   .cl-menu { position: static; min-width: 0; margin-top: 4px; }
 }
 .doc-template-note { font-size: 13px; }
+
+/* ======================= Cover letter blocks, Add a job, Always include and the filter warning =======================
+   The Documents tab's blocks card (app.js renderBlocks), the cover letter window's Build from my blocks (letter.js
+   initLetterBlocks), the Add a job dialog (app.js showAddJob), and the controls of a job the person included
+   (common.js includeToggle, filterWarnButton). The components are the shared p-* and u-* rules at the top. */
+.blocks-card h4, .block-warn { margin: 0; }
+.blocks-table .block-row > th { min-width: 14rem; font-weight: 400; }
+.block-title { display: block; font-weight: 550; overflow-wrap: anywhere; }
+.block-preview, .block-row-warn { display: block; margin-top: .125rem; overflow-wrap: anywhere; }
+/* A block's tags: small pills (not buttons), the chip's ground and edge. */
+.block-tags { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .25rem; }
+.block-tag {
+  display: inline-flex; align-items: center; max-width: 100%; min-height: 1.5rem; padding: 0 .5rem; font-size: .8125rem;
+  border: 1px solid var(--border-strong); border-radius: .75rem; background: var(--accent-soft); color: var(--text); overflow-wrap: anywhere;
+}
+.block-empty { margin: 0; }
+.cl-make { gap: .5rem; }
+.cl-blocks { gap: .75rem; }
+.cl-blocks-note { margin: 0; }
+.cl-block-list { margin: 0; }
+/* A ticked block: the tick, and a bar in the tick's colour down its left edge (not the colour alone). */
+.cl-block-row { display: flex; gap: .5rem 1rem; align-items: flex-start; justify-content: space-between; padding-left: .75rem; }
+.cl-block-row.is-ticked { box-shadow: inset 3px 0 0 var(--check, var(--accent)); }
+.cl-block-pick { flex: 1 1 auto; min-width: 0; }
+.cl-block-pick .p-check { align-items: flex-start; }
+.cl-block-pick .p-checkbox { margin-top: .1875rem; }
+.cl-block-name { font-weight: 550; overflow-wrap: anywhere; }
+.cl-block-why { margin: .125rem 0 0 2.125rem; overflow-wrap: anywhere; }
+.cl-block-move { flex: none; flex-wrap: nowrap; gap: .25rem; }
+.cl-missing { border-top: 1px solid var(--border); padding-top: .75rem; gap: .5rem; }
+.cl-missing-list { gap: 1rem; }
+.cl-missing-item { gap: .25rem; align-items: flex-start; }
+.cl-missing-item p { margin: 0; overflow-wrap: anywhere; }
+.cl-newblock { align-self: stretch; margin-top: .375rem; }
+/* "Write this block": the facts from the documents beside the text field, one above the other on narrow screens. */
+.block-write { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: .75rem; align-items: start; }
+.block-bullets {
+  background: var(--field); color: var(--text); border: 1px solid var(--border); padding: .5rem .75rem; font-size: .875rem; overflow-wrap: anywhere;
+}
+.block-bullets-title { margin: 0 0 .375rem; font-size: .875rem; font-weight: 550; }
+.block-bullets ul { margin: 0; padding-left: 1.125rem; }
+.block-bullets li { margin-bottom: .25rem; }
+.block-bullets p { margin: 0; }
+@media (max-width: 640px) { .block-write { grid-template-columns: minmax(0, 1fr); } }
+
+/* "Add a job": the saved pages, an address for one that doesn't say it, and a line for each page added. */
+.add-job p, .add-job ol { margin: 0; }
+.add-job ol { padding-left: 20px; }
+.add-job ol li { margin-bottom: 6px; }
+.add-job kbd { border: 1px solid var(--border-strong); border-radius: .125rem; padding: 0 5px; background: var(--field); font-size: 12px; }
+.add-job-results li { overflow-wrap: anywhere; }
+.add-job-results:empty { display: none; }
+
+/* ⚠️ beside or under the score of a job the person included that doesn't meet their filters: a button opening the
+   list of them. The emoji is the mark; its name is in words (hidden), and the edge is the caution colour. */
+.filter-warn {
+  font: inherit; font-size: 13px; line-height: 1.75rem; padding: 0 8px; background: var(--field); color: var(--text); cursor: pointer;
+  border: 1px solid var(--warn-fill, var(--warn)); border-radius: .125rem;
+}
+.filter-warn:hover { background: var(--accent-soft); }
+.filter-warnings { list-style: none; margin: .375rem 0 0; padding: 0; }
+.filter-warnings li { margin-bottom: .25rem; overflow-wrap: anywhere; }
+/* The score and its ⚠️ side by side (the table's Fit column, a board card's head). */
+.fit-cell { display: inline-flex; flex-wrap: wrap; gap: .375rem; align-items: center; justify-content: flex-end; }
+/* A board card's head: the title keeps at least 7rem; the score and its ⚠️ go under it in a narrow column. */
+.board-card__head:has(.filter-warn) { flex-wrap: wrap; }
+.board-card__head .board-card__title { flex: 1 1 7rem; min-width: 0; }
+.board-card__head .fit-cell { flex: none; justify-content: flex-start; }
+/* "Always include" among a job's actions, and under the job page's title. */
+.include-toggle { font-size: .875rem; white-space: nowrap; cursor: pointer; min-height: 2.25rem; }
+.jp-summary__include .include-toggle { min-height: 1.75rem; }
+@media (pointer: coarse) { .include-toggle, .jp-summary__include .include-toggle { min-height: 44px; } }
+/* A phone's job page summary: the title keeps at least 11rem; the labels (the score, its ⚠️) and More go to the next
+   line when they would leave it less. */
+@media (max-width: 719px) {
+  .job-page .jp-summary__inner { flex-wrap: wrap; }
+  .job-page .jp-summary__who { min-width: min(100%, 11rem); }
+}

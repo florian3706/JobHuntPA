@@ -99,6 +99,7 @@
             </details>
           </span>
           <span class="run-strip__tools">
+            <button id="add-job-open" class="p-button is-dense" type="button" aria-haspopup="dialog" title="Add a job from its page, saved in your browser. A job you add is listed even when it doesn't meet your search filters.">Add a job</button>
             <button id="dupes-open" class="p-button is-dense" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
             <button id="score-pending" class="p-button is-dense" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
             <button id="fill-info" class="p-button is-dense" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
@@ -400,6 +401,7 @@
           <p class="u-upper u-muted">On this tab</p>
           <ul class="p-side-navigation">
             <li><a class="p-side-navigation__link" href="#docs-card" aria-current="true">Your documents</a></li>
+            <li><a class="p-side-navigation__link" href="#blocks-card">Cover letter blocks</a></li>
             <li><a class="p-side-navigation__link" href="#add-card">Add a document or note</a></li>
             <li><a class="p-side-navigation__link" href="#summary-card">One summary</a></li>
             <li><a class="p-side-navigation__link" href="#titles-card">Suggested job titles</a></li>
@@ -434,6 +436,30 @@
               the chat and title suggestions use them, and cover letters never see them. A <strong>Letter template</strong> is only the layout your cover letters are
               made in: the AI never reads it. Untick "Used for scoring" to keep a document out of every prompt.
               <strong>Open</strong> shows a document's text, lets you edit a note and make a shorter concise version.</p>
+          </section>
+
+          <!-- Cover letter blocks (backend/letter_blocks.py): the form's fields come from blockFormHtml() in letter.js, which
+               the cover letter window's "Write this block" form uses too; the list is app.js renderBlocks. -->
+          <section id="blocks-card" class="p-card u-stack blocks-card" aria-labelledby="blocks-card-title">
+            <div class="p-card__head">
+              <h3 id="blocks-card-title" tabindex="-1">Cover letter blocks <span class="p-scope-tag">This workspace</span></h3>
+              <span id="blocks-count" class="u-small u-muted"></span>
+            </div>
+            <p class="p-form-help-text">Paragraphs in your own words. Build a letter from them in any job's cover letter window: the AI
+              only picks and orders them, it never rewrites them. You can use <code>{company}</code>, <code>{role}</code>,
+              <code>{location}</code> and <code>{date}</code>: they are filled in from the job when the letter is put together. A
+              Letter template takes the same, plus <code>{letter}</code> where the letter goes.</p>
+            <form id="block-form" class="u-stack block-form" aria-labelledby="block-form-title" novalidate>
+              <h4 id="block-form-title">Write a block</h4>
+              <div id="block-form-fields" class="u-stack block-form-fields"></div>
+              <p id="block-form-warn" class="p-notification p-notification--caution block-warn" role="note" hidden></p>
+              <div class="u-row">
+                <button id="block-save" class="p-button p-button--positive" type="submit">Save block</button>
+                <button id="block-cancel" class="p-button" type="button" hidden>Cancel</button>
+                <span id="block-status" class="u-small u-muted" role="status" aria-live="polite"></span>
+              </div>
+            </form>
+            <div id="block-list" class="block-list"></div>
           </section>
 
           <section id="add-card" class="p-card u-stack" aria-labelledby="add-title">
