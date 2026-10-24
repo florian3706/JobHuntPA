@@ -28,6 +28,10 @@ def setUpModule():
     helpers.enter_admin_scope()
 
 
+def tearDownModule():
+    helpers.exit_admin_scope()
+
+
 def job(**kw):
     base = dict(company="Acme", title="Program Manager", location_text="Sydney")
     return SimpleNamespace(**{**base, **kw})

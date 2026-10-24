@@ -7,11 +7,11 @@ from each package's own metadata (`License-Expression`, `License` and its licenc
 move within the bounds in `requirements.txt`. The other parts below are not Python packages; their licences are
 the projects' own statements, and for the AppImage's Python the libraries were checked in a built AppImage.
 
-Every licence below may be combined with GPLv3. Apache-2.0 is compatible with version 3 of the GPL (not with
-version 2), which is one reason the app is GPL-3.0 and not GPL-2.0. MPL-2.0 allows combination with the GPL (its
-section 3.3; none of these files is marked "Incompatible With Secondary Licenses"). LGPL-2.1 allows conveying the
-code under the GPL, and LGPL-3.0 is the GPLv3 with extra permissions, so it combines with GPLv3 code as it is. FreeType
-(in Pillow's wheels) is used under its GPL-2.0-or-later option.
+Every licence below may be combined with GPLv3, with one exception explained under
+[Fonts shipped with the app](#fonts-shipped-with-the-app). Apache-2.0 is compatible with version 3 of the GPL (not
+with version 2), which is one reason the app is GPL-3.0 and not GPL-2.0. MPL-2.0 allows combination with the GPL
+(its section 3.3; none of these files is marked "Incompatible With Secondary Licenses"). LGPL-2.1 allows conveying
+the code under the GPL. FreeType (in Pillow's wheels) is used under its GPL-2.0-or-later option.
 
 ## Python packages (requirements.txt and what they pull in)
 
@@ -25,8 +25,8 @@ Installed by setup and bundled into the AppImage. "Direct" means listed in `requ
 | python-multipart | 0.0.32 | Apache-2.0 | yes | |
 | pypdf | 6.20.1 | BSD-3-Clause | yes | |
 | python-docx | 1.2.0 | MIT | yes | |
-| fpdf2 | 2.8.9 | LGPL-3.0-only | yes | plain-text cover letter PDFs when LibreOffice isn't installed |
 | odfpy | 1.4.1 | Apache-2.0, or GPL-2.0-or-later, or LGPL-2.1-or-later (the files' headers); the metadata lists all three | yes | used under any of them |
+| reportlab | 5.1.0 | BSD-3-Clause (its metadata: "BSD license (see license.txt for details)") | yes | draws the cover-letter PDF; pulls in Pillow (MIT-CMU) and charset-normalizer (MIT) |
 | httpx | 0.28.1 | BSD-3-Clause | yes | |
 | anthropic | 1.13.0 | MIT | yes | vendors `httpx_aiohttp` (Apache-2.0, with its NOTICE) |
 | beautifulsoup4 | 4.15.0 | MIT | yes | |
@@ -43,10 +43,10 @@ Installed by setup and bundled into the AppImage. "Direct" means listed in `requ
 | anyio | 4.15.1 | MIT | | |
 | certifi | 2026.7.22 | MPL-2.0 | | Mozilla's CA certificates |
 | cffi | 2.1.1 | MIT-0 | | |
+| charset-normalizer | 3.5.2 | MIT | | pulled in by reportlab |
 | click | 8.5.0 | BSD-3-Clause | | |
 | defusedxml | 0.7.1 | PSF-2.0 | | |
 | docstring_parser | 0.18.0 | MIT | | |
-| fonttools | 4.67.0 | MIT | | pulled in by fpdf2; the test fonts in its sources are under the SIL OFL 1.1 and Adobe's glyph list under BSD-3-Clause (its `LICENSE.external`) |
 | greenlet | 3.5.6 | MIT AND PSF-2.0 | | |
 | h11 | 0.16.0 | MIT | | |
 | httpcore | 1.0.9 | BSD-3-Clause | | |
@@ -55,7 +55,7 @@ Installed by setup and bundled into the AppImage. "Direct" means listed in `requ
 | idna | 3.20 | BSD-3-Clause | | |
 | jiter | 0.17.0 | MIT | | |
 | opentelemetry-api | 1.45.1 | Apache-2.0 | | |
-| Pillow | 13.0.0 | MIT-CMU | | pulled in by fpdf2; its binary wheels bundle libjpeg-turbo, libpng, libtiff, libwebp, libavif with dav1d and AOM, OpenJPEG, Little CMS, HarfBuzz, Brotli, XZ, zstd, zlib and libxcb under their own permissive licences, and FreeType (FTL or GPL-2.0-or-later); its `LICENSE` lists them all |
+| Pillow | 13.0.0 | MIT-CMU | | pulled in by reportlab (pictures in a letter template's PDF); its binary wheels bundle libjpeg-turbo, libpng, libtiff, libwebp, libavif with dav1d and AOM, OpenJPEG, Little CMS, HarfBuzz, Brotli, XZ, zstd, zlib and libxcb under their own permissive licences, and FreeType (FTL or GPL-2.0-or-later); its `LICENSE` lists them all |
 | pycparser | 3.11 | BSD-3-Clause | | |
 | pydantic | 2.14.1 | MIT | | |
 | pydantic_core | 2.50.1 | MIT | | |
@@ -79,6 +79,22 @@ install's `site-packages`.
 | [appimagetool](https://github.com/AppImage/appimagetool) and the AppImage runtime | MIT (the runtime includes libraries such as libfuse and squashfuse under their own licences; see the [type2-runtime](https://github.com/AppImage/type2-runtime) project) | `installer/appimage.sh` downloads appimagetool to build the AppImage; the runtime it writes is the first part of every AppImage |
 | [PyInstaller](https://pyinstaller.org/) | GPL-2.0-or-later with the bootloader exception (programs it builds may carry any licence) | `release.yml` builds the Windows `.exe` files with it; each `.exe` carries the CPython 3.12 runtime it was built with (PSF-2.0, and the libraries named in the CPython row) |
 
+## Fonts shipped with the app
+
+| What | Licence | Where it comes in |
+| --- | --- | --- |
+| [Ubuntu Sans](https://design.ubuntu.com/font) (variable, `UbuntuSans[wdth,wght].woff2`) and Ubuntu Sans Mono (`UbuntuSansMono[wght].woff2`) | [Ubuntu Font Licence 1.0](https://ubuntu.com/legal/font-licence) | `frontend/fonts/`, Canonical's own variable WOFF2 builds (from [Ubuntu-Sans-fonts](https://github.com/canonical/Ubuntu-Sans-fonts) and [Ubuntu-Sans-Mono-fonts](https://github.com/canonical/Ubuntu-Sans-Mono-fonts), `fonts/webfont/`), loaded by `frontend/themes.css` for every theme but the Dyslexia ones, from the Vanilla redesign on; the licence text is beside them as `frontend/fonts/UFL-1.0.txt` |
+
+**The decision (October 2026).** The Ubuntu Font Licence is the one licence here that the Free Software Foundation
+does not list as GPL-compatible. It is used all the same, for this reason: the font files are data the browser
+downloads next to the pages, not part of the program. Nothing in JobHuntPA's code is derived from them and nothing
+in them is derived from JobHuntPA, so neither licence's terms spread to the other, and the GPL's "corresponding
+source" is JobHuntPA's own code, which is all here. The UFL's own conditions are met: the files are shipped
+unmodified, keep their original names and the Reserved Font Name "Ubuntu", and the licence text ships with them.
+Anyone redistributing JobHuntPA (the AppImage and the Windows installers included) passes both licences along. The
+same rule, stated in `CLAUDE.md`, applies to any font added later: a font file may come under a font licence (the
+UFL or the SIL Open Font License) when it is unmodified and its licence text sits beside it; code and scripts may not.
+
 ## Downloaded while the app runs, never shipped with it
 
 | What | Licence | When |
@@ -98,5 +114,5 @@ own key; neither is code in JobHuntPA.
 | --- | --- | --- |
 | [axe-core](https://github.com/dequelabs/axe-core) 4.14 | MPL-2.0 | `tools/a11y_audit.py` (you install it with npm; it is never shipped) |
 | Playwright's Chromium | as above | `tools/a11y_audit.py`, `tools/readme_screenshots.py` |
-| [Pillow](https://python-pillow.org/) | MIT-CMU (its metadata) | `tools/readme_screenshots.py`; also an app package now, pulled in by fpdf2 (above) |
+| [Pillow](https://python-pillow.org/) | MIT-CMU (its metadata) | `tools/readme_screenshots.py`; also an app package now, pulled in by reportlab (above) |
 | appimagetool | MIT | `installer/appimage.sh` (above) |

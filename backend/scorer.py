@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from backend import config  # noqa: F401  (loads .env)
 from backend import ghost, llm_providers
-from backend.db import Document, FitResult, Job, SessionLocal
+from backend.db import LETTER_TEMPLATE_KIND, Document, FitResult, Job, SessionLocal
 from backend.employment import normalise_employment_type
 from backend.llm_providers import MAX_RETRIES, ScorerError  # noqa: F401  (ScorerError is imported from here everywhere)
 from backend.threads import submit
@@ -119,7 +119,7 @@ def build_profile(db: Session, ws: int) -> tuple[str, str]:
     from backend.profile import get_profile
 
     docs = [d for d in db.query(Document).filter(Document.workspace_id == ws)
-            if d.use_for_scoring and d.text_for_llm()]
+            if d.use_for_scoring and d.text_for_llm() and d.kind != LETTER_TEMPLATE_KIND]  # a letterhead: never sent
     docs.sort(key=lambda d: (_KIND_ORDER.get(d.kind or "other", 2), d.id))
     parts = []
     prof = get_profile(db, ws)

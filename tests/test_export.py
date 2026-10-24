@@ -26,7 +26,6 @@ from backend.db import (
     FitResult,
     Job,
     LetterBlock,
-    LetterTemplate,
     Pin,
     SearchRun,
     SessionLocal,
@@ -166,9 +165,6 @@ class ExportTest(unittest.TestCase):
             db.add(LetterBlock(workspace_id=ws, kind="closing", position=0, title=f"MARK-blocktitle-{tag}",
                                text=f"MARK-blocktext-{tag}", tags=[f"MARK-blocktag-{tag}", "budget"]))
             db.add(LetterBlock(workspace_id=ws, kind="opening", position=0, title="First block", text="Dear {company}", tags=[]))
-            self.template = template_docx(f"MARK-templatebody-{tag}")
-            db.add(LetterTemplate(workspace_id=ws, filename=f"MARK-template-{tag}.docx", filetype=".docx",
-                                  stored_name=docs.save_upload(self.template)))
             main = Job(workspace_id=ws, url=f"https://ads.example/{tag}/main", title=f"Senior Analyst MARK-jobtitle-{tag}",
                        company="Acme Corp", description=f"MARK-description-{tag} <script>alert('x')</script> ![i](http://t.example/p.png)",
                        status="shortlisted", location_text=f"MARK-location-{tag}", salary_text="100k", work_mode="hybrid", office_days=2,
@@ -259,16 +255,22 @@ class ExportTest(unittest.TestCase):
         self.assertIn("- Tags: MARK-blocktag-bob, budget", md)
         self.assertNotIn("Tags: \n", md)
 
-    def test_the_cover_letter_template_is_in_it_as_uploaded(self):
+    def test_the_letter_template_is_a_document_and_the_import_file_names_it(self):
+        template = template_docx("MARK-templatebody-bob")
+        with helpers.client(self.bob.email) as c:
+            r = c.post("/api/documents", data={"kind": "letter_template"},
+                       files={"file": ("MARK-template-bob.docx", template, "application/octet-stream")})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertTrue(r.json()["current_template"])
         z = self.open_zip(self.export())
         root = z.namelist()[0].split("/")[0]
-        path = "Workspaces/My job search/Cover letter template/MARK-template-bob.docx"
-        self.assertEqual(z.read(f"{root}/{path}"), self.template)
+        path = "Workspaces/My job search/Documents/Original files/MARK-template-bob.docx"
+        self.assertEqual(z.read(f"{root}/{path}"), template, "with the other uploads, as uploaded")
         data = json.loads(z.read(f"{root}/{import_file.FILE_NAME}"))
-        self.assertEqual(data["workspaces"][0]["letter_template"]["original"], path)
-        self.assertEqual(data["workspaces"][0]["letter_template"]["filename"], "MARK-template-bob.docx")
-        self.assertEqual(data["workspaces"][0]["letter_template"]["filetype"], ".docx")
-        self.assertIn("Cover letter template/", z.read(f"{root}/README.md").decode())
+        ws = data["workspaces"][0]
+        doc = next(d for d in ws["documents"] if d["ref"] == ws["letter_template"])
+        self.assertEqual((doc["kind"], doc["filename"], doc["original"]), ("letter_template", "MARK-template-bob.docx", path))
+        self.assertNotIn("Cover letter template/", z.read(f"{root}/README.md").decode())
 
     def test_another_persons_data_never_appears(self):
         z = self.open_zip(self.export())

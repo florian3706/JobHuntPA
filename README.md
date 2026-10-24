@@ -24,11 +24,13 @@ Australian job sites (SEEK, APSJobs) and any company's careers page.
 
 ## A quick look
 
-**A job's full page** (*Open ↗* on any job): the office with links to Google Maps directions from
-your starting points, how well the job fits your CV and where the gaps are, what company research
-found about the employer, and the whole ad.
+**A job's full page** (*Open ↗* on any job): a summary that stays at the top (the fit score, the work mode,
+whether it looks like a real vacancy, the status, the cover letter and the chat), then tabs: *Overview*,
+*Fit* (every requirement, the gaps before the matches), *Company*, *Commute* (the office to pick and Google Maps
+directions from your starting points), *The ad* (with a *Gap* or *Matched* label after the sentence each
+requirement came from) and *Chats*.
 
-<img src="docs/screenshots/job-page.png" alt="A job's full page: the office and the commute, fit requirements and gaps, company profile and the ad" width="760">
+<img src="docs/screenshots/job-page.png" alt="A job's full page, Overview tab: the summary with the fit score, work mode, ghost-job rating, status, Cover letter and Chat; the tabs; the verdict with the gaps before the matches; is this a real vacancy; next steps; and the key facts, commute links and company beside them" width="760">
 
 **Map**: the jobs your filters show on an OpenStreetMap map, your pins with their radii, and the jobs in view
 listed underneath.
@@ -37,9 +39,13 @@ listed underneath.
 
 ![The job chat panel next to the job cards, answering how well the candidate fits](docs/screenshots/chat.png)
 
-**Cover letter drafts** from your own documents, to edit, copy or download as a Word, OpenDocument or PDF file.
-Or build a letter from paragraphs you wrote yourself: the AI only picks and orders them, and never rewrites
-them. Your own letterhead template can be filled in too (PDFs with a template use LibreOffice, if installed).
+**Cover letter drafts** from your own documents, to edit, copy, print or download as PDF, OpenDocument (.odt) or
+Word (.docx). Or build a letter from paragraphs you wrote yourself: the AI only picks and orders them, and never
+rewrites them. Upload your own letterhead (a .docx or .odt with a `{letter}` marker in a paragraph of its own) as a
+**Letter template** on the Documents tab and the downloads are poured into it, in that paragraph's font; `{date}`,
+`{company}`, `{job_title}` (or `{role}`), `{location}` and `{name}` are filled in too. With LibreOffice installed the
+PDF is LibreOffice's copy of the filled file; without it, the app draws the PDF with the fonts on this computer and
+says which one stood in when the template asks for a font it doesn't have.
 
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
@@ -50,13 +56,15 @@ address ([settings for this JobHuntPA](#settings-for-this-jobhuntpa)), and [your
 
 ![The Settings tab: scheduled searches, the AI provider with its reasoning levels, and the Rescore buttons](docs/screenshots/settings.png)
 
-**Themes**: Dark (above), Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and Everforest
-families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from live
-previews on the Settings tab.
+**Themes**: Vanilla Dark (the default, in the screenshots here) and Vanilla Light, in the colours and the Ubuntu
+Sans type of Ubuntu's Vanilla design, then the app's earlier Dark and Light, the Catppuccin, Rosé Pine, Nord, Kanagawa and
+Everforest families, a dyslexia-friendly theme and themes for colour vision deficiencies, picked from
+live previews on the Settings tab. Each family theme comes twice: a version adjusted to WCAG 2.0 AA
+(marked with a **WCAG 2.0 AA** badge) and the project's exact colours.
 
 ![The Theme card on the Settings tab: each theme is a card with a live preview of the app in it, grouped by family](docs/screenshots/theme-picker.png)
 
-![The Jobs tab in six themes: Light, Catppuccin Mocha, Catppuccin Latte, Dyslexia, Deuteranomaly (dark) and Monochromacy](docs/screenshots/themes.png)
+![The Jobs tab in six themes: Vanilla Light, Catppuccin Mocha, Catppuccin Latte, Dyslexia, Deuteranomaly (dark) and Monochromacy](docs/screenshots/themes.png)
 
 <details>
 <summary>More: search setup and the per-source run report</summary>
@@ -70,7 +78,8 @@ previews on the Settings tab.
 ## What you need
 
 - A computer running Windows 10/11, macOS or Linux, and an internet connection.
-- Optional: [LibreOffice](https://www.libreoffice.org/), only for PDF cover letters made from your own template.
+- Optional: [LibreOffice](https://www.libreoffice.org/): when it is installed, PDF cover letters are its conversion of
+  the filled letter (exactly as your word processor shows it); without it the app draws the PDF itself.
 - An **API key for an AI model (LLM)** from one of the major providers: [OpenAI](https://platform.openai.com/),
   [Anthropic (Claude)](https://platform.claude.com/), [Google Gemini](https://aistudio.google.com/),
   [Meta](https://dev.meta.ai/) (Muse Spark), Mistral, Groq, xAI (Grok), DeepSeek or OpenRouter, or
@@ -232,7 +241,7 @@ recovery codes and signed-in devices, background access, then download your data
 
 ### Signing in
 
-<img src="docs/screenshots/sign-in.png" alt="The sign-in page: name, password, keep me signed in, and the Trouble signing in help" width="400">
+<img src="docs/screenshots/sign-in.png" alt="The sign-in page: name, password, keep me signed in, and the Trouble signing in help beside it" width="760">
 
 - **Staying signed in:** you are signed out after 24 hours of not using JobHuntPA, and after 7 days
   whatever you do. Tick *Keep me signed in* on your own device to stay signed in for up to 30 days of not
@@ -662,6 +671,17 @@ limits on searches. The AI features use the provider and key set on the Settings
 
   <img src="docs/screenshots/search-schedule.png" alt="The Scheduled searches card: run times, days, public holidays and the next search" width="760">
 
+- **Cards, Table or Board**: the Jobs tab shows the same jobs three ways (the toggle at the right of the
+  toolbar; the choice is remembered in this browser). **Cards** carry everything about a job. **Table** has
+  one row a job, sortable by fit, distance or posted date (the column headings, or the Sort menu); a
+  job's title opens its fit summary in place: the scorer's words, the gaps first and then the matched
+  requirements, the office, and the card's buttons. **Board** has one column a status (*to review*,
+  *shortlisted*, *applied*, *interviewing*, with *rejected* and *not interested* folded into a *Closed*
+  column): each card's **Move to** menu changes its status, so the keyboard and screen readers do what
+  dragging would. On a phone the toggle reads **List | Board**, the table becomes stacked rows with a
+  **More** button and the board becomes status tabs. **Filters** opens a panel with the minimum score,
+  work mode, maximum distance, the temporary office days and *Show excluded / closed / hidden*; the
+  button says how many are set, and each one is also a chip under the toolbar that removes it.
 - **Tracking and tidying**: set each job's status (to review, shortlisted, applied, interviewing,
   rejected, not interested). Moving a job to *Applied* keeps the date: the card and the job page
   show *Applied* and the date while it stays there (moved away and back, the latest move; a job
@@ -717,8 +737,8 @@ limits on searches. The AI features use the provider and key set on the Settings
   search for; add them to the current search or start a new workspace with them.
 - **Notes** (Documents tab): under *Write a note*, give a note a title, type its text, pick a
   type and click **Save note**. Use notes for things that aren't in your CV, such as a project you
-  led, or what you want from your next job. A note works like an uploaded document: tick or untick
-  *use for scoring*, **Open** it to edit its text, title or type, or **Delete** it. Notes are
+  led, or what you want from your next job. A note works like an uploaded document: switch *Used for scoring*
+  on or off in the list, **Open** it to edit its text, title or type, or **Delete** it. Notes are
   plain text and are stored only in JobHuntPA.
 - **Preferences** (a document type for uploads and notes, next to *Resume / CV*, *Cover letter* and
   *Other/supporting*): say what you want from a job, such as the commute you'll accept or work you
@@ -743,14 +763,28 @@ limits on searches. The AI features use the provider and key set on the Settings
   cut the size, and with it the cost. When the ticked documents come to more than 50,000
   characters (counting the concise versions where the AI gets those), the Documents tab says so and
   points to *Create summary*. It is a warning only: nothing stops you sending more.
-- **Cover letters**: *Draft cover letter* on any job writes a first draft from your documents
-  (upload earlier cover letters as "Cover letter" documents to match your style). Edit it, then
-  copy it or download it as a Word, OpenDocument or PDF file. Always check it before sending.
-  *Build from my blocks* assembles a letter from the paragraphs you wrote on the Documents tab (*Cover letter
-  blocks*, with `{company}`, `{role}`, `{location}` and `{date}` filled in from the job): the AI picks and
-  orders them, you tick and reorder, and your words are used exactly as written. It also suggests blocks worth
-  writing. A *Cover letter template* (.docx or .odt with a `{letter}` paragraph) is filled with the letter.
-- **Chat about jobs**: *Chat* on a job (or tick several and click **Chat about N jobs**) opens a
+- **Cover letters**: *Draft cover letter* (or *Cover letter* once there is one) on a job card, in the table's
+  fit summary, on a board card or on the job page opens the cover letter window, the same one everywhere. Add
+  instructions if you like (*Mention I can start in two weeks*) and **Draft cover letter** writes a first draft from
+  your documents (upload earlier cover letters as "Cover letter" documents to match your style); **Redraft** writes
+  a new one. Edit the letter in the window: it shows the word count and whether your edits are saved. **Save
+  edits**, **Copy**, **Download** (a menu: *PDF*, *OpenDocument (.odt)* and *Word (.docx)*; a format the template
+  can't give is greyed out and says why), **Print** (the PDF in a new tab) and **Discard my edits, back to the
+  draft** (the model's draft is kept beside your edits). The rail on the right names the template in use, lists
+  the versions (*Edited by you*, *Drafted by* the model, with **View the draft**) and has *Mark this job as applied
+  when I download*. Always check a letter before sending.
+- **Cover letter blocks**: *Build from my blocks* assembles a letter from the paragraphs you wrote on the Documents
+  tab (*Cover letter blocks*, with `{company}`, `{role}`, `{location}` and `{date}` filled in from the job): the AI
+  picks and orders them, you tick and reorder, and your words are used exactly as written. It also suggests blocks
+  worth writing.
+- **Letter templates** (Documents tab): upload a .docx or .odt with your header, footer and signature and a
+  `{letter}` marker in a paragraph of its own, as the type **Letter template**, and the downloads are poured into
+  it in that paragraph's font (`{date}`, `{company}`, `{job_title}` or `{role}`, `{location}` and `{name}` are
+  filled in too, the same markers as in blocks; `{{letter}}` with double braces works as well). The AI never reads a
+  template. Several can be uploaded: the one marked *current template* is used, and **Use the plain layout** goes
+  back to an A4 letter with one inch margins. A .docx template gives .docx and PDF, an .odt one .odt and PDF. With
+  LibreOffice installed, the PDF is LibreOffice's conversion of the filled file; without it, the app draws it with
+  the fonts this computer has.
   chat on the right. The AI sees the ads, your documents, the fit assessment, the company info and
   any cover-letter draft, so you can ask what the role really involves, how to handle your gaps,
   what to ask in an interview, or which of several jobs suits you best. Tick *Search the web* for
@@ -764,9 +798,16 @@ limits on searches. The AI features use the provider and key set on the Settings
   (*Same job: merge* / *Different jobs*). Your status, cover letter and score carry over to the
   merged card. *split* (under *Also on*, or beside the employer's site) undoes a merge; **Merge as
   one job** (tick two or more jobs) merges ads the app missed.
-- **Job page**: *Open ↗* on a job opens it in a new tab: the whole ad, the fit and gaps, the office
-  (with every office company research found for the employer, to pick from), the company profile,
-  and [commute links](#commute-links) to Google Maps.
+- **Job page**: *Open ↗* on a job opens it in a new tab. A summary stays at the top (score, work mode, the
+  ghost-job rating, the status menu, *Cover letter*, *Chat* and *More*: rescore, hide, open on the source site);
+  under it, tabs you can link to (`#fit`, `#company`, …): **Overview** (the verdict, gaps then matches, is it a
+  real vacancy, next steps, key facts), **Fit** (every requirement with its evidence, gaps first), **Company**
+  (the profile, sentiment with criticisms before praise, news, sources, other jobs at the company), **Commute**
+  (every office company research found for the employer, to pick from, your call on the location, and
+  [directions](#commute-links) to Google Maps as a table), **The ad** (the whole ad, each sentence a requirement
+  came from labelled *Gap* or *Matched*, linking to a rail that links back) and **Chats** (the same chat as on
+  the dashboard, with the earlier conversations beside it). On a phone the tabs wrap onto two lines and the status,
+  *Letter* and *Chat* sit in a bar at the bottom.
 - **Map**: two modes. **Jobs** shows the jobs your Jobs tab filters show, with your pins and their
   radii, and lists the jobs in view under the map (click a dot, or **Show** in the list, to see a
   place's jobs; **Open ↗** for a job's full page in a new tab); nothing can be changed by accident.
@@ -784,14 +825,21 @@ limits on searches. The AI features use the provider and key set on the Settings
   **Location OK** / **Too far**. The office then drives the location filter and distance.
 - **Themes** (Settings > Theme, saved with your account and remembered by the browser): each theme is a card with a small live
   preview of the app in it; click or tap one, or move through them with the arrow keys, and it
-  applies at once (open job pages follow). Dark (the default), Light, or *System* to follow your
-  computer; Catppuccin (Latte, Frappé, Macchiato, Mocha); Rosé Pine (Rosé Pine, Moon, Dawn); Nord
+  applies at once (open job pages follow). **Vanilla Dark** (its AA version is the default on a new
+  install) and **Vanilla Light**, from Ubuntu's Vanilla design, or *System* to switch between their AA
+  versions with your computer; the app's earlier Dark and Light; Catppuccin (Latte, Frappé, Macchiato, Mocha); Rosé Pine (Rosé Pine, Moon, Dawn); Nord
   (dark, and a light variant made from Nord's colours); Kanagawa (Wave, Dragon, Lotus); Everforest
   (dark and light, medium contrast); a **Dyslexia** theme (warm low-glare background, Atkinson
   Hyperlegible font, wider letter and word spacing) in light and dark; and colour-vision themes
-  (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and dark. The
-  family themes use their projects' official palettes; where a colour fell short of the WCAG AA
-  contrast minimums it is a little lighter or darker in the same hue (themes.css lists each change).
+  (Protanomaly, Deuteranomaly, Tritanomaly, Dichromacy, Monochromacy), each in light and dark: 46 in
+  all. Every family theme (Vanilla, Catppuccin, Rosé Pine, Nord and Nord Light, Kanagawa, Everforest)
+  comes in two versions side by side: the **WCAG 2.0 AA** one, with that badge, where a colour that fell
+  short of the AA contrast minimums is a little lighter or darker in the same hue (themes.css lists each
+  change), and the project's **exact colours**, offered as they are, with the line "The project's exact
+  colours; some text is under 4.5:1". The app's own themes (Dark, Light, Dyslexia, colour vision) are
+  built to AA and carry the badge. Every theme but the Dyslexia ones uses Ubuntu Sans, a font that ships
+  with the app (nothing is loaded from another site for it). If you had chosen a theme before, you keep
+  what you chose: a family theme picked before the exact versions came in becomes its AA version.
   Labels, marks or shapes always accompany colours, so nothing relies on colour alone. See
   [Accessibility](#accessibility).
 - **Reasoning level** (Settings > AI provider): how long the AI thinks, set separately for scoring,
@@ -805,8 +853,8 @@ rating made from them, and never hides, scores or ranks a job down because of th
 
 <img src="docs/screenshots/ghost-job.png" alt="A job card with its fit score, 63, and under it a ghost and a red circle. Possible ghost job (several signs): why? is opened: the ad mentions a talent pool and has been open for 68 days" width="397">
 
-- **The circle:** under its fit score (🎯), every job card, the map list and the job page show 👻 and a
-  coloured circle:
+- **The circle:** under its fit score (🎯), every job card and the map list show 👻 and a coloured circle
+  (the job page says the same in words, as a label in its summary that links to the explanation):
   - 🟢 no signs, or only one or two weak ones;
   - 🟡 some signs: the card adds **Possible ghost job (some signs): why?**, which lists them;
   - 🔴 one strong sign, or several moderate ones (**several signs**).
@@ -1218,8 +1266,12 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 - **Screen readers:** landmarks, one heading outline, labels on every field, and spoken status
   messages for searches, scoring, saves and errors. Form errors appear under the field they belong
   to and say how to fix it.
-- **Colour:** every theme meets 4.5:1 for text and 3:1 for field borders, the focus ring and
-  selected states (`tools/theme_contrast.py` checks 71 colour pairs per theme). Nothing is told by
+- **Colour:** every theme with the **WCAG 2.0 AA** badge (30 of the 46, the default among them) meets
+  4.5:1 for text and 3:1 for field borders, the focus ring and selected states
+  (`tools/theme_contrast.py` checks 81 colour pairs per theme, 87 in the Vanilla themes, which also fill
+  status labels, and fails if a badged theme drops below AA; the tests check the badge is on exactly the
+  themes that pass). The other 16 are the family projects' exact colours, offered as they are for people
+  who want them: some of their text is under 4.5:1, and the AA guarantee doesn't cover them. Nothing is told by
   colour alone: scores are numbers, statuses and work modes are words, excluded jobs on the map are
   hollow dashed dots, the pin kinds have solid, dashed and dotted rings, and messages carry a mark.
 - **Phones and zoom:** the app works from 320 px wide, at 200% zoom and with wider text spacing
@@ -1228,18 +1280,24 @@ JobHuntPA aims to meet **WCAG 2.2 level AA** in every theme, in desktop and phon
 - **Motion:** with *reduce motion* set on the device, spinners, progress bars and map animations
   stop.
 
-**How it was tested** (October 2026, `tools/a11y_audit.py`, see [For developers](#for-developers)):
+**How it was tested** (23 October 2026, `tools/a11y_audit.py`, see [For developers](#for-developers)):
 [axe-core](https://github.com/dequelabs/axe-core) 4.14 with the WCAG 2.0, 2.1 and 2.2 A and AA rules, in
-headless Chromium (Playwright), on every page and every state of it: the dashboard's tabs, cards and
-dialogs, the job page, the sign-in, first-run and recover pages, each step of the walkthrough, at 320 and 1280 px wide in the Light, Dark, Dyslexia and
-Deuteranomaly themes (the colour contrast rule also in all 28 themes): no violations. The same run
-checked reflow at 320 px and WCAG's text spacing, watched the console (no errors, no
-Content-Security-Policy violations) and pressed Tab through the main flows (sign in, the
-walkthrough, change password, a job's status, the data export) and through every page: a visible focus ring
-on every stop, none hidden, no traps, focus back where it came from after a dialog, Escape closing it. (The
-settings that were on the admin panel then have since moved to the Settings tab, with the same controls;
-`tools/a11y_audit.py` now checks them there.) `tests/test_accessibility.py` keeps the contrast and
-the pages' basics (language, viewport, skip link, headings, labels) checked on every test run.
+headless Chromium (Playwright), on every page and every state of it: the dashboard's tabs, the Jobs tab's Cards,
+Table and Board views and its Filters panel, the job cards and dialogs, the cover letter window with its Download
+menu, each tab of the job page, the sign-in, first-run and recover pages and each step of the walkthrough, at 320
+and 1280 px wide in Vanilla Dark and Vanilla Light (their AA versions): 410 axe runs over 99 states, no
+violations. The same run checked reflow at 320 px and WCAG's text spacing, watched the console (no errors, no
+Content-Security-Policy violations) and pressed Tab through the main flows (sign in, the walkthrough, change
+password, a job's status, the Filters panel, the view toggle, a table row, a board card's Move to, the Download
+menu, the data export) and through every page: a visible focus ring on every stop, none hidden, no traps, focus
+back where it came from after a dialog, Escape closing it. It found one problem, the per-source report pushing the
+page sideways at 320 px with WCAG's text spacing, which was fixed and that part checked again. A shorter pass (the sign-in page with its error summary and the Jobs,
+Settings and Map tabs) ran in all 30 AA themes at both widths, 360 axe runs: it found the error summary's links
+under 24 px tall in 26 of them (all but the Vanilla and Dyslexia ones, whose type is taller) and the home pin's
+*special* label under 4.5:1 as text in seven; both were fixed and the pass ran again with no violations. `tools/theme_contrast.py` checks the colour pairs
+of all 30 AA themes (2,442 pairs, none below AA), and
+`tests/test_accessibility.py` keeps the contrast and the pages' basics (language, viewport, skip link, headings,
+labels) checked on every test run.
 
 **Known limitations:**
 - Not yet tried with real screen readers (NVDA, JAWS, VoiceOver, TalkBack) or by disabled users: the
@@ -1251,6 +1309,9 @@ the pages' basics (language, viewport, skip link, headings, labels) checked on e
   markers are smaller than 24 px targets where they overlap; the same list reaches each of them.
   Panning the map takes a drag, the arrow keys, or the zoom buttons and a double-click.
 - Text from elsewhere (job ads, company research, AI answers) is shown as it comes.
+- The theme picker's miniatures are small pictures of each theme, drawn in its own colours (the exact palettes
+  as they are): their tiny text is decorative, hidden from screen readers and not held to the contrast minimums.
+  The theme's name, mode and badge beside each one are.
 - Messages in the corner disappear after a few seconds; they wait while the pointer or focus is on
   them, have a Dismiss button, and screen readers announce them.
 - In Chrome on Windows, the arrow keys change a closed drop-down at once, so arrowing through the
@@ -1313,8 +1374,10 @@ an account), `backend/extension.py` (the browser extensions' API and keys; the e
 send only the job, or the jobs listed on a page of search results), `docs/design/accounts.md`. `python -m backend.keys` has `bench-kdf`, `rotate-kek`,
 and `recover-lost`. The pages' scripts beyond the dashboard's: `frontend/account.js`
 (account cards), `background.js`, `extension.js` (Settings > Browser extension),
-`export.js`, `restore.js` (import from an export) and `server-settings.js` (the Settings tab's cards for this
-JobHuntPA).
+`export.js`, `restore.js` (import from an export), `server-settings.js` (the Settings tab's cards for this
+JobHuntPA), and two that the dashboard and the job page share: `chat.js` (the job chat) and `letter.js` (the cover
+letter window). The pages' scripts share one global scope: `tests/test_frontend_pages.py` fails when two scripts a
+page loads declare the same name, or when a block in `styles.css` is left open.
 
 **Hardening** (design §2.5 and §18): `backend/hosts.py` (the Host allowlist: 400 before anything else runs) and
 `backend/security_headers.py` (the Content-Security-Policy, built at start-up from the pages, with a hash for each
@@ -1382,25 +1445,30 @@ shots). The map needs OpenStreetMap's tiles, so take that one on a machine that 
 the README until then). Where unpkg.com can't be reached, `--leaflet DIR` serves Leaflet from a local
 `npm install leaflet@1.9.4` (its `node_modules/leaflet/dist`).
 
-**Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme, the colour
-pairs the app uses together and fails on any below WCAG AA (`--all` shows the passing ones too).
+**Accessibility checks:** `python3 tools/theme_contrast.py` lists, for every theme with the AA badge
+(`aa: true` in THEMES, `frontend/common.js`), the colour pairs the app uses together and fails on any
+below WCAG AA (`--all` shows the passing ones too, `--exact` also reports the exact palettes, which never
+fail the run).
 When you style something with a new combination of colour tokens, add it to `PAIRS` there. The
 unit tests run the same check plus a static check of the pages (language, viewport, skip link,
 headings, a name for every control). See [Accessibility](#accessibility) for the browser checks.
 
 **Browser accessibility audit:** `python3 tools/a11y_audit.py NODE_MODULES` drives every page and
 dialog in headless Chromium (Playwright) on made-up data and runs axe-core (the WCAG 2.0, 2.1 and 2.2 A
-and AA rules) on each state at 320 and 1280 px in four themes. It also checks reflow at 320 px and
+and AA rules) on each state at 320 and 1280 px in six themes (Vanilla Dark and Light in their AA versions, Dark, Light, Dyslexia,
+Deuteranomaly). It also checks reflow at 320 px and
 WCAG's text spacing, watches the browser console (any error or Content-Security-Policy violation is
 reported) and walks the main flows with the keyboard (sign in, the walkthrough, change
-password, a job's status, the Settings tab's cards for this JobHuntPA, the data export).
+password, a job's status, the Jobs tab's Filters panel, view toggle, table rows and board cards, the cover letter
+window's Download menu, the Settings tab's cards for this JobHuntPA, the data export). The theme picker's miniatures
+are left out of axe's checks: they are pictures of each theme (see Known limitations).
 `NODE_MODULES` is a folder with `axe-core` in it: `mkdir /tmp/a11y && cd /tmp/a11y && npm install axe-core`
 (add `leaflet@1.9.4` when unpkg.com isn't reachable: the map is then served from there). It uses the
 Playwright and Chromium that setup installs. axe-core is developer-only: nothing in `requirements.txt`
 or the app uses the tool. It starts its own throwaway copy of the app (a demo database and the sign-in rate
 limits lifted) and never touches `data/` or
 `.env`. axe is put into each page by the browser itself, so the page's Content-Security-Policy stays as
-it is. Options: `--widths 320,640,1280`, `--themes light,dark,monochromacy` (or `all`), `--only
+it is. Options: `--widths 320,640,1280`, `--themes light,dark,monochromacy` (or `all`, the 30 AA themes), `--only
 index,keyboard` (`--list` names the groups), `--review` (axe's "needs review" results), `--json FILE`.
 A full run takes about 45 minutes. The exit status is 1 when anything is reported.
 
@@ -1408,7 +1476,8 @@ A full run takes about 45 minutes. The exit status is 1 when anything is reporte
 `.github/workflows/release.yml` builds JobHuntPA-Setup.exe, JobHuntPA.exe, the uninstaller, the reset tool and the
 AppImage and attaches them to a GitHub Release. The setup program downloads the source of its own tag, so the tag
 must exist on GitHub. The AppImage carries `LICENSE` and `THIRD-PARTY.md`; a new dependency gets a line in
-`THIRD-PARTY.md` (its licence from the package's own metadata, and one GPLv3 can be combined with).
+`THIRD-PARTY.md` (its licence from the package's own metadata, and one GPLv3 can be combined with; the fonts in
+`frontend/fonts/` are the one exception, and `THIRD-PARTY.md` says why).
 
 ## How a search run works
 
@@ -1494,4 +1563,6 @@ fitness for a particular purpose. See [`LICENSE`](LICENSE) for the full text.
 
 The browser extensions are separate programs in their own repositories, each with its own licence file. JobHuntPA
 uses other people's code and services under their own licences, all of which may be combined with GPLv3; they are
-listed in [`THIRD-PARTY.md`](THIRD-PARTY.md). Job ads, company research and map data belong to their owners.
+listed in [`THIRD-PARTY.md`](THIRD-PARTY.md). The Ubuntu fonts it ships are separate data files under the Ubuntu Font
+Licence, not part of the program; `THIRD-PARTY.md` explains that decision. Job ads, company research and map data
+belong to their owners.

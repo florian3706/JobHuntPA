@@ -49,6 +49,7 @@ function clearErrors() {
   $('#error-summary').hidden = true;
   $('#error-summary-list').innerHTML = '';
   $$('.auth-form .field-error, .codes-step .field-error').forEach((el) => el.remove());
+  $$('.is-error').forEach((el) => el.classList.remove('is-error'));
   $$('[aria-invalid="true"]').forEach((input) => {
     input.removeAttribute('aria-invalid');
     const ids = (input.getAttribute('aria-describedby') || '').split(/\s+/).filter((x) => x && x !== `${input.id}-error`);
@@ -66,10 +67,7 @@ function showErrors(errors) {
     if (input && !input.closest('[hidden]')) {
       li.innerHTML = `<a href="#${esc(field)}">${esc(message)}</a>`;
       li.querySelector('a').addEventListener('click', (e) => { e.preventDefault(); input.focus(); });
-      const note = document.createElement('p');
-      note.id = `${input.id}-error`;
-      note.className = 'field-error';
-      note.innerHTML = `<span class="visually-hidden">Error: </span>${esc(message)}`;
+      const note = fieldErrorEl(input, `${input.id}-error`, message);
       (input.closest('.pw-row') || input.closest('label.check') || input).insertAdjacentElement('afterend', note);
       input.setAttribute('aria-invalid', 'true');
       input.setAttribute('aria-describedby', [note.id, input.getAttribute('aria-describedby')].filter(Boolean).join(' '));

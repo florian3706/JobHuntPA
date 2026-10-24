@@ -14,7 +14,8 @@ it, and the test in tests/test_security_headers.py fails if a page needs more th
   Scripts set sizes and positions through ``element.style``, which a policy doesn't restrict.
 * ``img-src``: this site, ``data:`` (Leaflet's stylesheet embeds a few images), the OpenStreetMap tile servers the
   map draws from, and Leaflet's own images folder on unpkg.com (the default marker).
-* ``font-src``: Google Fonts' file server, which the stylesheet above points at.
+* ``font-src``: this site (Ubuntu Sans and Ubuntu Sans Mono, in frontend/fonts/) and Google Fonts' file server,
+  which the stylesheet above points at (the dyslexia themes' typeface).
 * ``connect-src 'self'``: the pages only call this server's API.
 * ``form-action 'self'``: no form posts elsewhere.
 * ``frame-ancestors 'none'`` (nobody may frame the app: clickjacking), ``base-uri 'none'``, ``object-src 'none'``

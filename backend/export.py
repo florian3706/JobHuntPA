@@ -26,7 +26,6 @@ Layout (names are made safe for Windows, macOS and Linux: ``safe_name``)::
         Search setup.md  Sources.md  Search history.md
         Documents/<title>.md  Documents/Original files/<upload>
         Cover letter blocks.md                  (only when the workspace has blocks)
-        Cover letter template/<upload>          (only when the workspace has one)
         Jobs/Jobs.md  Jobs/Filtered out.md  Jobs/<Status>/<Company - Title>.md (+ " - Cover letter.md")
         Chats/<date title>.md
       JobHuntPA import file.json                 everything above, for an import (backend/data_import.py)
@@ -72,7 +71,6 @@ from backend.db import (
     FitResult,
     Job,
     LetterBlock,
-    LetterTemplate,
     Pin,
     SearchRun,
     User,
@@ -343,7 +341,6 @@ The names below end in `.md`; each text file is there once for every file type c
   - `Sources.md`: the company career pages and feeds you added.
   - `Documents/`: your resume, notes and other documents as text, and `Original files/` with each upload exactly as you uploaded it.
   - `Cover letter blocks.md`: the paragraphs you wrote for cover letters (opening, body, closing) with their tags; only there when you have some.
-  - `Cover letter template/`: the template your cover letters are filled into, exactly as you uploaded it; only there when you have one.
   - `Jobs/`: `Jobs.md` lists every job with a file of its own ({counts['jobs']}); the jobs are sorted into folders by your status, with `Hidden` for the ones you hid. `Filtered out.md` lists the jobs the search filters left out.
   - `Chats/`: your conversations about jobs.
   - `Search history.md`: each search run and how it went.
@@ -541,23 +538,6 @@ def _blocks(db: Session, ws: Workspace, base: str, arc: Archive) -> None:
     arc.add_text(f"{base}/Cover letter blocks.md", "".join(out))
 
 
-# ----- the cover letter template -----
-
-def _template(db: Session, ws: Workspace, base: str, arc: Archive) -> Optional[str]:
-    """Writes the workspace's cover letter template as uploaded; returns its path in the zip (None: none, or its file
-    doesn't open)."""
-    t = db.query(LetterTemplate).filter(LetterTemplate.workspace_id == ws.id).order_by(LetterTemplate.id.desc()).first()
-    if t is None or not t.stored_name:
-        return None
-    try:
-        data = docs.read_upload(t.stored_name)
-    except (OSError, crypto.CryptoError):
-        return None
-    ext = t.filetype if t.filetype in (".docx", ".odt") else ""
-    stem = posixpath.splitext(t.filename or "")[0]
-    return arc.add(f"{base}/Cover letter template/{Folder().name(stem, 'Template', ext)}", data)
-
-
 # ----- jobs -----
 
 class JobEntry:
@@ -706,7 +686,10 @@ def _jobs(db: Session, ws: Workspace, base: str, arc: Archive, companies: dict[s
                 head += facts([("Job", rel_link(_job_label(entry), entry.letter_path, entry.path)), ("Written", when(letter.created_at)),
                                ("Last changed", when(letter.updated_at)), ("Edited by you", yes(letter.edited)),
                                ("Instructions you gave", line(letter.instructions))])
-                arc.add_text(entry.letter_path, f"{head}\n---\n\n{text(letter.text)}\n")
+                body = f"{head}\n---\n\n{text(letter.text)}\n"
+                if letter.edited and (letter.draft_text or "").strip() and letter.draft_text != letter.text:
+                    body += f"\n## The draft as the model wrote it\n\n{text(letter.draft_text)}\n"
+                arc.add_text(entry.letter_path, body)
     # the index
     index = f"{base}/Jobs/Jobs.md"
     out = ["# Jobs\n", f"\n{len(with_files)} job(s) with a file of their own.\n"]
@@ -817,9 +800,7 @@ def build(db: Session, user_id: int, now: Optional[datetime] = None,
     root = f"JobHuntPA export {stamp.strftime('%Y-%m-%d')}"
     workspaces = db.query(Workspace).filter(Workspace.owner_id == user_id).order_by(Workspace.id).all()
     stored = 0
-    ws_ids = [w.id for w in workspaces]
-    for (name,) in [*db.query(Document.stored_name).filter(Document.workspace_id.in_(ws_ids)),
-                    *db.query(LetterTemplate.stored_name).filter(LetterTemplate.workspace_id.in_(ws_ids))]:
+    for (name,) in db.query(Document.stored_name).filter(Document.workspace_id.in_([w.id for w in workspaces])):
         try:
             stored += os.path.getsize(UPLOAD_DIR / name) if name and os.path.basename(name) == name else 0
         except OSError:
@@ -847,15 +828,11 @@ def build(db: Session, user_id: int, now: Optional[datetime] = None,
             companies[key] = f"Companies/{folder.name(p.official_name or p.name, 'Company', '.md')}"
         jobs_total = 0
         originals: dict[int, str] = {}
-        templates: dict[int, str] = {}
         for ws, base, entries, filtered in plans:
             arc.add_text(f"{base}/Search setup.md", _setup_md(db, ws))
             arc.add_text(f"{base}/Sources.md", _sources_md(db, ws))
             originals.update(_documents(db, ws, base, arc))
             _blocks(db, ws, base, arc)
-            template = _template(db, ws, base, arc)
-            if template:
-                templates[ws.id] = template
             _jobs(db, ws, base, arc, companies, entries, filtered)
             jobs_total += sum(1 for e in entries.values() if e.path)
             _chats(db, ws, base, arc, entries)
@@ -864,7 +841,7 @@ def build(db: Session, user_id: int, now: Optional[datetime] = None,
             arc.add_text(path, _company_md(profiles[key]))
         arc.add_text("Account.md", _account_md(db, user, workspaces))
         arc.add_text("README.md", _readme(stamp, {"workspaces": len(workspaces), "jobs": jobs_total}, arc.formats))
-        data = import_file.build(db, workspaces, originals, stamp, user_id, templates)
+        data = import_file.build(db, workspaces, originals, stamp, user_id)
         arc.add(import_file.FILE_NAME, json.dumps(data, ensure_ascii=False, separators=(",", ":")))
         del data
         count = arc.files

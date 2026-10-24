@@ -344,23 +344,24 @@ ranks a job down because of them, and never puts a number on it.
   a letter is put together; a warning names any other `{...}` word you saved (a typo such as `{compny}`).
   The list is grouped under Opening, Body and Closing; each block can be edited, moved up or down, or deleted
   (with a confirmation). Blocks are stored encrypted and copied with a new workspace's documents.
-- **Cover letter template** (a card on the Documents tab): one Word (`.docx`) or OpenDocument (`.odt`) file per
-  workspace with your letterhead and signature. It must contain a paragraph with `{letter}`: that paragraph's
-  style is used for every paragraph of the letter. `{company}`, `{role}`, `{location}` and `{date}` are filled
-  in anywhere in the file (body, tables, headers, footers). An upload without `{letter}` is refused with a
-  message. Uploading again replaces the template; *Remove* (with a confirmation) goes back to plain documents.
-  The card says whether PDFs use the template: they do when LibreOffice is installed, otherwise they are plain
-  text. The file is stored encrypted like other uploads.
+- **Letter templates**: upload a Word (`.docx`) or OpenDocument (`.odt`) file with your letterhead and signature
+  as the type *Letter template*. It must contain a paragraph with `{letter}` (`{{letter}}` works too): that
+  paragraph is replaced by the letter, one paragraph per letter paragraph in its style and font. `{date}`,
+  `{company}`, `{job_title}` (or `{role}`), `{location}` and `{name}` (the name the letter signs off with) are
+  filled in anywhere in the file (body, tables, headers, footers), the same markers as in blocks. An upload
+  without `{letter}` is refused with a message. Several templates can be uploaded; the one marked *current
+  template* is used, and *Use the plain layout* goes back to an A4 letter. A template is never sent to the AI.
+  The file is stored encrypted like other uploads.
 
 ## 11. Cover letters
 
-`backend/cover_letters.py`, `backend/letter_blocks.py`, `backend/letter_templates.py`, `backend/textclean.py`
+`backend/cover_letters.py`, `backend/letter_blocks.py`, `backend/letter_files.py`, `backend/letter_pdf.py`,
+`backend/textclean.py`
 
 - **Draft cover letter** on any job, written from the résumé, earlier cover letters as style samples,
   the ad, the fit result and the company profile.
 - Optional **extra instructions** for the draft.
-- Edit and **Save edits**, **Copy**, **Redraft** (with a confirmation), and download as a Word
-  `.docx` file.
+- Edit and **Save edits**, **Copy**, **Redraft** (with a confirmation), **Print** and **Download** (below).
 - The card shows *Cover letter ✓* once a letter exists, drafted or assembled.
 - **Build from my blocks**: the AI chooses which of your blocks fit the job and in what order (one opening,
   two to four body blocks, one closing) and says why for each; it never rewrites them. You tick or untick
@@ -381,10 +382,13 @@ ranks a job down because of them, and never puts a number on it.
   characters, has curly quotes, dashes and special spaces turned into plain ones, accented letters
   transliterated (`é` becomes `e`, `ß` becomes `ss`) and anything outside a fixed set of characters dropped.
   This is never applied to the text of your own blocks.
-- **Downloads** as Word `.docx`, OpenDocument `.odt` or `.pdf`. With a cover letter template the letter is
-  poured into it; without one it is a plain document. PDFs are made with LibreOffice when it is installed
-  (also with the template); otherwise a plain-text PDF is made and the window says the template needs
-  LibreOffice for PDFs. The window says when a template is used.
+- **Downloads** as `.pdf`, OpenDocument `.odt` or Word `.docx`. With a letter template the letter is poured
+  into it (a `.docx` template gives `.docx` and PDF, an `.odt` one `.odt` and PDF; the other format is greyed
+  out with the reason); without one it is a plain A4 document. The PDF is made from the filled file: by
+  LibreOffice when it is installed, otherwise drawn by the app with the fonts this computer has (the window
+  names any font that stood in). The window says which template is used and which way PDFs are made.
+- **Discard my edits**: the model's draft is kept beside your edits, so you can go back to it. *Mark this job
+  as applied when I download* is an option in the window.
 
 ## 12. Chat about jobs
 
@@ -561,11 +565,11 @@ ranks a job down because of them, and never puts a number on it.
     in folders by status (each with fit score, description, cover letter, ghost-job signs and other
     sites), excluded jobs, chats and search history.
   - Also per workspace: `Cover letter blocks.md` (your blocks in letter order with kind and tags, only when
-    you have some) and the cover letter template's original file.
+    you have some). Letter templates are documents, so their original files are with the other uploads.
   - The company research behind the jobs.
   - Links between the files work offline.
-- The import file carries the cover letter blocks (`letter_blocks`) and the template (`letter_template`), and
-  the reset tool wipes both tables.
+- The import file carries the cover letter blocks (`letter_blocks`) and which document is the letter template
+  (`letter_template`), and the reset tool wipes the blocks.
 - Limits: 200 MB of files, one export per account and two at once for the whole app.
 - **Delete account**: removes workspaces, jobs, documents, uploads, chats, cover letters, keys and
   sessions, and cancels a Stripe subscription first. The last admin can't delete themselves.

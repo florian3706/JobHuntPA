@@ -137,7 +137,7 @@ class ResetTest(unittest.TestCase):
                           Path(cls.folder) / ".server-keys.json-k3j4.tmp",
                           Path(cls.folder) / ".server-keys.json.new-m5n6.tmp",
                           Path(cls.folder) / ".first-run.txt-p7q8.tmp"]
-        # ... and a PDF conversion's folder with the cover letter in it (backend/letter_templates.py).
+        # ... and a PDF conversion's folder with the cover letter in it (backend/letter_pdf.py).
         pdf_folder = Path(cls.folder) / ".letter-pdf-q1w2"
         pdf_folder.mkdir()
         cls.crash_left.append(pdf_folder / "letter.docx")

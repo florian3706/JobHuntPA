@@ -177,7 +177,7 @@ class PageTest(unittest.TestCase):
     def test_the_offer_and_the_card_are_on_the_dashboard(self):
         html = (helpers.ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
         for needle in ('id="browser-offer"', 'id="browser-offer-yes"', 'id="browser-offer-no"', 'id="browser-card"',
-                       'id="browser-state" class="muted" role="status"', 'src="./browser.js"'):
+                       'id="browser-state" class="u-small u-muted" role="status"', 'src="./browser.js"'):
             self.assertIn(needle, html)
         js = (helpers.ROOT / "frontend" / "browser.js").read_text(encoding="utf-8")
         self.assertIn("/api/settings/browser/install", js)

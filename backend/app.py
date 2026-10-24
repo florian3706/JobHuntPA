@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -38,7 +39,6 @@ from backend.db import (FOLDER_CHOSEN, CompanyProfile, CoverLetter, FitResult, J
 from backend.cover_letters import router as cover_letters_router
 from backend.docs import router as docs_router
 from backend.letter_blocks import router as letter_blocks_router
-from backend.letter_templates import router as letter_templates_router
 from backend.data_folder import router as data_folder_router
 from backend.data_import import router as import_router
 from backend.export import router as export_router
@@ -138,6 +138,9 @@ class FrontendFiles(StaticFiles):
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+# The Ubuntu fonts in frontend/fonts/. Python before 3.13 (and a Windows registry without the type) doesn't know
+# .woff2, and the file would go out as text/plain.
+mimetypes.add_type("font/woff2", ".woff2")
 STATUSES = ("to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested")
 Status = Literal["to_review", "shortlisted", "applied", "interviewing", "rejected", "not_interested"]
 
@@ -191,7 +194,6 @@ app.include_router(geo_router)
 app.include_router(titles_router)  # before docs_router: /suggest-titles must not match /{doc_id}
 app.include_router(docs_router)
 app.include_router(letter_blocks_router)
-app.include_router(letter_templates_router)
 app.include_router(profile_router)
 app.include_router(sources_router)
 app.include_router(workspaces_router)

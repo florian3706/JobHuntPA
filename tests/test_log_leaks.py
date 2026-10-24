@@ -72,11 +72,20 @@ def _tiny_pdf(text: str) -> bytes:
     return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, start)
 
 
-def _docx(text: str) -> bytes:
+def _docx(text: str, template: bool = False) -> bytes:
+    """A one-paragraph .docx; as a ``template``, a letterhead (``text`` in the header and footer) with the
+    {letter} marker in a font this computer may not have."""
     import docx
+    from docx.shared import Pt
 
     document = docx.Document()
-    document.add_paragraph(text)
+    if template:
+        document.sections[0].header.paragraphs[0].text = f"{text} {{{{date}}}}"
+        document.sections[0].footer.paragraphs[0].text = text
+        run = document.add_paragraph().add_run("{{letter}}")
+        run.font.name, run.font.size = "ZQX Garamond", Pt(11)
+    else:
+        document.add_paragraph(text)
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
@@ -391,6 +400,26 @@ class FullRun(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(c.put(f"/api/jobs/{job_id}/cover-letter", json={"text": "ZQX edited letter"}).status_code, 200)
         self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter.docx").status_code, 200)
+        # The letter as PDF, .odt and .docx from the plain layout, then from a letter template (a letterhead with
+        # the marker in a font this computer doesn't have: the substitution is answered, never logged).
+        for fmt in ("pdf", "odt"):
+            self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter.{fmt}").status_code, 200)
+        r = c.post("/api/documents", files={"file": ("ZQX-letterhead.docx", _docx("ZQX letterhead", template=True),
+                                                     "application/octet-stream")}, data={"kind": "letter_template"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["current_template"])
+        info = c.get("/api/documents/letter-template").json()
+        self.assertEqual(info["template"]["filename"], "ZQX-letterhead.docx")
+        self.assertIn("ZQX Garamond", [f["asked"] for f in info["fonts"]])
+        r = c.get(f"/api/jobs/{job_id}/cover-letter.pdf")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("ZQX Garamond", r.headers["x-font-substitutions"])
+        self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter.docx").status_code, 200)
+        self.assertEqual(c.get(f"/api/jobs/{job_id}/cover-letter.odt").status_code, 409)  # a .docx template: no .odt
+        r = c.post("/api/documents", files={"file": ("ZQX-no-marker.docx", _docx("ZQX no marker here"),
+                                                     "application/octet-stream")}, data={"kind": "letter_template"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(c.put("/api/documents/letter-template", json={"id": None}).json()["template"], None)
         r = c.post("/api/companies/research", json={"mode": "all"})
         self.assertEqual(r.status_code, 200, r.text)
         listed = c.get("/api/tasks")  # the tasks tray, while the research may still run: kinds and ids only
@@ -418,37 +447,45 @@ class FullRun(unittest.TestCase):
         self.assertIn("ZQX block text", r.json()["text"])
 
     def cover_letter_template(self, c):
-        """A cover letter template (its name and text the person's) uploaded, refused without its {letter} paragraph,
-        filled into the three downloads (the PDF without LibreOffice: plain text), removed, then uploaded again and kept
-        for the export, the import and the copied workspace."""
-        from backend import letter_templates
+        """A letter template (a document whose name and text are the person's) uploaded and chosen, filled into the
+        downloads with the PDF drawn by reportlab, then made by a stand-in LibreOffice (a fake ``soffice``: the PDF is
+        its conversion of the filled file), once by one that fails (the log says how it failed, never a name or the
+        letter; reportlab draws the PDF instead), then deleted."""
+        import sys
+        import tempfile
+        from pathlib import Path
 
-        def template(marker: str) -> bytes:
-            import docx
+        from backend import letter_pdf
 
-            document = docx.Document()
-            document.sections[0].header.paragraphs[0].text = "ZQX letterhead for {company}"
-            document.add_paragraph("ZQX street address, {date}")
-            document.add_paragraph(marker)
-            buffer = io.BytesIO()
-            document.save(buffer)
-            return buffer.getvalue()
-
-        def upload(name, data):
-            return c.post("/api/letter-template", files={"file": (name, data, "application/octet-stream")})
-
-        r = upload("ZQX no marker.docx", template("ZQX no letter here"))
-        self.assertEqual(r.status_code, 400, r.text)
-        self.assertEqual(upload("ZQX broken.odt", b"ZQX not an odt").status_code, 400)
-        r = upload("ZQX letterhead.docx", template("{letter}"))
+        r = c.post("/api/documents", data={"kind": "letter_template"},
+                   files={"file": ("ZQX letterhead.docx", _docx("ZQX letterhead body", template=True),
+                                   "application/octet-stream")})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertIn(MARK, c.get("/api/letter-template").json()["template"]["filename"])
-        with mock.patch.object(letter_templates, "pdf_backend", return_value="plain"):
-            for fmt in ("docx", "odt", "pdf"):
-                r = c.get(f"/api/jobs/{self.job_id}/cover-letter.{fmt}")
-                self.assertEqual(r.status_code, 200, f"{fmt}: {r.text[:200]}")
-        self.assertEqual(c.delete("/api/letter-template").status_code, 204)
-        self.assertEqual(upload("ZQX letterhead.docx", template("{letter}")).status_code, 200)
+        template_id = r.json()["id"]
+        r = c.put("/api/documents/letter-template", json={"id": template_id})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn(MARK, r.json()["template"]["filename"])
+        self.assertEqual(r.json()["pdf"], "reportlab")
+        for fmt, status in (("docx", 200), ("odt", 409), ("pdf", 200)):
+            r = c.get(f"/api/jobs/{self.job_id}/cover-letter.{fmt}")
+            self.assertEqual(r.status_code, status, f"{fmt}: {r.text[:200]}")
+        folder = Path(tempfile.mkdtemp())
+        fakes = () if os.name == "nt" else (("soffice", 0), ("soffice-failing", 3))  # (a script with a #! line)
+        for name, code in fakes:
+            fake = folder / name
+            fake.write_text(f"#!{sys.executable}\nimport pathlib, sys\nargs = sys.argv[1:]\nif {code}: sys.exit({code})\n"
+                            "out = pathlib.Path(args[args.index('--outdir') + 1])\n"
+                            "(out / (pathlib.Path(args[-1]).stem + '.pdf')).write_bytes(b'%PDF-1.4 fake')\n")
+            fake.chmod(0o755)
+            with mock.patch.object(letter_pdf, "_backend", ("libreoffice", str(fake))), \
+                    mock.patch.object(letter_pdf, "_temp_parent", return_value=folder):
+                self.assertEqual(c.get("/api/documents/letter-template").json()["pdf"], "libreoffice")
+                r = c.get(f"/api/jobs/{self.job_id}/cover-letter.pdf")
+                self.assertEqual(r.status_code, 200, r.text[:200])
+                self.assertEqual(r.content == b"%PDF-1.4 fake", code == 0)
+            self.assertEqual(list(folder.glob(letter_pdf.TEMP_PREFIX + "*")), [], "the conversion's folder is gone")
+        self.assertEqual(c.delete(f"/api/documents/{template_id}").status_code, 200)
+        self.assertIsNone(c.get("/api/documents/letter-template").json()["template"])
 
     def documents_and_saved_pages(self, c):
         """The AI's work on documents (a concise version, a summary of the ticked ones, title suggestions), a rename and

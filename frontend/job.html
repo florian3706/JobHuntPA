@@ -7,9 +7,19 @@
   <script>
     // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
     (function () {
-      var t = "dark";
-      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
-      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      var t = "vanilla-dark-aa";
+      try {
+        t = localStorage.getItem("jobhunt.theme") || t;
+        // Once: a family theme saved before the exact palettes came in was its AA version (see common.js).
+        if (localStorage.getItem("jobhunt.themeMigrated") !== "aa") {
+          if (/^(vanilla-(dark|light)|catppuccin-(latte|frappe|macchiato|mocha)|rose-pine(-moon|-dawn)?|nord(-light)?|kanagawa-(wave|dragon|lotus)|everforest-(dark|light))$/.test(t)) {
+            t += "-aa";
+            localStorage.setItem("jobhunt.theme", t);
+          }
+          localStorage.setItem("jobhunt.themeMigrated", "aa");
+        }
+      } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark-aa" : "vanilla-light-aa";
       document.documentElement.setAttribute("data-theme", t);
     })();
   </script>
@@ -21,7 +31,7 @@
   <header class="app-header">
     <div class="header-inner">
       <a class="brand brand-link" href="./#jobs">
-        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span class="p-navigation__logo-tag" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" focusable="false"><circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="2.5" fill="currentColor" stroke="none"/></svg></span>
         <span class="brand-text">
           <span class="brand-name">JobHuntPA</span>
           <span id="ws-name" class="subtitle">Job</span>
@@ -52,49 +62,204 @@
     </div>
   </header>
 
-  <main id="main" class="main job-main" tabindex="-1">
-    <div id="job-error" class="error" hidden></div>
-    <section id="job-head" class="card job-head" aria-labelledby="job-title"><h1 id="job-title" class="job-page-title">Loading the job…</h1></section>
-
-    <section id="job-ghost-section" class="card job-section ghost-section" aria-labelledby="ghost-title" hidden>
-      <h2 id="ghost-title" tabindex="-1">Is this a real vacancy?</h2>
-      <div id="job-ghost"></div>
-    </section>
-
-    <div id="job-cols" class="job-cols">
-      <div class="job-col">
-        <section class="card job-section" aria-labelledby="office-title">
-          <h2 id="office-title">Office and commute</h2>
-          <div id="job-office"></div>
-          <div id="job-commute"><p class="muted">Listing the commute links…</p></div>
-        </section>
-        <section class="card job-section" aria-labelledby="company-title">
-          <h2 id="company-title" tabindex="-1">Company</h2>
-          <div id="job-company" class="modal-html company-body"></div>
-          <p id="company-status" class="muted" role="status"></p>
-        </section>
+  <!-- The summary: who, what, how well it fits, and the actions. Sticky on wide screens; a compact header with a
+       bottom action bar (#job-bar) on phones, where job.js moves #job-controls. -->
+  <div id="job-summary" class="jp-summary">
+    <div id="job-head" class="jp-summary__inner">
+      <a class="p-button p-button--base is-dense jp-summary__back" href="./#jobs"><span aria-hidden="true">‹ </span>Jobs<span class="visually-hidden">: back to the dashboard</span></a>
+      <div class="jp-summary__who">
+        <p id="job-where" class="u-upper u-muted jp-summary__where"></p>
+        <h1 id="job-title" class="jp-summary__title">Loading the job…</h1>
+        <p id="job-sub" class="u-small u-muted jp-summary__sub"></p>
       </div>
-      <div class="job-col">
-        <section class="card job-section" aria-labelledby="fit-title">
-          <h2 id="fit-title">Fit</h2>
-          <div id="job-fit" class="reqs"></div>
-        </section>
-        <section class="card job-section" aria-labelledby="ad-title">
-          <h2 id="ad-title">The ad</h2>
-          <div id="job-ad" class="job-ad"></div>
-        </section>
+      <div id="job-labels" class="u-row jp-summary__labels"></div>
+      <div class="u-row jp-summary__actions">
+        <div id="job-controls" class="u-row jp-controls">
+          <label class="u-sr" for="job-status">Application status</label>
+          <select id="job-status" class="p-select jp-status"></select>
+          <button id="job-letter" class="p-button is-dense" type="button"><span class="jp-long">Cover letter</span><span class="jp-short" aria-hidden="true">Letter</span></button>
+          <button id="job-chat" class="p-button p-button--positive is-dense" type="button">Chat</button>
+        </div>
+        <div class="jp-more">
+          <button id="job-more" class="p-button p-button--base is-dense" type="button" aria-expanded="false" aria-controls="job-more-menu">More<span class="visually-hidden"> actions for this job</span></button>
+          <div id="job-more-menu" class="jp-more__menu" hidden>
+            <ul id="job-more-list" class="p-list jp-more__list"></ul>
+          </div>
+        </div>
       </div>
     </div>
+    <div class="p-tabs jp-tabs">
+      <div id="job-tabs" class="p-tabs__list" role="tablist" aria-label="Sections of this job">
+        <button id="tab-overview" class="p-tabs__link" role="tab" type="button" aria-selected="true" aria-controls="panel-overview">Overview</button>
+        <button id="tab-fit" class="p-tabs__link" role="tab" type="button" aria-selected="false" tabindex="-1" aria-controls="panel-fit">Fit<span id="tab-fit-count" class="jp-tab-count"></span></button>
+        <button id="tab-company" class="p-tabs__link" role="tab" type="button" aria-selected="false" tabindex="-1" aria-controls="panel-company">Company</button>
+        <button id="tab-commute" class="p-tabs__link" role="tab" type="button" aria-selected="false" tabindex="-1" aria-controls="panel-commute">Commute</button>
+        <button id="tab-ad" class="p-tabs__link" role="tab" type="button" aria-selected="false" tabindex="-1" aria-controls="panel-ad">The ad</button>
+        <button id="tab-chats" class="p-tabs__link" role="tab" type="button" aria-selected="false" tabindex="-1" aria-controls="panel-chats">Chats<span id="tab-chats-count" class="jp-tab-count"></span></button>
+      </div>
+    </div>
+  </div>
+
+  <main id="main" class="jp-main" tabindex="-1">
+    <div id="job-error" class="error" hidden></div>
+
+    <section id="panel-overview" class="jp-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="-1">
+      <div class="jp-grid jp-grid--rail">
+        <div class="u-stack jp-stack">
+          <section id="job-verdict" class="p-card u-stack jp-card" aria-labelledby="verdict-title">
+            <h2 id="verdict-title" class="jp-h2">The verdict</h2>
+            <div id="job-verdict-body"></div>
+          </section>
+          <section id="job-ghost-section" class="p-card u-stack jp-card" aria-labelledby="ghost-title" hidden>
+            <h2 id="ghost-title" class="jp-h2" tabindex="-1">Is this a real vacancy?</h2>
+            <div id="job-ghost"></div>
+          </section>
+          <section id="job-next" class="p-card u-stack jp-card" aria-labelledby="next-title">
+            <h2 id="next-title" class="jp-h2">Next steps</h2>
+            <ul id="job-next-list" class="p-list p-list--divided jp-next"></ul>
+          </section>
+        </div>
+        <aside class="u-stack jp-rail" aria-label="Key facts">
+          <details class="p-card jp-fold" open>
+            <summary class="jp-fold__summary"><h2 id="facts-title" class="jp-h2 jp-h2--small">Key facts</h2></summary>
+            <dl id="job-facts" class="jp-facts"></dl>
+          </details>
+          <details class="p-card jp-fold">
+            <summary class="jp-fold__summary"><h2 id="commute-rail-title" class="jp-h2 jp-h2--small">Commute</h2></summary>
+            <div id="job-commute-brief" class="jp-commute-brief"><p class="u-small u-muted">Listing the commute links…</p></div>
+          </details>
+          <details class="p-card jp-fold">
+            <summary class="jp-fold__summary"><h2 id="company-brief-title" class="jp-h2 jp-h2--small">Company</h2></summary>
+            <div id="job-company-brief"></div>
+          </details>
+        </aside>
+      </div>
+    </section>
+
+    <section id="panel-fit" class="jp-panel" role="tabpanel" aria-labelledby="tab-fit" tabindex="-1" hidden>
+      <div class="jp-grid jp-grid--rail">
+        <div id="job-fit" class="u-stack jp-stack"></div>
+        <aside class="u-stack jp-rail" aria-label="About this score">
+          <details class="p-card jp-fold">
+            <summary class="jp-fold__summary"><h2 id="how-title" class="jp-h2 jp-h2--small">How the score is made</h2></summary>
+            <div id="job-fit-how"></div>
+          </details>
+          <details id="job-compare-card" class="p-card jp-fold" hidden>
+            <summary class="jp-fold__summary"><h2 id="compare-title" class="jp-h2 jp-h2--small">Compared with your other jobs</h2></summary>
+            <div id="job-compare"></div>
+          </details>
+        </aside>
+      </div>
+    </section>
+
+    <section id="panel-company" class="jp-panel" role="tabpanel" aria-labelledby="tab-company" tabindex="-1" hidden>
+      <div id="job-company-note"></div>
+      <div class="jp-grid jp-grid--rail">
+        <div id="job-company" class="u-stack jp-stack"></div>
+        <aside class="u-stack jp-rail" aria-label="Sources and other jobs">
+          <details class="p-card jp-fold">
+            <summary class="jp-fold__summary"><h2 id="sources-title" class="jp-h2 jp-h2--small">Sources the research used</h2></summary>
+            <div id="job-company-sources"></div>
+          </details>
+          <details class="p-card jp-fold">
+            <summary class="jp-fold__summary"><h2 id="other-jobs-title" class="jp-h2 jp-h2--small">Other jobs at this company</h2></summary>
+            <div id="job-company-others"></div>
+          </details>
+          <details class="p-card jp-fold">
+            <summary class="jp-fold__summary"><h2 id="ask-title" class="jp-h2 jp-h2--small">Ask about this company</h2></summary>
+            <ul id="job-company-ask" class="p-list jp-ask"></ul>
+          </details>
+        </aside>
+      </div>
+      <p id="company-status" class="u-small u-muted" role="status"></p>
+    </section>
+
+    <section id="panel-commute" class="jp-panel" role="tabpanel" aria-labelledby="tab-commute" tabindex="-1" hidden>
+      <div class="jp-grid jp-grid--halves">
+        <section class="p-card u-stack jp-card" aria-labelledby="office-title">
+          <h2 id="office-title" class="jp-h2">The office</h2>
+          <div id="job-office"></div>
+        </section>
+        <div class="u-stack jp-stack">
+          <section class="p-card u-stack jp-card" aria-labelledby="directions-title">
+            <h2 id="directions-title" class="jp-h2">Directions in Google Maps</h2>
+            <div id="job-commute"><p class="u-small u-muted">Listing the commute links…</p></div>
+          </section>
+          <section class="p-card u-stack jp-card" aria-labelledby="there-title">
+            <h2 id="there-title" class="jp-h2 jp-h2--small">What the ad says about being there</h2>
+            <ul id="job-there" class="p-list jp-there"></ul>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-ad" class="jp-panel" role="tabpanel" aria-labelledby="tab-ad" tabindex="-1" hidden>
+      <div class="jp-grid jp-grid--ad">
+        <article id="job-ad" class="jp-ad" aria-labelledby="ad-title">
+          <h2 id="ad-title" class="jp-h2">The ad</h2>
+          <div id="job-ad-body"></div>
+        </article>
+        <aside class="u-stack jp-rail jp-rail--ad" aria-label="Fit at a glance and the office">
+          <details id="job-glance-card" class="p-card jp-fold" open>
+            <summary class="jp-fold__summary"><h2 id="glance-title" class="jp-h2 jp-h2--small">Fit at a glance</h2></summary>
+            <div id="job-glance"></div>
+          </details>
+          <details class="p-card jp-fold">
+            <summary class="jp-fold__summary"><h2 id="ad-office-title" class="jp-h2 jp-h2--small">Office and commute</h2></summary>
+            <div id="job-ad-office"></div>
+          </details>
+        </aside>
+      </div>
+    </section>
+
+    <section id="panel-chats" class="jp-panel" role="tabpanel" aria-labelledby="tab-chats" tabindex="-1" hidden>
+      <div class="jp-grid jp-grid--chats">
+        <aside class="u-stack jp-chat-side" aria-label="Conversations">
+          <div class="u-row jp-chat-pick">
+            <label class="u-sr" for="chat-threads">Conversation</label>
+            <select id="chat-threads" class="p-select"></select>
+            <button id="chat-new" class="p-button is-dense" type="button" title="Start a new conversation about this job">New chat</button>
+          </div>
+          <ul id="chat-thread-list" class="p-list jp-chat-threads" aria-label="Earlier chats about this job"></ul>
+          <p class="u-small u-muted jp-chat-note">Chats about several jobs at once start from the Jobs tab: tick them and choose Chat about selected.</p>
+          <section class="u-stack jp-chat-starters" aria-labelledby="starters-title">
+            <h2 id="starters-title" class="u-upper u-muted jp-h2--upper">Starters</h2>
+            <div id="chat-starters"></div>
+          </section>
+        </aside>
+        <section class="p-card jp-chat" aria-labelledby="chat-title">
+          <div class="p-card__head jp-chat__head">
+            <h2 id="chat-title" class="jp-h2">Ask about this job</h2>
+            <button id="chat-delete" class="p-button p-button--base is-dense" type="button" title="Delete this conversation" hidden>Delete<span class="visually-hidden"> this chat</span></button>
+          </div>
+          <ul id="chat-jobs" class="chat-jobs" aria-label="Jobs in this chat" hidden></ul>
+          <div id="chat-messages" class="chat-messages jp-chat__messages" role="region" aria-label="Conversation" tabindex="0"></div>
+          <form id="chat-form" class="chat-form jp-chat__form" autocomplete="off">
+            <label for="chat-input" class="visually-hidden">Your question</label>
+            <textarea id="chat-input" class="p-textarea" rows="2" enterkeyhint="send" aria-describedby="chat-input-hint" placeholder="Ask anything about this job…"></textarea>
+            <div class="chat-form-row jp-chat__row">
+              <label class="p-check check" title="Let the model search the web for things your saved data doesn't cover: company news, salaries, interview process. Slower; the pages it used are listed under the answer.">
+                <input id="chat-web" class="p-switch" type="checkbox" role="switch" /> Search the web</label>
+              <span id="chat-input-hint" class="u-small u-muted">Enter sends; Shift+Enter starts a new line.</span>
+              <span id="chat-status" class="muted" role="status"></span>
+              <button id="chat-send" class="p-button p-button--positive is-dense" type="submit">Send</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </section>
   </main>
 
-  <!-- The rules of the search filters a job the person added doesn't meet (its ⚠️): job.js showFilterWarnings -->
-  <dialog id="modal" class="modal" aria-labelledby="modal-title">
+  <div id="job-bar" class="jp-bar" role="region" aria-label="Actions for this job" hidden></div>
+
+  <!-- The cover letter (a native dialog: focus moves in and stays, Escape closes). -->
+  <dialog id="letter-dialog" class="modal" aria-labelledby="letter-title">
     <div class="modal-box">
       <div class="modal-head">
-        <h2 id="modal-title" class="modal-title"></h2>
-        <button id="modal-close" class="btn btn-ghost btn-sm" type="button"><span aria-hidden="true">✕ </span>Close</button>
+        <h2 id="letter-title" class="modal-title">Cover letter</h2>
+        <button id="letter-close" class="btn btn-ghost btn-sm" type="button"><span aria-hidden="true">✕ </span>Close</button>
       </div>
-      <div id="modal-html" class="modal-html"></div>
+      <div id="letter-body" class="modal-html"></div>
     </div>
   </dialog>
 
@@ -102,6 +267,8 @@
 
   <script src="./common.js"></script>
   <script src="./tasks-tray.js"></script>
+  <script src="./chat.js"></script>
+  <script src="./letter.js"></script>
   <script src="./job.js"></script>
 </body>
 </html>

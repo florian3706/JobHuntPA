@@ -3,9 +3,9 @@
 Its format is written down in docs/design/open-source.md, Part 7. In short: a JSON object with ``format``
 ("jobhuntpa-import") and ``format_version`` (``FORMAT_VERSION``), the app's version and the time of the export, then
 per workspace the search setup (with its starting points), pins, sources, schedule, documents (text, concise version,
-flags and the path in the zip of each one's original file), cover letter blocks, the cover letter template (its name,
-type and the path of its file in the zip), jobs (the ad, status and its dates, hidden, excluded,
-office, verdict, fit result, cover letter) and chats, and the research on the companies of those jobs. Never the
+flags and the path in the zip of each one's original file), cover letter blocks, which document is the letter
+template, jobs (the ad, status and its dates, hidden, excluded, office, verdict, fit result, cover letter) and chats,
+and the research on the companies of those jobs. Never the
 password, keys, sessions, extension keys or the AI key: none of them is read here.
 
 ``workspace_data`` and ``company_data`` write it (backend/export.py, in the exporting person's key scope).
@@ -49,7 +49,6 @@ from backend.db import (
     FitResult,
     Job,
     LetterBlock,
-    LetterTemplate,
     Pin,
     UserProfile,
     Workspace,
@@ -156,16 +155,14 @@ def _fit(fit: Optional[FitResult]) -> Optional[dict]:
 def _letter(letter: Optional[CoverLetter]) -> Optional[dict]:
     if letter is None:
         return None
-    return {"text": letter.text or "", "instructions": letter.instructions, "edited": bool(letter.edited),
-            "model": letter.model, "reasoning_effort": letter.reasoning_effort, "created_at": iso(letter.created_at),
+    return {"text": letter.text or "", "draft_text": letter.draft_text, "instructions": letter.instructions,
+            "edited": bool(letter.edited), "model": letter.model, "reasoning_effort": letter.reasoning_effort, "created_at": iso(letter.created_at),
             "updated_at": iso(letter.updated_at)}
 
 
-def workspace_data(db: Session, ws: Workspace, originals: dict[int, str],
-                   templates: Optional[dict[int, str]] = None) -> tuple[dict, set[str]]:
+def workspace_data(db: Session, ws: Workspace, originals: dict[int, str]) -> tuple[dict, set[str]]:
     """One workspace for the import file, and the company keys of its jobs (for the research). ``originals``: each
-    document's original file, by document id, as its path inside the export's folder; ``templates``: the cover letter
-    template's file, by workspace id, the same way."""
+    document's original file, by document id, as its path inside the export's folder."""
     from backend.db import company_key
     from backend.pool import jobs_query
 
@@ -181,7 +178,6 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str],
     fits = {f.job_id: f for f in db.query(FitResult).join(Job, Job.id == FitResult.job_id).filter(Job.workspace_id == ws.id)}
     letters = {c.job_id: c for c in db.query(CoverLetter).join(Job, Job.id == CoverLetter.job_id).filter(Job.workspace_id == ws.id)}
     blocks = ordered_blocks(db.query(LetterBlock).filter(LetterBlock.workspace_id == ws.id).all())
-    template = db.query(LetterTemplate).filter(LetterTemplate.workspace_id == ws.id).order_by(LetterTemplate.id.desc()).first()
     jobs, companies = [], set()
     for start in range(0, len(job_ids), CHUNK):
         ids = job_ids[start:start + CHUNK]
@@ -235,12 +231,10 @@ def workspace_data(db: Session, ws: Workspace, originals: dict[int, str],
             "kind": b.kind, "title": b.title, "text": b.text, "tags": list(b.tags or []), "position": b.position,
             "created_at": iso(b.created_at), "updated_at": iso(b.updated_at),
         } for b in blocks],
-        "letter_template": None if template is None else {
-            "filename": template.filename, "filetype": template.filetype, "created_at": iso(template.created_at),
-            "original": (templates or {}).get(ws.id),
-        },
         "jobs": jobs,
         "chats": chats,
+        # The letter template cover-letter downloads use (one of the documents above); None: the plain layout.
+        "letter_template": doc_ref.get(ws.letter_template_id) if ws.letter_template_id else None,
     }
     return data, companies
 
@@ -274,12 +268,12 @@ def site_mappings_data(db: Session, user_id: int) -> list[dict]:
 
 
 def build(db: Session, workspaces: list[Workspace], originals: dict[int, str], stamp: datetime,
-          user_id: Optional[int] = None, templates: Optional[dict[int, str]] = None) -> dict:
+          user_id: Optional[int] = None) -> dict:
     """The whole import file for these workspaces (the exporting person's own), with ``user_id``'s saved job-site
     mappings."""
     data, keys = [], set()
     for ws in workspaces:
-        one, companies = workspace_data(db, ws, originals, templates)
+        one, companies = workspace_data(db, ws, originals)
         data.append(one)
         keys |= companies
     ordered = sorted(keys)
@@ -324,6 +318,11 @@ def _as_text(value: Any) -> Any:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return str(value)
     return value
+
+
+def _ref_or_none(value: Any) -> Any:
+    """A document ref, or None for anything else (a development build wrote the letter template as an object)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 Short = Annotated[str, StringConstraints(max_length=SHORT)]
@@ -445,7 +444,7 @@ class DocumentIn(_In):
     ref: Ref
     filename: Short
     filetype: Optional[Annotated[str, StringConstraints(max_length=20)]] = None
-    kind: Optional[Literal["resume", "cover_letter", "preferences", "other"]] = None
+    kind: Optional[Literal["resume", "cover_letter", "preferences", "other", "letter_template"]] = None
     text: Optional[DocText] = None
     concise_text: Optional[DocText] = None
     use_concise: bool = False
@@ -466,13 +465,6 @@ class LetterBlockIn(_In):
     position: Annotated[int, Field(ge=0, le=1_000_000)] = 0
     created_at: When = None
     updated_at: When = None
-
-
-class LetterTemplateIn(_In):
-    filename: Short = ""
-    filetype: Literal[".docx", ".odt"]
-    created_at: When = None
-    original: Optional[Annotated[str, StringConstraints(max_length=1_000)]] = None
 
 
 class AdIn(_In):
@@ -552,6 +544,7 @@ class FitIn(_In):
 
 class LetterIn(_In):
     text: Long = ""
+    draft_text: Optional[Long] = None
     instructions: Optional[Long] = None
     edited: bool = False
     model: Optional[Short] = None
@@ -615,9 +608,10 @@ class WorkspaceIn(_In):
     schedule: Optional[ScheduleIn] = None
     documents: Annotated[list[DocumentIn], Field(max_length=MANY)] = Field(default_factory=list)
     letter_blocks: Annotated[list[LetterBlockIn], Field(max_length=MANY)] = Field(default_factory=list)
-    letter_template: Optional[LetterTemplateIn] = None
     jobs: Annotated[list[JobIn], Field(max_length=MANY)] = Field(default_factory=list)
     chats: Annotated[list[ChatIn], Field(max_length=MANY)] = Field(default_factory=list)
+    # The document (its ref) cover-letter downloads use.
+    letter_template: Annotated[Optional[Ref], BeforeValidator(_ref_or_none)] = None
 
 
 def _web_page(url: str) -> str:

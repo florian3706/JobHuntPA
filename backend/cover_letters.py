@@ -3,40 +3,59 @@ paragraphs (backend.letter_blocks).
 
     GET  /api/jobs/{id}/cover-letter                  saved letter (404 if none)
     POST /api/jobs/{id}/cover-letter                  draft a new one {instructions?}
-    PUT  /api/jobs/{id}/cover-letter                  save edits {text}
-    GET  /api/jobs/{id}/cover-letter.{fmt}            download as .docx, .odt or .pdf (the template filled in when
-                                                      there is one: backend.letter_templates)
+    PUT  /api/jobs/{id}/cover-letter                  save edits {text} (the model's draft stays in ``draft_text``)
+    GET  /api/jobs/{id}/cover-letter.pdf              download as PDF (X-Font-Substitutions says which fonts stood in)
+    GET  /api/jobs/{id}/cover-letter.odt              download as OpenDocument
+    GET  /api/jobs/{id}/cover-letter.docx             download as Word
     POST /api/jobs/{id}/cover-letter/blocks/suggest   the AI picks and orders blocks, and names blocks worth writing
     POST /api/jobs/{id}/cover-letter/blocks/assemble  {block_ids}: the blocks' text verbatim, placeholders filled
 
-All of them need a signed-in user. The draft prompt gets the resume(s) first, the candidate's own paragraphs
-(blocks) as material when there are any, earlier cover letters (or else notes) as style samples, the job ad, the
-fit result (matched evidence and gaps) and the company profile when there is one. Reasoning level: task
-"cover_letter". Everything taken from the model goes through ``textclean.plain_text``; the user's block text never
-does (an assembled letter keeps their words exactly).
+All of them: signed in, the job's workspace. Downloads use the workspace's letter template when it has one
+(backend/letter_files.py; chosen on the Documents tab, kept in ``workspaces.letter_template_id``): a .docx template
+gives .docx and PDF, an .odt template .odt and PDF, and a format the template can't give answers 409. Without a
+template every format comes from the plain built-in layout. The PDF is LibreOffice's conversion of the filled file
+when LibreOffice is installed, else drawn from it with reportlab (backend/letter_pdf.py ``pdf_backend``).
+
+The draft prompt gets the resume(s) first, the candidate's own paragraphs (blocks) as material when there are any,
+earlier cover letters (or else notes) as style samples, the job ad, the fit result (matched evidence and gaps) and the
+company profile when there is one. Reasoning level: task "cover_letter". Everything taken from the model goes through
+``textclean.plain_text``; the user's block text never does (an assembled letter keeps their words exactly).
 
 Preference documents are never sent: they are the candidate's private wishes
 (pay, place, employers to avoid) and must not end up in a letter to an employer.
 """
 from __future__ import annotations
 
-import io
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import letter_templates, llm_providers, tasks
-from backend.db import (NOTE_FILETYPE, CompanyProfile, CoverLetter, Document, FitResult, Job, LetterBlock, company_key,
-                        get_db)
+from backend import crypto, letter_files, letter_pdf, llm_providers, tasks
+from backend.db import (
+    LETTER_TEMPLATE_KIND,
+    NOTE_FILETYPE,
+    CompanyProfile,
+    CoverLetter,
+    Document,
+    FitResult,
+    Job,
+    LetterBlock,
+    Workspace,
+    company_key,
+    get_db,
+)
 from backend.letter_blocks import BLOCK_KINDS, _block_dict, _ordered, assemble_letter
 from backend.textclean import plain_text
 from backend.workspaces import current_workspace, owned
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/jobs", tags=["cover letters"])
 
@@ -86,6 +105,7 @@ def _letter_dict(cl: CoverLetter) -> dict:
     return {
         "job_id": cl.job_id,
         "text": cl.text,
+        "draft_text": cl.draft_text,  # the model's draft as written (None for a letter from before this was kept)
         "instructions": cl.instructions,
         "edited": bool(cl.edited),
         "model": cl.model,
@@ -105,7 +125,7 @@ def _documents_section(db: Session, workspace_id: int, required: bool = True) ->
     docs = [d for d in (db.query(Document)
                         .filter(Document.workspace_id == workspace_id, Document.use_for_scoring.is_(True))
                         .order_by(Document.id))
-            if d.kind != "preferences"]  # private: never in a letter to an employer
+            if d.kind not in ("preferences", LETTER_TEMPLATE_KIND)]  # private wishes; a letterhead is not a document
     resumes = [d for d in docs if d.kind == "resume" and d.text_for_llm()]
     letters = [d for d in docs if d.kind == "cover_letter" and (d.text or "").strip()]
     others = [d for d in docs if d.kind not in ("resume", "cover_letter") and d.text_for_llm()]
@@ -284,7 +304,7 @@ def draft_cover_letter(job_id: int, payload: DraftRequest, db: Session = Depends
     if not text:
         raise HTTPException(status_code=502, detail="The model returned an empty letter; try again.")
     cl = db.query(CoverLetter).filter(CoverLetter.job_id == job_id).first() or CoverLetter(job_id=job_id)
-    cl.text, cl.instructions, cl.edited = text, payload.instructions, False
+    cl.text, cl.draft_text, cl.instructions, cl.edited = text, text, payload.instructions, False
     cl.model, cl.reasoning_effort = cfg["model"], cfg["reasoning_effort"] or None
     cl.source = "ai"
     cl.created_at = cl.updated_at = datetime.utcnow()
@@ -323,7 +343,7 @@ def assemble_from_blocks(job_id: int, payload: AssembleRequest, db: Session = De
     blocks = [owned(db, LetterBlock, i, ws, "Block") for i in dict.fromkeys(payload.block_ids)]
     text, unfilled = assemble_letter(blocks, job)
     cl = db.query(CoverLetter).filter(CoverLetter.job_id == job_id).first() or CoverLetter(job_id=job_id)
-    cl.text, cl.instructions, cl.edited = text, None, False
+    cl.text, cl.draft_text, cl.instructions, cl.edited = text, None, None, False  # (no model draft to go back to)
     cl.model, cl.reasoning_effort = None, None
     cl.source = "blocks"
     cl.created_at = cl.updated_at = datetime.utcnow()
@@ -340,22 +360,140 @@ def save_cover_letter(job_id: int, payload: SaveRequest, db: Session = Depends(g
     if cl is None:
         cl = CoverLetter(job_id=job_id, created_at=datetime.utcnow())
         db.add(cl)
-    cl.text, cl.edited, cl.updated_at = payload.text, True, datetime.utcnow()
+    # Saving the model's draft back word for word ("Discard my edits") makes the letter the draft again.
+    cl.text, cl.edited, cl.updated_at = payload.text, payload.text != (cl.draft_text or object()), datetime.utcnow()
     db.commit()
     return _letter_dict(cl)
 
 
-@router.get("/{job_id}/cover-letter.{fmt}")
-def download_cover_letter(job_id: int, fmt: str, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
-    """The saved letter as .docx, .odt or .pdf: the workspace's template filled in, or a plain document
-    (backend.letter_templates.render)."""
-    if fmt not in letter_templates.FORMATS:
-        raise HTTPException(status_code=404, detail="Cover letters download as .docx, .odt or .pdf.")
+# --------------------------------------------------------------------------
+# Downloads
+# --------------------------------------------------------------------------
+
+FORMATS = {
+    "pdf": ("application/pdf", "PDF"),
+    "odt": ("application/vnd.oasis.opendocument.text", "OpenDocument (.odt)"),
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "Word (.docx)"),
+}
+
+
+def current_template(db: Session, ws: int) -> Optional[Document]:
+    """The workspace's letter template, or None for the plain layout. Checked through plaintext columns before the
+    row is loaded; a pointer to a document that is gone or no longer a template counts as none."""
+    template_id = db.query(Workspace.letter_template_id).filter(Workspace.id == ws).scalar()
+    if not template_id:
+        return None
+    row = db.query(Document.workspace_id, Document.kind, Document.stored_name).filter(Document.id == template_id).first()
+    if row is None or row[0] != ws or row[1] != LETTER_TEMPLATE_KIND or not row[2]:
+        return None
+    return db.get(Document, template_id)
+
+
+def template_suffix(template: Document) -> str:
+    return (template.filetype or "").lower()
+
+
+def format_problem(fmt: str, template: Optional[Document]) -> Optional[str]:
+    """Why ``fmt`` can't be made with the current template (None: it can)."""
+    if template is None or fmt == "pdf":
+        return None
+    suffix = template_suffix(template)
+    if fmt == "docx" and suffix == ".odt":
+        return ("Your letter template is an OpenDocument (.odt) file, which gives .odt and PDF. For a Word file, upload "
+                "a .docx template or switch to the plain layout on the Documents tab.")
+    if fmt == "odt" and suffix == ".docx":
+        return ("Your letter template is a Word (.docx) file, which gives .docx and PDF. For an OpenDocument file, "
+                "upload an .odt template or switch to the plain layout on the Documents tab.")
+    return None
+
+
+def export_options(db: Session, ws: int) -> dict:
+    """What the cover-letter window shows about downloads: the template (or the plain layout), which formats it
+    gives, the font the letter takes, which of the template's fonts this computer lacks (what reportlab stands in
+    with), and what makes the PDF (``pdf``: "libreoffice" or "reportlab")."""
+    template = current_template(db, ws)
+    out = {"template": None, "formats": {}, "fonts": [], "letter_font": None, "problem": None,
+           "pdf": letter_pdf.pdf_backend()}
+    if template is not None:
+        out["template"] = {"id": template.id, "filename": template.filename, "filetype": template_suffix(template)}
+        try:
+            model = letter_files.check_template(_template_bytes(template), template_suffix(template))
+            out["fonts"] = letter_pdf.font_report(model.families())
+            font = letter_files.marker_font(model)
+            out["letter_font"] = {"family": font[0], "size": font[1]} if font else None
+        except HTTPException as exc:
+            out["problem"] = exc.detail
+    else:
+        font = letter_pdf.plain_font()
+        out["letter_font"] = {"family": font, "size": letter_files.DEFAULT_SIZE}
+    for fmt, (_media, label) in FORMATS.items():
+        problem = out["problem"] or format_problem(fmt, template)
+        out["formats"][fmt] = {"label": label, "available": problem is None, "reason": problem}
+    return out
+
+
+def _template_bytes(template: Document) -> bytes:
+    from backend import docs
+
+    try:
+        return docs.read_upload(template.stored_name)
+    except (OSError, crypto.CryptoError):
+        raise HTTPException(status_code=409, detail="The letter template's file can't be opened. Upload it again on "
+                                                    "the Documents tab, or switch to the plain layout.")
+
+
+def build_file(db: Session, ws: int, job: Job, text: str, fmt: str) -> tuple[bytes, list[dict]]:
+    """The letter as ``fmt`` with the workspace's template or the plain layout: (bytes, font substitutions)."""
+    template = current_template(db, ws)
+    problem = format_problem(fmt, template)
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
+    values = letter_files.marker_values(text, job.company or "", job.title or "", location=job.location_text or "")
+    if template is not None:
+        suffix = template_suffix(template)
+        try:
+            filled = letter_files.fill(_template_bytes(template), suffix, text, values)
+        except letter_files.TemplateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except Exception:
+            raise HTTPException(status_code=409, detail="The letter template couldn't be filled. Save it again from "
+                                                        "your word processor and upload it once more.")
+    else:
+        suffix = ".odt" if fmt == "odt" else ".docx"
+        filled = letter_files.plain(suffix, text, letter_pdf.plain_font())
+    if fmt != "pdf":
+        return filled, []
+    if letter_pdf.pdf_backend() == "libreoffice":
+        try:
+            return letter_pdf.to_pdf_libreoffice(filled, suffix), []
+        except letter_pdf.PdfError as exc:  # (how it failed, never a name or text; reportlab draws it instead)
+            log.warning("LibreOffice could not turn a cover letter into a PDF: %s", exc)
+    return letter_pdf.render(letter_files.letter_model(filled, suffix))
+
+
+def _download(job_id: int, fmt: str, db: Session, ws: int) -> Response:
     job = owned(db, Job, job_id, ws, "Job")
     cl = db.query(CoverLetter).filter(CoverLetter.job_id == job_id).first()
     if cl is None:
         raise HTTPException(status_code=404, detail="No cover letter drafted yet")
-    data, media_type, ext = letter_templates.render(db, ws, job, cl.text or "", fmt)
-    name = re.sub(r"[^\w\- ]+", "", f"Cover letter - {job.company} - {job.title}")[:120].strip() + f".{ext}"
-    return StreamingResponse(io.BytesIO(data), media_type=media_type,
-                             headers={"Content-Disposition": f'attachment; filename="{name}"'})
+    data, substitutions = build_file(db, ws, job, cl.text, fmt)
+    name = re.sub(r"[^\w\- ]+", "", f"Cover letter - {job.company} - {job.title}")[:120].strip() + f".{fmt}"
+    headers = {"Content-Disposition": f'attachment; filename="{name}"'}
+    if fmt == "pdf":
+        headers["X-Font-Substitutions"] = json.dumps(substitutions, ensure_ascii=True)
+    return Response(content=data, media_type=FORMATS[fmt][0], headers=headers)
+
+
+@router.get("/{job_id}/cover-letter.pdf")
+def download_cover_letter_pdf(job_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    return _download(job_id, "pdf", db, ws)
+
+
+@router.get("/{job_id}/cover-letter.odt")
+def download_cover_letter_odt(job_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    return _download(job_id, "odt", db, ws)
+
+
+@router.get("/{job_id}/cover-letter.docx")
+def download_cover_letter(job_id: int, db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
+    return _download(job_id, "docx", db, ws)

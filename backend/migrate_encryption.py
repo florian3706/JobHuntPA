@@ -76,7 +76,6 @@ OWNED = {
     "job_duplicates": f"workspace_id IN ({_WS})",
     "documents": f"workspace_id IN ({_WS})",
     "letter_blocks": f"workspace_id IN ({_WS})",
-    "letter_templates": f"workspace_id IN ({_WS})",
     "pins": f"workspace_id IN ({_WS})",
     "company_sources": f"workspace_id IN ({_WS})",
     "chat_threads": f"workspace_id IN ({_WS})",

@@ -42,14 +42,21 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 
-# The ids in THEMES (frontend/common.js); tests/test_wizard.py checks the two lists agree.
-THEME_IDS = frozenset({
-    "system", "dark", "light", "catppuccin-latte", "catppuccin-frappe", "catppuccin-macchiato", "catppuccin-mocha",
-    "rose-pine", "rose-pine-moon", "rose-pine-dawn", "nord", "nord-light", "kanagawa-wave", "kanagawa-dragon",
-    "kanagawa-lotus", "everforest-dark", "everforest-light", "dyslexia", "dyslexia-dark", "protanomaly",
-    "protanomaly-dark", "deuteranomaly", "deuteranomaly-dark", "tritanomaly", "tritanomaly-dark", "dichromacy",
-    "dichromacy-dark", "monochromacy", "monochromacy-dark",
+# Each family theme comes as its project's exact palette (the plain id) and a WCAG AA version ("<id>-aa"); the app's
+# own themes come once. These are the ids in THEMES (frontend/common.js); tests/test_wizard.py checks they agree.
+EXACT_THEME_IDS = frozenset({
+    "vanilla-dark", "vanilla-light", "catppuccin-latte", "catppuccin-frappe", "catppuccin-macchiato",
+    "catppuccin-mocha", "rose-pine", "rose-pine-moon", "rose-pine-dawn", "nord", "nord-light", "kanagawa-wave",
+    "kanagawa-dragon", "kanagawa-lotus", "everforest-dark", "everforest-light",
 })
+THEME_IDS = EXACT_THEME_IDS | {f"{t}-aa" for t in EXACT_THEME_IDS} | frozenset({
+    "system", "dark", "light", "dyslexia", "dyslexia-dark", "protanomaly", "protanomaly-dark", "deuteranomaly",
+    "deuteranomaly-dark", "tritanomaly", "tritanomaly-dark", "dichromacy", "dichromacy-dark", "monochromacy",
+    "monochromacy-dark",
+})
+# Preferences saved before the exact palettes came in hold no "themes" mark, and their family ids meant the AA
+# version: they read as "<id>-aa" (_migrated), and the next save writes the mark, so a later exact choice stays exact.
+THEMES_VERSION = 2
 MAX_STEP = 20
 SHORT_PATH_LAST_STEP = 3  # on the short path: 1 AI provider, 2 theme, 3 "keep your current settings or review them"
 
@@ -74,7 +81,13 @@ def read_prefs(db: Session, user_id: int) -> dict[str, Any]:
     except (ValueError, crypto.CryptoError):
         log.warning("user %s: preferences could not be opened", user_id)
         return {}
-    return data if isinstance(data, dict) else {}
+    return _migrated(data) if isinstance(data, dict) else {}
+
+
+def _migrated(prefs: dict[str, Any]) -> dict[str, Any]:
+    if prefs.get("themes") != THEMES_VERSION and prefs.get("theme") in EXACT_THEME_IDS:
+        prefs = {**prefs, "theme": f"{prefs['theme']}-aa"}
+    return {**prefs, "themes": THEMES_VERSION}
 
 
 def write_prefs(db: Session, user_id: int, prefs: dict[str, Any]) -> None:
@@ -102,8 +115,9 @@ def get_prefs(user: AuthUser = Depends(current_user), db: Session = Depends(get_
 def put_prefs(body: PrefsIn, user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
     if body.theme not in THEME_IDS:
         raise HTTPException(status_code=422, detail="That isn't one of the themes JobHuntPA offers.")
-    prefs = read_prefs(db, user.id)
+    prefs = read_prefs(db, user.id)  # with a saved family theme already read as its AA version
     prefs["theme"] = body.theme
+    prefs["themes"] = THEMES_VERSION  # from now on an exact id means the exact palette
     write_prefs(db, user.id, prefs)
     return public_prefs(db, user.id)
 

@@ -81,23 +81,34 @@ function toast(msg, kind = '', ms = 5000) {
 /* ---------- form errors (WCAG 3.3.1, 3.3.3) ----------
    Marks a field invalid and shows the message under it, tied to the field with aria-describedby, so it
    is read with the field. setFieldError(input, '') clears it; typing in the field clears it too. */
+const ERROR_ICON = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5v.5"></path></svg>';
+// The message under a field, as Vanilla's validation message: an icon, and "Error:" for screen readers.
+function fieldErrorEl(input, id, msg) {
+  const el = document.createElement('p');
+  el.id = id;
+  el.className = 'p-form-validation__message field-error';
+  el.innerHTML = `${ERROR_ICON}<span><span class="u-sr">Error: </span>${esc(msg)}</span>`;
+  input.closest('.p-field')?.classList.add('is-error');
+  return el;
+}
+
 function setFieldError(input, msg, { focus = true } = {}) {
   const id = `${input.id}-error`;
   let el = document.getElementById(id);
   const described = (input.getAttribute('aria-describedby') || '').split(/\s+/).filter((x) => x && x !== id);
   if (!msg) {
     el?.remove();
+    input.closest('.p-field')?.classList.remove('is-error');
     input.removeAttribute('aria-invalid');
     if (described.length) input.setAttribute('aria-describedby', described.join(' ')); else input.removeAttribute('aria-describedby');
     return;
   }
   if (!el) {
-    el = document.createElement('p');
-    el.id = id;
-    el.className = 'field-error';
+    el = fieldErrorEl(input, id, msg);
     (input.closest('.key-row, .tag-input, .sched-add, .pw-row') || input).insertAdjacentElement('afterend', el);
+  } else {
+    el.innerHTML = `${ERROR_ICON}<span><span class="u-sr">Error: </span>${esc(msg)}</span>`;
   }
-  el.innerHTML = `<span aria-hidden="true">⚠ </span>${esc(msg)}`;
   input.setAttribute('aria-invalid', 'true');
   input.setAttribute('aria-describedby', [id, ...described].join(' '));
   input.addEventListener('input', () => setFieldError(input, ''), { once: true });
@@ -487,6 +498,16 @@ function showEncrypting(data) {
   }
 }
 
+// A file the page made or fetched, saved through a blob: address (the page's policy allows it).
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 function fmtBytes(n) {
   if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   if (n >= 1024) return `${Math.round(n / 1024)} KB`;
@@ -579,10 +600,10 @@ function appliedHtml(job) {
     ? `<span class="applied-on"><span aria-hidden="true">📨 </span>Applied ${esc(fmtDate(job.applied_at).split(',')[0])}</span>` : '';
 }
 const EMPLOYMENT_LABEL = { full_time: 'Full-time', part_time: 'Part-time', contract: 'Contract', casual: 'Casual', temporary: 'Temporary', internship: 'Internship' };
-/* Employment type badge for job facts; nothing when unknown. */
+/* The employment type as a neutral status label (a fact, not a warning); nothing when unknown. */
 function employmentBadge(job) {
   const label = EMPLOYMENT_LABEL[job.employment_type];
-  return label ? `<span class="badge soft"><span class="visually-hidden">Employment type: </span>${label}</span>` : '';
+  return label ? `<span class="p-status-label"><span class="visually-hidden">Employment type: </span>${label}</span>` : '';
 }
 /* Ghost jobs (backend/ghost.py): signs that the ad may not be a current vacancy. Every job shows 👻 and a coloured
    circle under its fit score: 🟢 no strong signs, 🟡 some signs, 🔴 several signs. Hovering over it says which signs
@@ -721,6 +742,11 @@ function linkList(sources) {
 
 // For a link that opens in a new tab: the arrow people see, and words for screen readers.
 const NEW_TAB = '<span aria-hidden="true"> ↗</span><span class="visually-hidden"> (opens in a new tab)</span>';
+
+/* A removable chip, as in the tag fields and the scheduled times: a list item (.tag keeps its value for the code that
+   reads the fields back) with a real button to remove it. The button's name says what it removes. */
+const CHIP_X = '<svg aria-hidden="true" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4l8 8M12 4l-8 8"></path></svg>';
+const chipHtml = (value) => `<li class="tag p-chip p-chip--dismiss" data-value="${esc(value)}"><span>${esc(value)}</span><button class="p-chip__x" type="button" aria-label="Remove ${esc(value)}">${CHIP_X}</button></li>`;
 
 function glassdoorLink(p, name) {
   if (p?.glassdoor_url) {
@@ -905,55 +931,97 @@ function officeHtml(job) {
 
 /* ================= THEMES ================= */
 // A per-browser display preference, as in ProjectTimeline. The stored value may
-// be "system", which follows the OS between Light and Dark. themes.css has one
+// be "system", which follows the OS between Vanilla Light and Vanilla Dark; with
+// nothing stored (a new install) the theme is Vanilla Dark. themes.css has one
 // block per theme; each page's <head> script applies the theme before first
 // paint, and initTheme() keeps it in step afterwards (and across open tabs).
 // The Settings tab chooses it with createThemePicker(), which the sign-up wizard
 // (docs/design/accounts.md, Phase K) reuses as its first step.
+// Each family theme comes twice: '<id>-aa', adjusted to WCAG AA, and the plain id, the
+// project's exact palette. aa: true marks the themes that meet AA (the picker's badge);
+// tools/theme_contrast.py checks exactly these and the tests check the flag matches.
 const DYSLEXIA_FONT = 'Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400';
 const THEMES = [
-  { id: 'system', label: 'System', family: 'JobHuntPA', mode: 'auto', note: 'follows this device' },
-  { id: 'dark', label: 'Dark', family: 'JobHuntPA', mode: 'dark' },
-  { id: 'light', label: 'Light', family: 'JobHuntPA', mode: 'light' },
+  { id: 'system', label: 'System', family: 'Vanilla', mode: 'auto', note: 'follows this device', aa: true },
+  { id: 'vanilla-dark-aa', label: 'Vanilla Dark', family: 'Vanilla', mode: 'dark', aa: true },
+  { id: 'vanilla-dark', label: 'Vanilla Dark', family: 'Vanilla', mode: 'dark' },
+  { id: 'vanilla-light-aa', label: 'Vanilla Light', family: 'Vanilla', mode: 'light', aa: true },
+  { id: 'vanilla-light', label: 'Vanilla Light', family: 'Vanilla', mode: 'light' },
+  { id: 'dark', label: 'Dark', family: 'JobHuntPA', mode: 'dark', aa: true },
+  { id: 'light', label: 'Light', family: 'JobHuntPA', mode: 'light', aa: true },
+  { id: 'catppuccin-latte-aa', label: 'Catppuccin Latte', family: 'Catppuccin', mode: 'light', aa: true },
   { id: 'catppuccin-latte', label: 'Catppuccin Latte', family: 'Catppuccin', mode: 'light' },
+  { id: 'catppuccin-frappe-aa', label: 'Catppuccin Frappé', family: 'Catppuccin', mode: 'dark', aa: true },
   { id: 'catppuccin-frappe', label: 'Catppuccin Frappé', family: 'Catppuccin', mode: 'dark' },
+  { id: 'catppuccin-macchiato-aa', label: 'Catppuccin Macchiato', family: 'Catppuccin', mode: 'dark', aa: true },
   { id: 'catppuccin-macchiato', label: 'Catppuccin Macchiato', family: 'Catppuccin', mode: 'dark' },
+  { id: 'catppuccin-mocha-aa', label: 'Catppuccin Mocha', family: 'Catppuccin', mode: 'dark', aa: true },
   { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', family: 'Catppuccin', mode: 'dark' },
+  { id: 'rose-pine-aa', label: 'Rosé Pine', family: 'Rosé Pine', mode: 'dark', aa: true },
   { id: 'rose-pine', label: 'Rosé Pine', family: 'Rosé Pine', mode: 'dark' },
+  { id: 'rose-pine-moon-aa', label: 'Rosé Pine Moon', family: 'Rosé Pine', mode: 'dark', aa: true },
   { id: 'rose-pine-moon', label: 'Rosé Pine Moon', family: 'Rosé Pine', mode: 'dark' },
+  { id: 'rose-pine-dawn-aa', label: 'Rosé Pine Dawn', family: 'Rosé Pine', mode: 'light', aa: true },
   { id: 'rose-pine-dawn', label: 'Rosé Pine Dawn', family: 'Rosé Pine', mode: 'light' },
+  { id: 'nord-aa', label: 'Nord', family: 'Nord', mode: 'dark', aa: true },
   { id: 'nord', label: 'Nord', family: 'Nord', mode: 'dark' },
+  { id: 'nord-light-aa', label: 'Nord Light', family: 'Nord', mode: 'light', aa: true },
   { id: 'nord-light', label: 'Nord Light', family: 'Nord', mode: 'light' },
+  { id: 'kanagawa-wave-aa', label: 'Kanagawa Wave', family: 'Kanagawa', mode: 'dark', aa: true },
   { id: 'kanagawa-wave', label: 'Kanagawa Wave', family: 'Kanagawa', mode: 'dark' },
+  { id: 'kanagawa-dragon-aa', label: 'Kanagawa Dragon', family: 'Kanagawa', mode: 'dark', aa: true },
   { id: 'kanagawa-dragon', label: 'Kanagawa Dragon', family: 'Kanagawa', mode: 'dark' },
+  { id: 'kanagawa-lotus-aa', label: 'Kanagawa Lotus', family: 'Kanagawa', mode: 'light', aa: true },
   { id: 'kanagawa-lotus', label: 'Kanagawa Lotus', family: 'Kanagawa', mode: 'light' },
+  { id: 'everforest-dark-aa', label: 'Everforest Dark', family: 'Everforest', mode: 'dark', aa: true },
   { id: 'everforest-dark', label: 'Everforest Dark', family: 'Everforest', mode: 'dark' },
+  { id: 'everforest-light-aa', label: 'Everforest Light', family: 'Everforest', mode: 'light', aa: true },
   { id: 'everforest-light', label: 'Everforest Light', family: 'Everforest', mode: 'light' },
-  { id: 'dyslexia', label: 'Dyslexia', family: 'Built for reading', mode: 'light', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing' },
-  { id: 'dyslexia-dark', label: 'Dyslexia (dark)', family: 'Built for reading', mode: 'dark', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing' },
-  { id: 'protanomaly', label: 'Protanomaly', family: 'Built for colour vision', mode: 'light', note: 'red-weak' },
-  { id: 'protanomaly-dark', label: 'Protanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'red-weak' },
-  { id: 'deuteranomaly', label: 'Deuteranomaly', family: 'Built for colour vision', mode: 'light', note: 'green-weak' },
-  { id: 'deuteranomaly-dark', label: 'Deuteranomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'green-weak' },
-  { id: 'tritanomaly', label: 'Tritanomaly', family: 'Built for colour vision', mode: 'light', note: 'blue-weak' },
-  { id: 'tritanomaly-dark', label: 'Tritanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'blue-weak' },
-  { id: 'dichromacy', label: 'Dichromacy', family: 'Built for colour vision', mode: 'light', note: 'any kind' },
-  { id: 'dichromacy-dark', label: 'Dichromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'any kind' },
-  { id: 'monochromacy', label: 'Monochromacy', family: 'Built for colour vision', mode: 'light', note: 'greys only' },
-  { id: 'monochromacy-dark', label: 'Monochromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'greys only' },
+  { id: 'dyslexia', label: 'Dyslexia', family: 'Built for reading', mode: 'light', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing', aa: true },
+  { id: 'dyslexia-dark', label: 'Dyslexia (dark)', family: 'Built for reading', mode: 'dark', font: DYSLEXIA_FONT, note: 'Atkinson Hyperlegible, wider spacing', aa: true },
+  { id: 'protanomaly', label: 'Protanomaly', family: 'Built for colour vision', mode: 'light', note: 'red-weak', aa: true },
+  { id: 'protanomaly-dark', label: 'Protanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'red-weak', aa: true },
+  { id: 'deuteranomaly', label: 'Deuteranomaly', family: 'Built for colour vision', mode: 'light', note: 'green-weak', aa: true },
+  { id: 'deuteranomaly-dark', label: 'Deuteranomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'green-weak', aa: true },
+  { id: 'tritanomaly', label: 'Tritanomaly', family: 'Built for colour vision', mode: 'light', note: 'blue-weak', aa: true },
+  { id: 'tritanomaly-dark', label: 'Tritanomaly (dark)', family: 'Built for colour vision', mode: 'dark', note: 'blue-weak', aa: true },
+  { id: 'dichromacy', label: 'Dichromacy', family: 'Built for colour vision', mode: 'light', note: 'any kind', aa: true },
+  { id: 'dichromacy-dark', label: 'Dichromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'any kind', aa: true },
+  { id: 'monochromacy', label: 'Monochromacy', family: 'Built for colour vision', mode: 'light', note: 'greys only', aa: true },
+  { id: 'monochromacy-dark', label: 'Monochromacy (dark)', family: 'Built for colour vision', mode: 'dark', note: 'greys only', aa: true },
 ];
 const THEME_KEY = 'jobhunt.theme';
+const DEFAULT_THEME = 'vanilla-dark-aa'; // also in each page's first-paint script
+// Before the exact palettes came in, the plain family ids were the AA-adjusted palettes. A browser that
+// saved one keeps what it chose: once, the saved id becomes '<id>-aa' (the first-paint script in each
+// page does the same, with the same list as a pattern; tests/test_accessibility.py checks they agree).
+const THEME_MIGRATED_KEY = 'jobhunt.themeMigrated';
+const EXACT_THEMES = THEMES.filter((t) => !t.aa).map((t) => t.id);
+
+function migrateStoredTheme() {
+  try {
+    if (localStorage.getItem(THEME_MIGRATED_KEY) === 'aa') return;
+    const t = localStorage.getItem(THEME_KEY);
+    if (EXACT_THEMES.includes(t)) localStorage.setItem(THEME_KEY, `${t}-aa`);
+    localStorage.setItem(THEME_MIGRATED_KEY, 'aa');
+  } catch { /* private mode: nothing saved to migrate */ }
+}
 const MODE_LABEL = { light: 'Light', dark: 'Dark', auto: 'Light or dark' };
+// The picker's mark of a theme that meets WCAG AA (a status label with the words in it, so screen readers
+// hear it), and the line under an exact palette instead.
+const AA_BADGE = '<span class="p-status-label p-status-label--positive theme-aa">WCAG 2.0 AA</span>';
+const EXACT_NOTE = 'The project\'s exact colours; some text is under 4.5:1';
 
 function storedTheme() {
+  migrateStoredTheme();
   try {
     const t = localStorage.getItem(THEME_KEY);
-    return THEMES.some((x) => x.id === t) ? t : 'dark';
-  } catch { return 'dark'; }
+    return THEMES.some((x) => x.id === t) ? t : DEFAULT_THEME;
+  } catch { return DEFAULT_THEME; }
 }
 
 function resolveTheme(pref) {
-  return pref === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : pref;
+  return pref === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'vanilla-dark-aa' : 'vanilla-light-aa') : pref;
 }
 
 function applyTheme(pref = storedTheme()) {
@@ -1026,7 +1094,7 @@ function createThemePicker({ legend = 'Theme', name = 'theme', onChange = null }
   const card = (t) => {
     const id = `${name}-opt-${t.id}`;
     const preview = t.id === 'system'
-      ? `<span class="theme-split">${themePreviewHtml('light')}${themePreviewHtml('dark')}</span>`
+      ? `<span class="theme-split">${themePreviewHtml('vanilla-light-aa')}${themePreviewHtml('vanilla-dark-aa')}</span>`
       : themePreviewHtml(t.id);
     return `<label class="theme-card" for="${id}">
         ${preview}
@@ -1034,6 +1102,7 @@ function createThemePicker({ legend = 'Theme', name = 'theme', onChange = null }
           <input type="radio" name="${esc(name)}" id="${id}" value="${esc(t.id)}" />
           <span class="theme-name">${esc(t.label)}</span>
           <span class="theme-mode">${MODE_LABEL[t.mode]}${t.note ? `, ${esc(t.note)}` : ''}</span>
+          ${t.aa ? `<span class="theme-badge">${AA_BADGE}</span>` : `<span class="theme-mode theme-exact">${EXACT_NOTE}</span>`}
           <span class="theme-chosen" aria-hidden="true">✓ Selected</span>
         </span>
       </label>`;
@@ -1052,7 +1121,7 @@ function createThemePicker({ legend = 'Theme', name = 'theme', onChange = null }
     if (!radio) return;
     setTheme(radio.value);
     const t = THEMES.find((x) => x.id === radio.value);
-    announce(`Theme: ${t.label}${t.id === 'system' ? `, now ${resolveTheme('system') === 'dark' ? 'Dark' : 'Light'}` : ''}.`);
+    announce(`Theme: ${t.label}${t.aa ? ', WCAG 2.0 AA' : ', exact colours'}${t.id === 'system' ? `, now ${resolveTheme('system') === 'vanilla-dark-aa' ? 'Vanilla Dark' : 'Vanilla Light'}` : ''}.`);
     onChange?.(radio.value);
   });
   document.addEventListener('themechange', sync); // chosen in another tab

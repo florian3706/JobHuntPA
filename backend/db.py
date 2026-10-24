@@ -202,6 +202,9 @@ class Workspace(Base):
     # deletes its workspaces. (Databases from before accounts get this column without the foreign key, which
     # SQLite can't add later: delete an account's workspaces explicitly, don't rely on the cascade.)
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    # The letter template (a ``documents`` row of kind letter_template in this workspace) that cover-letter downloads
+    # use; NULL: the plain built-in layout. An id, so plaintext; cleared when that document goes (backend.docs).
+    letter_template_id = Column(Integer, nullable=True)
 
 
 def _workspace_fk():
@@ -501,7 +504,11 @@ class FitResult(Base):
 
 # preferences: what the candidate wants from a job (salary, place, kind of work...). Sent to the scorer,
 # the chat and title suggestions, but never counted as experience and never sent for a cover letter.
-DOCUMENT_KINDS = ("resume", "cover_letter", "preferences", "other")
+# letter_template: a .docx or .odt letterhead with a {letter} marker, which the cover-letter downloads are poured
+# into (backend/letter_files.py). Its file is what matters; its text is shown but never sent to the AI (every prompt
+# builder skips the kind, and ``use_for_scoring`` stays off: backend/docs.py).
+DOCUMENT_KINDS = ("resume", "cover_letter", "preferences", "other", "letter_template")
+LETTER_TEMPLATE_KIND = "letter_template"
 
 # Documents without a file (``stored_name`` is empty), told apart by ``filetype``:
 NOTE_FILETYPE = "note"          # written in the app: title in ``filename``, body in ``text``
@@ -745,7 +752,8 @@ class CoverLetter(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    text = Column(SealedText(), nullable=False, default="")
+    text = Column(SealedText(), nullable=False, default="")       # the current text (the draft, or the user's edits)
+    draft_text = Column(SealedText(), nullable=True)               # the model's draft as written (NULL: older letter)
     instructions = Column(SealedText(), nullable=True)
     edited = Column(Boolean, nullable=False, default=False, server_default="0")
     model = Column(String, nullable=True)
@@ -769,21 +777,6 @@ class LetterBlock(Base):
     tags = Column(SealedJSON(), nullable=False, default=list)  # ["budget", "SQL", ...]
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow)
-
-
-class LetterTemplate(Base):
-    """The workspace's cover letter template (at most one): a .docx or .odt with a ``{letter}`` paragraph that
-    downloads fill in (backend.letter_templates). The file is an upload like a document's (``stored_name``)."""
-
-    __tablename__ = "letter_templates"
-
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = _workspace_fk()
-    filename = Column(SealedText(), nullable=False, default="")  # the uploaded file's name
-    filetype = Column(String, nullable=False)                   # ".docx" | ".odt" (plaintext: picks the filler)
-    # The upload in data/uploads: "<random hex>.sealed", sealed under the owner's key (backend.docs.save_upload).
-    stored_name = Column(String, nullable=False)
-    created_at = Column(DateTime, default=utcnow)
 
 
 class ChatThread(Base):
@@ -1065,7 +1058,7 @@ def get_db():
 
 
 # Rows that belong to a workspace must say which: no default, and none in the schema of new databases.
-_WORKSPACE_ROWS = (Job, JobDuplicate, Document, LetterBlock, LetterTemplate, Pin, CompanySource, ChatThread, SearchRun)
+_WORKSPACE_ROWS = (Job, JobDuplicate, Document, LetterBlock, Pin, CompanySource, ChatThread, SearchRun)
 
 
 def _refuse_rows_without_workspace(_mapper, _connection, target) -> None:
@@ -1266,9 +1259,11 @@ def _ensure_indexes() -> None:
 # What features taken out of the open-source version (docs/design/open-source.md §1.3) left in a database made
 # before it: the tables of memberships with their free periods (Stripe) and of job digest settings.
 # Memberships and email (Phase A); the admin panel's key grants and audit log, and invitations (Phase B); the commute
-# services' answers, sealed per user (Phase C: the job page links to Google Maps instead, spec §1.8).
+# services' answers, sealed per user (Phase C: the job page links to Google Maps instead, spec §1.8). A development
+# build's cover letter templates (a table of their own; a template is now a document of kind letter_template): their
+# sealed upload files are deleted with the table.
 RETIRED_TABLES = ("membership_grants", "memberships", "email_prefs", "admin_key_grants", "admin_audit", "auth_tokens",
-                  "commute_cache")
+                  "commute_cache", "letter_templates")
 # Two-step sign-in: the secrets (under the server key) and what they were checked against. The admin panel: each
 # account's details sealed to the admin details key, and the role that set the admins apart.
 _USERS_CLEARED = {"mfa_enabled": "0", "totp_secret_enc": "NULL", "totp_pending_enc": "NULL", "totp_last_step": "NULL",
@@ -1311,6 +1306,9 @@ def _retire_removed_features() -> bool:
                               "WHERE skipped_reason = 'membership_required'"))
         if "app_settings" in tables:
             counts["settings"] = conn.execute(text(f"DELETE FROM app_settings WHERE key IN ({names})")).rowcount
+        uploads = []
+        if "letter_templates" in tables:  # (their files go after the commit, as a deleted document's do)
+            uploads = [name for (name,) in conn.execute(text("SELECT stored_name FROM letter_templates"))]
         for name in RETIRED_TABLES:
             if name in tables:
                 conn.execute(text(f"DROP TABLE {name}"))
@@ -1318,6 +1316,12 @@ def _retire_removed_features() -> bool:
     if not any(counts.values()):
         return False
     scrub_wal()
+    for name in uploads:
+        if name and os.path.basename(name) == name:
+            try:
+                (UPLOAD_DIR / name).unlink(missing_ok=True)
+            except OSError as exc:
+                log.warning("Could not delete a retired cover letter template's file: %s", exc.__class__.__name__)
     log.info("removed what memberships, email, digests, two-step sign-in, the admin panel and the commute services "
              "left: %d account(s) cleaned, %d waiting sign-in(s) and %d link(s) or invitation(s) deleted, %d setting(s) "
              "and %d table(s) dropped", counts["accounts"], counts["pending"], counts["links"], counts["settings"], counts["tables"])

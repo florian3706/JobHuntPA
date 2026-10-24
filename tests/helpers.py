@@ -52,6 +52,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import crypto, ratelimit, users  # noqa: E402
 from backend.app import app  # noqa: E402
 from backend.db import SessionLocal, Workspace, init_db  # noqa: E402
+from backend import letter_pdf  # noqa: E402
+
+# Cover letter PDFs in tests are reportlab's, whether or not this computer has LibreOffice (the tests of the LibreOffice
+# path put a fake ``soffice`` in ``letter_pdf._backend`` themselves).
+letter_pdf._backend = ("reportlab", None)
 
 _passwords = {ADMIN_EMAIL: ADMIN_PASSWORD}
 _numbers = itertools.count(1)

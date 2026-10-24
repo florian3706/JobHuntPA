@@ -30,19 +30,10 @@ async function fetchExport(formats) {
   return { blob: await res.blob(), name: named ? named[1] : 'JobHuntPA-export.zip' };
 }
 
-function saveBlob(blob, name) {
-  const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement('a'), { href: url, download: name });
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
-}
-
 function initExportCard() {
   const slot = document.getElementById('account-export-slot');
   if (!slot) return;
-  slot.innerHTML = `<div class="card form-card" id="export-card">
+  slot.innerHTML = `<div class="p-card u-stack" id="export-card">
     <h3 id="export-title">Download your data</h3>
     <p>Get a zip file with everything JobHuntPA keeps for your account, as files in folders you can read in a text
       editor or a word processor: your account details, each workspace's search setup, sources, documents (and the original
@@ -60,7 +51,7 @@ function initExportCard() {
       as they are, and so does the import file that <strong>Import from an export</strong> reads to bring your data back.</p>
     <p id="export-types-error" class="field-error" hidden></p>
     <div class="toolbar-row">
-      <button id="export-btn" class="btn btn-primary" type="button">Download my data (.zip)</button>
+      <button id="export-btn" class="p-button p-button--positive" type="button">Download my data (.zip)</button>
       <span id="export-status" class="muted" role="status"></span>
     </div>
   </div>`;

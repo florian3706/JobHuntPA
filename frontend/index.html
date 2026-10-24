@@ -8,9 +8,19 @@
   <script>
     // Theme before first paint, so the page never flashes the wrong one (common.js keeps it in step).
     (function () {
-      var t = "dark";
-      try { t = localStorage.getItem("jobhunt.theme") || "dark"; } catch (e) {}
-      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      var t = "vanilla-dark-aa";
+      try {
+        t = localStorage.getItem("jobhunt.theme") || t;
+        // Once: a family theme saved before the exact palettes came in was its AA version (see common.js).
+        if (localStorage.getItem("jobhunt.themeMigrated") !== "aa") {
+          if (/^(vanilla-(dark|light)|catppuccin-(latte|frappe|macchiato|mocha)|rose-pine(-moon|-dawn)?|nord(-light)?|kanagawa-(wave|dragon|lotus)|everforest-(dark|light))$/.test(t)) {
+            t += "-aa";
+            localStorage.setItem("jobhunt.theme", t);
+          }
+          localStorage.setItem("jobhunt.themeMigrated", "aa");
+        }
+      } catch (e) {}
+      if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark-aa" : "vanilla-light-aa";
       document.documentElement.setAttribute("data-theme", t);
     })();
   </script>
@@ -22,13 +32,14 @@
   <header class="app-header">
     <div class="header-inner">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span class="p-navigation__logo-tag" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" focusable="false"><circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="2.5" fill="currentColor" stroke="none"/></svg></span>
         <div>
           <h1>JobHuntPA</h1>
           <p class="subtitle">Personal job-hunt dashboard</p>
         </div>
       </div>
-      <div class="header-meta">
+      <button id="header-menu-btn" class="p-button p-button--base header-menu-btn" type="button" aria-expanded="false" aria-controls="header-meta">Menu <span aria-hidden="true">☰</span></button>
+      <div id="header-meta" class="header-meta">
         <div class="workspace-bar">
           <label for="ws-select" class="muted">Workspace</label>
           <select id="ws-select"></select>
@@ -73,75 +84,106 @@
     <!-- ============ JOBS ============ -->
     <section id="tab-jobs" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-jobs" tabindex="0">
       <h2 class="visually-hidden">Jobs</h2>
-      <div class="card run-card">
-        <div class="toolbar-row">
-          <button id="search-run" class="btn btn-primary" type="button">Run search</button>
-          <button id="score-pending" class="btn" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
-          <button id="fill-info" class="btn" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
-          <button id="dupes-open" class="btn" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
-          <button id="add-job-open" class="btn" type="button" aria-haspopup="dialog" title="Add a job from its page, saved in your browser. A job you add is listed even when it doesn't meet your search filters.">Add a job</button>
-          <span id="run-status" class="muted" role="status"></span>
+      <!-- The run strip: Run search, the last run and the next scheduled one on one line, the per-source results, and
+           the other runs to the right. -->
+      <section class="p-card p-card--highlighted run-card" aria-labelledby="run-heading">
+        <h3 id="run-heading" class="visually-hidden">Search runs</h3>
+        <div class="run-strip">
+          <button id="search-run" class="p-button p-button--positive" type="button">Run search</button>
+          <span class="run-strip__status">
+            <span id="run-status" class="u-small" role="status"></span>
+            <span id="next-scheduled" class="u-small u-muted" hidden></span>
+            <details id="run-report" class="p-details run-report" hidden>
+              <summary>Per-source results</summary>
+              <div id="run-report-body"></div>
+            </details>
+          </span>
+          <span class="run-strip__tools">
+            <button id="dupes-open" class="p-button is-dense" type="button" title="The same job advertised on several sites is merged into one card. Check the merges and the possible duplicates here.">Duplicates</button>
+            <button id="score-pending" class="p-button is-dense" type="button" title="Score jobs that have no score yet or failed">Score pending</button>
+            <button id="fill-info" class="p-button is-dense" type="button" title="Research companies with no or outdated profile, and find the office of ads that name only a city: for the ticked jobs, or every job in your list when none are ticked (LLM web-search agents)">Fill missing info</button>
+          </span>
         </div>
-        <div id="next-scheduled" class="muted" hidden></div>
-        <div id="run-progress" class="progress" role="progressbar" aria-label="Progress of the run" aria-valuemin="0" aria-valuemax="100" hidden><div class="progress-bar"></div></div>
-        <details id="run-report" class="run-report" hidden>
-          <summary>Last run: per-source results</summary>
-          <div id="run-report-body"></div>
-        </details>
-      </div>
+        <div id="run-progress" class="p-progress progress" role="progressbar" aria-label="Progress of the run" aria-valuemin="0" aria-valuemax="100" hidden><div class="p-progress__bar progress-bar"></div></div>
+      </section>
+      <div id="dupe-note" class="p-notification p-notification--information dupe-note" role="note" hidden></div>
 
       <div class="jobs-toolbar">
-        <div class="toolbar-row">
-          <label class="field search-field">
-            <span class="field-label">Search</span>
-            <input id="filter-search" type="search" placeholder="company, title, location…" autocomplete="off" enterkeyhint="search" />
-          </label>
-          <label class="field">
-            <span class="field-label">Min score: <output id="score-output" for="filter-min-score">0</output></span>
-            <input id="filter-min-score" type="range" min="0" max="100" step="5" value="0" />
-          </label>
-          <label class="field">
-            <span class="field-label">Work mode</span>
-            <select id="filter-mode">
-              <option value="all">All modes</option>
-              <option value="remote">Remote</option>
-              <option value="hybrid">Hybrid</option>
-              <option value="onsite">Onsite</option>
-              <option value="unknown">Unknown</option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="field-label">Max distance (km)</span>
-            <input id="filter-max-dist" type="number" min="0" step="1" inputmode="numeric" placeholder="Any" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span class="field-label">Sort</span>
-            <select id="sort-by">
-              <option value="score">Score</option>
-              <option value="newest">Newest first</option>
-              <option value="distance">Distance</option>
-            </select>
-          </label>
-          <label class="field" id="soften-field" hidden
-                 title="What-if: temporarily allow more office days a week than your saved hybrid rule. Nothing is saved; reloading the page resets it.">
-            <span class="field-label">Office days (temporary)</span>
-            <select id="office-slack"></select>
-          </label>
-          <label class="field check-field"><input id="filter-show-excluded" type="checkbox" /> <span>Show excluded</span></label>
-          <label class="field check-field"><input id="filter-show-closed" type="checkbox" /> <span>Show closed</span></label>
-          <label class="field check-field"><input id="filter-show-hidden" type="checkbox" /> <span>Show hidden</span></label>
+        <div class="jobs-toolbar__row">
+          <div class="jobs-toolbar__main">
+            <div class="p-field jobs-search">
+              <label class="p-label visually-hidden" for="filter-search">Search</label>
+              <input id="filter-search" class="p-input" type="search" placeholder="Search jobs: company, title, location…" autocomplete="off" enterkeyhint="search" />
+            </div>
+            <button id="filters-toggle" class="p-button filters-toggle" type="button" aria-expanded="false" aria-controls="filters-panel">Filters <span id="filters-count" class="p-status-label p-status-label--information" hidden>0</span><span class="visually-hidden" id="filters-count-words"></span></button>
+            <div class="p-field jobs-sort">
+              <label class="p-label" for="sort-by" id="sort-label">Sort</label>
+              <select id="sort-by" class="p-select">
+                <option value="score">Fit, highest first</option>
+                <option value="newest">Newest first</option>
+                <option value="distance">Distance</option>
+              </select>
+            </div>
+          </div>
+          <div id="view-toggle" class="view-toggle" role="group" aria-label="View">
+            <button class="p-button is-dense view-toggle__btn" type="button" data-view="cards" aria-pressed="true">Cards</button>
+            <button class="p-button is-dense view-toggle__btn" type="button" data-view="table" aria-pressed="false">Table</button>
+            <button class="p-button is-dense view-toggle__btn" type="button" data-view="board" aria-pressed="false">Board</button>
+          </div>
         </div>
-        <div id="soften-note" class="soften-note" hidden></div>
-        <div id="dupe-note" class="dupe-note" hidden></div>
+
+        <!-- The Filters panel: everything the old toolbar held, in the same words. -->
+        <section id="filters-panel" class="p-card filters-panel" aria-labelledby="filters-heading" hidden>
+          <div class="p-card__head filters-panel__head">
+            <h3 id="filters-heading" class="filters-heading">Filters</h3>
+            <span class="u-small u-muted">The count on the Filters button says how many are set; each one is also a chip under the toolbar.</span>
+          </div>
+          <div class="filters-grid">
+            <div class="p-field">
+              <label class="p-label" for="filter-min-score">Min score: <output id="score-output" for="filter-min-score">0</output></label>
+              <input id="filter-min-score" class="p-range" type="range" min="0" max="100" step="5" value="0" />
+            </div>
+            <div class="p-field">
+              <label class="p-label" for="filter-mode">Work mode</label>
+              <select id="filter-mode" class="p-select">
+                <option value="all">All modes</option>
+                <option value="remote">Remote</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="onsite">Onsite</option>
+                <option value="unknown">Unknown</option>
+              </select>
+            </div>
+            <div class="p-field">
+              <label class="p-label" for="filter-max-dist">Max distance (km)</label>
+              <input id="filter-max-dist" class="p-input" type="number" min="0" step="1" inputmode="numeric" placeholder="Any" autocomplete="off" />
+            </div>
+            <div class="p-field" id="soften-field" hidden
+                 title="What-if: temporarily allow more office days a week than your saved hybrid rule. Nothing is saved; reloading the page resets it.">
+              <label class="p-label" for="office-slack">Office days (temporary)</label>
+              <select id="office-slack" class="p-select"></select>
+            </div>
+          </div>
+          <div class="filters-checks">
+            <label class="field check-field"><input id="filter-show-excluded" type="checkbox" /> <span>Show excluded</span></label>
+            <label class="field check-field"><input id="filter-show-closed" type="checkbox" /> <span>Show closed</span></label>
+            <label class="field check-field"><input id="filter-show-hidden" type="checkbox" /> <span>Show hidden</span></label>
+            <span class="filters-actions">
+              <button id="filters-clear" class="p-button p-button--base is-dense" type="button">Clear all</button>
+              <button id="filters-done" class="p-button is-dense" type="button">Done</button>
+            </span>
+          </div>
+        </section>
+        <div id="filter-chips" class="filter-chips" role="group" aria-label="Filters set" hidden></div>
+        <div id="soften-note" class="p-notification p-notification--caution soften-note" hidden></div>
         <div class="toolbar-row chips-row">
           <div id="status-chips" class="chips" role="group" aria-label="Show jobs with the status"></div>
           <label class="check select-all-shown" title="Select every job the current filters show (for bulk status changes, hiding or Fill missing info)">
-            <input id="select-all-shown" type="checkbox" /> <span>Select all shown</span></label>
-          <span id="jobs-count" class="muted" role="status"></span>
+            <input id="select-all-shown" class="p-checkbox" type="checkbox" /> <span>Select all shown</span></label>
+          <span id="jobs-count" class="u-small u-muted" role="status"></span>
         </div>
-        <div id="bulk-bar" class="bulk-bar" role="group" aria-label="Actions for the selected jobs" hidden>
-          <label class="bulk-select-all"><input id="bulk-select-all" type="checkbox" /> <span id="bulk-count">0 selected</span></label>
-          <select id="bulk-status" aria-label="New status for the selected jobs">
+        <div id="bulk-bar" class="p-notification p-notification--information bulk-bar" role="group" aria-label="Actions for the selected jobs" hidden>
+          <label class="bulk-select-all"><input id="bulk-select-all" class="p-checkbox" type="checkbox" /> <strong id="bulk-count">0 selected</strong></label>
+          <select id="bulk-status" class="p-select" aria-label="New status for the selected jobs">
             <option value="to_review">to review</option>
             <option value="shortlisted">shortlisted</option>
             <option value="applied">applied</option>
@@ -149,537 +191,616 @@
             <option value="rejected">rejected</option>
             <option value="not_interested">not interested</option>
           </select>
-          <button id="bulk-apply" class="btn btn-primary btn-sm" type="button">Set status</button>
-          <button id="bulk-hide" class="btn btn-sm" type="button" title="Hide the selected job ads. They stay hidden even if the source lists them again, and aren't scored or researched.">Hide selected</button>
-          <button id="bulk-unhide" class="btn btn-ghost btn-sm" type="button" hidden>Unhide selected</button>
-          <button id="bulk-chat" class="btn btn-sm" type="button" title="Open a chat about the selected jobs (up to 12) to ask questions or compare them">Chat about selected</button>
-          <button id="bulk-merge" class="btn btn-sm" type="button" hidden title="The selected ads are the same job on different sites: show them as one card">Merge as one job</button>
-          <button id="bulk-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
+          <button id="bulk-apply" class="p-button p-button--positive is-dense" type="button">Set status</button>
+          <button id="bulk-hide" class="p-button is-dense" type="button" title="Hide the selected job ads. They stay hidden even if the source lists them again, and aren't scored or researched.">Hide selected</button>
+          <button id="bulk-unhide" class="p-button p-button--base is-dense" type="button" hidden>Unhide selected</button>
+          <button id="bulk-chat" class="p-button is-dense" type="button" title="Open a chat about the selected jobs (up to 12) to ask questions or compare them">Chat about selected</button>
+          <button id="bulk-merge" class="p-button is-dense" type="button" hidden title="The selected ads are the same job on different sites: show them as one card">Merge as one job</button>
+          <button id="bulk-clear" class="p-button p-button--base is-dense" type="button">Clear</button>
         </div>
       </div>
+      <!-- One of the three is shown, by the view toggle (app.js renderJobs). -->
       <div id="jobs-list" class="jobs-grid"></div>
+      <div id="jobs-table" class="p-table-wrap jobs-table-wrap" hidden></div>
+      <div id="jobs-board" class="jobs-board" hidden></div>
       <div id="jobs-empty" class="empty" hidden>No jobs match the current filters. Clear the search, lower the minimum score or pick another status to see more.</div>
       <div id="jobs-error" class="error" hidden></div>
     </section>
 
     <!-- ============ SEARCH SETUP ============ -->
     <section id="tab-search" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-search" tabindex="0" hidden>
-      <div class="panel-head">
-        <h2>Search setup</h2>
-        <span id="search-save-status" class="muted" role="status"></span>
-      </div>
-      <form id="search-form" class="card form-card" autocomplete="off" novalidate>
-        <div class="form-grid">
-          <div class="form-group">
-            <label for="tags-titles">Target job titles</label>
-            <div class="tag-input" data-field="titles"><ul class="tags" aria-label="Target job titles"></ul><input id="tags-titles" type="text" placeholder="Add title + Enter" aria-describedby="tags-titles-hint" enterkeyhint="done" /></div>
-            <small id="tags-titles-hint" class="hint">A job passes if its title contains one of these… (also used as SEEK search terms)</small>
-          </div>
-          <div class="form-group">
-            <label for="tags-keywords_include">Include keywords</label>
-            <div class="tag-input" data-field="keywords_include"><ul class="tags" aria-label="Include keywords"></ul><input id="tags-keywords_include" type="text" placeholder="Add keyword + Enter" aria-describedby="tags-keywords_include-hint" enterkeyhint="done" /></div>
-            <small id="tags-keywords_include-hint" class="hint">…or if its title/description mentions one of these.</small>
-          </div>
-          <div class="form-group">
-            <label for="tags-keywords_exclude">Exclude keywords</label>
-            <div class="tag-input" data-field="keywords_exclude"><ul class="tags" aria-label="Exclude keywords"></ul><input id="tags-keywords_exclude" type="text" placeholder="Add keyword + Enter" aria-describedby="tags-keywords_exclude-hint" enterkeyhint="done" /></div>
-            <small id="tags-keywords_exclude-hint" class="hint">Whole-word match in title or description.</small>
-          </div>
-          <div class="form-group">
-            <label for="salary-floor">Salary floor (AUD per year)</label>
-            <input id="salary-floor" type="number" min="0" step="1000" inputmode="numeric" placeholder="e.g. 140000" autocomplete="off" aria-describedby="salary-floor-hint" />
-            <small id="salary-floor-hint" class="hint">Only applied when a job states its salary. Hourly/daily rates are annualised.</small>
-          </div>
-          <fieldset class="form-group">
-            <legend>Work modes wanted</legend>
-            <label class="check"><input type="checkbox" id="remote-aus" /> Remote (Australia)</label>
-            <label class="check"><input type="checkbox" id="remote-global" /> Remote (overseas employers)</label>
-            <label class="check"><input type="checkbox" id="allow-hybrid" /> Hybrid</label>
-            <label class="check"><input type="checkbox" id="allow-onsite" /> Onsite</label>
-            <small class="hint">Hybrid/onsite roles must be inside a pin radius (Map tab).</small>
-          </fieldset>
-          <div class="form-group">
-            <label for="max-office-days">Hybrid: max days in the office per week</label>
-            <select id="max-office-days" aria-describedby="max-office-days-hint">
-              <option value="">Any</option>
-              <option value="1">1 day</option>
-              <option value="2">2 days</option>
-              <option value="3">3 days</option>
-              <option value="4">4 days</option>
-            </select>
-            <small id="max-office-days-hint" class="hint">Hybrid roles whose ad asks for more office days are excluded. Ads that don't say how many days are kept.</small>
-          </div>
-          <div class="form-group">
-            <label for="tags-dealbreaker_industries">Dealbreaker industries</label>
-            <div class="tag-input" data-field="dealbreaker_industries"><ul class="tags" aria-label="Dealbreaker industries"></ul><input id="tags-dealbreaker_industries" type="text" placeholder="Add industry + Enter" aria-describedby="tags-dealbreaker_industries-hint" enterkeyhint="done" /></div>
-            <small id="tags-dealbreaker_industries-hint" class="hint">Matched against the job's industry, company and title.</small>
-          </div>
-          <div class="form-group">
-            <label for="tags-dealbreaker_keywords">Dealbreaker keywords</label>
-            <div class="tag-input" data-field="dealbreaker_keywords"><ul class="tags" aria-label="Dealbreaker keywords"></ul><input id="tags-dealbreaker_keywords" type="text" placeholder="Add keyword + Enter" enterkeyhint="done" /></div>
-          </div>
-        </div>
-        <div id="search-error" class="error" hidden></div>
-      </form>
+      <div class="tab-layout">
+        <nav class="tab-jump" aria-label="Search setup sections">
+          <p class="u-upper u-muted">On this tab</p>
+          <ul class="p-side-navigation">
+            <li><a class="p-side-navigation__link" href="#search-form" aria-current="true">Your search</a></li>
+            <li><a class="p-side-navigation__link" href="#seek-card">SEEK</a></li>
+            <li><a class="p-side-navigation__link" href="#starts-card">Commute</a></li>
+            <li><a class="p-side-navigation__link" href="#sources-card">Company sources</a></li>
+          </ul>
+          <p class="u-small u-muted tab-jump-note">Saved as you type. <span id="search-save-status" role="status"></span></p>
+        </nav>
 
-      <div class="card form-card">
-        <h3>SEEK</h3>
-        <div class="form-grid">
-          <fieldset class="form-group">
-            <legend>Search SEEK</legend>
-            <label class="check"><input type="checkbox" id="seek-enabled" /> Enabled</label>
-          </fieldset>
-          <div class="form-group">
-            <label for="tags-seek_locations">SEEK locations</label>
-            <div class="tag-input" data-field="seek_locations"><ul class="tags" aria-label="SEEK locations"></ul><input id="tags-seek_locations" type="text" placeholder="e.g. All Sydney NSW + Enter" aria-describedby="tags-seek_locations-hint" enterkeyhint="done" /></div>
-            <small id="tags-seek_locations-hint" class="hint">Each title is searched in each location. Empty = all of Australia.</small>
+        <div class="tab-body">
+          <div class="tab-intro u-stack">
+            <h2>Search setup</h2>
+            <p class="u-small u-muted">What a job must be to pass the filters, where to look for it, and how you would get there.</p>
           </div>
-        </div>
-        <p class="hint">SEEK's robots.txt allows the first page of each search but not job pages or further result pages, so SEEK jobs are scored on the listing summary (about 20 newest-relevant results per title and location).
-          SEEK may also refuse automated access altogether. Either way you can save SEEK search or job pages from your own browser (Ctrl+S)
-          and import them here. A saved job page gives the full description, and a job from any other site can be added the same way
-          (<em>Add a job</em> on the Jobs tab). The browser extension (Settings) adds the jobs of a SEEK results
-          page you have open in one go, also from SEEK's <em>New to you</em> view or a later page.</p>
-        <form id="import-form" class="toolbar-row" novalidate>
-          <label class="field"><span class="field-label">Import saved pages (.html)</span>
-            <input id="import-input" type="file" accept=".html,.htm,text/html" multiple /></label>
-          <button class="btn" type="submit">Import</button>
-          <span id="import-status" class="muted" role="status"></span>
-        </form>
-      </div>
 
-      <section id="starts-card" class="card form-card" aria-labelledby="starts-title">
-        <h3 id="starts-title">Commute</h3>
-        <p class="hint">Each job's full page (Open ↗) links to Google Maps directions from these starting points to the office, one
-          link for each way of getting there. Departure and arrival times, and the route, are chosen in Google Maps.</p>
-        <p id="starts-home" class="hint"></p>
-        <ul id="starts-list" class="starts-list" aria-labelledby="starts-title"></ul>
-        <form id="starts-form" class="starts-form" autocomplete="off" novalidate>
-          <fieldset>
-            <legend>Add a starting point</legend>
-            <div class="form-grid">
-              <div class="form-group">
-                <label for="start-from">From</label>
-                <select id="start-from" aria-describedby="start-from-hint"><option value="">A place I type</option></select>
-                <small id="start-from-hint" class="hint">A pin from the Map tab, or a place you type.</small>
+          <form id="search-form" class="p-card u-stack" autocomplete="off" novalidate aria-labelledby="search-title">
+            <h3 id="search-title">Your search <span class="p-scope-tag">This workspace</span></h3>
+            <div class="tab-grid">
+              <div class="p-field">
+                <label class="p-label" for="tags-titles">Target job titles</label>
+                <div class="tag-input" data-field="titles"><ul class="tags" aria-label="Target job titles"></ul><input id="tags-titles" type="text" placeholder="Add a title, then Enter" aria-describedby="tags-titles-hint" enterkeyhint="done" /></div>
+                <p id="tags-titles-hint" class="p-form-help-text">A job passes if its title contains one of these. They are also the SEEK search terms.</p>
               </div>
-              <div class="form-group" id="start-place-group">
-                <label for="start-place">Address, station or stop</label>
-                <input id="start-place" type="text" maxlength="200" placeholder="e.g. Gosford Station NSW" aria-describedby="start-place-hint" />
-                <small id="start-place-hint" class="hint">Write it as you would in Google Maps.</small>
+              <div class="p-field">
+                <label class="p-label" for="tags-keywords_include">Include keywords</label>
+                <div class="tag-input" data-field="keywords_include"><ul class="tags" aria-label="Include keywords"></ul><input id="tags-keywords_include" type="text" placeholder="Add a keyword, then Enter" aria-describedby="tags-keywords_include-hint" enterkeyhint="done" /></div>
+                <p id="tags-keywords_include-hint" class="p-form-help-text">Or if the title or description mentions one of these.</p>
               </div>
-              <div class="form-group">
-                <label for="start-label">Label (optional)</label>
-                <input id="start-label" type="text" maxlength="80" placeholder="e.g. Gosford" />
+              <div class="p-field">
+                <label class="p-label" for="tags-keywords_exclude">Exclude keywords</label>
+                <div class="tag-input" data-field="keywords_exclude"><ul class="tags" aria-label="Exclude keywords"></ul><input id="tags-keywords_exclude" type="text" placeholder="Add a keyword, then Enter" aria-describedby="tags-keywords_exclude-hint" enterkeyhint="done" /></div>
+                <p id="tags-keywords_exclude-hint" class="p-form-help-text">Whole-word match in the title or description.</p>
               </div>
-              <div class="form-group">
-                <label for="start-use">Used for</label>
-                <select id="start-use">
-                  <option value="transit">Public transport</option>
-                  <option value="driving">Driving</option>
-                  <option value="both">Driving and public transport</option>
+              <div class="p-field">
+                <label class="p-label" for="salary-floor">Salary floor (AUD per year)</label>
+                <input id="salary-floor" class="p-input" type="number" min="0" step="1000" inputmode="numeric" placeholder="e.g. 140000" autocomplete="off" aria-describedby="salary-floor-hint" />
+                <p id="salary-floor-hint" class="p-form-help-text">Only applied when a job states its salary. Hourly and daily rates are annualised.</p>
+              </div>
+              <fieldset class="p-field tab-fieldset">
+                <legend class="p-label">Work modes wanted</legend>
+                <label class="p-check"><input class="p-checkbox" type="checkbox" id="remote-aus" /> Remote (Australia)</label>
+                <label class="p-check"><input class="p-checkbox" type="checkbox" id="remote-global" /> Remote (overseas employers)</label>
+                <label class="p-check"><input class="p-checkbox" type="checkbox" id="allow-hybrid" /> Hybrid</label>
+                <label class="p-check"><input class="p-checkbox" type="checkbox" id="allow-onsite" /> Onsite</label>
+                <p class="p-form-help-text">Hybrid and onsite roles must be inside a pin radius (Map tab).</p>
+              </fieldset>
+              <div class="p-field">
+                <label class="p-label" for="max-office-days">Hybrid: max days in the office per week</label>
+                <select id="max-office-days" class="p-select" aria-describedby="max-office-days-hint">
+                  <option value="">Any</option>
+                  <option value="1">1 day</option>
+                  <option value="2">2 days</option>
+                  <option value="3">3 days</option>
+                  <option value="4">4 days</option>
                 </select>
+                <p id="max-office-days-hint" class="p-form-help-text">Hybrid roles whose ad asks for more office days are excluded. Ads that don't say how many days are kept.</p>
+              </div>
+              <div class="p-field">
+                <label class="p-label" for="tags-dealbreaker_industries">Dealbreaker industries</label>
+                <div class="tag-input" data-field="dealbreaker_industries"><ul class="tags" aria-label="Dealbreaker industries"></ul><input id="tags-dealbreaker_industries" type="text" placeholder="Add an industry, then Enter" aria-describedby="tags-dealbreaker_industries-hint" enterkeyhint="done" /></div>
+                <p id="tags-dealbreaker_industries-hint" class="p-form-help-text">Matched against the job's industry, company and title.</p>
+              </div>
+              <div class="p-field">
+                <label class="p-label" for="tags-dealbreaker_keywords">Dealbreaker keywords</label>
+                <div class="tag-input" data-field="dealbreaker_keywords"><ul class="tags" aria-label="Dealbreaker keywords"></ul><input id="tags-dealbreaker_keywords" type="text" placeholder="Add a keyword, then Enter" enterkeyhint="done" /></div>
               </div>
             </div>
-            <button class="btn btn-primary btn-sm" type="submit">Add starting point</button>
-          </fieldset>
-        </form>
-      </section>
+            <div id="search-error" class="error" hidden></div>
+          </form>
 
-      <div class="card form-card">
-        <h3>Company sources</h3>
-        <p class="hint">Careers pages or job boards. The app detects Workable/Greenhouse/Lever/Ashby/SmartRecruiters/Workday boards,
-          otherwise it scrapes the page's HTML, respecting robots.txt and crawl delays.</p>
-        <form id="source-form" class="toolbar-row" novalidate>
-          <label class="field search-field"><span class="field-label">Careers page URL</span>
-            <input id="source-url" type="url" inputmode="url" placeholder="https://company.com/careers" autocomplete="off" spellcheck="false" required /></label>
-          <label class="field"><span class="field-label">Company name (optional)</span>
-            <input id="source-label" type="text" placeholder="Company" autocomplete="off" /></label>
-          <button id="source-add" class="btn btn-primary" type="submit">Add</button>
-        </form>
-        <div class="toolbar-row sources-bulk-row">
-          <button id="sources-bulk-open" class="btn btn-ghost" type="button" aria-haspopup="dialog">Bulk add</button>
-          <button id="sources-export" class="btn btn-ghost" type="button">Export sources</button>
-          <span id="sources-export-status" class="muted" role="status"></span>
+          <section id="seek-card" class="p-card u-stack" aria-labelledby="seek-title">
+            <div class="p-card__head">
+              <h3 id="seek-title">SEEK <span class="p-scope-tag">This workspace</span></h3>
+              <label class="p-check"><input class="p-switch" type="checkbox" role="switch" id="seek-enabled" /> Search SEEK</label>
+            </div>
+            <div class="p-field tab-narrow">
+              <label class="p-label" for="tags-seek_locations">SEEK locations</label>
+              <div class="tag-input" data-field="seek_locations"><ul class="tags" aria-label="SEEK locations"></ul><input id="tags-seek_locations" type="text" placeholder="e.g. All Sydney NSW, then Enter" aria-describedby="tags-seek_locations-hint" enterkeyhint="done" /></div>
+              <p id="tags-seek_locations-hint" class="p-form-help-text">Each title is searched in each location. Empty means all of Australia.</p>
+            </div>
+            <div class="p-notification p-notification--information" role="note">
+              <svg class="p-notification__icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7.5v.5"></path></svg>
+              <div class="p-notification__body u-small">SEEK's robots.txt allows the first page of each search but not job pages or further result pages, so SEEK jobs are scored on the listing summary (about 20 newest-relevant results per title and location).
+                SEEK may also refuse automated access altogether. Either way you can save SEEK search or job pages from your own browser (Ctrl+S)
+                and import them here. A saved job page gives the full description. The browser extension (Settings) adds the jobs of a SEEK results
+                page you have open in one go, also from SEEK's <em>New to you</em> view or a later page.</div>
+            </div>
+            <form id="import-form" class="tab-inline-form" novalidate>
+              <div class="p-field"><label class="p-label" for="import-input">Import saved pages (.html)</label>
+                <input id="import-input" class="p-input tab-file" type="file" accept=".html,.htm,text/html" multiple /></div>
+              <button class="p-button" type="submit">Import</button>
+              <span id="import-status" class="u-small u-muted" role="status"></span>
+            </form>
+          </section>
+
+          <section id="starts-card" class="p-card u-stack" aria-labelledby="starts-title">
+            <h3 id="starts-title">Commute <span class="p-scope-tag">This workspace</span></h3>
+            <p class="p-form-help-text">Each job's full page (Open ↗) links to Google Maps directions from these starting points to the office, one
+              link for each way of getting there. Departure and arrival times, and the route, are chosen in Google Maps.</p>
+            <p id="starts-home" class="p-form-help-text"></p>
+            <p id="starts-empty" class="u-small u-muted" hidden>No starting points of your own yet.</p>
+            <div id="starts-table-wrap" class="p-table-wrap">
+              <table class="p-table tab-stack-table">
+                <caption class="u-sr">Starting points</caption>
+                <thead><tr><th scope="col">Starting point</th><th scope="col">From</th><th scope="col">Used for</th><th scope="col"><span class="u-sr">Actions</span></th></tr></thead>
+                <tbody id="starts-list"></tbody>
+              </table>
+            </div>
+            <details id="starts-add" class="p-details">
+              <summary>Add a starting point</summary>
+              <form id="starts-form" class="starts-form" autocomplete="off" novalidate aria-labelledby="starts-add-title">
+                <h4 id="starts-add-title" class="u-sr">Add a starting point</h4>
+                <div class="tab-grid">
+                  <div class="p-field">
+                    <label class="p-label" for="start-from">From</label>
+                    <select id="start-from" class="p-select" aria-describedby="start-from-hint"><option value="">A place I type</option></select>
+                    <p id="start-from-hint" class="p-form-help-text">A pin from the Map tab, or a place you type.</p>
+                  </div>
+                  <div class="p-field" id="start-place-group">
+                    <label class="p-label" for="start-place">Address, station or stop</label>
+                    <input id="start-place" class="p-input" type="text" maxlength="200" placeholder="e.g. Gosford Station NSW" aria-describedby="start-place-hint" />
+                    <p id="start-place-hint" class="p-form-help-text">Write it as you would in Google Maps.</p>
+                  </div>
+                  <div class="p-field">
+                    <label class="p-label" for="start-label">Label (optional)</label>
+                    <input id="start-label" class="p-input" type="text" maxlength="80" placeholder="e.g. Gosford" />
+                  </div>
+                  <div class="p-field">
+                    <label class="p-label" for="start-use">Used for</label>
+                    <select id="start-use" class="p-select">
+                      <option value="transit">Public transport</option>
+                      <option value="driving">Driving</option>
+                      <option value="both">Driving and public transport</option>
+                    </select>
+                  </div>
+                </div>
+                <button class="p-button p-button--positive" type="submit">Add starting point</button>
+              </form>
+            </details>
+          </section>
+
+          <section id="sources-card" class="p-card u-stack" aria-labelledby="sources-title">
+            <div class="p-card__head">
+              <h3 id="sources-title">Company sources <span class="p-scope-tag">This workspace</span></h3>
+              <span class="u-row tab-head-actions">
+                <button id="sources-bulk-open" class="p-button p-button--base is-dense" type="button" aria-haspopup="dialog">Bulk add</button>
+                <button id="sources-export" class="p-button p-button--base is-dense" type="button">Export sources</button>
+                <span id="sources-export-status" class="u-small u-muted" role="status"></span>
+              </span>
+            </div>
+            <p class="p-form-help-text">Careers pages or job boards. The app detects Workable, Greenhouse, Lever, Ashby, SmartRecruiters and Workday boards,
+              otherwise it scrapes the page's HTML, respecting robots.txt and crawl delays.</p>
+            <form id="source-form" class="tab-inline-form" novalidate>
+              <div class="p-field tab-grow"><label class="p-label" for="source-url">Careers page URL</label>
+                <input id="source-url" class="p-input" type="url" inputmode="url" placeholder="https://company.com/careers" autocomplete="off" spellcheck="false" required /></div>
+              <div class="p-field"><label class="p-label" for="source-label">Company name (optional)</label>
+                <input id="source-label" class="p-input" type="text" placeholder="Company" autocomplete="off" /></div>
+              <button id="source-add" class="p-button p-button--positive" type="submit">Add</button>
+            </form>
+            <div id="sources-list"></div>
+            <div id="sources-error" class="error" hidden></div>
+            <!-- The offer to download the browser for JavaScript-only careers pages (browser.js), once one needs it. -->
+            <section id="browser-offer" class="p-notification p-notification--caution browser-offer" aria-labelledby="browser-offer-title" hidden>
+              <svg class="p-notification__icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l10 18H2z"></path><path d="M12 10v5M12 18v.5"></path></svg>
+              <div class="p-notification__body u-stack">
+                <h4 id="browser-offer-title" class="p-notification__title">A careers page needs a browser component</h4>
+                <p>One of your careers pages shows its jobs only with JavaScript. To read it, JobHuntPA needs a browser
+                  component (Chromium, about <span class="browser-size">180</span> MB), downloaded once into your data folder.
+                  Nothing is downloaded unless you choose to.</p>
+                <div class="u-row">
+                  <button id="browser-offer-yes" class="p-button p-button--positive" type="button">Download it</button>
+                  <button id="browser-offer-no" class="p-button" type="button">Not now</button>
+                  <span id="browser-offer-status" class="u-small u-muted" role="status"></span>
+                </div>
+              </div>
+            </section>
+          </section>
         </div>
-        <div id="sources-list" class="docs-list"></div>
-        <div id="sources-error" class="error" hidden></div>
-        <!-- The offer to download the browser for JavaScript-only careers pages (browser.js), once one needs it. -->
-        <section id="browser-offer" class="callout browser-offer" aria-labelledby="browser-offer-title" hidden>
-          <h4 id="browser-offer-title">A careers page needs a browser component</h4>
-          <p>One of your careers pages shows its jobs only with JavaScript. To read it, JobHuntPA needs a browser
-            component (Chromium, about <span class="browser-size">180</span> MB), downloaded once into your data folder.
-            Nothing is downloaded unless you choose to.</p>
-          <div class="toolbar-row">
-            <button id="browser-offer-yes" class="btn btn-primary" type="button">Download it</button>
-            <button id="browser-offer-no" class="btn" type="button">Not now</button>
-            <span id="browser-offer-status" class="muted" role="status"></span>
-          </div>
-        </section>
       </div>
     </section>
 
     <!-- ============ DOCUMENTS ============ -->
     <section id="tab-docs" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-docs" tabindex="0" hidden>
-      <div class="panel-head">
-        <h2>Documents</h2>
-        <span class="muted">PDF / DOCX / ODT / TXT, or notes you write here</span>
-      </div>
-      <form id="upload-form" class="card upload-card" novalidate>
-        <label class="field"><span class="field-label">Upload</span>
-          <input id="upload-input" type="file" accept=".pdf,.odt,.ods,.odp,.docx,.txt,.md" multiple /></label>
-        <label class="field"><span class="field-label">Type</span>
-          <select id="upload-kind">
-            <option value="resume">Resume / CV</option>
-            <option value="cover_letter">Cover letter</option>
-            <option value="preferences">Preferences</option>
-            <option value="other">Other/supporting</option>
-          </select></label>
-        <button class="btn btn-primary" type="submit">Upload</button>
-        <span id="upload-status" class="muted" role="status" aria-live="polite"></span>
-      </form>
-      <form id="note-form" class="card form-card note-form" aria-labelledby="note-form-title" novalidate>
-        <h3 id="note-form-title">Write a note</h3>
-        <p class="hint">Plain text the AI reads like an uploaded document: details of a project, results you're proud of,
-          or what you want from your next job (choose <strong>Preferences</strong> for that).</p>
-        <div class="note-grid">
-          <div class="field"><label class="field-label" for="note-title">Title</label>
-            <input id="note-title" type="text" maxlength="200" autocomplete="off" required /></div>
-          <div class="field"><label class="field-label" for="note-kind">Type</label>
-            <select id="note-kind">
-              <option value="resume">Resume / CV</option>
-              <option value="cover_letter">Cover letter</option>
-              <option value="preferences">Preferences</option>
-              <option value="other" selected>Other/supporting</option>
-            </select></div>
-        </div>
-        <div class="field"><label class="field-label" for="note-text">Note</label>
-          <textarea id="note-text" class="doc-textarea" rows="6" required></textarea></div>
-        <div class="toolbar-row note-actions">
-          <label class="check"><input id="note-use" type="checkbox" checked /> use for scoring</label>
-          <button class="btn btn-primary" type="submit">Save note</button>
-          <span id="note-status" class="muted" role="status" aria-live="polite"></span>
-        </div>
-      </form>
-      <!-- Cover letter blocks (backend/letter_blocks.py): the form's fields come from blockFormHtml() in app.js, which
-           the cover letter window's "Write this block" form uses too. -->
-      <section id="blocks-card" class="card form-card blocks-card" aria-labelledby="blocks-card-title">
-        <h3 id="blocks-card-title" tabindex="-1">Cover letter blocks</h3>
-        <p class="hint">Paragraphs in your own words. Build a letter from them on any job's cover letter window; the AI only
-          picks and orders them, it never rewrites them. You can use <code>{company}</code>, <code>{role}</code>,
-          <code>{location}</code> and <code>{date}</code>: they are filled in from the job when the letter is put together.</p>
-        <form id="block-form" class="block-form" aria-label="Cover letter block" novalidate>
-          <div id="block-form-fields" class="block-form-fields"></div>
-          <p id="block-form-warn" class="callout block-warn" hidden></p>
-          <div class="toolbar-row block-form-actions">
-            <button id="block-save" class="btn btn-primary" type="submit">Save block</button>
-            <button id="block-cancel" class="btn" type="button" hidden>Cancel</button>
-            <span id="block-status" class="muted" role="status" aria-live="polite"></span>
+      <div class="tab-layout">
+        <nav class="tab-jump" aria-label="Documents sections">
+          <p class="u-upper u-muted">On this tab</p>
+          <ul class="p-side-navigation">
+            <li><a class="p-side-navigation__link" href="#docs-card" aria-current="true">Your documents</a></li>
+            <li><a class="p-side-navigation__link" href="#add-card">Add a document or note</a></li>
+            <li><a class="p-side-navigation__link" href="#summary-card">One summary</a></li>
+            <li><a class="p-side-navigation__link" href="#titles-card">Suggested job titles</a></li>
+          </ul>
+          <p class="u-small u-muted tab-jump-note">What the AI reads about you. Changing documents marks existing scores as stale.</p>
+        </nav>
+
+        <div class="tab-body">
+          <div class="tab-intro u-stack">
+            <h2>Documents</h2>
+            <p class="u-small u-muted">PDF, DOCX, ODT or TXT, or notes you write here. The scorer reads resumes first, then cover letters, then supporting documents and notes.</p>
           </div>
-        </form>
-        <div id="block-list" class="block-list"></div>
-      </section>
-      <section id="template-card" class="card form-card template-card" aria-labelledby="template-card-title">
-        <h3 id="template-card-title" tabindex="-1">Cover letter template</h3>
-        <p class="hint">A Word (.docx) or OpenDocument (.odt) file with your letterhead and signature. Put <code>{letter}</code>
-          in the paragraph where the letter goes; <code>{company}</code>, <code>{role}</code>, <code>{location}</code> and
-          <code>{date}</code> are filled in anywhere in the file. Every cover letter download then uses it.</p>
-        <form id="template-form" class="toolbar-row" aria-label="Cover letter template" novalidate>
-          <label class="field-label" for="template-input">Template file</label>
-          <input id="template-input" type="file" accept=".docx,.odt" />
-          <button id="template-upload" class="btn btn-primary" type="submit">Upload</button>
-          <span id="template-status" class="muted" role="status" aria-live="polite"></span>
-        </form>
-        <p id="template-current" class="template-current"></p>
-        <p id="template-pdf" class="muted"></p>
-      </section>
-      <p class="hint">The scorer reads resumes first, then cover letters, then other documents and notes, and treats everything but resumes as supporting evidence only.
-        <strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
-        the chat and title suggestions use them, and cover letters never see them.
-        Untick "use for scoring" to keep a document out of every prompt. Changing documents marks existing scores as stale.</p>
-      <div id="docs-size-warning" class="callout docs-size-warning" hidden></div>
-      <div class="card form-card summary-card">
-        <h3>One summary instead of many documents</h3>
-        <p class="hint">Every ticked document goes with every request to the AI, repeats and all. <strong>Create summary</strong> merges the
-          ticked documents (not preferences) into one new document: each fact once, with every employer, date, number and
-          qualification kept. It takes a few minutes. Read it through, edit it if needed, then untick the originals so they
-          aren't sent twice. Each document can also get a shorter <strong>concise version</strong> of its own: <strong>Open</strong> it below.</p>
-        <div class="toolbar-row">
-          <button id="summary-make" class="btn btn-primary" type="button">Create summary of ticked documents</button>
-          <span id="summary-status" class="muted" role="status" aria-live="polite"></span>
+
+          <div id="docs-size-warning" class="p-notification p-notification--caution docs-size-warning" role="note" hidden></div>
+
+          <section id="docs-card" class="p-card u-stack" aria-labelledby="docs-list-heading">
+            <div class="p-card__head">
+              <h3 id="docs-list-heading" tabindex="-1">Your documents <span class="p-scope-tag">This workspace</span></h3>
+              <span id="docs-count" class="u-small u-muted"></span>
+            </div>
+            <div id="summary-suggest" class="summary-suggest u-stack" hidden></div>
+            <div id="docs-live" class="u-sr" role="status" aria-live="polite"></div>
+            <div id="docs-list" class="p-table-wrap" hidden>
+              <table class="p-table tab-stack-table docs-table">
+                <caption class="u-sr">Your documents</caption>
+                <thead><tr><th scope="col">Document</th><th scope="col">Type</th><th scope="col">Used for scoring</th><th scope="col" class="u-num">Characters</th><th scope="col">Added</th><th scope="col"><span class="u-sr">Actions</span></th></tr></thead>
+              </table>
+            </div>
+            <p id="docs-empty" class="u-muted" hidden>No documents yet. Upload your resume or write a note to get started.</p>
+            <div id="docs-error" class="error" hidden></div>
+            <p class="p-form-help-text"><strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
+              the chat and title suggestions use them, and cover letters never see them. A <strong>Letter template</strong> is only the layout your cover letters are
+              made in: the AI never reads it. Untick "Used for scoring" to keep a document out of every prompt.
+              <strong>Open</strong> shows a document's text, lets you edit a note and make a shorter concise version.</p>
+          </section>
+
+          <section id="add-card" class="p-card u-stack" aria-labelledby="add-title">
+            <h3 id="add-title">Add a document or note</h3>
+            <div class="tab-grid tab-grid--wide">
+              <form id="upload-form" class="u-stack" aria-labelledby="upload-title" novalidate>
+                <h4 id="upload-title">Upload</h4>
+                <div class="p-field"><label class="p-label" for="upload-input">Files</label>
+                  <input id="upload-input" class="p-input tab-file" type="file" accept=".pdf,.odt,.ods,.odp,.docx,.txt,.md" multiple /></div>
+                <div class="p-field"><label class="p-label" for="upload-kind">Type</label>
+                  <select id="upload-kind" class="p-select">
+                    <option value="resume">Resume / CV</option>
+                    <option value="cover_letter">Cover letter</option>
+                    <option value="preferences">Preferences</option>
+                    <option value="other">Other/supporting</option>
+                    <option value="letter_template">Letter template (.docx or .odt with a {letter} marker)</option>
+                  </select></div>
+                <div class="u-row">
+                  <button class="p-button p-button--positive" type="submit">Upload</button>
+                  <span id="upload-status" class="u-small u-muted" role="status" aria-live="polite"></span>
+                </div>
+              </form>
+              <form id="note-form" class="u-stack note-form" aria-labelledby="note-form-title" novalidate>
+                <h4 id="note-form-title">Write a note</h4>
+                <div class="note-grid">
+                  <div class="p-field"><label class="p-label" for="note-title">Title</label>
+                    <input id="note-title" class="p-input" type="text" maxlength="200" autocomplete="off" required /></div>
+                  <div class="p-field"><label class="p-label" for="note-kind">Type</label>
+                    <select id="note-kind" class="p-select">
+                      <option value="resume">Resume / CV</option>
+                      <option value="cover_letter">Cover letter</option>
+                      <option value="preferences">Preferences</option>
+                      <option value="other" selected>Other/supporting</option>
+                    </select></div>
+                </div>
+                <div class="p-field"><label class="p-label" for="note-text">Note</label>
+                  <textarea id="note-text" class="p-textarea doc-textarea" rows="5" required placeholder="A project, a result you're proud of, or what you want from your next job (choose Preferences for that)"></textarea></div>
+                <div class="u-row note-actions">
+                  <label class="p-check"><input class="p-checkbox" id="note-use" type="checkbox" checked /> Use for scoring</label>
+                  <button class="p-button p-button--positive" type="submit">Save note</button>
+                  <span id="note-status" class="u-small u-muted" role="status" aria-live="polite"></span>
+                </div>
+              </form>
+            </div>
+          </section>
+
+          <div class="tab-grid tab-grid--wide tab-grid--top">
+            <section id="summary-card" class="p-card u-stack summary-card" aria-labelledby="summary-title">
+              <h3 id="summary-title">One summary instead of many documents</h3>
+              <p class="u-small">Every ticked document goes with every request to the AI, repeats and all. <strong>Create summary</strong> merges the
+                ticked documents (not preferences) into one new document: each fact once, with every employer, date, number and
+                qualification kept. It takes a few minutes. Read it through, edit it if needed, then untick the originals so they
+                aren't sent twice. Each document can also get a shorter <strong>concise version</strong> of its own: <strong>Open</strong> it in the list.</p>
+              <div class="u-row">
+                <button id="summary-make" class="p-button p-button--positive" type="button">Create summary of ticked documents</button>
+                <span id="summary-status" class="u-small u-muted" role="status" aria-live="polite"></span>
+              </div>
+            </section>
+            <section id="titles-card" class="p-card u-stack titles-card" aria-labelledby="titles-title">
+              <h3 id="titles-title">Suggested job titles</h3>
+              <p class="u-small">Reads this workspace's documents and suggests job titles to search for. Tick the ones you want,
+                then add them to this search or start a new search with them.</p>
+              <div class="u-row">
+                <button id="suggest-titles" class="p-button p-button--positive" type="button">Suggest job titles</button>
+                <span id="titles-status" class="u-small u-muted" role="status"></span>
+              </div>
+              <div id="titles-list" class="titles-list"></div>
+              <div id="titles-actions" class="u-row" hidden>
+                <button id="titles-merge" class="p-button p-button--positive is-dense" type="button">Add selected to this search</button>
+                <button id="titles-new" class="p-button is-dense" type="button">Start a new search with selected</button>
+              </div>
+            </section>
+          </div>
         </div>
       </div>
-      <div class="card form-card titles-card">
-        <h3>Suggested job titles</h3>
-        <p class="hint">Reads this workspace's documents and suggests job titles to search for. Tick the ones you want,
-          then add them to this search or start a new search with them.</p>
-        <div class="toolbar-row">
-          <button id="suggest-titles" class="btn btn-primary" type="button">Suggest job titles</button>
-          <span id="titles-status" class="muted" role="status"></span>
-        </div>
-        <div id="titles-list" class="titles-list"></div>
-        <div id="titles-actions" class="toolbar-row" hidden>
-          <button id="titles-merge" class="btn btn-primary btn-sm" type="button">Add selected to this search</button>
-          <button id="titles-new" class="btn btn-sm" type="button">Start a new search with selected</button>
-        </div>
-      </div>
-      <h3 id="docs-list-heading" class="docs-heading" tabindex="-1">Your documents</h3>
-      <div id="summary-suggest" class="summary-suggest" hidden></div>
-      <div id="docs-live" class="visually-hidden" role="status" aria-live="polite"></div>
-      <div id="docs-list" class="docs-list"></div>
-      <div id="docs-empty" class="empty" hidden>No documents yet. Upload your resume or write a note to get started.</div>
-      <div id="docs-error" class="error" hidden></div>
     </section>
 
     <!-- ============ MAP ============ -->
     <section id="tab-map" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-map" tabindex="0" hidden>
-      <div class="panel-head">
-        <h2>Map</h2>
-        <div class="seg" role="group" aria-label="Map mode">
-          <button id="map-mode-jobs" class="seg-btn active" type="button" aria-pressed="true">Jobs</button>
-          <button id="map-mode-pins" class="seg-btn" type="button" aria-pressed="false">Edit pins</button>
+      <div class="tab-body tab-body--full">
+        <div class="tab-head">
+          <div class="tab-intro u-stack">
+            <h2>Map</h2>
+            <p id="map-hint-jobs" class="u-small u-muted">The jobs your Jobs tab filters show, with your pins and their radii. Pan and zoom: the jobs in view are
+              listed under the map. Click a dot, or <strong>Show</strong> in the list, to see its jobs; a job's title opens its full page in a new tab.
+              With the map focused, the arrow keys pan and + and − zoom.</p>
+            <p id="map-hint-pins" class="u-small u-muted" hidden>Click or tap the map to drop a pin, or move the map until the cross in its middle is on the place
+              and press <strong>Drop a pin at the cross</strong>. Drag a pin to move it, or use <strong>Move to the cross</strong> in the list of pins.
+              With the map focused, the arrow keys pan and + and − zoom.
+              Home pin: hybrid and onsite roles within its radius are OK.
+              Hybrid pins (e.g. stations on your commute): hybrid roles within the radius are OK. Onsite pins: onsite roles within the radius are OK.
+              Remote roles don't need a pin.</p>
+          </div>
+          <div class="map-seg" role="group" aria-label="Map mode">
+            <button id="map-mode-jobs" class="p-button is-dense" type="button" aria-pressed="true">Jobs</button>
+            <button id="map-mode-pins" class="p-button is-dense" type="button" aria-pressed="false">Edit pins</button>
+          </div>
         </div>
+
+        <div class="map-layout">
+          <div class="map-main u-stack">
+            <div id="map" class="map" role="region" aria-label="Map of jobs and pins" aria-describedby="map-hint-jobs"></div>
+            <div id="map-legend" class="map-legend u-small"></div>
+          </div>
+
+          <aside class="map-side u-stack" aria-label="Pins">
+            <section id="pin-controls" class="p-card u-stack map-controls" aria-labelledby="pin-new-title" hidden>
+              <h3 id="pin-new-title" class="map-card-title">New pin</h3>
+              <div class="p-field"><label class="p-label" for="pin-kind">Pin kind</label>
+                <select id="pin-kind" class="p-select"><option value="home">home</option><option value="hybrid">hybrid</option><option value="onsite">onsite</option></select></div>
+              <div class="p-field"><label class="p-label" for="pin-radius">Radius: <output id="pin-radius-output" for="pin-radius">10 km</output></label>
+                <input id="pin-radius" class="p-range" type="range" min="1" max="100" step="1" value="10" /></div>
+              <div class="p-field"><label class="p-label" for="pin-label">Label (optional)</label>
+                <input id="pin-label" class="p-input" type="text" placeholder="e.g. Home, Office hub" autocomplete="off" /></div>
+              <button id="pin-add-centre" class="p-button p-button--positive" type="button">Drop a pin at the cross</button>
+              <label class="p-check pins-in-view"><input class="p-checkbox" id="pins-in-view" type="checkbox" /> <span>Only list pins in view</span></label>
+            </section>
+            <section class="p-card u-stack" aria-labelledby="pins-title">
+              <h3 id="pins-title" class="map-card-title">Your pins</h3>
+              <div id="pins-list" class="pins-list"></div>
+              <div id="pins-error" class="error" hidden></div>
+              <p id="pins-edit-note" class="u-small u-muted">Switch to <strong>Edit pins</strong> to add one: tap the map, or move it until the cross is on the place and press Drop a pin at the cross.</p>
+            </section>
+          </aside>
+        </div>
+
+        <section id="map-jobs" class="p-card u-stack map-jobs" aria-live="off"></section>
       </div>
-      <p id="map-hint-jobs" class="hint">The jobs your Jobs tab filters show, with your pins and their radii. Pan and zoom: the jobs in view are
-        listed under the map. Click a dot, or <strong>Show</strong> in the list, to see its jobs; <strong>Open ↗</strong> opens a job's full page in a new tab.
-        With the map focused, the arrow keys pan and + and − zoom.</p>
-      <p id="map-hint-pins" class="hint" hidden>Click or tap the map to drop a pin, or move the map until the cross in its middle is on the place
-        and press <strong>Drop a pin at the cross</strong>. Drag a pin to move it, or use <strong>Move to the cross</strong> in the list of pins.
-        With the map focused, the arrow keys pan and + and − zoom.
-        Home pin: hybrid and onsite roles within its radius are OK.
-        Hybrid pins (e.g. stations on your commute): hybrid roles within the radius are OK. Onsite pins: onsite roles within the radius are OK.
-        Remote roles don't need a pin.</p>
-      <div id="pin-controls" class="map-controls card" hidden>
-        <label class="field"><span class="field-label">Pin kind</span>
-          <select id="pin-kind"><option value="home">home</option><option value="hybrid">hybrid</option><option value="onsite">onsite</option></select></label>
-        <label class="field"><span class="field-label">Radius: <output id="pin-radius-output" for="pin-radius">10 km</output></span>
-          <input id="pin-radius" type="range" min="1" max="100" step="1" value="10" /></label>
-        <label class="field"><span class="field-label">Label (optional)</span>
-          <input id="pin-label" type="text" placeholder="e.g. Home, Office hub" autocomplete="off" /></label>
-        <button id="pin-add-centre" class="btn btn-primary" type="button">Drop a pin at the cross</button>
-        <label class="check pins-in-view"><input id="pins-in-view" type="checkbox" /> <span>Only list pins in view</span></label>
-      </div>
-      <div id="map" class="map" role="region" aria-label="Map of jobs and pins" aria-describedby="map-hint-jobs"></div>
-      <div id="map-legend" class="map-legend muted"></div>
-      <div id="map-jobs" class="map-jobs"></div>
-      <div id="pins-list" class="pins-list" hidden></div>
-      <div id="pins-error" class="error" hidden></div>
     </section>
 
     <!-- ============ SETTINGS ============ -->
     <section id="tab-settings" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-settings" tabindex="0" hidden>
-      <div class="panel-head">
-        <h2>Settings</h2>
-        <span class="muted">Each card says what it applies to: this browser, this workspace, your account, or the whole of this JobHuntPA</span>
-      </div>
+      <div class="tab-layout">
+        <nav class="tab-jump" aria-label="Settings sections">
+          <p class="u-upper u-muted">On this tab</p>
+          <ul class="p-side-navigation">
+            <li><a class="p-side-navigation__link" href="#theme-card" aria-current="true">Theme</a></li>
+            <li><a class="p-side-navigation__link" href="#schedule-card">Scheduled searches</a></li>
+            <li><a class="p-side-navigation__link" href="#llm-card">AI provider</a></li>
+            <li><a class="p-side-navigation__link" href="#scores-card">Fit scores</a></li>
+            <li><a class="p-side-navigation__link" href="#usage-card">AI usage</a></li>
+            <li><a class="p-side-navigation__link" href="#address-card">Public address</a></li>
+            <li><a class="p-side-navigation__link" href="#browser-card">Browser for JavaScript pages</a></li>
+            <li><a class="p-side-navigation__link" href="#rotate-card">Server key</a></li>
+            <li><a class="p-side-navigation__link" href="#account-cards">Your account</a></li>
+          </ul>
+        </nav>
 
-      <div id="theme-card" class="card form-card theme-card-section">
-        <div class="card-head">
-          <h3 id="theme-heading">Theme <span class="scope-tag">This browser</span></h3>
-        </div>
-        <p class="hint">Each card shows the app in that theme. Pick one with a click or tap, or with the arrow keys:
-          it applies at once and is remembered in this browser. Every theme meets the WCAG AA contrast minimums, and
-          labels or shapes always go with colours.</p>
-        <div id="theme-picker-slot"></div>
-      </div>
+        <div class="tab-body">
+          <div class="tab-intro u-stack">
+            <h2>Settings</h2>
+            <p class="u-small u-muted">Each card says what it applies to: this browser, this workspace, your account, or the whole of this JobHuntPA.</p>
+          </div>
 
-      <div id="schedule-card" class="card form-card">
-        <div class="card-head">
-          <h3>Scheduled searches <span id="sched-scope" class="scope-tag">This workspace</span></h3>
-          <span id="sched-save-status" class="muted" role="status"></span>
-        </div>
-        <p class="hint">JobHuntPA runs this search by itself at set times while it is running; a search missed because it was closed runs if you start it within the hour.
-          Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.
-          Scheduled searches need <strong>background access</strong> (the card further down this tab); without it they are skipped.
-          They are off in a new workspace: tick <strong>Run searches automatically</strong> to start them.</p>
-        <label class="check sched-enable"><input type="checkbox" id="sched-enabled" /> Run searches automatically</label>
-        <div class="form-grid">
-          <div class="form-group">
-            <label for="sched-time-input">Run at</label>
-            <ul id="sched-times" class="sched-times" aria-label="Search times"></ul>
-            <div class="sched-add">
-              <input id="sched-time-input" type="time" value="09:00" />
-              <button id="sched-time-add" class="btn btn-sm" type="button">Add time</button>
+          <div id="theme-card" class="p-card u-stack theme-card-section">
+            <h3 id="theme-heading">Theme <span class="p-scope-tag">This browser</span></h3>
+            <p class="p-form-help-text">Each card shows the app in that theme. Pick one with a click or tap, or with the arrow keys:
+              it applies at once and is remembered in this browser. Themes marked WCAG 2.0 AA meet the AA contrast
+              minimums; the others are a project's exact colours, shown as they are, beside their AA version. Labels or
+              shapes always go with colours.</p>
+            <div id="theme-picker-slot"></div>
+          </div>
+
+          <div id="schedule-card" class="p-card u-stack">
+            <div class="p-card__head">
+              <h3>Scheduled searches <span id="sched-scope" class="p-scope-tag">This workspace</span></h3>
+              <span id="sched-save-status" class="u-small u-muted" role="status"></span>
+            </div>
+            <p class="p-form-help-text">JobHuntPA runs this search by itself at set times while it is running; a search missed because it was closed runs if you start it within the hour.
+              Each workspace has its own schedule, and each run scores the new jobs it finds, like Run search.
+              Scheduled searches need <strong>background access</strong> (the card further down this tab); without it they are skipped.
+              They are off in a new workspace: turn on <strong>Run searches automatically</strong> to start them.</p>
+            <label class="p-check sched-enable"><input class="p-switch" type="checkbox" role="switch" id="sched-enabled" /> Run searches automatically</label>
+            <div class="tab-grid tab-grid--three">
+              <div class="p-field">
+                <label class="p-label" for="sched-time-input">Run at</label>
+                <ul id="sched-times" class="sched-times" aria-label="Search times"></ul>
+                <div class="sched-add u-row">
+                  <input id="sched-time-input" class="p-input tab-time" type="time" value="09:00" />
+                  <button id="sched-time-add" class="p-button is-dense" type="button">Add time</button>
+                </div>
+              </div>
+              <fieldset id="sched-days" class="p-field tab-fieldset">
+                <legend class="p-label">On these days</legend>
+                <div class="u-row tab-days">
+                  <label class="p-check"><input class="p-checkbox sched-day" type="checkbox" value="0" /> Mon</label>
+                  <label class="p-check"><input class="p-checkbox sched-day" type="checkbox" value="1" /> Tue</label>
+                  <label class="p-check"><input class="p-checkbox sched-day" type="checkbox" value="2" /> Wed</label>
+                  <label class="p-check"><input class="p-checkbox sched-day" type="checkbox" value="3" /> Thu</label>
+                  <label class="p-check"><input class="p-checkbox sched-day" type="checkbox" value="4" /> Fri</label>
+                  <label class="p-check"><input class="p-checkbox sched-day" type="checkbox" value="5" /> Sat</label>
+                  <label class="p-check"><input class="p-checkbox sched-day" type="checkbox" value="6" /> Sun</label>
+                </div>
+              </fieldset>
+              <fieldset class="p-field tab-fieldset">
+                <legend class="p-label">Public holidays</legend>
+                <label class="p-check"><input class="p-checkbox" type="checkbox" id="sched-holidays" /> Skip public holidays</label>
+                <label for="sched-state" class="p-label tab-label-gap">State or territory</label>
+                <select id="sched-state" class="p-select" aria-describedby="sched-state-hint"></select>
+                <p id="sched-state-hint" class="p-form-help-text">The state picks the holiday calendar and also the time zone the times above are in.
+                  Substitute days, such as a weekend holiday moved to the Monday, are skipped too.</p>
+              </fieldset>
+            </div>
+            <div id="sched-status" class="sched-status"></div>
+          </div>
+
+          <!-- This JobHuntPA's settings (frontend/server-settings.js). They serve every workspace; whoever is signed in may
+               change them (open-source spec §1.4). -->
+          <div class="p-card u-stack install-card" id="llm-card">
+            <h3 id="llm-title">AI provider <span class="p-scope-tag">This JobHuntPA</span></h3>
+            <p class="p-form-help-text">The AI that scores jobs, writes cover letters, researches companies and answers job chats. Bring your own
+              key: JobHuntPA sends your jobs and documents to this provider only when one of those features runs.</p>
+            <form id="llm-form" class="llm-form u-stack" autocomplete="off" novalidate aria-labelledby="llm-form-title">
+              <h4 id="llm-form-title">Provider, model and API key</h4>
+              <div class="tab-grid">
+                <div class="p-field"><label class="p-label" for="llm-provider">Provider</label><select id="llm-provider" class="p-select"></select></div>
+                <div class="p-field"><label class="p-label" for="llm-model">Model</label>
+                  <input id="llm-model" class="p-input" type="text" list="llm-models" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Model name" required /></div>
+                <div class="p-field"><label class="p-label" for="llm-base-url">API address</label>
+                  <input id="llm-base-url" class="p-input" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://api.example.com/v1" required /></div>
+                <div class="p-field">
+                  <label class="p-label" for="llm-key">API key</label>
+                  <input id="llm-key" class="p-input" type="password" autocomplete="new-password" spellcheck="false"
+                         data-1p-ignore data-lpignore="true" placeholder="Paste the API key" aria-describedby="llm-key-state" />
+                  <div id="llm-key-state" class="key-state p-form-help-text"></div>
+                </div>
+              </div>
+              <datalist id="llm-models"></datalist>
+              <p id="llm-note" class="p-form-help-text"></p>
+              <p id="llm-key-hint" class="p-form-help-text warn-text" hidden></p>
+              <div id="llm-web-notice" class="p-notification p-notification--information" role="note" hidden>
+                <svg class="p-notification__icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7.5v.5"></path></svg>
+                <div id="llm-web-notice-text" class="p-notification__body u-small"></div>
+              </div>
+              <div id="llm-error" class="error" role="alert" hidden></div>
+              <div class="u-row">
+                <button id="llm-save" class="p-button p-button--positive" type="submit">Save<span class="u-sr"> the AI provider</span></button>
+                <button id="score-test" class="p-button" type="button">Test connection</button>
+                <span id="llm-save-status" class="u-small u-muted" role="status"></span>
+                <span id="score-test-status" class="u-small u-muted" role="status"></span>
+              </div>
+            </form>
+            <div class="reasoning-settings u-stack">
+              <h4>Reasoning level</h4>
+              <p class="p-form-help-text">Higher levels think longer: usually better results, but slower and more expensive.
+                The choices are the levels your model accepts; use <strong>Detect</strong> after changing model.</p>
+              <div class="tab-grid tab-grid--four">
+                <div class="p-field"><label class="p-label" for="reasoning-scoring">Fit scoring</label><select id="reasoning-scoring" class="p-select" data-task="scoring"></select></div>
+                <div class="p-field"><label class="p-label" for="reasoning-cover_letter">Cover letters</label><select id="reasoning-cover_letter" class="p-select" data-task="cover_letter"></select></div>
+                <div class="p-field"><label class="p-label" for="reasoning-research">Company research</label><select id="reasoning-research" class="p-select" data-task="research"></select></div>
+                <div class="p-field"><label class="p-label" for="reasoning-chat">Job chat</label><select id="reasoning-chat" class="p-select" data-task="chat"></select></div>
+              </div>
+              <div class="u-row">
+                <button id="detect-levels" class="p-button is-dense" type="button">Detect supported levels</button>
+                <span id="levels-status" class="u-small u-muted" role="status"></span>
+              </div>
             </div>
           </div>
-          <fieldset id="sched-days" class="form-group">
-            <legend>On these days</legend>
-            <label class="check"><input type="checkbox" class="sched-day" value="0" /> Mon</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="1" /> Tue</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="2" /> Wed</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="3" /> Thu</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="4" /> Fri</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="5" /> Sat</label>
-            <label class="check"><input type="checkbox" class="sched-day" value="6" /> Sun</label>
-          </fieldset>
-          <fieldset class="form-group">
-            <legend>Public holidays</legend>
-            <label class="check"><input type="checkbox" id="sched-holidays" /> Skip public holidays</label>
-            <label for="sched-state" class="field-label">State or territory</label>
-            <select id="sched-state" aria-describedby="sched-state-hint"></select>
-            <small id="sched-state-hint" class="hint">The state picks the holiday calendar and also the time zone the times above are in.
-              Substitute days, such as a weekend holiday moved to the Monday, are skipped too.</small>
-          </fieldset>
-        </div>
-        <div id="sched-status" class="sched-status"></div>
-      </div>
 
-      <!-- This JobHuntPA's settings (frontend/server-settings.js). They serve every workspace; whoever is signed in may
-           change them (open-source spec §1.4). -->
-      <div class="card form-card install-card" id="llm-card">
-        <h3 id="llm-title">AI provider <span class="scope-tag">This JobHuntPA</span></h3>
-        <p class="hint">The AI that scores jobs, writes cover letters, researches companies and answers job chats. Bring your own
-          key: JobHuntPA sends your jobs and documents to this provider only when one of those features runs.</p>
-        <form id="llm-form" class="llm-form" autocomplete="off" novalidate aria-labelledby="llm-form-title">
-          <h4 id="llm-form-title">Provider, model and API key</h4>
-          <div class="form-grid">
-            <label class="field"><span class="field-label">Provider</span><select id="llm-provider"></select></label>
-            <label class="field"><span class="field-label">Model</span>
-              <input id="llm-model" type="text" list="llm-models" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Model name" required /></label>
-            <label class="field"><span class="field-label">API address</span>
-              <input id="llm-base-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://api.example.com/v1" required /></label>
-            <div class="field">
-              <label class="field-label" for="llm-key">API key</label>
-              <input id="llm-key" type="password" autocomplete="new-password" spellcheck="false"
-                     data-1p-ignore data-lpignore="true" placeholder="Paste the API key" aria-describedby="llm-key-state" />
-              <div id="llm-key-state" class="key-state"></div>
+          <div id="scores-card" class="p-card u-stack">
+            <h3>Fit scores <span class="p-scope-tag">This workspace</span></h3>
+            <div id="scorer-info" class="u-small u-muted"></div>
+            <p class="p-form-help-text">The buttons below rescore this workspace's jobs with the AI provider above.</p>
+            <div class="u-row llm-actions">
+              <button id="score-stale" class="p-button" type="button" title="Also rescore this workspace's jobs that were scored before your documents changed">Rescore stale</button>
+              <button id="score-all" class="p-button p-button--base" type="button" title="Rescore every job in this workspace">Rescore all</button>
             </div>
           </div>
-          <datalist id="llm-models"></datalist>
-          <p id="llm-note" class="hint"></p>
-          <p id="llm-key-hint" class="hint warn-text" hidden></p>
-          <div id="llm-web-notice" class="callout" role="note" hidden></div>
-          <div id="llm-error" class="error" role="alert" hidden></div>
-          <div class="toolbar-row">
-            <button id="llm-save" class="btn btn-primary" type="submit">Save<span class="visually-hidden"> the AI provider</span></button>
-            <span id="llm-save-status" class="muted" role="status"></span>
+
+          <section class="p-card u-stack install-card" id="usage-card" aria-labelledby="usage-title">
+            <h3 id="usage-title">AI usage <span class="p-scope-tag">This JobHuntPA</span></h3>
+            <p class="p-form-help-text">Requests and tokens sent to the AI provider, to compare with your provider's bill. Cached tokens are
+              prompt tokens the provider served from its cache, usually at a discount.</p>
+            <dl id="usage-tiles" class="tiles"></dl>
+            <div id="usage-tables"></div>
+            <p id="usage-status" class="u-small u-muted" role="status"></p>
+          </section>
+
+          <form id="address-card" class="p-card u-stack install-card" autocomplete="off" novalidate aria-labelledby="address-title">
+            <h3 id="address-title">Public address and host names <span class="p-scope-tag">This JobHuntPA</span></h3>
+            <p class="p-form-help-text">Only for using JobHuntPA from other devices, through an HTTPS proxy on this computer such as
+              <code>tailscale serve</code> (the README's "Hosting on your own network" has the steps). Leave both
+              empty when you only use it on this computer. Saving asks for your password if you entered it a while ago.</p>
+            <div class="tab-grid">
+              <div class="p-field">
+                <label class="p-label" for="public-url">Public address</label>
+                <input id="public-url" class="p-input" type="url" inputmode="url" autocapitalize="off" spellcheck="false"
+                       placeholder="https://jobs.example.com" aria-describedby="public-url-hint" />
+                <p id="public-url-hint" class="p-form-help-text">The https:// address other devices open. Sign-in cookies are then marked secure, and
+                  pages at that address are accepted. Changing it may sign this browser out.</p>
+              </div>
+              <div class="p-field">
+                <label class="p-label" for="allowed-hosts">More host names</label>
+                <input id="allowed-hosts" class="p-input" type="text" autocapitalize="off" spellcheck="false"
+                       placeholder="pi.tail1234.ts.net" aria-describedby="allowed-hosts-hint" />
+                <p id="allowed-hosts-hint" class="p-form-help-text">Other names this computer is reached by, separated by commas (no http://, port or
+                  path). IP addresses always work.</p>
+              </div>
+            </div>
+            <div id="address-error" class="error" role="alert" hidden></div>
+            <div class="u-row">
+              <button id="address-save" class="p-button p-button--positive" type="submit">Save<span class="u-sr"> the public address and host names</span></button>
+              <span id="address-status" class="u-small u-muted" role="status"></span>
+            </div>
+          </form>
+
+          <section class="p-card u-stack install-card" id="browser-card" aria-labelledby="browser-title">
+            <h3 id="browser-title">Browser for JavaScript pages <span class="p-scope-tag">This JobHuntPA</span></h3>
+            <p class="p-form-help-text">A few careers pages show their jobs only with JavaScript. JobHuntPA reads those with a browser
+              component (Chromium, through Playwright), about <span class="browser-size">180</span> MB, downloaded once from
+              Playwright's servers into your data folder. Everything else works without it.</p>
+            <p id="browser-state" class="u-small u-muted" role="status"></p>
+            <div class="u-row">
+              <button id="browser-download" class="p-button" type="button" hidden>Download the browser</button>
+            </div>
+          </section>
+
+          <div class="p-card u-stack install-card" id="rotate-card">
+            <h3>Server key <span class="p-scope-tag">This JobHuntPA</span></h3>
+            <p>The server key protects the keys JobHuntPA keeps for background searches. Replacing it
+              moves all of them to a new key and drops the old one. Do it if the <code>data</code> folder or a backup of it
+              may have been copied by someone else. It asks for your password and takes a few seconds.</p>
+            <div class="u-row">
+              <button id="rotate-key" class="p-button" type="button">Replace the server key</button>
+              <span id="rotate-status" class="u-small u-muted" role="status"></span>
+            </div>
           </div>
-        </form>
-        <div class="reasoning-settings">
-          <h4>Reasoning level</h4>
-          <p class="hint">Higher levels think longer: usually better results, but slower and more expensive.
-            The choices are the levels your model accepts; use <strong>Detect</strong> after changing model.</p>
-          <div class="form-grid">
-            <label class="field"><span class="field-label">Fit scoring</span><select data-task="scoring"></select></label>
-            <label class="field"><span class="field-label">Cover letters</span><select data-task="cover_letter"></select></label>
-            <label class="field"><span class="field-label">Company research</span><select data-task="research"></select></label>
-            <label class="field"><span class="field-label">Job chat</span><select data-task="chat"></select></label>
+
+          <div class="p-card u-stack install-card" id="plain-card" hidden>
+            <h3>Unencrypted copies of data <span class="p-scope-tag">This JobHuntPA</span></h3>
+            <p id="plain-summary" class="u-muted" role="status" tabindex="-1"></p>
+            <div id="plain-details"></div>
+            <div class="u-row">
+              <button id="plain-delete" class="p-button p-button--positive" type="button" hidden>Delete these files now</button>
+              <span id="plain-status" class="u-small u-muted" role="status"></span>
+            </div>
           </div>
-          <div class="toolbar-row">
-            <button id="detect-levels" class="btn btn-sm" type="button">Detect supported levels</button>
-            <span id="levels-status" class="muted" role="status"></span>
+
+          <!-- Account cards (accounts design §6): they apply to the signed-in account, in every workspace. Each feature
+               fills its own slot, so the pieces stay apart. -->
+          <div id="account-cards" class="tab-stack">
+            <div id="account-security-slot"></div><!-- password, recovery codes, sign out everywhere -->
+
+            <div id="account-background-slot"><!-- background access (frontend/background.js) -->
+              <div id="background-card" class="p-card u-stack">
+                <div class="p-card__head">
+                  <h3 id="background-title" tabindex="-1">Background access <span class="p-scope-tag">Your account</span></h3>
+                  <span id="background-status" class="u-small u-muted"></span>
+                </div>
+                <p id="background-error" class="error" role="alert" hidden></p>
+                <button id="background-retry" class="p-button" type="button" hidden>Try again</button>
+                <label class="p-check"><input class="p-switch" type="checkbox" id="background-switch" role="switch" aria-describedby="background-explain" disabled /> Let JobHuntPA work while I'm signed out</label>
+                <p id="background-explain" class="p-form-help-text">Loading…</p>
+                <p id="background-more" class="p-form-help-text"></p>
+              </div>
+            </div>
+
+            <div id="account-extension-slot"></div><!-- browser extension keys (frontend/extension.js) -->
+
+            <div id="account-export-slot"></div><!-- download your data -->
+
+            <div id="account-import-slot"></div><!-- import from an export (frontend/restore.js) -->
+
+            <div id="account-delete-slot"></div><!-- delete the account (last) -->
           </div>
-        </div>
-        <div class="toolbar-row llm-actions">
-          <button id="score-test" class="btn" type="button">Test connection</button>
-          <span id="score-test-status" class="muted" role="status"></span>
         </div>
       </div>
-
-      <div class="card form-card">
-        <h3>Fit scores <span class="scope-tag">This workspace</span></h3>
-        <div id="scorer-info" class="muted"></div>
-        <p class="hint">The buttons below rescore this workspace's jobs with the AI provider above.</p>
-        <div class="toolbar-row llm-actions">
-          <button id="score-stale" class="btn" type="button" title="Also rescore this workspace's jobs that were scored before your documents changed">Rescore stale</button>
-          <button id="score-all" class="btn btn-ghost" type="button" title="Rescore every job in this workspace">Rescore all</button>
-        </div>
-      </div>
-
-      <section class="card form-card install-card" id="usage-card" aria-labelledby="usage-title">
-        <h3 id="usage-title">AI usage <span class="scope-tag">This JobHuntPA</span></h3>
-        <p class="hint">Requests and tokens sent to the AI provider, to compare with your provider's bill. Cached tokens are
-          prompt tokens the provider served from its cache, usually at a discount.</p>
-        <dl id="usage-tiles" class="tiles"></dl>
-        <div id="usage-tables"></div>
-        <p id="usage-status" class="muted" role="status"></p>
-      </section>
-
-      <form id="address-card" class="card form-card install-card" autocomplete="off" novalidate aria-labelledby="address-title">
-        <h3 id="address-title">Public address and host names <span class="scope-tag">This JobHuntPA</span></h3>
-        <p class="hint">Only for using JobHuntPA from other devices, through an HTTPS proxy on this computer such as
-          <code>tailscale serve</code> (the README's "Hosting on your own network" has the steps). Leave both
-          empty when you only use it on this computer. Saving asks for your password if you entered it a while ago.</p>
-        <div class="form-grid">
-          <div class="field">
-            <label class="field-label" for="public-url">Public address</label>
-            <input id="public-url" type="url" inputmode="url" autocapitalize="off" spellcheck="false"
-                   placeholder="https://jobs.example.com" aria-describedby="public-url-hint" />
-            <small id="public-url-hint" class="hint">The https:// address other devices open. Sign-in cookies are then marked secure, and
-              pages at that address are accepted. Changing it may sign this browser out.</small>
-          </div>
-          <div class="field">
-            <label class="field-label" for="allowed-hosts">More host names</label>
-            <input id="allowed-hosts" type="text" autocapitalize="off" spellcheck="false"
-                   placeholder="pi.tail1234.ts.net" aria-describedby="allowed-hosts-hint" />
-            <small id="allowed-hosts-hint" class="hint">Other names this computer is reached by, separated by commas (no http://, port or
-              path). IP addresses always work.</small>
-          </div>
-        </div>
-        <div id="address-error" class="error" role="alert" hidden></div>
-        <div class="toolbar-row">
-          <button id="address-save" class="btn btn-primary" type="submit">Save<span class="visually-hidden"> the public address and host names</span></button>
-          <span id="address-status" class="muted" role="status"></span>
-        </div>
-      </form>
-
-      <section class="card form-card install-card" id="browser-card" aria-labelledby="browser-title">
-        <h3 id="browser-title">Browser for JavaScript pages <span class="scope-tag">This JobHuntPA</span></h3>
-        <p class="hint">A few careers pages show their jobs only with JavaScript. JobHuntPA reads those with a browser
-          component (Chromium, through Playwright), about <span class="browser-size">180</span> MB, downloaded once from
-          Playwright's servers into your data folder. Everything else works without it.</p>
-        <p id="browser-state" class="muted" role="status"></p>
-        <div class="toolbar-row">
-          <button id="browser-download" class="btn" type="button" hidden>Download the browser</button>
-        </div>
-      </section>
-
-      <div class="card form-card install-card" id="rotate-card">
-        <h3>Server key <span class="scope-tag">This JobHuntPA</span></h3>
-        <p>The server key protects the keys JobHuntPA keeps for background searches. Replacing it
-          moves all of them to a new key and drops the old one. Do it if the <code>data</code> folder or a backup of it
-          may have been copied by someone else. It asks for your password and takes a few seconds.</p>
-        <div class="toolbar-row">
-          <button id="rotate-key" class="btn" type="button">Replace the server key</button>
-          <span id="rotate-status" class="muted" role="status"></span>
-        </div>
-      </div>
-
-      <div class="card form-card install-card" id="plain-card" hidden>
-        <h3>Unencrypted copies of data <span class="scope-tag">This JobHuntPA</span></h3>
-        <p id="plain-summary" class="muted" role="status" tabindex="-1"></p>
-        <div id="plain-details"></div>
-        <div class="toolbar-row">
-          <button id="plain-delete" class="btn btn-primary" type="button" hidden>Delete these files now</button>
-          <span id="plain-status" class="muted" role="status"></span>
-        </div>
-      </div>
-
-      <!-- Account cards (accounts design §6): they apply to the signed-in account, in every workspace. Each feature
-           fills its own slot, so the pieces stay apart. -->
-      <div id="account-security-slot"></div><!-- password, recovery codes, sign out everywhere -->
-
-      <div id="account-background-slot"><!-- background access (frontend/background.js) -->
-        <div id="background-card" class="card form-card">
-          <div class="card-head">
-            <h3 id="background-title" tabindex="-1">Background access <span class="scope-tag">Your account</span></h3>
-            <span id="background-status" class="muted"></span>
-          </div>
-          <p id="background-error" class="error" role="alert" hidden></p>
-          <button id="background-retry" class="btn" type="button" hidden>Try again</button>
-          <label class="check"><input type="checkbox" id="background-switch" role="switch" aria-describedby="background-explain" disabled /> Let JobHuntPA work while I'm signed out</label>
-          <p id="background-explain" class="hint">Loading…</p>
-          <p id="background-more" class="hint"></p>
-        </div>
-      </div>
-
-      <div id="account-extension-slot"></div><!-- browser extension keys (frontend/extension.js) -->
-
-      <div id="account-export-slot"></div><!-- download your data -->
-
-      <div id="account-import-slot"></div><!-- import from an export (frontend/restore.js) -->
-
-      <div id="account-delete-slot"></div><!-- delete the account (last) -->
     </section>
   </main>
 
@@ -784,6 +905,8 @@ Acme,https://jobs.lever.co/acme</pre>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="./common.js"></script>
   <script src="./tasks-tray.js"></script>
+  <script src="./chat.js"></script>
+  <script src="./letter.js"></script>
   <script src="./app.js"></script>
   <script src="./server-settings.js"></script>
   <script src="./account.js"></script>

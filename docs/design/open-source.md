@@ -126,8 +126,8 @@ Rules:
 - One machine-readable file with a format version, holding everything needed to bring the data back: per workspace
   the search setup, sources, pins and starting points, documents (text, concise versions, their flags, and which
   original file in the zip belongs to each), jobs (the ad, status and its dates, notes, hidden, excluded, office and
-  verdict, fit results, cover letters), cover letter blocks, the cover letter template (and which file in the zip it
-  is), chats and the schedule; plus the research on those jobs' companies. Never the
+  verdict, fit results, cover letters), cover letter blocks, which document is the letter template, chats and the
+  schedule; plus the research on those jobs' companies. Never the
   password, keys, sessions, extension keys or the AI key.
 
 **Import** (Settings tab):
@@ -623,7 +623,7 @@ file (not a row id). Other fields point at them by that number.
 | `schedule` | `{enabled, times: ["10:00", …], days: [0-6, Monday = 0], skip_holidays, state: "NSW" …}` |
 | `documents` | below |
 | `letter_blocks` | below |
-| `letter_template` | `null`, or the object below |
+| `letter_template` | `null`, or the `ref` of the document cover-letter downloads are filled into (below) |
 | `jobs` | below |
 | `chats` | below |
 
@@ -639,8 +639,8 @@ public-transport place, and leaves out a `pin` the file's `pins` don't have.
 
 **`documents`:** `{ref, filename, filetype, kind, text, concise_text, use_concise, use_for_scoring, concise_model,
 concise_at, created_at, updated_at, summary_of, original}`. `filetype` is the upload's extension (`.pdf` …), or
-`note` / `summary` for a document written in the app; `kind` is `resume`, `cover_letter`, `preferences` or
-`other`; `summary_of` lists the `ref`s a summary was made from; `original` is the path of the uploaded file inside
+`note` / `summary` for a document written in the app; `kind` is `resume`, `cover_letter`, `preferences`, `other`
+or `letter_template` (a .docx or .odt letterhead with a `{letter}` marker); `summary_of` lists the `ref`s a summary was made from; `original` is the path of the uploaded file inside
 the export's folder (`Workspaces/<workspace>/Documents/Original files/<name>`), or null. The original files are
 plain bytes in the zip, exactly as uploaded.
 
@@ -651,12 +651,10 @@ them and drops empty and repeated ones); `position` is the block's order within 
 (made before blocks existed) brings in none. Blocks have no `ref`: nothing points at them. They are also written as
 `Workspaces/<workspace>/Cover letter blocks.md` when there are any.
 
-**`letter_template`:** the workspace's cover letter template, `{filename, filetype, created_at, original}`, or `null`
-when it has none: `filetype` is `.docx` or `.odt`; `original` is the path of the uploaded file inside the export's
-folder (`Workspaces/<workspace>/Cover letter template/<name>`), the bytes exactly as uploaded. An import takes it only
-when that file is in the zip and is a template the app can fill (it opens as that type and has a `{letter}`
-paragraph, the same check as an upload); otherwise the workspace comes in without one. A file without the field (made
-before templates existed) brings in none.
+**`letter_template`:** the `ref` of the document (of kind `letter_template`) that the workspace's cover-letter
+downloads are filled into, or `null` for the plain layout. An import points the new workspace at that document's copy
+when it came in with its original file; otherwise the workspace uses the plain layout. Anything but a number (a
+development build wrote an object here) counts as `null`.
 
 **`jobs`:** one entry per job, merged copies included:
 

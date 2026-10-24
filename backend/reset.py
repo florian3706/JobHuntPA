@@ -11,7 +11,7 @@ typing it, for scripts; without a terminal and without it, nothing is done), and
 app holds the key file's lock for as long as it runs, and ``running.json`` in the data folder names the launcher's
 process: backend/key_rotation.py ``refuse_while_running``). Then, in **one transaction**, it deletes every account and everything only an account
 could read: the users with their keys, recovery codes, sessions and browser-extension keys, every workspace and what
-is in it (jobs, scores, cover letters, documents, cover letter blocks, cover letter templates, chats, search setup, pins,
+is in it (jobs, scores, cover letters, documents, cover letter blocks, chats, search setup, pins,
 sources with their page layouts, schedules, runs), the job sites' page layouts the AI worked out (``site_mappings``) and the page cache
 (sealed); usage counts are kept without saying whose they were. After the commit the
 write-ahead log is scrubbed (``db.scrub_wal``), then the files go: the uploads (sealed), the plaintext copies left
@@ -48,7 +48,8 @@ WORD = "RESET"
 # so a new table has to be put in one list or the other.
 WIPED_TABLES = (  # children before parents (foreign keys are on)
     "chat_messages", "chat_threads", "cover_letters", "fit_results", "job_duplicates", "jobs", "documents", "letter_blocks",
-    "letter_templates", "pins", "company_sources", "search_runs", "search_schedules", "user_profile", "dealbreakers", "search_profile",
+    "letter_templates",  # (retired, backend/db.py RETIRED_TABLES; a child of workspaces, so it goes before them)
+    "pins", "company_sources", "search_runs", "search_schedules", "user_profile", "dealbreakers", "search_profile",
     "http_cache", "workspaces", "site_mappings", "sessions", "recovery_codes", "user_keys",
     # an install that wasn't started since the update may still have these (backend/db.py RETIRED_TABLES)
     "auth_tokens", "admin_key_grants", "admin_audit", "membership_grants", "memberships", "email_prefs", "commute_cache",
@@ -125,7 +126,7 @@ def wipe() -> dict[str, int]:
             files += 1
         except OSError as exc:
             log.warning("Could not delete an upload: %s", exc.__class__.__name__)
-    from backend.letter_templates import remove_temp_folders  # (a cover letter a crashed PDF conversion left)
+    from backend.letter_pdf import remove_temp_folders  # (a cover letter a crashed PDF conversion left)
 
     remove_temp_folders()
     key_file = keys.key_file_path()

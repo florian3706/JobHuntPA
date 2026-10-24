@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Contrast of every theme's colour pairs that the app actually uses together (WCAG 2.2 AA).
 
-    python3 tools/theme_contrast.py            # report every theme; exit 1 if any pair fails
+    python3 tools/theme_contrast.py            # report every AA theme; exit 1 if any of its pairs fails
     python3 tools/theme_contrast.py --all      # also list the pairs that pass
+    python3 tools/theme_contrast.py --exact    # also report the exact palettes (never fails on them)
 
 Reads frontend/themes.css (one block of custom properties per theme) and checks the pairs listed
 in PAIRS below against their AA minimum: 4.5:1 for text (1.4.3), 3:1 for the parts of controls and
@@ -10,6 +11,11 @@ graphics people need to see (1.4.11: focus rings, field borders, selected fills,
 Tinted backgrounds such as ``color-mix(in srgb, var(--warn) 12%, transparent)`` are composited over
 the ground they sit on. tests/test_accessibility.py runs the same check, so a theme change that drops
 a pair below AA fails the tests.
+
+Only the themes flagged ``aa: true`` in THEMES (frontend/common.js) are held to AA: they carry the picker's
+"WCAG 2.0 AA" badge. The family themes' exact palettes (the plain ids, each with an "-aa" sibling) are
+offered as their projects publish them; ``--exact`` lists how they do, and the tests check that the flagged
+set is exactly the set of themes that pass.
 
 When you style something with a new combination of tokens, add it to PAIRS.
 """
@@ -21,21 +27,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 THEMES_CSS = ROOT / "frontend" / "themes.css"
+COMMON_JS = ROOT / "frontend" / "common.js"
 
 TEXT = 4.5  # 1.4.3: text and images of text (all text in the app is under 18.66px bold / 24px)
 UI = 3.0  # 1.4.11: user interface components and graphical objects
 
 GROUNDS = ("bg", "panel", "card", "field")  # page, chrome, cards, wells (inputs, score badges)
 
-# (foreground token, background, minimum, where it is used). A background is a token, or
+# (foreground token, background, minimum, where it is used, optional). A background is a token, or
 # (token, percent, ground) for color-mix(in srgb, var(--token) percent%, transparent) laid on a ground.
-PAIRS: list[tuple[str, object, float, str]] = []
+# An optional pair is checked only in the themes that set both its slots (the --lbl-* label fills).
+PAIRS: list[tuple[str, object, float, str, bool]] = []
 
 
-def _add(fgs, bgs, minimum, where):
+def _add(fgs, bgs, minimum, where, optional=False):
     for fg in fgs:
         for bg in bgs:
-            PAIRS.append((fg, bg, minimum, where))
+            PAIRS.append((fg, bg, minimum, where, optional))
 
 
 # Text on the grounds
@@ -60,9 +68,19 @@ _add(["text", "muted", "accent-text"], [("accent", 16, "panel")], TEXT, "your me
 # Non-text contrast
 _add(["focus"], GROUNDS, UI, "keyboard focus ring")
 _add(["focus"], [("accent", 10, "bg"), ("warn", 12, "panel"), ("warn", 12, "card")], UI, "focus ring on the bulk-action bar and on notices")
-_add(["accent"], GROUNDS, UI, "selected tab, chip and map mode; checked boxes and radio buttons; progress bar")
+# The edge of an --accent fill. --accent-edge is --accent itself in every theme but Vanilla Dark, where the fill
+# (#008013) is under 3:1 on the grounds and the fill's 1 px border in --accent-edge is what people see.
+_add(["accent-edge"], GROUNDS, UI, "edge of --accent fills: primary buttons, selected tab, chip and map mode, "
+     "switches, progress bar (drawn in --accent-edge)")
+_add(["check"], GROUNDS, UI, "checked boxes and radio buttons, pressed chips")
+_add(["on-check"], ["check"], TEXT, "the tick in a checked box, the text of a pressed chip")
+_add(["warn-fill"], ("bg", "panel", "card"), UI, "caution borders and icons (notices, caution labels)")
+# Filled status labels (the Vanilla themes); elsewhere these slots are unset and labels are outlined text
+for _kind in ("neu", "pos", "cau", "neg", "inf", "spe"):
+    _add([f"lbl-{_kind}-fg"], [f"lbl-{_kind}-bg"], TEXT, "filled status labels", optional=True)
 _add(["border-strong"], ("bg", "panel", "card"), UI, "borders of text fields, selects, tag inputs and checkboxes")
 _add(["ok", "quiet", "special", "info", "warn"], ["bg"], UI, "map legend swatches (job dots and pin rings)")
+_add(["special"], ("card", "panel"), UI, "the border of special status labels (home pins, a summary document); their word is --text")
 
 _COLOR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)")
 
@@ -118,9 +136,30 @@ def over(fg, bg):
     return tuple(a * f + (1 - a) * g for f, g in zip(fg[:3], bg[:3])) + (1.0,)
 
 
+_VAR = re.compile(r"^var\(\s*--([\w-]+)\s*(?:,[^)]*)?\)$")
+
+
+def is_set(tokens: dict[str, str], name: str) -> bool:
+    """Whether the theme gives the slot a colour (directly or through var()); ``initial`` leaves it unset."""
+    for _ in range(10):
+        value = tokens.get(name, "").strip()
+        ref = _VAR.match(value)
+        if not ref:
+            return bool(_COLOR.search(value))
+        name = ref.group(1)
+    return False
+
+
 def token(tokens: dict[str, str], name: str):
     if name not in tokens:
         raise KeyError(f"--{name} is not defined")
+    for _ in range(10):  # a fallback slot such as --check: var(--accent)
+        ref = _VAR.match(tokens[name].strip())
+        if not ref:
+            break
+        name = ref.group(1)
+        if name not in tokens:
+            raise KeyError(f"--{name} is not defined")
     found = _COLOR.search(tokens[name])
     if not found:
         raise ValueError(f"--{name}: {tokens[name]!r} is not a colour")
@@ -142,12 +181,24 @@ def describe(bg) -> str:
     return f"{bg[0]} {bg[1]}% over {bg[2]}" if isinstance(bg, tuple) else bg
 
 
-def check(css: str | None = None) -> list[dict]:
-    """Every (theme, pair) with its ratio and whether it meets its minimum."""
+def aa_themes(js: str | None = None) -> set[str]:
+    """The theme ids flagged ``aa: true`` in THEMES (common.js), "system" left out (it is a choice, not a block)."""
+    js = js if js is not None else COMMON_JS.read_text(encoding="utf-8")
+    return {m.group(1) for m in re.finditer(r"\{ id: '([\w-]+)'[^}]*\baa: true\b[^}]*\}", js)} - {"system"}
+
+
+def check(css: str | None = None, only: set[str] | None = None) -> list[dict]:
+    """Every (theme, pair) with its ratio and whether it meets its minimum: the AA-flagged themes, or ``only``
+    (pass every theme id in themes.css to see them all)."""
     themes = parse_themes(css if css is not None else THEMES_CSS.read_text(encoding="utf-8"))
+    wanted = aa_themes() if only is None else only
     rows = []
     for theme, tokens in themes.items():
-        for fg, bg, minimum, where in PAIRS:
+        if theme not in wanted:
+            continue
+        for fg, bg, minimum, where, optional in PAIRS:
+            if optional and not all(is_set(tokens, t) for t in (fg, bg if isinstance(bg, str) else bg[0])):
+                continue
             back = resolve(tokens, bg)
             value = ratio(over(token(tokens, fg), back), back)
             rows.append({"theme": theme, "fg": fg, "bg": describe(bg), "ratio": value, "min": minimum,
@@ -155,17 +206,31 @@ def check(css: str | None = None) -> list[dict]:
     return rows
 
 
+def passing_themes(css: str | None = None) -> set[str]:
+    """Every theme in themes.css whose pairs all meet AA, flagged or not."""
+    css = css if css is not None else THEMES_CSS.read_text(encoding="utf-8")
+    everything = set(parse_themes(css))
+    failing = {r["theme"] for r in check(css, only=everything) if not r["ok"]}
+    return everything - failing
+
+
 def main() -> int:
-    rows = check()
-    show_all = "--all" in sys.argv
+    css = THEMES_CSS.read_text(encoding="utf-8")
+    flagged = aa_themes()
+    rows = check(css, only=flagged)
     failed = [r for r in rows if not r["ok"]]
+    if "--exact" in sys.argv:  # the exact palettes, reported but never failing the run
+        rows += check(css, only=set(parse_themes(css)) - flagged)
+    show_all = "--all" in sys.argv
     for theme in dict.fromkeys(r["theme"] for r in rows):
         mine = [r for r in rows if r["theme"] == theme and (show_all or not r["ok"])]
         n_fail = sum(not r["ok"] for r in rows if r["theme"] == theme)
-        print(f"{theme}: {'all pass' if not n_fail else f'{n_fail} below AA'}")
+        kind = "" if theme in flagged else " (exact palette, not held to AA)"
+        print(f"{theme}{kind}: {'all pass' if not n_fail else f'{n_fail} below AA'}")
         for r in mine:
             print(f"   {'ok  ' if r['ok'] else 'FAIL'} --{r['fg']} on {r['bg']}: {r['ratio']:.2f} (needs {r['min']}) {r['where']}")
-    print(f"{len(rows)} pairs in {len({r['theme'] for r in rows})} themes; {len(failed)} below AA.")
+    checked = [r for r in rows if r["theme"] in flagged]
+    print(f"{len(checked)} pairs in {len({r['theme'] for r in checked})} AA themes; {len(failed)} below AA.")
     return 1 if failed else 0
 
 

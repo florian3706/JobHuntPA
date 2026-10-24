@@ -18,8 +18,8 @@ bounded on the way in (backend/import_file.py) and stored as data; pages show it
 
 **What an import does.** Each picked workspace becomes a new workspace of the signed-in account (nothing is merged
 into an existing one), named as in the file, or with " (imported 2026-10-13)" when the name is taken, then ", 2", ", 3".
-Documents (originals sealed again under this account's key), cover letter blocks, the cover letter template (sealed
-again too, when it is one the app can fill), jobs, chats, the search setup, pins, sources (with their
+Documents (originals sealed again under this account's key, and which of them is the letter template), cover letter
+blocks, jobs, chats, the search setup, pins, sources (with their
 page layouts; never one on the local network or this computer) and schedule come with it. The account's saved job-site
 layouts come in for the sites it has none for. A job whose address the shared pool already has is linked to that posting, with the workspace's own
 values on top; any other job is a private job. Nothing is written to the pool. Company research from the file is
@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 from backend import commute, docs, mapping_format, schedule, source_bulk
 from backend.db import (
     JOB_CONTENT,
+    LETTER_TEMPLATE_KIND,
     ChatMessage,
     ChatThread,
     CompanyProfile,
@@ -58,7 +59,6 @@ from backend.db import (
     FitResult,
     Job,
     LetterBlock,
-    LetterTemplate,
     Pin,
     Posting,
     SearchSchedule,
@@ -256,7 +256,7 @@ def too_large_unpacked() -> AuthProblem:
 def counts(ws: WorkspaceIn) -> dict:
     """What the file holds for a workspace (the check's list). An import says what it brought in instead."""
     return {"jobs": sum(1 for j in ws.jobs if j.duplicate_of is None), "documents": len(ws.documents),
-            "letter_blocks": len(ws.letter_blocks), "letter_template": int(ws.letter_template is not None),
+            "letter_blocks": len(ws.letter_blocks),
             "chats": len(ws.chats), "cover_letters": sum(1 for j in ws.jobs if j.cover_letter is not None),
             "sources": len(ws.sources), "pins": len(ws.pins)}
 
@@ -315,7 +315,8 @@ class Importer:
         self.db, self.user_id, self.data, self.archive = db, user_id, data, archive
         self.stored: list[str] = []   # uploads sealed so far (deleted again if the import fails)
         self.company_keys: set[str] = set()
-        self.totals = {"jobs": 0, "documents": 0, "chats": 0, "originals": 0, "templates": 0}
+        self.document_ids: dict[int, int] = {}  # the workspace being imported: its documents' new ids by ref
+        self.totals = {"jobs": 0, "documents": 0, "chats": 0, "originals": 0}
 
     def run(self, picked: list[int], today: date) -> dict:
         taken = {_fold(w.name) for w in self.db.query(Workspace).filter(Workspace.owner_id == self.user_id)}
@@ -354,7 +355,7 @@ class Importer:
     def workspace(self, ws: int, data: WorkspaceIn) -> dict:
         """Writes one workspace's rows; returns what it brought in (as ``counts`` names them)."""
         db = self.db
-        made = {"jobs": 0, "documents": 0, "letter_blocks": 0, "letter_template": 0, "chats": 0, "cover_letters": 0,
+        made = {"jobs": 0, "documents": 0, "letter_blocks": 0, "chats": 0, "cover_letters": 0,
                 "sources": 0, "pins": len(data.pins)}
         pin_ids: dict[int, int] = {}  # (pins first: a starting point names its pin's new row)
         for p in data.pins:
@@ -400,8 +401,11 @@ class Importer:
                 sources[s.ref] = row
         made["documents"] = self.documents(ws, data)
         made["letter_blocks"] = self.letter_blocks(ws, data.letter_blocks)
-        made["letter_template"] = self.letter_template(ws, data.letter_template)
         db.flush()
+        if data.letter_template is not None and data.letter_template in self.document_ids:
+            template = db.get(Document, self.document_ids[data.letter_template])
+            if template is not None and template.kind == LETTER_TEMPLATE_KIND and template.stored_name:
+                db.get(Workspace, ws).letter_template_id = template.id
         jobs = self.jobs(ws, data, {ref: row.id for ref, row in sources.items()}, made)
         made["chats"] = self.chats(ws, data, jobs)
         return made
@@ -430,6 +434,7 @@ class Importer:
         for d in data.documents:
             if d.summary_of:
                 rows[d.ref].summary_of = [rows[r].id for r in d.summary_of if r in rows and r != d.ref] or None
+        self.document_ids = {ref: row.id for ref, row in rows.items()}
         self.totals["documents"] += len(rows)
         return len(rows)
 
@@ -439,26 +444,6 @@ class Importer:
                                     tags=clean_tags(b.tags), created_at=b.created_at or utcnow(),
                                     updated_at=b.updated_at or b.created_at or utcnow()))
         return len(items)
-
-    def letter_template(self, ws: int, item) -> int:
-        """The cover letter template, sealed again under a new name: only when its file is in the zip and is a
-        template this app can fill (the same check as an upload)."""
-        from backend.letter_templates import FILENAME_MAX, TemplateError, check_template
-
-        name = self.archive.original(item.original) if item is not None else None
-        if name is None or self.archive.infos[name].file_size > docs.MAX_UPLOAD_BYTES:
-            return 0
-        content = self.archive.read(name, docs.MAX_UPLOAD_BYTES)
-        try:
-            check_template(content, item.filetype)
-        except TemplateError:
-            return 0
-        stored = docs.save_upload(content)
-        self.stored.append(stored)
-        self.totals["templates"] += 1
-        self.db.add(LetterTemplate(workspace_id=ws, filename=(item.filename or "").strip()[:FILENAME_MAX] or "Template",
-                                   filetype=item.filetype, stored_name=stored, created_at=item.created_at or utcnow()))
-        return 1
 
     def _postings(self, data: WorkspaceIn) -> dict[str, Posting]:
         """The pool's postings for the jobs' addresses (looked up, never written)."""
@@ -521,8 +506,8 @@ class Importer:
                                  error=f.error, profile_hash=f.profile_hash, model=f.model, created_at=f.created_at or now))
             if j.cover_letter is not None:
                 c = j.cover_letter
-                db.add(CoverLetter(job_id=job.id, text=c.text, instructions=c.instructions, edited=c.edited,
-                                   model=c.model, reasoning_effort=c.reasoning_effort, created_at=c.created_at or now,
+                db.add(CoverLetter(job_id=job.id, text=c.text, draft_text=c.draft_text, instructions=c.instructions,
+                                   edited=c.edited, model=c.model, reasoning_effort=c.reasoning_effort, created_at=c.created_at or now,
                                    updated_at=c.updated_at or c.created_at or now))
                 made["cover_letters"] += 1
         made["jobs"] = sum(1 for job in rows.values() if job.duplicate_of is None)
@@ -711,7 +696,7 @@ def run_import(pick: str = Query(..., max_length=4000), upload: tuple[AuthUser, 
         importer.undo_uploads()
         raise
     t = importer.totals
-    log.info("user %s imported %d workspace(s): %d jobs, %d documents (%d original files), %d cover letter templates, "
-             "%d chats, research for %d companies, %d job sites' layouts", user.id, len(result["workspaces"]), t["jobs"],
-             t["documents"], t["originals"], t["templates"], t["chats"], result["companies"], result["site_mappings"])
+    log.info("user %s imported %d workspace(s): %d jobs, %d documents (%d original files), %d chats, research for %d "
+             "companies, %d job sites' layouts", user.id, len(result["workspaces"]), t["jobs"], t["documents"],
+             t["originals"], t["chats"], result["companies"], result["site_mappings"])
     return result

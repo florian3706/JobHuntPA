@@ -21,7 +21,6 @@ from backend.db import (
     Document,
     Job,
     LetterBlock,
-    LetterTemplate,
     Posting,
     SessionLocal,
     Workspace,
@@ -188,7 +187,7 @@ class ExportFileTypesTest(Base):
     def test_only_the_chosen_types_are_written(self):
         names = list(entries(self.export(formats=["docx"])))
         self.assertTrue(any(n.endswith(".docx") for n in names))
-        uploads = ("/Original files/", "/Cover letter template/")  # (files as they were uploaded)
+        uploads = ("/Original files/",)  # (files as they were uploaded)
         self.assertFalse(any(n.endswith((".md", ".odt")) for n in names if not any(u in n for u in uploads)))
         default = list(entries(self.export()))
         self.assertFalse(any(n.endswith((".docx", ".odt")) for n in default if not any(u in n for u in uploads)))
@@ -266,7 +265,6 @@ class RoundTripTest(Base):
         self.assertEqual(listed[0]["jobs"], 7)  # (the merged copy isn't counted)
         self.assertEqual((listed[0]["documents"], listed[0]["chats"], listed[0]["cover_letters"]), (3, 1, 1))
         self.assertEqual(listed[0]["letter_blocks"], 2)
-        self.assertEqual(listed[0]["letter_template"], 1)
         r = self.do_import(blob)
         self.assertEqual(r.status_code, 200, r.text)
         made = r.json()["workspaces"][0]
@@ -274,8 +272,6 @@ class RoundTripTest(Base):
         self.assertEqual(made["name"], f"My job search (imported {today})")
         self.assertEqual(self.workspaces()[:-1], before, "nothing was merged into the old workspace")
         self.assertEqual(made["letter_blocks"], 2)
-        self.assertEqual(made["letter_template"], 1)
-        self.assertEqual(self.expected()["letter_template"]["filename"], "MARK-template-bob.docx")
         self.assertEqual(len(self.expected()["letter_blocks"]), 2, "the snapshot holds the planted blocks")
         self.assertEqual(self.snapshot(made["id"]), self.expected())
         # the original file came back byte for byte, sealed under a new name
@@ -287,11 +283,6 @@ class RoundTripTest(Base):
                 self.assertEqual(len(new), 1)
                 self.assertNotEqual(new[0].stored_name, old[0].stored_name)
                 self.assertEqual(docs.read_upload(new[0].stored_name), self.upload)
-                # ... and so did the cover letter template
-                old_t = db.query(LetterTemplate).filter(LetterTemplate.workspace_id == self.bob.workspace_id).one()
-                new_t = db.query(LetterTemplate).filter(LetterTemplate.workspace_id == made["id"]).one()
-                self.assertNotEqual(new_t.stored_name, old_t.stored_name)
-                self.assertEqual(docs.read_upload(new_t.stored_name), self.template)
         finally:
             db.close()
 
@@ -549,55 +540,59 @@ class LetterBlockTest(Base):
 
 
 class LetterTemplateTest(Base):
+    """The letter template is one of the documents; the import file names it by its ``ref`` (``letter_template``)."""
+
+    def setUp(self):
+        super().setUp()
+        self.template = test_export.template_docx("MARK-templatebody-bob")
+        with helpers.client(self.bob.email) as c:
+            r = c.post("/api/documents", data={"kind": "letter_template"},
+                       files={"file": ("MARK-template-bob.docx", self.template, "application/octet-stream")})
+        self.assertEqual(r.status_code, 200, r.text)
+
     def made(self, blob) -> dict:
         r = self.do_import(blob)
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()["workspaces"][0]
 
-    def rows(self, ws_id) -> list:
+    def current(self, ws_id):
+        """(filename, kind, the sealed file's bytes) of the workspace's letter template, or None."""
         db = SessionLocal()
         try:
             with helpers.as_account(self.bob):
-                return [(t.filename, t.filetype) for t in db.query(LetterTemplate).filter(LetterTemplate.workspace_id == ws_id)]
+                template_id = db.get(Workspace, ws_id).letter_template_id
+                d = db.get(Document, template_id) if template_id else None
+                return None if d is None else (d.filename, d.kind, docs.read_upload(d.stored_name))
         finally:
             db.close()
 
-    def test_a_file_without_a_template_or_without_its_file_brings_none(self):
+    def test_the_template_comes_back_and_is_chosen(self):
+        made = self.made(self.export())
+        self.assertEqual(made["documents"], 4)
+        self.assertEqual(self.current(made["id"]), ("MARK-template-bob.docx", "letter_template", self.template))
+        self.assertEqual(self.current(self.bob.workspace_id), self.current(made["id"]), "the old one is still there")
+
+    def test_no_pointer_or_an_older_shape_brings_the_plain_layout(self):
         blob = self.export()
         data = self.import_data(blob)
-        del data["workspaces"][0]["letter_template"]
-        made = self.made(self.replace_import_file(blob, data))
-        self.assertEqual((made["letter_template"], self.rows(made["id"])), (0, []))
+        data["workspaces"][0]["letter_template"] = None
+        self.assertIsNone(self.current(self.made(self.replace_import_file(blob, data))["id"]))
+        # a development build wrote the template as an object: it is ignored, the import still works
         data["workspaces"][0]["letter_template"] = {"filename": "x.docx", "filetype": ".docx", "original": "../x.docx"}
         made = self.made(self.replace_import_file(blob, data))
-        self.assertEqual((made["letter_template"], self.rows(made["id"])), (0, []))
+        self.assertIsNone(self.current(made["id"]))
+        self.assertEqual(made["documents"], 4)
+        del data["workspaces"][0]["letter_template"]
+        self.assertIsNone(self.current(self.made(self.replace_import_file(blob, data))["id"]))
 
-    def test_a_file_that_isnt_a_template_is_left_out(self):
+    def test_a_pointer_to_a_document_that_isnt_a_template_is_ignored(self):
         blob = self.export()
         data = self.import_data(blob)
-        path = data["workspaces"][0]["letter_template"]["original"]
-        files = entries(blob)
-        name = next(n for n in files if n.endswith(path))
-        import docx
-
-        document = docx.Document()
-        document.add_paragraph("no marker in this one")
-        out = io.BytesIO()
-        document.save(out)
-        files[name] = out.getvalue()
-        made = self.made(zip_of(files))
-        self.assertEqual((made["letter_template"], self.rows(made["id"])), (0, []))
-        files[name] = b"PK\x03\x04 broken"
-        self.assertEqual(self.made(zip_of(files))["letter_template"], 0)
-
-    def test_a_wrong_type_is_refused_and_the_name_is_kept(self):
-        blob = self.export()
-        data = self.import_data(blob)
-        data["workspaces"][0]["letter_template"]["filetype"] = ".exe"
-        self.assertEqual(self.check(self.replace_import_file(blob, data)).status_code, 422)
-        data["workspaces"][0]["letter_template"]["filetype"] = ".docx"
-        made = self.made(self.replace_import_file(blob, data))
-        self.assertEqual(self.rows(made["id"]), [("MARK-template-bob.docx", ".docx")])
+        ws = data["workspaces"][0]
+        ws["letter_template"] = next(d["ref"] for d in ws["documents"] if d["kind"] == "resume")
+        self.assertIsNone(self.current(self.made(self.replace_import_file(blob, data))["id"]))
+        ws["letter_template"] = 9999  # no such document
+        self.assertIsNone(self.current(self.made(self.replace_import_file(blob, data))["id"]))
 
 
 class ShapeTest(Base):
@@ -947,8 +942,7 @@ class RefusalTest(Base):
         with self.assertLogs("backend.data_import", level="INFO") as logs:
             self.assertEqual(self.do_import(blob).status_code, 200)
         logged = "\n".join(logs.output)
-        self.assertRegex(logged, r"user \d+ imported 1 workspace\(s\): 7 jobs, 3 documents \(1 original files\), 1 cover letter "
-                                 r"templates, 1 chats")
+        self.assertRegex(logged, r"user \d+ imported 1 workspace\(s\): 7 jobs, 3 documents \(1 original files\), 1 chats")
         self.assertNotIn("MARK", logged)
         self.assertNotIn("My job search", logged)
 
