@@ -4,7 +4,8 @@ The extension's API contract ("api": 3): docs/design/open-source.md, Part 8 (fir
 §19). Who may call each endpoint:
 
     GET    /api/extension/status    signed in (an extension key or a session): the key's name and expiry (null for a
-                                    session), the account's workspaces and the default one
+                                    session), the account's workspaces and the default one, and the theme chosen for
+                                    the account (null until one is chosen; the extension's popup paints it)
     POST   /api/extension/preview   signed in, any workspace of the account (X-Workspace): the address a save would
                                     store, and the workspace's job with that address if it has one. Stores nothing.
     POST   /api/extension/jobs      signed in, as above: stores the job as the workspace's own (201), or updates the
@@ -65,6 +66,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from backend import crypto, job_source, sessions
+from backend.account import public_prefs
 from backend.adapters.base import Posting
 from backend.adapters.seek import JOB_URL as SEEK_JOB_URL
 from backend.db import PROJECT_ROOT, AuthSession, Job, UserKeys, Workspace, get_db, scrub_wal, utcnow
@@ -478,7 +480,8 @@ NO_TITLE = "No job title was found on this page. Type one in, then save."
 
 @router.get("/status")
 def status(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)):
-    """"Test connection" and the workspace list. Signed in (a key or a session)."""
+    """"Test connection", the workspace list and the account's theme (``theme``: the id saved by Settings > Theme,
+    null until one is chosen), which the extension's popup and options page paint. Signed in (a key or a session)."""
     spaces = [{"id": w.id, "name": w.name}
               for w in db.query(Workspace).filter(Workspace.owner_id == user.id).order_by(Workspace.id)]
     label = expires = None
@@ -487,7 +490,8 @@ def status(user: AuthUser = Depends(current_user), db: Session = Depends(get_db)
         if row is not None and row.user_id == user.id:
             label, expires = _label_of(row), _iso(_expires(row))
     return {"ok": True, "api": API_VERSION, "app_version": APP_VERSION, "label": label, "expires_at": expires,
-            "workspaces": spaces, "default_workspace": spaces[0]["id"] if spaces else None}
+            "workspaces": spaces, "default_workspace": spaces[0]["id"] if spaces else None,
+            "theme": public_prefs(db, user.id)["theme"]}
 
 
 @router.post("/preview")

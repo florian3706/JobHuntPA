@@ -973,7 +973,9 @@ Each source brings in at most 60 new full ads per search; the rest follow on the
 
 ## Browser extension
 
-The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your current tab to JobHuntPA:
+The JobHuntPA extension for **Chrome** or **Firefox** adds the page in your current tab to JobHuntPA. From version
+1.4.0 of the extension it also looks like JobHuntPA: its popup and options page paint the theme you chose in Settings
+(the choice is saved to your account, and the extension asks for it each time you open the popup).
 
 - **Add as a job**: the extension reads the ad you are looking at, shows what it found (title, employer,
   location, salary, employment type, work mode, description) so you can correct it, and saves it as your own

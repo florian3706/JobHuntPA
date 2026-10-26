@@ -822,9 +822,12 @@ a general message.
 
 `GET /api/extension/status`: `{"ok": true, "api": 3, "app_version": "1.13.0", "label": <the key's name>,
 "expires_at": "2027-10-09T12:00:00Z", "workspaces": [{"id": 1, "name": "My job search"}, ...],
-"default_workspace": 1}`. `label` and `expires_at` are null for a session. `default_workspace` is the account's first
-workspace (the one used without `X-Workspace`), null when it has none (`workspaces` is then `[]`). `expires_at` moves
-on with use (60 days without use, a year at most). `expires_at` here and the mappings' `updated_at` (8.8) are ISO
+"default_workspace": 1, "theme": "vanilla-dark-aa"}`. `label` and `expires_at` are null for a session. `default_workspace`
+is the account's first workspace (the one used without `X-Workspace`), null when it has none (`workspaces` is then
+`[]`). `expires_at` moves on with use (60 days without use, a year at most). `theme` (added after 2.1.0) is the theme chosen
+for the account (Settings > Theme; `GET /api/account/prefs` gives the same), one of the ids in `THEMES`
+(frontend/common.js), or null until one is chosen; the extension's popup and options page paint it (`system` follows
+the device between Vanilla Light and Vanilla Dark), and an older extension ignores the field. `expires_at` here and the mappings' `updated_at` (8.8) are ISO
 8601 UTC with `Z` and no fraction; a source's `last_run` (8.5) is not.
 
 ## 8.4 Jobs (unchanged from api 2)

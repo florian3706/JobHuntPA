@@ -284,6 +284,15 @@ class KeysTest(Base):
         self.assertEqual((r.status_code, r.json()["code"]), (401, "token_invalid"))
         self.assertEqual(c.delete(f"/api/extension/keys/{made['id']}").status_code, 404)
 
+    def test_status_carries_the_account_theme(self):
+        """The popup paints the theme chosen for the account: null until one is chosen, then the saved id."""
+        acct, c = self.account()
+        k = self.key_client(self.connect(c)["key"])
+        self.assertIsNone(k.get("/api/extension/status").json()["theme"])
+        self.assertEqual(c.put("/api/account/prefs", json={"theme": "catppuccin-mocha-aa"}).status_code, 200)
+        self.assertEqual(k.get("/api/extension/status").json()["theme"], "catppuccin-mocha-aa")
+        self.assertEqual(c.get("/api/extension/status").json()["theme"], "catppuccin-mocha-aa")
+
     def test_a_name_is_needed_and_has_a_limit(self):
         acct, c = self.account()
         for label in ("", "   ", None, "x" * 81):
