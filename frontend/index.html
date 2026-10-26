@@ -400,8 +400,8 @@
         <nav class="tab-jump" aria-label="Documents sections">
           <p class="u-upper u-muted">On this tab</p>
           <ul class="p-side-navigation">
-            <li><a class="p-side-navigation__link" href="#docs-card" aria-current="true">Your documents</a></li>
-            <li><a class="p-side-navigation__link" href="#blocks-card">Cover letter blocks</a></li>
+            <li><a class="p-side-navigation__link" href="#blocks-card" aria-current="true">Cover letter blocks</a></li>
+            <li><a class="p-side-navigation__link" href="#docs-card">Your documents</a></li>
             <li><a class="p-side-navigation__link" href="#add-card">Add a document or note</a></li>
             <li><a class="p-side-navigation__link" href="#summary-card">One summary</a></li>
             <li><a class="p-side-navigation__link" href="#titles-card">Suggested job titles</a></li>
@@ -414,29 +414,6 @@
             <h2>Documents</h2>
             <p class="u-small u-muted">PDF, DOCX, ODT or TXT, or notes you write here. The scorer reads resumes first, then cover letters, then supporting documents and notes.</p>
           </div>
-
-          <div id="docs-size-warning" class="p-notification p-notification--caution docs-size-warning" role="note" hidden></div>
-
-          <section id="docs-card" class="p-card u-stack" aria-labelledby="docs-list-heading">
-            <div class="p-card__head">
-              <h3 id="docs-list-heading" tabindex="-1">Your documents <span class="p-scope-tag">This workspace</span></h3>
-              <span id="docs-count" class="u-small u-muted"></span>
-            </div>
-            <div id="summary-suggest" class="summary-suggest u-stack" hidden></div>
-            <div id="docs-live" class="u-sr" role="status" aria-live="polite"></div>
-            <div id="docs-list" class="p-table-wrap" hidden>
-              <table class="p-table tab-stack-table docs-table">
-                <caption class="u-sr">Your documents</caption>
-                <thead><tr><th scope="col">Document</th><th scope="col">Type</th><th scope="col">Used for scoring</th><th scope="col" class="u-num">Characters</th><th scope="col">Added</th><th scope="col"><span class="u-sr">Actions</span></th></tr></thead>
-              </table>
-            </div>
-            <p id="docs-empty" class="u-muted" hidden>No documents yet. Upload your resume or write a note to get started.</p>
-            <div id="docs-error" class="error" hidden></div>
-            <p class="p-form-help-text"><strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
-              the chat and title suggestions use them, and cover letters never see them. A <strong>Letter template</strong> is only the layout your cover letters are
-              made in: the AI never reads it. Untick "Used for scoring" to keep a document out of every prompt.
-              <strong>Open</strong> shows a document's text, lets you edit a note and make a shorter concise version.</p>
-          </section>
 
           <!-- Cover letter blocks (backend/letter_blocks.py): the form's fields come from blockFormHtml() in letter.js, which
                the cover letter window's "Write this block" form uses too; the list is app.js renderBlocks. -->
@@ -460,6 +437,29 @@
               </div>
             </form>
             <div id="block-list" class="block-list"></div>
+          </section>
+
+          <div id="docs-size-warning" class="p-notification p-notification--caution docs-size-warning" role="note" hidden></div>
+
+          <section id="docs-card" class="p-card u-stack" aria-labelledby="docs-list-heading">
+            <div class="p-card__head">
+              <h3 id="docs-list-heading" tabindex="-1">Your documents <span class="p-scope-tag">This workspace</span></h3>
+              <span id="docs-count" class="u-small u-muted"></span>
+            </div>
+            <div id="summary-suggest" class="summary-suggest u-stack" hidden></div>
+            <div id="docs-live" class="u-sr" role="status" aria-live="polite"></div>
+            <div id="docs-list" class="p-table-wrap" hidden>
+              <table class="p-table tab-stack-table docs-table">
+                <caption class="u-sr">Your documents</caption>
+                <thead><tr><th scope="col">Document</th><th scope="col">Type</th><th scope="col">Used for scoring</th><th scope="col" class="u-num">Characters</th><th scope="col">Added</th><th scope="col"><span class="u-sr">Actions</span></th></tr></thead>
+              </table>
+            </div>
+            <p id="docs-empty" class="u-muted" hidden>No documents yet. Upload your resume or write a note to get started.</p>
+            <div id="docs-error" class="error" hidden></div>
+            <p class="p-form-help-text"><strong>Preferences</strong> say what you want from a job: the scorer names jobs that conflict with them but never counts them as experience,
+              the chat and title suggestions use them, and cover letters never see them. A <strong>Letter template</strong> is only the layout your cover letters are
+              made in: the AI never reads it. Untick "Used for scoring" to keep a document out of every prompt.
+              <strong>Open</strong> shows a document's text, lets you edit a note and make a shorter concise version.</p>
           </section>
 
           <section id="add-card" class="p-card u-stack" aria-labelledby="add-title">
