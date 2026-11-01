@@ -353,22 +353,28 @@ def _with_copies(out: dict, copies: list[Job], boards: Optional[set[str]] = None
 @app.get("/api/jobs")
 def list_jobs(office_slack: int = OfficeSlack,
               include: str = Query("", pattern=r"^((excluded|hidden)(,(excluded|hidden))?)?$"),
+              offset: int = Query(0, ge=0), limit: Optional[int] = Query(None, ge=1, le=5000),
               db: Session = Depends(get_db), ws: int = Depends(current_workspace)):
     """The workspace's jobs (merged copies under ``also_on``). Excluded jobs (by the filters) and
     hidden ones (by the user) are most of them and only sent on demand: ``include=excluded``,
     ``include=hidden`` or both, which the Jobs tab asks for while "Show excluded" / "Show hidden"
     is ticked. ``X-Omitted-Count`` says how many were left out. A job the office-days what-if lets
-    through isn't excluded."""
+    through isn't excluded.
+
+    A long list comes in pages: ``offset`` and ``limit`` cut the listed jobs, which are ordered kept jobs first
+    (then the excluded, then the hidden, by id within each), so the first page is the useful one and the Jobs
+    tab can show it while the rest loads. ``X-Total-Count`` is the number of listed jobs over every page."""
     from backend.pipeline import name_browser_sources, seek_addresses
     from backend.pool import jobs_query
 
-    try:  # once per workspace: jobs the browser extension stored before it said how and where, or as some other
-        name_browser_sources(db, ws)  # site's when they are SEEK's, are put right
-        seek_addresses(db, ws)
-    except Exception as exc:  # never in the way of the list; tried again with the next one
-        db.rollback()
-        log.warning("Putting the browser extension's old jobs right failed in workspace %s: %s", ws,
-                    exc.__class__.__name__)
+    if offset == 0:  # (once per list, not per page)
+        try:  # once per workspace: jobs the browser extension stored before it said how and where, or as some other
+            name_browser_sources(db, ws)  # site's when they are SEEK's, are put right
+            seek_addresses(db, ws)
+        except Exception as exc:  # never in the way of the list; tried again with the next one
+            db.rollback()
+            log.warning("Putting the browser extension's old jobs right failed in workspace %s: %s", ws,
+                        exc.__class__.__name__)
     phash = _profile_hash(db, ws)
     softened = softened_job_ids(db, ws, office_slack)
     leave_out = {"excluded", "hidden"} - set(include.split(","))
@@ -377,10 +383,12 @@ def list_jobs(office_slack: int = OfficeSlack,
     # loaded in full. A job the what-if lets through isn't excluded.
     states = (db.query(Job.id, Job.hidden, Job.excluded_reason)
               .filter(Job.workspace_id == ws, Job.duplicate_of.is_(None)).all())
-    listed_ids = sorted(i for i, hidden, reason in states
-                        if not ("excluded" in leave_out and reason and i not in softened)
-                        and not ("hidden" in leave_out and hidden))
-    omitted_count = len(states) - len(listed_ids)
+    ranked = sorted((bool(hidden), bool(reason and i not in softened), i) for i, hidden, reason in states
+                    if not ("excluded" in leave_out and reason and i not in softened)
+                    and not ("hidden" in leave_out and hidden))
+    total_count = len(ranked)
+    omitted_count = len(states) - total_count
+    listed_ids = [i for _, _, i in ranked[offset:offset + limit if limit else None]]
     listed: list[tuple[Job, Optional[FitResult]]] = []
     copies: dict[int, list[Job]] = {}  # merged copies of the listed jobs, whatever their own state
     for start in range(0, len(listed_ids), 500):
@@ -410,7 +418,7 @@ def list_jobs(office_slack: int = OfficeSlack,
                                               softened),
                                       copies.get(job.id, []), boards)
                          for job, fit in listed],
-                        headers={"X-Omitted-Count": str(omitted_count)})
+                        headers={"X-Omitted-Count": str(omitted_count), "X-Total-Count": str(total_count)})
 
 
 @app.get("/api/jobs/{job_id}")

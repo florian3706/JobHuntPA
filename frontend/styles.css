@@ -1853,6 +1853,7 @@ dialog.modal.modal--letter .modal-box { max-height: calc(100dvh - 32px); }
 .cl-block-name { font-weight: 550; overflow-wrap: anywhere; }
 .cl-block-why { margin: .125rem 0 0 2.125rem; overflow-wrap: anywhere; }
 .cl-block-move { flex: none; flex-wrap: nowrap; gap: .25rem; }
+.jobs-more { margin-top: 1rem; justify-content: center; }
 .cl-review { border-top: 1px solid var(--border); padding-top: .75rem; gap: .5rem; }
 .cl-review-head { margin-bottom: 0; }
 .cl-review p { margin: 0; }

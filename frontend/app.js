@@ -10,6 +10,8 @@ const state = {
   jobsToken: 0, // bumped by every loadJobs, so only the newest answer is shown
   loadedOmit: 'excluded,hidden', // what the loaded list left out ("Show excluded"/"Show hidden" fetch them)
   omittedCount: 0, // how many jobs it left out
+  jobsProgress: null, // { loaded, total } while a long list still comes in pages (loadJobs)
+  listMore: 0, // how many more windows of LIST_CAP jobs the person asked to see (renderJobs "Show more")
   details: new Map(), // job id -> full job (with description)
   filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
   selected: new Set(),
@@ -195,7 +197,10 @@ const slackQuery = () => (state.officeSlack ? `?office_slack=${state.officeSlack
 // reload keeps the list up and says it's updating. An answer for an older request, or for the
 // workspace you've just left, is dropped. Excluded and hidden jobs (usually most of them) are only
 // sent on demand, while "Show excluded" / "Show hidden" is ticked; otherwise only their number comes along.
+// A long list comes in pages of JOBS_PAGE (the server sends the kept jobs first): the first page is shown as
+// soon as it is here and the rest is added as it arrives, with the count saying how far it is.
 const includeFor = () => [state.filter.showExcluded && 'excluded', state.filter.showHidden && 'hidden'].filter(Boolean);
+const JOBS_PAGE = 2000;
 
 async function loadJobs() {
   const token = ++state.jobsToken;
@@ -205,27 +210,40 @@ async function loadJobs() {
   state.jobsRefreshing = state.jobsStatus === 'ready';
   if (state.jobsStatus === 'error') state.jobsStatus = 'loading';
   renderJobs();
-  let jobs, omittedCount;
-  try {
-    const q = new URLSearchParams();
-    if (include.length) q.set('include', include.join(','));
-    if (state.officeSlack) q.set('office_slack', state.officeSlack);
-    const res = await apiResponse(`/api/jobs?${q}`);
-    jobs = res.data;
-    omittedCount = Number(res.headers.get('X-Omitted-Count')) || 0;
-  } catch (e) {
-    if (token !== state.jobsToken || ws !== state.ws) return;
-    state.jobsRefreshing = false;
-    if (state.jobsStatus === 'loading') state.jobsStatus = 'error';
-    showError($('#jobs-error'), `Could not load jobs: ${e.message}. Reload the page to try again.`);
-    renderJobs();
-    return;
+  const stale = () => token !== state.jobsToken || ws !== state.ws;
+  const loaded = [];
+  let total = null;
+  while (total === null || loaded.length < total) {
+    let res;
+    try {
+      const q = new URLSearchParams();
+      if (include.length) q.set('include', include.join(','));
+      if (state.officeSlack) q.set('office_slack', state.officeSlack);
+      q.set('offset', loaded.length);
+      q.set('limit', JOBS_PAGE);
+      res = await apiResponse(`/api/jobs?${q}`);
+    } catch (e) {
+      if (stale()) return;
+      state.jobsRefreshing = false;
+      state.jobsProgress = null;
+      if (state.jobsStatus === 'loading') state.jobsStatus = 'error';
+      showError($('#jobs-error'), loaded.length
+        ? `Could not load the rest of the jobs (${loaded.length} of ${total} are here): ${e.message}. Reload the page to try again.`
+        : `Could not load jobs: ${e.message}. Reload the page to try again.`);
+      renderJobs();
+      return;
+    }
+    if (stale()) return;
+    loaded.push(...res.data);
+    total = Number(res.headers.get('X-Total-Count')) || loaded.length;
+    if (!res.data.length) total = loaded.length; // (an empty page: the list ended early; never loop on it)
+    state.jobs = loaded;
+    state.loadedOmit = omit;
+    state.omittedCount = Number(res.headers.get('X-Omitted-Count')) || 0;
+    state.jobsStatus = 'ready';
+    state.jobsProgress = loaded.length < total ? { loaded: loaded.length, total } : null;
+    if (loaded.length < total) renderJobs(); // (the first pages: shown while the rest loads)
   }
-  if (token !== state.jobsToken || ws !== state.ws) return;
-  state.jobs = jobs;
-  state.loadedOmit = omit;
-  state.omittedCount = omittedCount;
-  state.jobsStatus = 'ready';
   state.jobsRefreshing = false;
   const ids = new Set(state.jobs.map((j) => j.id));
   state.selected.forEach((id) => { if (!ids.has(id)) state.selected.delete(id); });
@@ -253,6 +271,7 @@ function storedView() {
 function setView(view) {
   if (!VIEWS.includes(view)) view = 'cards';
   state.view = view;
+  state.listMore = 0;
   if (view !== 'board') state.listView = view;
   try { localStorage.setItem(VIEW_KEY, view); } catch { /* private mode: this page keeps it */ }
   if (view === 'board') state.selected.clear(); // the board has no tick boxes
@@ -321,7 +340,7 @@ function renderStatusChips() {
     b.setAttribute('aria-pressed', String(state.filter.status === val));
     const text = val === 'all' ? `<span class="p-chip__lead">${label}</span>` : esc(label);
     b.innerHTML = state.jobsStatus === 'ready' ? `${text} <span class="p-chip__n">${n}</span>` : text; // no "0" while loading
-    b.addEventListener('click', () => { state.filter.status = val; renderJobs(); });
+    b.addEventListener('click', () => { state.filter.status = val; state.listMore = 0; renderJobs(); });
     box.appendChild(b);
   });
   // The chips are redrawn: keep keyboard focus on the same one.
@@ -349,6 +368,7 @@ function readFilter(key) {
 // A filter control changed: excluded and hidden jobs are fetched on demand (see loadJobs), the rest is a redraw.
 function filterChanged(key) {
   readFilter(key);
+  state.listMore = 0;
   const f = state.filter;
   const fetch = (key === 'showExcluded' && f.showExcluded && state.loadedOmit.includes('excluded'))
     || (key === 'showHidden' && f.showHidden && state.loadedOmit.includes('hidden'));
@@ -368,6 +388,7 @@ function clearFilters() {
     if (el.type === 'checkbox') el.checked = FILTER_DEFAULT[key]; else el.value = FILTER_DEFAULT[key];
     readFilter(key);
   });
+  state.listMore = 0;
   if (state.officeSlack) setOfficeSlack(0); else renderJobs(); // setOfficeSlack reloads (and redraws)
   announce('All filters cleared.');
 }
@@ -468,15 +489,21 @@ function renderJobs() {
     drawJobMarkers();
     return;
   }
-  const jobs = visibleJobs();
-  // Bulk actions only ever apply to jobs on screen: drop selections the filters now hide.
+  const matching = visibleJobs();
+  // A long list is drawn LIST_CAP jobs at a time ("Show more" below it): thousands of cards at once took
+  // seconds to build. The board caps its columns itself. The map and the filters still see every matching job.
+  const cap = view === 'board' ? matching.length : LIST_CAP * (1 + state.listMore);
+  const jobs = matching.length > cap ? matching.slice(0, cap) : matching;
+  // Bulk actions only ever apply to jobs on screen: drop selections the filters (or the window) now hide.
   const shown = new Set(jobs.map((j) => j.id));
   state.selected.forEach((id) => { if (!shown.has(id)) state.selected.delete(id); });
   // The view is redrawn: keep keyboard focus on the same control of the same job.
   const focusBack = box.contains(document.activeElement) ? focusFinder(document.activeElement) : null;
-  $('#jobs-empty').hidden = jobs.length !== 0;
-  const hidden = state.jobs.length - jobs.length + state.omittedCount;
-  setText($('#jobs-count'), `${jobs.length} shown${hidden ? ` · ${hidden} hidden by filters` : ''}${state.jobsRefreshing ? ' · updating…' : ''}`);
+  $('#jobs-empty').hidden = matching.length !== 0;
+  const hidden = state.jobs.length - matching.length + state.omittedCount;
+  const p = state.jobsProgress;
+  setText($('#jobs-count'), `${jobs.length < matching.length ? `${jobs.length} of ${matching.length}` : matching.length} shown${
+    hidden ? ` · ${hidden} hidden by filters` : ''}${p ? ` · loading… ${p.loaded} of ${p.total}` : state.jobsRefreshing ? ' · updating…' : ''}`);
   if (view === 'cards') {
     box.innerHTML = '';
     jobs.forEach((job) => box.appendChild(renderJobCard(job)));
@@ -485,9 +512,32 @@ function renderJobs() {
   } else {
     renderBoard(box, jobs);
   }
+  renderMoreButton(matching.length - jobs.length);
   if (focusBack) (focusBack() || $('#tab-jobs')).focus({ preventScroll: true });
   renderBulkBar();
   drawJobMarkers();
+}
+
+const LIST_CAP = 200;
+
+// "Show N more" under the cards or the table when the window ends before the matching jobs do.
+function renderMoreButton(left) {
+  const wrap = $('#jobs-more-wrap');
+  wrap.hidden = left <= 0;
+  if (left <= 0) return;
+  const n = Math.min(left, LIST_CAP);
+  $('#jobs-more').textContent = `Show ${n} more`;
+  setText($('#jobs-more-left'), `${left} more match${left === 1 ? 'es' : ''} the filters`);
+}
+
+function showMoreJobs() {
+  const first = LIST_CAP * (1 + state.listMore); // the index of the first job the next window adds
+  state.listMore += 1;
+  renderJobs();
+  const box = state.view === 'table' ? $('#jobs-table tbody') : $('#jobs-list');
+  const next = box?.children[first];
+  (next?.querySelector('a, button, select, input') || $('#jobs-more')).focus({ preventScroll: true });
+  next?.scrollIntoView({ block: 'start' });
 }
 
 /* ---------- pieces shared by the views ---------- */
@@ -664,6 +714,7 @@ function renderTable(box, jobs) {
   box.querySelectorAll('[data-sort]').forEach((b) => b.addEventListener('click', () => {
     state.filter.sort = b.dataset.sort;
     $('#sort-by').value = b.dataset.sort; // the Sort menu stays in step
+    state.listMore = 0;
     renderJobs();
   }));
   $('#table-select-all').addEventListener('change', (e) => selectAllShown(e.target.checked));
@@ -905,8 +956,11 @@ async function showDescription(job) {
   } catch (e) { toast(`Could not load job: ${e.message}`, 'err'); }
 }
 
-function selectAllShown(on) {
-  visibleJobs().forEach((j) => (on ? state.selected.add(j.id) : state.selected.delete(j.id)));
+function selectAllShown(on) { // (the jobs on screen: the window of the matching ones, not every match)
+  $$('#jobs-list [data-job-id], #jobs-table tbody [data-job-id]').forEach((el) => {
+    const id = Number(el.dataset.jobId);
+    if (on) state.selected.add(id); else state.selected.delete(id);
+  });
   renderJobs();
 }
 
@@ -1122,14 +1176,15 @@ async function rescoreJob(job, btn) {
 function initJobs() {
   state.view = storedView();
   state.listView = state.view === 'board' ? 'cards' : state.view;
-  $('#filter-search').addEventListener('input', debounce((e) => { state.filter.q = e.target.value; renderJobs(); }, 150));
+  $('#filter-search').addEventListener('input', debounce((e) => { state.filter.q = e.target.value; state.listMore = 0; renderJobs(); }, 150));
   $('#filter-min-score').addEventListener('input', () => filterChanged('minScore'));
   $('#filter-mode').addEventListener('change', () => filterChanged('mode'));
   $('#filter-max-dist').addEventListener('input', () => filterChanged('maxDist'));
   $('#filter-show-excluded').addEventListener('change', () => filterChanged('showExcluded'));
   $('#filter-show-closed').addEventListener('change', () => filterChanged('showClosed'));
   $('#filter-show-hidden').addEventListener('change', () => filterChanged('showHidden'));
-  $('#sort-by').addEventListener('change', (e) => { state.filter.sort = e.target.value; renderJobs(); });
+  $('#sort-by').addEventListener('change', (e) => { state.filter.sort = e.target.value; state.listMore = 0; renderJobs(); });
+  $('#jobs-more').addEventListener('click', showMoreJobs);
   $('#office-slack').addEventListener('change', (e) => setOfficeSlack(Number(e.target.value)));
   // The Filters panel: a disclosure; Done and Escape close it and put the focus back on the button.
   $('#filters-toggle').addEventListener('click', () => setFiltersOpen(!state.filtersOpen));

@@ -162,6 +162,11 @@ reason and can be shown with *Show excluded*.
 - Sort by score, newest first, or distance.
 - *Show excluded*, *Show closed*, *Show hidden*, *Hide possible ghost jobs*.
 - A count of jobs shown and how many the filters hide.
+- A long list is drawn 200 jobs at a time, with **Show more** under the cards or the table (the board caps
+  its columns itself); the count reads *200 of 2,345 shown*. Sorting, the search and the map still take every
+  matching job. The list itself comes from the server in pages of 2,000, kept jobs first: the first page shows
+  while the rest loads (*loading… 2,000 of 9,000*), which is what makes *Show excluded* usable with thousands
+  of excluded ads.
 
 **Bulk actions**
 

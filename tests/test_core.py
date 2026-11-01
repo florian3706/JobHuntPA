@@ -2364,4 +2364,18 @@ class JobListExcludedTest(unittest.TestCase):
             self.assertEqual([a["title"] for a in listed[0]["also_on"]], ["Copy"])
             for bad in ("closed", "excluded,closed", "excluded,"):
                 self.assertEqual(c.get(f"/api/jobs?include={bad}", headers=h).status_code, 422, bad)
+            # Pages: kept jobs first, then the excluded, then the hidden (by id within each), and the total over
+            # every page, so the Jobs tab shows the first page while the rest loads.
+            def page(query):
+                r = c.get(f"/api/jobs{query}", headers=h)
+                self.assertEqual(r.status_code, 200, r.text)
+                return [j["title"] for j in r.json()], r.headers["X-Total-Count"], r.headers["X-Omitted-Count"]
+            self.assertEqual(page("?include=excluded,hidden&limit=2"), (["Kept", "Out"], "4", "0"))
+            self.assertEqual(page("?include=excluded,hidden&limit=2&offset=2"), (["Hybrid", "Hidden"], "4", "0"))
+            self.assertEqual(page("?include=excluded,hidden&limit=2&offset=4"), ([], "4", "0"))
+            self.assertEqual(page("?include=excluded&offset=1"), (["Out", "Hybrid"], "3", "1"))
+            self.assertEqual(page("?office_slack=1&limit=5"), (["Kept", "Hybrid"], "2", "2"))
+            self.assertEqual(page(""), (["Kept"], "1", "3"))
+            for bad in ("limit=0", "limit=5001", "offset=-1"):
+                self.assertEqual(c.get(f"/api/jobs?{bad}", headers=h).status_code, 422, bad)
             c.delete(f"/api/workspaces/{ws}")
