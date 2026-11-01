@@ -13,7 +13,8 @@ function renderBrowser(st) {
   $$('.browser-size').forEach((el) => setText(el, String(st.size_mb)));
   const offer = $('#browser-offer');
   if (offer) offer.hidden = !(st.needed && !st.declined && !st.available) && !st.installing;
-  const state = st.available ? 'Ready: JavaScript-only careers pages can be read.'
+  const state = st.available && st.using === 'system' ? `Ready: JavaScript-only careers pages are read with the Chromium installed on this computer (${st.system}). Nothing needs downloading.`
+    : st.available ? 'Ready: JavaScript-only careers pages can be read.'
     : st.installing ? 'Downloading the browser… This takes a few minutes; you can keep using JobHuntPA.'
       : st.error ? st.error
         : 'Not downloaded. Careers pages that need JavaScript say so in their test result until it is.';

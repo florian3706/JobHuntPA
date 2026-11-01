@@ -316,7 +316,7 @@ class PoliteClient:
         self._within(0)
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=True, **browser_component.launch_options())
                 try:
                     page = browser.new_page(user_agent=USER_AGENT)
                     guard = _guard_requests(url)

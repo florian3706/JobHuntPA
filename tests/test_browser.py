@@ -20,6 +20,9 @@ from backend.app import app
 from backend.db import AppSetting, SessionLocal
 from backend.scraping import http
 
+REAL_SYSTEM_BROWSER = browser.system_browser  # (the tests below stand in for it: the machine's own Chrome never counts)
+UNSUPPORTED_OUTPUT = b"Failed to install browsers\nError: ERROR: Playwright does not support chromium on debian11-arm64\n"
+
 
 def forget_setting():
     db = SessionLocal()
@@ -38,6 +41,7 @@ class BrowserBase(unittest.TestCase):
         self.data = self.top / "browsers"
         for patch in (mock.patch.object(browser, "folder", return_value=self.data),
                       mock.patch.object(browser, "_playwright_cache", return_value=self.top / "no-cache"),
+                      mock.patch.object(browser, "system_browser", return_value=None),
                       mock.patch.dict(os.environ, {}, clear=False)):
             patch.start()
             self.addCleanup(patch.stop)
@@ -46,13 +50,13 @@ class BrowserBase(unittest.TestCase):
         self.addCleanup(forget_setting)
         browser._installing, browser._error = False, None
 
-    def fake_download(self, ok=True):
+    def fake_download(self, ok=True, stderr=b""):
         def run(cmd, env, **kwargs):
             self.assertEqual(cmd[1:], ["-m", "playwright", "install", "chromium"])
             self.assertEqual(env[browser.ENV], str(self.data))
             if ok:
                 (self.data / "chromium-1234").mkdir(parents=True)
-            return subprocess.CompletedProcess(cmd, 0 if ok else 1, b"", b"")
+            return subprocess.CompletedProcess(cmd, 0 if ok else 1, b"", stderr)
         return mock.patch.object(browser.subprocess, "run", side_effect=run)
 
     def wait_done(self):
@@ -157,6 +161,52 @@ class EndpointsTest(BrowserBase):
         self.assertFalse(st["available"])
         self.assertIn("couldn't be downloaded", st["error"])
         self.assertNotIn(browser.ENV, os.environ)
+
+    def test_a_system_without_a_playwright_build_says_so_and_what_to_do(self):
+        """A Debian 11 Raspberry Pi: Playwright has no Chromium for debian11-arm64. The error names the system and
+        says to install the system's own Chromium, or that the one found is used (nothing more to do)."""
+        with helpers.client() as c, self.fake_download(ok=False, stderr=UNSUPPORTED_OUTPUT):
+            c.post("/api/settings/browser/install")
+            self.wait_done()
+            st = c.get("/api/settings/browser").json()
+        self.assertFalse(st["available"])
+        self.assertEqual(st["error"], "Playwright has no browser for this system (debian11-arm64). Install your system's "
+                                      "Chromium or Chrome and JobHuntPA uses that (Debian, Ubuntu and Raspberry Pi OS: "
+                                      "sudo apt install chromium), then reload this page.")
+        with helpers.client() as c, self.fake_download(ok=False, stderr=UNSUPPORTED_OUTPUT), \
+                mock.patch.object(browser, "system_browser", return_value="/usr/bin/chromium-browser"):
+            self.assertEqual(c.post("/api/settings/browser/install").status_code, 200)  # (there is a browser: nothing runs)
+            browser.start_download()  # (as if asked before the system's own was installed)
+            self.wait_done()
+            st = c.get("/api/settings/browser").json()
+        self.assertEqual((st["available"], st["using"], st["system"]), (True, "system", "/usr/bin/chromium-browser"))
+        self.assertEqual(st["error"], "Playwright has no browser for this system (debian11-arm64). JobHuntPA uses the "
+                                      "Chromium installed on this computer instead (/usr/bin/chromium-browser); nothing "
+                                      "more is needed.")
+        self.assertEqual(browser._unsupported(b"x\nERROR: Playwright does not support chromium on ubuntu18.04-x64.\ny"),
+                         "ubuntu18.04-x64")
+        self.assertIsNone(browser._unsupported(b"Error: download failed"))
+
+    def test_a_chromium_installed_on_the_computer_is_used_when_playwrights_own_is_not_there(self):
+        with mock.patch.object(browser, "system_browser", return_value="/usr/bin/chromium-browser"):
+            self.assertTrue(browser.available())
+            self.assertFalse(browser.downloaded())
+            self.assertEqual(browser.launch_options(), {"executable_path": "/usr/bin/chromium-browser"})
+            st = browser.state()
+            self.assertEqual((st["available"], st["downloaded"], st["using"], st["needed"]), (True, False, "system", False))
+            (self.data / "chromium-1234").mkdir(parents=True)  # Playwright's own, once downloaded, is preferred
+            self.assertEqual(browser.launch_options(), {})
+            self.assertEqual(browser.state()["using"], "downloaded")
+        self.assertEqual(browser.launch_options(), {})  # (its own and no system browser: nothing to add)
+        shutil.rmtree(self.data)
+        self.assertIsNone(browser.state()["using"])
+        # How the computer's own is found: the usual names on the PATH, in order.
+        with mock.patch.object(browser.shutil, "which", side_effect=lambda n: "/usr/bin/chromium-browser" if n == "chromium-browser" else None), \
+                mock.patch.object(browser.platform, "system", return_value="Linux"):
+            self.assertEqual(REAL_SYSTEM_BROWSER(), "/usr/bin/chromium-browser")
+        with mock.patch.object(browser.shutil, "which", return_value=None), \
+                mock.patch.object(browser.platform, "system", return_value="Linux"):
+            self.assertIsNone(REAL_SYSTEM_BROWSER())
 
     def test_one_download_at_a_time(self):
         with mock.patch.object(browser.threading, "Thread") as thread:

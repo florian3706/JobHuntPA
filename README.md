@@ -460,6 +460,8 @@ your data.
   them with a browser component (Chromium, about 180 MB), which it downloads into your data folder only when
   you click **Download the browser** here, or **Download it** when the Search setup tab offers it after a careers
   page needed it. Until then (and if you choose **Not now**) those pages say in their test result what they need.
+  A Chromium or Chrome already installed on the computer is used instead when Playwright's own isn't there (the
+  card says which it uses).
 - **Server key** and **Unencrypted copies of data** (below).
 
 <img src="docs/screenshots/settings-install.png" alt="The Settings tab's AI provider card (provider, model, API address and key, reasoning levels, Test connection), the Fit scores card and the AI usage card" width="760">
@@ -1255,7 +1257,10 @@ the database and `server-keys.json` must stay together, and you still sign in wi
   browser component into your data folder. On Linux, if it downloads but doesn't start, Chromium is missing
   some system libraries: from the source, `sudo .venv/bin/python -m playwright install-deps chromium` installs
   them; otherwise install your system's packages for Chromium (Ubuntu and Debian: `sudo apt install libnss3
-  libatk-bridge2.0-0 libgbm1 libxkbcommon0 libasound2`, on Ubuntu 24.04 `libasound2t64`).
+  libatk-bridge2.0-0 libgbm1 libxkbcommon0 libasound2`, on Ubuntu 24.04 `libasound2t64`). If the card says
+  *Playwright has no browser for this system* (an older Debian on a Raspberry Pi, for one), install your system's
+  own Chromium (`sudo apt install chromium`; Raspberry Pi OS has `chromium-browser` already) and JobHuntPA uses
+  that instead.
 
 ## Accessibility
 
