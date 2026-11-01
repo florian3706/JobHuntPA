@@ -679,6 +679,9 @@ The panel never shows anyone's jobs, documents or searches.
   - Colour-vision themes, each in light and dark: Protanomaly, Deuteranomaly, Tritanomaly,
     Dichromacy, Monochromacy.
 - Saved with the account, encrypted, and remembered by the browser; applied before first paint.
+- Page width (Settings > Page width, a setting of the browser): *Standard*, a 1200 px reading width in the middle of
+  the window, or *Full width*, the whole window, so wide tables such as the documents list need less sideways
+  scrolling. Applied before first paint, on the job pages too; open pages follow a change.
 
 ## 26. Accessibility
 

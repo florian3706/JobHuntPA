@@ -185,6 +185,28 @@ class ThemeContrastTest(unittest.TestCase):
             self.assertIn('matches ? "vanilla-dark-aa" : "vanilla-light-aa";', src, page)
             self.assertNotIn('|| "dark"', src, page)
 
+    def test_the_page_width_is_a_setting_of_the_browser_applied_before_first_paint(self):
+        """Settings > Page width: Standard (the 1200 px reading width) or Full width, saved like the theme in this browser
+        and set on <html> by every page's first-paint script, so a wide page never starts narrow and jumps."""
+        common = (FRONTEND / "common.js").read_text(encoding="utf-8")
+        self.assertIn("const LAYOUT_KEY = 'jobhunt.layout';", common)
+        self.assertIn("const LAYOUTS = ['standard', 'full'];", common)
+        self.assertIn("document.documentElement.setAttribute('data-layout', layout);", common)
+        self.assertIn("if (e.key === LAYOUT_KEY) applyLayout();", common, "open pages follow a change in another tab")
+        for page in PAGES:
+            src = (FRONTEND / page).read_text(encoding="utf-8")
+            self.assertIn('if (localStorage.getItem("jobhunt.layout") === "full") w = "full";', src, page)
+            self.assertIn('document.documentElement.setAttribute("data-layout", w);', src, page)
+            self.assertLess(src.index("jobhunt.layout"), src.index("styles.css"), f"{page}: set before the CSS loads")
+        css = (FRONTEND / "styles.css").read_text(encoding="utf-8")
+        for part in (".main", ".header-inner", ".p-tabs__list", ".job-page .jp-main", ".job-page .jp-summary__inner"):
+            self.assertRegex(css, r'html\[data-layout="full"\] %s[^{]*\{[^}]*max-width: none' % re.escape(part), part)
+        index = (FRONTEND / "index.html").read_text(encoding="utf-8")
+        self.assertIn('href="#layout-card">Page width</a>', index, "the Settings jump list reaches the card")
+        self.assertIn('<div id="layout-picker-slot"></div>', index)
+        app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+        self.assertIn("$('#layout-picker-slot').replaceWith(createLayoutPicker());", app)
+
 
 class FontsTest(unittest.TestCase):
     """Ubuntu Sans and Ubuntu Sans Mono ship in frontend/fonts/ with their licence and come from this server; the only

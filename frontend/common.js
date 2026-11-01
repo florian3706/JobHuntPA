@@ -1094,14 +1094,67 @@ function themeColor(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim() || '#888888';
 }
 
-/* Applies the stored theme now, then follows it: a change in another tab (the dashboard or a job page),
-   and the device's light/dark switch while the theme is System. Every page calls this once. */
+/* Applies the stored theme and page width now, then follows them: a change in another tab (the dashboard or
+   a job page), and the device's light/dark switch while the theme is System. Every page calls this once. */
 function initTheme() {
-  window.addEventListener('storage', (e) => { if (e.key === THEME_KEY) applyTheme(); });
+  window.addEventListener('storage', (e) => {
+    if (e.key === THEME_KEY) applyTheme();
+    if (e.key === LAYOUT_KEY) applyLayout();
+  });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (storedTheme() === 'system') applyTheme();
   });
   applyTheme();
+  applyLayout();
+}
+
+/* The page width, a setting of this browser like the theme (a phone and a wide monitor want different ones):
+   'standard' keeps the header, tabs and content at a reading width in the middle of the window; 'full' lets them
+   use the whole window, so wide tables need less sideways scrolling. Each page's first-paint script sets the
+   attribute before the CSS loads; styles.css keys the widths on html[data-layout="full"]. */
+const LAYOUT_KEY = 'jobhunt.layout';
+const LAYOUTS = ['standard', 'full'];
+const DEFAULT_LAYOUT = 'standard';
+
+function storedLayout() {
+  try {
+    const v = localStorage.getItem(LAYOUT_KEY);
+    return LAYOUTS.includes(v) ? v : DEFAULT_LAYOUT;
+  } catch { return DEFAULT_LAYOUT; }
+}
+
+function applyLayout(layout = storedLayout()) {
+  document.documentElement.setAttribute('data-layout', layout);
+  document.dispatchEvent(new CustomEvent('layoutchange', { detail: { layout } }));
+}
+
+/* Saves the page width for this browser and applies it (open pages follow through the storage event). */
+function setLayout(layout) {
+  if (!LAYOUTS.includes(layout)) return;
+  try { localStorage.setItem(LAYOUT_KEY, layout); } catch { /* still applies to this page */ }
+  applyLayout(layout);
+}
+
+/* The page-width chooser (Settings > Page width): one radio group, applied and saved on change. */
+function createLayoutPicker({ name = 'layout' } = {}) {
+  const root = document.createElement('fieldset');
+  root.className = 'p-field layout-picker';
+  const current = storedLayout();
+  const options = [
+    ['standard', 'Standard', 'A reading width in the middle of the window.'],
+    ['full', 'Full width', 'The whole window: wide tables need less sideways scrolling.'],
+  ];
+  root.innerHTML = `<legend class="u-sr">Page width</legend>${options.map(([id, label, note]) => `
+    <label class="check-field layout-option">
+      <input type="radio" name="${esc(name)}" value="${id}"${id === current ? ' checked' : ''}>
+      <span><span class="layout-option__label">${label}</span> <span class="u-small u-muted">${note}</span></span>
+    </label>`).join('')}`;
+  root.addEventListener('change', (e) => { if (e.target.name === name) setLayout(e.target.value); });
+  document.addEventListener('layoutchange', (e) => {  // another tab changed it
+    const input = root.querySelector(`input[value="${e.detail.layout}"]`);
+    if (input && !input.checked) input.checked = true;
+  });
+  return root;
 }
 
 /* A theme's miniature: a header bar with a selected tab, and a job card with a title, a line of muted

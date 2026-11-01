@@ -3256,6 +3256,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   initModal();
   initTheme();
   $('#theme-picker-slot').replaceWith(createThemePicker({ legend: 'Theme', onChange: saveAccountTheme }));
+  $('#layout-picker-slot').replaceWith(createLayoutPicker());
+  document.addEventListener('layoutchange', () => state.map?.invalidateSize()); // the map's box changes width
   // Map markers are drawn in script, so they take the new theme's colours here.
   document.addEventListener('themechange', () => { if (state.map) { drawPins(); drawJobMarkers(); } });
   $('#source-form').addEventListener('submit', addSource);

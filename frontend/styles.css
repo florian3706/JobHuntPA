@@ -347,6 +347,12 @@ th[scope="row"] { border-bottom-color: var(--border); vertical-align: top; } /* 
 
 .main { max-width: 1200px; margin: 0 auto; padding: 20px; }
 
+/* Page width (Settings > Page width, common.js setLayout; the first-paint script sets the attribute). Full width
+   lets the header, tabs and content use the whole window; the job page's parts are below, with its rules. */
+html[data-layout="full"] .p-navigation__row, html[data-layout="full"] .p-tabs__list, html[data-layout="full"] .tabs,
+html[data-layout="full"] .p-strip, html[data-layout="full"] .header-inner, html[data-layout="full"] .main { max-width: none; }
+html[data-layout="full"] .app-header .tabs { padding-left: 1.25rem; }
+
 /* Generic */
 /* (.card: the .p-card rules above) */
 .muted { color: var(--muted); font-size: .875rem; }
@@ -797,6 +803,12 @@ a.btn { text-decoration: none; display: inline-block; }
 
 /* Header tools: the AI status and Help */
 .header-tools { display: flex; gap: 6px 12px; align-items: center; flex-wrap: wrap; min-width: 0; }
+
+/* Page-width chooser (Settings > Page width, common.js createLayoutPicker): two radios with a line of help each. */
+.layout-picker { gap: .5rem; }
+.layout-option { align-items: flex-start; }
+.layout-option input { margin-top: 3px; }
+.layout-option__label { font-weight: 550; }
 
 /* Theme picker (Settings > Theme, common.js createThemePicker). Each card is a <label> around a native radio;
    its preview carries data-theme, so it is drawn in that theme whatever theme the page is in. */
@@ -1409,6 +1421,8 @@ body.job-page .header-inner { max-width: 1240px; padding-left: 20px; padding-rig
 .job-page .jp-tabs .p-tabs__list { position: relative; overflow-x: auto; scrollbar-width: thin; max-width: 1240px; padding: 0 20px; }
 .job-page .jp-tab-count { margin-left: 6px; }
 .job-page .jp-main { position: relative; max-width: 1240px; margin: 0 auto; padding: 20px; }
+html[data-layout="full"] body.job-page .header-inner, html[data-layout="full"] .job-page .jp-summary__inner,
+html[data-layout="full"] .job-page .jp-tabs .p-tabs__list, html[data-layout="full"] .job-page .jp-main { max-width: none; }
 .job-page .jp-panel:focus-visible { outline-offset: 4px; }
 .job-page .jp-grid { display: grid; gap: 20px; align-items: start; }
 .job-page .jp-grid--rail { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }

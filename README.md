@@ -49,7 +49,7 @@ says which one stood in when the template asks for a font it doesn't have.
 
 ![The cover letter window with a draft for one job](docs/screenshots/cover-letter.png)
 
-**Settings**: the theme, scheduled searches (by themselves at set times on workdays, skipping public
+**Settings**: the theme and the page width (standard or the whole window), scheduled searches (by themselves at set times on workdays, skipping public
 holidays), the AI provider with the Rescore buttons and the AI usage, and the public
 address ([settings for this JobHuntPA](#settings-for-this-jobhuntpa)), and [your account](#your-account)
 (name, password, recovery codes, background access, download your data, import from an export).

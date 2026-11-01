@@ -21,6 +21,10 @@
       } catch (e) {}
       if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark-aa" : "vanilla-light-aa";
       document.documentElement.setAttribute("data-theme", t);
+      // Page width too (Settings > Page width, common.js setLayout): full width or the standard reading width.
+      var w = "standard";
+      try { if (localStorage.getItem("jobhunt.layout") === "full") w = "full"; } catch (e) {}
+      document.documentElement.setAttribute("data-layout", w);
     })();
   </script>
   <link rel="stylesheet" href="./themes.css" />

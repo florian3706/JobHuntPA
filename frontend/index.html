@@ -22,6 +22,10 @@
       } catch (e) {}
       if (t === "system") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "vanilla-dark-aa" : "vanilla-light-aa";
       document.documentElement.setAttribute("data-theme", t);
+      // Page width too (Settings > Page width, common.js setLayout): full width or the standard reading width.
+      var w = "standard";
+      try { if (localStorage.getItem("jobhunt.layout") === "full") w = "full"; } catch (e) {}
+      document.documentElement.setAttribute("data-layout", w);
     })();
   </script>
   <link rel="stylesheet" href="./themes.css" />
@@ -597,6 +601,7 @@
           <p class="u-upper u-muted">On this tab</p>
           <ul class="p-side-navigation">
             <li><a class="p-side-navigation__link" href="#theme-card" aria-current="true">Theme</a></li>
+            <li><a class="p-side-navigation__link" href="#layout-card">Page width</a></li>
             <li><a class="p-side-navigation__link" href="#schedule-card">Scheduled searches</a></li>
             <li><a class="p-side-navigation__link" href="#llm-card">AI provider</a></li>
             <li><a class="p-side-navigation__link" href="#scores-card">Fit scores</a></li>
@@ -621,6 +626,14 @@
               minimums; the others are a project's exact colours, shown as they are, beside their AA version. Labels or
               shapes always go with colours.</p>
             <div id="theme-picker-slot"></div>
+          </div>
+
+          <div id="layout-card" class="p-card u-stack">
+            <h3 id="layout-heading">Page width <span class="p-scope-tag">This browser</span></h3>
+            <p class="p-form-help-text">Standard keeps the page at a reading width in the middle of a wide screen. Full width
+              uses the whole window, so wide tables such as the documents list need less sideways scrolling. The choice
+              applies at once, to the job pages too, and is remembered in this browser.</p>
+            <div id="layout-picker-slot"></div>
           </div>
 
           <div id="schedule-card" class="p-card u-stack">
