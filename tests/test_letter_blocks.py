@@ -304,6 +304,99 @@ class SuggestTest(unittest.TestCase):
         call2.assert_not_called()
 
 
+class ReviewTest(unittest.TestCase):
+    """POST .../cover-letter/blocks/review: the AI's view of the blocks the user ticked, in their order."""
+
+    def review(self, c, ws, ids, reply):
+        from unittest import mock
+        import backend.scorer as sc
+
+        sent = {}
+
+        def fake_call(messages, cfg, json_mode=True):
+            sent.update(messages=messages, json_mode=json_mode, cfg=cfg)
+            return reply
+        with mock.patch.object(sc, "call_model", side_effect=fake_call), mock.patch.dict(os.environ, LLM_ENV):
+            r = c.post(f"/api/jobs/{ws.job_id}/cover-letter/blocks/review", json={"block_ids": ids}, headers=ws.h)
+        return r, sent
+
+    def test_prompt_has_the_choice_in_order_and_the_answer_is_cleaned(self):
+        import json
+
+        with helpers.client() as c:
+            ws, other = _Workspace(c), _Workspace(c)
+            try:
+                other.block("body", "Theirs", "not mine")
+                o1 = ws.block("opening", "Hello", "Dear {company},")
+                b1 = ws.block("body", "Budget", "I ran a 2M budget.", ["budget"])
+                b2 = ws.block("body", "SQL", "I write SQL.")
+                b3 = ws.block("body", "Long", "x" * 500)
+                reply = json.dumps({
+                    "gaps": [{"requirement": "no title"}, "junk",
+                             {"title": "Stakeholders", "requirement": "Manage “stakeholders”",
+                              "bullets": ["Led a​ steering group of 12 – weekly", "", 5]}],
+                    "feedback": ["“Budget” says it twice", "", 7, "f" * 400] + ["more"] * 10})
+                r, sent = self.review(c, ws, [b2, o1, b2], reply)
+            finally:
+                ws.close()
+                other.close()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIs(sent["json_mode"], True)
+        self.assertGreaterEqual(sent["cfg"]["timeout_s"], 300)
+        self.assertIn("never write sentences for the candidate", sent["messages"][0]["content"])
+        prompt = sent["messages"][1]["content"]
+        chosen = prompt[prompt.index("=== CHOSEN BLOCKS"):prompt.index("=== OTHER BLOCKS")]
+        self.assertLess(chosen.index(f"[{b2}] (body) SQL\nI write SQL."), chosen.index(f"[{o1}] (opening) Hello\nDear {{company}},"),
+                        "the chosen blocks come in the letter's order, each once")
+        self.assertEqual(chosen.count("(body) SQL"), 1)
+        others = prompt[prompt.index("=== OTHER BLOCKS"):prompt.index("=== JOB AD ===")]
+        self.assertIn(f"[{b1}] (body) Budget - tags: budget\nI ran a 2M budget.", others)
+        self.assertIn("x" * 400 + " [...]", others, "a block left out is shortened")
+        self.assertNotIn("x" * 401, others)
+        self.assertNotIn("not mine", prompt)
+        self.assertIn("RESUME", prompt)
+        out = r.json()
+        self.assertEqual(out["gaps"], [{"title": "Stakeholders", "requirement": 'Manage "stakeholders"',
+                                        "bullets": ["Led a steering group of 12 - weekly"]}])
+        self.assertEqual(out["feedback"], ['"Budget" says it twice', "f" * 300] + ["more"] * 6)
+        self.assertEqual(len(out["feedback"]), 8)
+        b3  # (listed among the others; nothing else to check)
+
+    def test_refusals(self):
+        from unittest import mock
+        import backend.scorer as sc
+
+        with helpers.client() as c:
+            ws, other = _Workspace(c), _Workspace(c)
+            try:
+                b = ws.block("body", "B", "Text")
+                foreign = other.block("body", "Theirs", "not mine")
+                url = f"/api/jobs/{ws.job_id}/cover-letter/blocks/review"
+                with mock.patch.object(sc, "call_model") as call, mock.patch.dict(os.environ, LLM_ENV):
+                    empty = c.post(url, json={"block_ids": []}, headers=ws.h)
+                    foreign_block = c.post(url, json={"block_ids": [b, foreign]}, headers=ws.h)
+                    foreign_job = c.post(url, json={"block_ids": [b]}, headers=other.h)
+                with mock.patch.object(sc, "call_model") as call2, \
+                        mock.patch.dict(os.environ, {"LLM_API_KEY": "", "LLM_BASE_URL": "https://x/v1", "LLM_MODEL": ""}):
+                    no_llm = c.post(url, json={"block_ids": [b]}, headers=ws.h)
+                with mock.patch.object(sc, "call_model", side_effect=sc.ScorerError("HTTP 500")), \
+                        mock.patch.dict(os.environ, LLM_ENV):
+                    failed = c.post(url, json={"block_ids": [b]}, headers=ws.h)
+                prose, _ = self.review(c, ws, [b], "Looks fine to me.")
+            finally:
+                ws.close()
+                other.close()
+        self.assertEqual(empty.status_code, 400)
+        self.assertEqual(foreign_block.status_code, 404)
+        self.assertEqual(foreign_job.status_code, 404)
+        self.assertEqual(no_llm.status_code, 400)
+        self.assertEqual(failed.status_code, 502)
+        self.assertEqual(prose.status_code, 502)
+        self.assertEqual(prose.json()["detail"], "The model's answer was unusable; the letter stands as put together.")
+        call.assert_not_called()
+        call2.assert_not_called()
+
+
 class AssembleHttpTest(unittest.TestCase):
     def test_assemble_save_and_download(self):
         with helpers.client() as c:

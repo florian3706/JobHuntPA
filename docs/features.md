@@ -370,6 +370,13 @@ ranks a job down because of them, and never puts a number on it.
   filled (unknown name or empty value) stays as written and a notice says *Left as written* with the names, to
   fill in before sending. The letter is marked as built from your blocks. Without an AI key the same list
   appears with every block unticked, to choose yourself. Replacing an existing letter asks first.
+- **The AI's view of your choice**: once the letter is put together, the block list stays open and the AI
+  reviews the blocks you ticked, in their order: *Blocks worth writing* then lists what this choice leaves
+  uncovered (with the evidence bullets, as below), and *What the AI makes of your choice* gives short points on
+  the letter as chosen (a block that doesn't fit, two saying the same thing, a better order, a missing opening
+  or closing, length, an unticked block that would fit better). Write a block, tick it and *Assemble letter*
+  again; *Check again* reviews a changed choice without assembling. Nothing in the letter is changed by the
+  review, and without an AI key the letter is put together without one.
 - **Blocks worth writing**: requirements of the ad that your documents show real experience in but no block
   covers (all of them when you have no blocks yet). Each shows a proposed title and *Write this block*, which
   opens a form with bullet points of facts taken from your documents beside the text box. You write the

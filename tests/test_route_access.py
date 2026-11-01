@@ -63,6 +63,7 @@ GET /api/jobs/{job_id}; GET /api/jobs/{job_id}/commute; PATCH /api/jobs/{job_id}
 GET /api/jobs/{job_id}/cover-letter; POST /api/jobs/{job_id}/cover-letter; PUT /api/jobs/{job_id}/cover-letter;
 GET /api/jobs/{job_id}/cover-letter.docx; GET /api/jobs/{job_id}/cover-letter.odt;
 GET /api/jobs/{job_id}/cover-letter.pdf; POST /api/jobs/{job_id}/cover-letter/blocks/assemble;
+POST /api/jobs/{job_id}/cover-letter/blocks/review;
 POST /api/jobs/{job_id}/cover-letter/blocks/suggest; POST /api/jobs/{job_id}/import-page; PUT /api/jobs/{job_id}/office;
 PATCH /api/jobs/{job_id}/status; POST /api/jobs/{job_id}/unmerge; GET /api/llm; POST /api/llm/detect-levels;
 PUT /api/llm/reasoning; GET /api/pins; POST /api/pins; DELETE /api/pins/{pin_id}; PUT /api/pins/{pin_id};

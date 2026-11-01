@@ -9,6 +9,9 @@ paragraphs (backend.letter_blocks).
     GET  /api/jobs/{id}/cover-letter.docx             download as Word
     POST /api/jobs/{id}/cover-letter/blocks/suggest   the AI picks and orders blocks, and names blocks worth writing
     POST /api/jobs/{id}/cover-letter/blocks/assemble  {block_ids}: the blocks' text verbatim, placeholders filled
+    POST /api/jobs/{id}/cover-letter/blocks/review    {block_ids}: the AI's view of that choice: ``gaps`` (what the
+                                                      chosen blocks leave uncovered, with evidence bullets for a block
+                                                      to write) and ``feedback`` (short points on the letter as chosen)
 
 All of them: signed in, the job's workspace. Downloads use the workspace's letter template when it has one
 (backend/letter_files.py; chosen on the Documents tab, kept in ``workspaces.letter_template_id``): a .docx template
@@ -88,6 +91,14 @@ Return JSON: {"blocks": [{"id": <the block's number>, "why": "<short reason>"}],
 - "missing": requirements of the ad that the candidate's documents (or the fit analysis) show real experience for but that no block covers. For each, a short title for the paragraph to write, the requirement it answers, and 2-5 bullets of the evidence as facts taken from the documents (what, where, scale, result): never suggested wording, never anything the documents don't show. An empty list when every evidenced requirement is covered.
 - Plain text only in every string: no markdown."""
 
+REVIEW_SYSTEM_PROMPT = """You review a cover letter the candidate put together, in the given order, from their own pre-written paragraphs ("blocks") for the job below. You never rewrite the blocks and never write sentences for the candidate.
+
+Return JSON: {"gaps": [{"title": "...", "requirement": "...", "bullets": ["..."]}], "feedback": ["..."]}
+
+- "gaps": requirements of the ad that the chosen blocks don't cover but that the candidate's documents (or the fit analysis) show real experience for. For each, a short title for the paragraph to write, the requirement it answers, and 2-5 bullets of the evidence as facts taken from the documents (what, where, scale, result): never suggested wording, never anything the documents don't show. A requirement that one of the OTHER BLOCKS (not chosen) already covers is not a gap: say so under "feedback" instead, naming that block's title. An empty list when the chosen blocks cover every evidenced requirement.
+- "feedback": 2-6 short points on the letter as chosen, most useful first: a block that doesn't fit this job, two blocks saying the same thing, a better order, a missing opening or closing, length (a letter of 250-400 words reads best), a claim the ad doesn't call for, an unchosen block that would fit better. Each point names the block(s) by title. Plain statements, no praise for its own sake.
+- Plain text only in every string: no markdown."""
+
 
 class DraftRequest(BaseModel):
     instructions: Optional[str] = Field(default=None, max_length=2000)
@@ -99,6 +110,10 @@ class SaveRequest(BaseModel):
 
 class AssembleRequest(BaseModel):
     block_ids: list[int] = Field(max_length=40)
+
+
+class ReviewRequest(AssembleRequest):
+    pass
 
 
 def _letter_dict(cl: CoverLetter) -> dict:
@@ -188,12 +203,32 @@ def build_prompt(db: Session, job: Job, instructions: str = "") -> str:
 
 def build_blocks_prompt(db: Session, job: Job, blocks: list[LetterBlock]) -> str:
     """What the model gets to pick blocks: the blocks (or "(none yet)"), the documents, the job ad and the fit."""
+    parts = ["=== BLOCKS ===\n" + (_block_lines(blocks) or "(none yet)")]
+    parts += _documents_section(db, job.workspace_id, required=False)[0]
+    parts.append(_job_section(job))
+    fit = _fit_section(db, job)
+    if fit:
+        parts.append(fit)
+    return "\n\n".join(parts)
+
+
+def _block_lines(blocks: list[LetterBlock], text_limit: Optional[int] = None) -> str:
+    """Blocks for a prompt: ``[id] (kind) title - tags: ...`` then the text (clipped to ``text_limit`` characters)."""
     lines = []
     for b in blocks:
         tags = ", ".join(b.tags or [])
-        lines.append(f"[{b.id}] ({b.kind}) {b.title or '(untitled)'}" + (f" - tags: {tags}" if tags else "")
-                     + f"\n{(b.text or '').strip()}")
-    parts = ["=== BLOCKS ===\n" + ("\n\n".join(lines) or "(none yet)")]
+        text = (b.text or "").strip()
+        if text_limit and len(text) > text_limit:
+            text = text[:text_limit].rstrip() + " [...]"
+        lines.append(f"[{b.id}] ({b.kind}) {b.title or '(untitled)'}" + (f" - tags: {tags}" if tags else "") + f"\n{text}")
+    return "\n\n".join(lines)
+
+
+def build_review_prompt(db: Session, job: Job, chosen: list[LetterBlock], others: list[LetterBlock]) -> str:
+    """What the model gets to review a choice: the chosen blocks in the letter's order, the blocks left out (their text
+    shortened), the documents, the job ad and the fit."""
+    parts = ["=== CHOSEN BLOCKS (the letter, in this order) ===\n" + _block_lines(chosen),
+             "=== OTHER BLOCKS (not chosen) ===\n" + (_block_lines(others, 400) or "(none)")]
     parts += _documents_section(db, job.workspace_id, required=False)[0]
     parts.append(_job_section(job))
     fit = _fit_section(db, job)
@@ -213,8 +248,8 @@ def _clean_letter(text: str) -> str:
 _UNUSABLE = "The model's answer was unusable; pick the blocks yourself."
 
 
-def _answer_object(raw: str) -> dict:
-    """The JSON object the model answered (a fence and trailing commas allowed); 502 when it isn't one."""
+def _answer_object(raw: str, unusable: str = _UNUSABLE) -> dict:
+    """The JSON object the model answered (a fence and trailing commas allowed); 502 (``unusable``) when it isn't one."""
     text = (raw or "").strip()
     fence = re.match(r"^```\w*\s*(.*?)\s*```$", text, re.S)
     if fence:
@@ -228,7 +263,7 @@ def _answer_object(raw: str) -> dict:
         except (ValueError, RecursionError):
             data = None
     if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail=_UNUSABLE)
+        raise HTTPException(status_code=502, detail=unusable)
     return data
 
 
@@ -258,21 +293,33 @@ def parse_suggestion(data: dict, blocks: list[LetterBlock]) -> dict:
         seen.add(bid)
         picked.append((b, _clip(entry.get("why"), 200)))
     picked.sort(key=lambda p: BLOCK_KINDS.index(p[0].kind) if p[0].kind in BLOCK_KINDS else 1)  # stable
-    missing = []
-    for entry in _list(data.get("missing")):
+    return {"picked": [{"id": b.id, "why": why} for b, why in picked],
+            "unpicked": [b.id for b in blocks if b.id not in seen],
+            "missing": _gaps(data.get("missing"))}
+
+
+def _gaps(value) -> list[dict]:
+    """Blocks worth writing, as the model listed them, cleaned and bounded: a title (required), the requirement and
+    up to 6 evidence bullets; at most 8 entries. Anything that isn't a string becomes ""."""
+    gaps = []
+    for entry in _list(value):
         if not isinstance(entry, dict):
             continue
         title = _clip(entry.get("title"), 120)
         if not title:
             continue
-        bullets = [_clip(x, 300) for x in _list(entry.get("bullets"))]  # (anything but a string becomes "")
-        missing.append({"title": title, "requirement": _clip(entry.get("requirement"), 120),
-                        "bullets": [x for x in bullets if x][:6]})
-        if len(missing) == 8:
+        bullets = [_clip(x, 300) for x in _list(entry.get("bullets"))]
+        gaps.append({"title": title, "requirement": _clip(entry.get("requirement"), 120),
+                     "bullets": [x for x in bullets if x][:6]})
+        if len(gaps) == 8:
             break
-    return {"picked": [{"id": b.id, "why": why} for b, why in picked],
-            "unpicked": [b.id for b in blocks if b.id not in seen],
-            "missing": missing}
+    return gaps
+
+
+def parse_review(data: dict) -> dict:
+    """The model's review, cleaned: ``gaps`` as ``missing`` above; ``feedback`` up to 8 plain points of 300 characters."""
+    feedback = [_clip(x, 300) for x in _list(data.get("feedback"))]
+    return {"gaps": _gaps(data.get("gaps")), "feedback": [x for x in feedback if x][:8]}
 
 
 @router.get("/{job_id}/cover-letter")
@@ -350,6 +397,32 @@ def assemble_from_blocks(job_id: int, payload: AssembleRequest, db: Session = De
     db.add(cl)
     db.commit()
     return {**_letter_dict(cl), "unfilled": unfilled}
+
+
+@router.post("/{job_id}/cover-letter/blocks/review")
+def review_blocks(job_id: int, payload: ReviewRequest, db: Session = Depends(get_db),
+                  ws: int = Depends(current_workspace)):
+    """The AI's view of the blocks the user ticked, in their order: what the choice leaves uncovered (``gaps``, blocks
+    worth writing, with evidence bullets) and short points on the letter as chosen (``feedback``). Nothing is saved."""
+    from backend.scorer import ScorerError, call_model, config_problem, get_config
+
+    job = owned(db, Job, job_id, ws, "Job")
+    if not payload.block_ids:
+        raise HTTPException(status_code=400, detail="Tick at least one block.")
+    cfg = {**get_config("cover_letter"), "workspace_id": ws}
+    if config_problem(cfg):
+        raise HTTPException(status_code=400, detail=config_problem(cfg))
+    chosen = [owned(db, LetterBlock, i, ws, "Block") for i in dict.fromkeys(payload.block_ids)]
+    chosen_ids = {b.id for b in chosen}
+    others = [b for b in _workspace_blocks(db, ws) if b.id not in chosen_ids]
+    messages = [{"role": "system", "content": REVIEW_SYSTEM_PROMPT},
+                {"role": "user", "content": build_review_prompt(db, job, chosen, others)}]
+    try:
+        with tasks.track("cover_letter", ws, jobs=[job_id]):
+            raw = call_model(messages, {**cfg, "timeout_s": max(cfg["timeout_s"], 300)}, json_mode=True)
+    except ScorerError as exc:
+        raise HTTPException(status_code=502, detail=llm_providers.user_message(exc))
+    return parse_review(_answer_object(raw, "The model's answer was unusable; the letter stands as put together."))
 
 
 @router.put("/{job_id}/cover-letter")

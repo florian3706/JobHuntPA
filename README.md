@@ -776,7 +776,8 @@ limits on searches. The AI features use the provider and key set on the Settings
 - **Cover letter blocks**: *Build from my blocks* assembles a letter from the paragraphs you wrote on the Documents
   tab (*Cover letter blocks*, with `{company}`, `{role}`, `{location}` and `{date}` filled in from the job): the AI
   picks and orders them, you tick and reorder, and your words are used exactly as written. It also suggests blocks
-  worth writing.
+  worth writing, and once a letter is put together it says what your choice of blocks leaves uncovered and what
+  it makes of the letter as chosen.
 - **Letter templates** (Documents tab): upload a .docx or .odt with your header, footer and signature and a
   `{letter}` marker in a paragraph of its own, as the type **Letter template**, and the downloads are poured into
   it in that paragraph's font (`{date}`, `{company}`, `{job_title}` or `{role}`, `{location}` and `{name}` are

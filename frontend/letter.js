@@ -11,8 +11,10 @@
 
    The other way to a letter is "Build from my blocks" (initLetterBlocks): the AI suggests which of the user's own
    paragraphs (cover letter blocks, backend/letter_blocks.py) fit this job and in what order, and which blocks are
-   worth writing; the user ticks, orders and writes them, and Assemble joins them word for word. The block helpers
-   below are shared with the Documents tab's blocks card (app.js). */
+   worth writing; the user ticks, orders and writes them, and Assemble joins them word for word. The panel then stays
+   open while the AI reviews that choice (blocks/review): the gaps it leaves become the blocks worth writing, and its
+   points on the letter as chosen show under the list. The block helpers below are shared with the Documents tab's
+   blocks card (app.js). */
 const LETTER_FORMATS = [['pdf', 'PDF', '.pdf', 'What most forms want'], ['odt', 'OpenDocument', '.odt', 'Editable'],
   ['docx', 'Word', '.docx', 'Editable']];
 const wordCount = (t) => ((t || '').trim().match(/\S+/g) || []).length;
@@ -437,7 +439,9 @@ async function openLetterWindow(job, host) {
 /* "Build from my blocks": the panel (#cl-blocks) of one job's cover letter window. `rows` is the checklist in display
    order ({ block, ticked, why }); `missing` the blocks worth writing ({ title, requirement, bullets, draft? }: `draft`
    keeps what was typed while the panel is drawn again); `writing` the one whose form is open. When the AI can't be
-   asked (400: no model set up; 502: it failed), the user ticks and orders the blocks themselves. */
+   asked (400: no model set up; 502: it failed), the user ticks and orders the blocks themselves. After Assemble the
+   panel stays open: `review` is the AI's view of the ticked blocks ({ state: checking | done | failed, feedback,
+   note }); its gaps replace `missing`. */
 function initLetterBlocks(job, host, showLetter) {
   const panel = $('#cl-blocks');
   const status = $('#cl-status');
@@ -445,6 +449,8 @@ function initLetterBlocks(job, host, showLetter) {
   let missing = [];
   let writing = null;
   let note = ''; // a message at the top of the panel (HTML, built from escaped text)
+  let review = null;
+  let assembled = false; // a letter was put together from this panel (its Cancel is then Close)
 
   const close = () => {
     panel.hidden = true;
@@ -452,6 +458,8 @@ function initLetterBlocks(job, host, showLetter) {
     rows = [];
     missing = [];
     writing = null;
+    review = null;
+    assembled = false;
   };
 
   // What is typed in the open "Write this block" form, kept before the panel is drawn again or another form opens.
@@ -477,10 +485,12 @@ function initLetterBlocks(job, host, showLetter) {
           </div>
         </li>`;
       }).join('')}</ul>` : '';
+    const reviewed = review?.state === 'done';
     const suggestions = missing.length ? `
       <section class="u-stack cl-missing" aria-labelledby="cl-missing-title">
         <h4 id="cl-missing-title" class="cl-h">Blocks worth writing</h4>
-        <p class="p-form-help-text">This job asks for these, and none of your blocks covers them yet.</p>
+        <p class="p-form-help-text">${reviewed ? 'This job asks for these, and none of the blocks you chose covers them.'
+          : 'This job asks for these, and none of your blocks covers them yet.'}</p>
         <ul class="p-list cl-missing-list">${missing.map((m, i) => `<li class="u-stack cl-missing-item">
           <p class="cl-missing-name"><strong>${esc(m.title)}</strong></p>
           <p class="u-small u-muted">${esc(m.requirement)}</p>
@@ -501,12 +511,53 @@ function initLetterBlocks(job, host, showLetter) {
       ${rows.length ? `<p class="p-form-help-text">Tick the blocks to use and put them in order: they are joined word for word, with ${BLOCK_PLACEHOLDERS} filled in.</p>` : ''}
       ${checklist}
       <div class="u-row">
-        ${rows.length ? '<button id="cl-assemble" class="p-button p-button--positive" type="button" data-focus="assemble">Assemble letter</button>' : ''}
-        <button id="cl-blocks-cancel" class="p-button" type="button" data-focus="cancel">Cancel</button>
+        ${rows.length ? `<button id="cl-assemble" class="p-button p-button--positive" type="button" data-focus="assemble">Assemble letter${assembled ? ' again' : ''}</button>` : ''}
+        <button id="cl-blocks-cancel" class="p-button" type="button" data-focus="cancel">${assembled ? 'Close' : 'Cancel'}</button>
       </div>
+      ${reviewHtml()}
       ${suggestions}`;
     panel.hidden = false;
     restoreFocus(panel, saved);
+  };
+
+  // The AI's view of the ticked blocks, under the list: while it is asked, its points, or why there are none.
+  const reviewHtml = () => {
+    if (!review) return '';
+    let body;
+    if (review.state === 'checking') body = '<p class="u-muted cl-review-wait">Checking the blocks you chose against the job…</p>';
+    else if (review.state === 'failed') body = `<p class="u-muted">${esc(review.note)}</p>`;
+    else if (review.feedback.length) body = `<ul class="p-list cl-feedback">${review.feedback.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`;
+    else body = '<p class="u-muted">Nothing to add: the blocks you chose cover what the ad asks for and your documents show.</p>';
+    return `
+      <section class="u-stack cl-review" aria-labelledby="cl-review-title" aria-busy="${review.state === 'checking'}">
+        <div class="p-card__head cl-review-head">
+          <h4 id="cl-review-title" class="cl-h" tabindex="-1">What the AI makes of your choice</h4>
+          ${review.state === 'checking' ? '' : '<button id="cl-recheck" class="p-button is-dense" type="button" data-focus="recheck">Check again</button>'}
+        </div>
+        ${body}
+      </section>`;
+  };
+
+  // Asks the AI about the ticked blocks (in their order); its gaps become the blocks worth writing.
+  const runReview = async (ids) => {
+    keepDraft();
+    review = { state: 'checking', feedback: [], note: '' };
+    render();
+    try {
+      const res = await api(`/api/jobs/${job.id}/cover-letter/blocks/review`, { method: 'POST', body: JSON.stringify({ block_ids: ids }) });
+      keepDraft();
+      missing = (res.gaps || []).map((g) => ({ ...g }));
+      writing = null;
+      review = { state: 'done', feedback: res.feedback || [], note: '' };
+      render();
+      const n = review.feedback.length;
+      announce(`${missing.length ? `${missing.length} block${missing.length === 1 ? '' : 's'} worth writing. ` : ''}${n ? `${n} point${n === 1 ? '' : 's'} on your choice.` : 'Nothing to add to your choice.'}`);
+    } catch (e) {
+      keepDraft();
+      const detail = e.message.replace(/[.\s]+$/, '');
+      review = { state: 'failed', feedback: [], note: e.status === 400 || e.status === 502 ? `Not checked: ${detail}.` : `Failed: ${e.message}` };
+      render();
+    }
   };
 
   const open = ({ list, picked = [], unpicked = [], gaps = [], message = '' }) => {
@@ -522,6 +573,8 @@ function initLetterBlocks(job, host, showLetter) {
     rows.push(...sortBlocks(list.filter((b) => !used.has(b.id))).map((b) => ({ block: b, ticked: false, why: '' }))); // any the answer left out
     missing = gaps.map((g) => ({ ...g }));
     writing = null;
+    review = null;
+    assembled = false;
     note = message || (rows.length ? '' : `You have no blocks yet. Write the suggested ones below, or on the <a href="${host.docsHref}" data-act="to-docs">Documents tab</a>.`);
     render();
     $('#cl-blocks-title').focus();
@@ -590,27 +643,37 @@ function initLetterBlocks(job, host, showLetter) {
       render();
       panel.querySelector(`[data-focus="write-${i}"]`)?.focus();
     } else if (el.id === 'cl-blocks-cancel') {
+      const wasAssembled = assembled;
       close();
-      status.textContent = '';
+      if (!wasAssembled) status.textContent = '';
       $('#cl-build').focus();
+    } else if (el.id === 'cl-recheck') {
+      const ids = rows.filter((r) => r.ticked).map((r) => r.block.id);
+      if (!ids.length) { status.textContent = 'Tick at least one block.'; announce('Tick at least one block.', true); return; }
+      await runReview(ids);
+      $('#cl-review-title')?.focus?.();
     } else if (el.id === 'cl-assemble') {
       const ids = rows.filter((r) => r.ticked).map((r) => r.block.id);
       if (!ids.length) { status.textContent = 'Tick at least one block.'; announce('Tick at least one block.', true); return; }
       setBusy(el, true);
       status.textContent = 'Putting the letter together…';
+      let l;
       try {
-        const l = await api(`/api/jobs/${job.id}/cover-letter/blocks/assemble`, { method: 'POST', body: JSON.stringify({ block_ids: ids }) });
-        showLetter(l);
-        close();
-        const unfilled = l.unfilled || [];
-        status.textContent = unfilled.length
-          ? `Left as written: ${unfilled.map((n) => `{${n}}`).join(', ')} — fill ${unfilled.length === 1 ? 'it' : 'them'} in before sending.`
-          : `Put together from ${ids.length} block${ids.length === 1 ? '' : 's'}. Check it, then save any edits.`;
-        $('#cl-text').focus();
+        l = await api(`/api/jobs/${job.id}/cover-letter/blocks/assemble`, { method: 'POST', body: JSON.stringify({ block_ids: ids }) });
       } catch (err) {
         setBusy(el, false);
         status.textContent = `Failed: ${err.message}`;
+        return;
       }
+      showLetter(l);
+      assembled = true;
+      const unfilled = l.unfilled || [];
+      status.textContent = (unfilled.length
+        ? `Left as written: ${unfilled.map((n) => `{${n}}`).join(', ')} — fill ${unfilled.length === 1 ? 'it' : 'them'} in before sending.`
+        : `Put together from ${ids.length} block${ids.length === 1 ? '' : 's'}. Check it, then save any edits.`)
+        + ' The AI is looking over your choice, under the list.';
+      $('#cl-text').focus();
+      await runReview(ids); // (draws the panel again: the Assemble button is fresh, no need to unbusy it)
     }
   });
 

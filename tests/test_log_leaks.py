@@ -228,6 +228,10 @@ class FullRun(unittest.TestCase):
             first = re.search(r"\[(\d+)\] \(", prompt)
             text = json_lib.dumps({"blocks": [{"id": int(first.group(1)), "why": "fits"}] if first else [],
                                    "missing": [{"title": "T", "requirement": "R", "bullets": ["B"]}]})
+        if "=== CHOSEN BLOCKS" in prompt:  # the AI reviewing a choice of blocks (backend/cover_letters.py)
+            import json as json_lib
+
+            text = json_lib.dumps({"gaps": [{"title": "T", "requirement": "R", "bullets": ["B"]}], "feedback": ["F"]})
         if "PAGE OUTLINE" in prompt and self.mapping_reply is not None:  # an AI mapping (backend/mappings.py)
             text = self.mapping_reply["careers" if '"list" picks every job entry' in prompt else "job"]
         return _Response(200, {"choices": [{"message": {"content": text}, "finish_reason": "stop"}],
@@ -431,7 +435,8 @@ class FullRun(unittest.TestCase):
         self.assertIn("zqx corp", c.get("/api/companies").json())
 
     def write_letter_blocks(self, c):
-        """A cover letter block, the AI's pick of blocks for a job and a letter put together from them."""
+        """A cover letter block, the AI's pick of blocks for a job, a letter put together from them and the AI's
+        review of that choice."""
         job_id = self.job_id
         r = c.post("/api/letter-blocks", json={"kind": "body", "title": "ZQX block title",
                                                "text": "ZQX block text at {company}", "tags": ["zqx tag"]})
@@ -442,6 +447,9 @@ class FullRun(unittest.TestCase):
         self.assertEqual([p["id"] for p in r.json()["picked"]], [block_id])
         r = c.post(f"/api/jobs/{job_id}/cover-letter/blocks/assemble", json={"block_ids": [block_id]})
         self.assertEqual(r.status_code, 200, r.text)
+        r = c.post(f"/api/jobs/{job_id}/cover-letter/blocks/review", json={"block_ids": [block_id]})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["feedback"], ["F"])
         r = c.get(f"/api/jobs/{job_id}/cover-letter")
         self.assertEqual(r.status_code, 200, r.text)
         self.assertIn("ZQX block text", r.json()["text"])
