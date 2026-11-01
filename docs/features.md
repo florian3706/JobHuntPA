@@ -56,7 +56,10 @@ repositories; this repository holds the server side they talk to.
   2. an RSS or Atom job feed;
   3. schema.org `JobPosting` data embedded in the page;
   4. plain HTML job links, following "next page" links;
-  5. a hidden headless browser (Chromium) for pages that only build their list with JavaScript.
+  5. a hidden headless browser (Chromium) for pages that only build their list with JavaScript: Playwright's own,
+     downloaded into the data folder when a page first needs it and the person agrees (Settings > Browser for
+     JavaScript pages), or else a Chromium or Chrome already installed on the computer (a Raspberry Pi on Debian 11,
+     for one, where Playwright has no build: the card says so and which browser it uses).
 - **Saved pages**: SEEK search or job pages saved from the user's own browser (HTML or MHTML) can be
   imported; a saved job page gives the full description.
 - **Upload full ad**: a SEEK job marked *summary only* can be completed with a saved copy of its page.
@@ -158,7 +161,7 @@ reason and can be shown with *Show excluded*.
 - Minimum score slider (0–100 in steps of 5).
 - Work mode: all, remote, hybrid, onsite, unknown.
 - Maximum distance in km.
-- Status chips.
+- Status chips: the page opens on *to review* (what is left to look at); *All* shows every status.
 - Sort by score, newest first, or distance.
 - *Show excluded*, *Show closed*, *Show hidden*, *Hide possible ghost jobs*.
 - A count of jobs shown and how many the filters hide.

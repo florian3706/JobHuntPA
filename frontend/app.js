@@ -13,7 +13,7 @@ const state = {
   jobsProgress: null, // { loaded, total } while a long list still comes in pages (loadJobs)
   listMore: 0, // how many more windows of LIST_CAP jobs the person asked to see (renderJobs "Show more")
   details: new Map(), // job id -> full job (with description)
-  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'all', sort: 'score' },
+  filter: { q: '', minScore: 0, mode: 'all', maxDist: null, showExcluded: false, showClosed: false, showHidden: false, status: 'to_review', sort: 'score' }, // (the page opens on To review: what is left to look at)
   selected: new Set(),
   profile: null,
   pins: [],
