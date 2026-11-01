@@ -207,6 +207,19 @@ class ThemeContrastTest(unittest.TestCase):
         app = (FRONTEND / "app.js").read_text(encoding="utf-8")
         self.assertIn("$('#layout-picker-slot').replaceWith(createLayoutPicker());", app)
 
+    def test_the_letter_windows_waits_are_shown_and_announced_once_per_step(self):
+        """letter.js startWait: the spinner and bar are decoration (aria-hidden) inside the status live region, the
+        text is what is announced, and every wait has a first step at 0 ms (the box is never left empty)."""
+        src = (FRONTEND / "letter.js").read_text(encoding="utf-8")
+        self.assertIn('<span class="spinner" aria-hidden="true"></span>', src)
+        self.assertIn('<span class="p-progress indeterminate cl-wait__bar" aria-hidden="true">', src)
+        self.assertIn('<p id="cl-status" class="u-small cl-status" role="status"></p>', src)
+        self.assertIn('<p class="u-muted cl-review-wait" role="status"></p>', src)
+        for name in ("DRAFT_STEPS", "CHOOSE_STEPS", "REVIEW_STEPS"):
+            self.assertRegex(src, r"const %s = \[\[0, '" % name, name)
+        self.assertNotIn("'Drafting… this can take a minute.'", src)
+        self.assertIn("return () => { timers.forEach(clearTimeout); box.textContent = ''; };", src)
+
 
 class FontsTest(unittest.TestCase):
     """Ubuntu Sans and Ubuntu Sans Mono ship in frontend/fonts/ with their licence and come from this server; the only

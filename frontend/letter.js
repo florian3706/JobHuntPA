@@ -20,6 +20,28 @@ const LETTER_FORMATS = [['pdf', 'PDF', '.pdf', 'What most forms want'], ['odt', 
 const wordCount = (t) => ((t || '').trim().match(/\S+/g) || []).length;
 const CHEVRON = '<svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"></path></svg>';
 
+/* A wait on the model, shown rather than just said: the status line (or any box) gets a spinner, the text and a
+   sliding bar, and the text moves on to the next step after a while, so a long wait still looks alive. `steps` is
+   [[afterMs, text], ...] with the first at 0. The box is a live region (role=status), so every step is announced:
+   keep them few. Returns stop(), which clears the box. */
+function startWait(box, steps) {
+  const html = (text) => `<span class="cl-wait"><span class="spinner" aria-hidden="true"></span><span class="cl-wait__text">${esc(text)}</span></span>
+    <span class="p-progress indeterminate cl-wait__bar" aria-hidden="true"><span class="p-progress__bar"></span></span>`;
+  box.innerHTML = html(steps[0][1]);
+  const timers = steps.slice(1).map(([after, text]) => setTimeout(() => {
+    const t = box.querySelector('.cl-wait__text');
+    if (t) t.textContent = text;
+  }, after));
+  return () => { timers.forEach(clearTimeout); box.textContent = ''; };
+}
+const DRAFT_STEPS = [[0, 'Drafting…'], [5000, 'Drafting… the AI is reading your documents and the ad.'],
+  [25000, 'Still drafting… a careful model can take a minute or two.']];
+const CHOOSE_STEPS = [[0, 'Choosing blocks…'], [5000, 'Choosing blocks… the AI is reading the ad, your blocks and your documents.'],
+  [20000, 'Still choosing… a careful model can take up to a minute.']];
+const REVIEW_STEPS = [[0, 'Checking the blocks you chose against the job…'],
+  [8000, 'Still checking… the AI is reading your blocks, the ad and your documents.'],
+  [25000, 'Still checking… a careful model can take up to a minute.']];
+
 // A download: its bytes, file name and what the server says about it. Through apiResponse, so a signed-out session
 // goes to the sign-in page and the encryption notice shows, as for every other call.
 async function fetchFile(url) {
@@ -334,11 +356,11 @@ async function openLetterWindow(job, host) {
     const btn = $('#cl-draft');
     if (text().trim() && !confirm('Replace the current letter with a new draft?')) return;
     setBusy(btn, true);
-    $('#cl-status').textContent = 'Drafting… this can take a minute.';
+    const stop = startWait($('#cl-status'), DRAFT_STEPS);
     try {
       showLetter(await api(`/api/jobs/${job.id}/cover-letter`, { method: 'POST', body: JSON.stringify({ instructions: $('#cl-instructions').value }) }));
-      $('#cl-status').textContent = '';
-    } catch (e) { $('#cl-status').textContent = `Failed: ${e.message}`; }
+      stop();
+    } catch (e) { stop(); $('#cl-status').textContent = `Failed: ${e.message}`; }
     setBusy(btn, false);
   });
   $('#cl-save').addEventListener('click', async () => {
@@ -524,7 +546,7 @@ function initLetterBlocks(job, host, showLetter) {
   const reviewHtml = () => {
     if (!review) return '';
     let body;
-    if (review.state === 'checking') body = '<p class="u-muted cl-review-wait">Checking the blocks you chose against the job…</p>';
+    if (review.state === 'checking') body = '<p class="u-muted cl-review-wait" role="status"></p>'; // (filled by runReview's startWait)
     else if (review.state === 'failed') body = `<p class="u-muted">${esc(review.note)}</p>`;
     else if (review.feedback.length) body = `<ul class="p-list cl-feedback">${review.feedback.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`;
     else body = '<p class="u-muted">Nothing to add: the blocks you chose cover what the ad asks for and your documents show.</p>';
@@ -543,12 +565,14 @@ function initLetterBlocks(job, host, showLetter) {
     keepDraft();
     review = { state: 'checking', feedback: [], note: '' };
     render();
+    const stopWait = startWait(panel.querySelector('.cl-review-wait'), REVIEW_STEPS);
     try {
       const res = await api(`/api/jobs/${job.id}/cover-letter/blocks/review`, { method: 'POST', body: JSON.stringify({ block_ids: ids }) });
       keepDraft();
       missing = (res.gaps || []).map((g) => ({ ...g }));
       writing = null;
       review = { state: 'done', feedback: res.feedback || [], note: '' };
+      stopWait();
       render();
       const n = review.feedback.length;
       announce(`${missing.length ? `${missing.length} block${missing.length === 1 ? '' : 's'} worth writing. ` : ''}${n ? `${n} point${n === 1 ? '' : 's'} on your choice.` : 'Nothing to add to your choice.'}`);
@@ -556,6 +580,7 @@ function initLetterBlocks(job, host, showLetter) {
       keepDraft();
       const detail = e.message.replace(/[.\s]+$/, '');
       review = { state: 'failed', feedback: [], note: e.status === 400 || e.status === 502 ? `Not checked: ${detail}.` : `Failed: ${e.message}` };
+      stopWait();
       render();
     }
   };
@@ -584,12 +609,13 @@ function initLetterBlocks(job, host, showLetter) {
     const btn = $('#cl-build');
     if ($('#cl-text').value.trim() && !confirm('Replace the current letter with one built from your blocks? It is replaced only when you choose Assemble.')) return;
     setBusy(btn, true);
-    status.textContent = 'Choosing blocks…';
+    const stop = startWait(status, CHOOSE_STEPS);
     try {
       const res = await api(`/api/jobs/${job.id}/cover-letter/blocks/suggest`, { method: 'POST' });
-      status.textContent = '';
+      stop();
       open({ list: res.blocks || [], picked: res.picked || [], unpicked: res.unpicked || [], gaps: res.missing || [] });
     } catch (e) {
+      stop();
       if (e.status === 400 || e.status === 502) {
         // No model to ask (or it failed): the user's own blocks, to tick and order by hand.
         let list = [];
@@ -656,11 +682,13 @@ function initLetterBlocks(job, host, showLetter) {
       const ids = rows.filter((r) => r.ticked).map((r) => r.block.id);
       if (!ids.length) { status.textContent = 'Tick at least one block.'; announce('Tick at least one block.', true); return; }
       setBusy(el, true);
-      status.textContent = 'Putting the letter together…';
+      const stop = startWait(status, [[0, 'Putting the letter together…']]);
       let l;
       try {
         l = await api(`/api/jobs/${job.id}/cover-letter/blocks/assemble`, { method: 'POST', body: JSON.stringify({ block_ids: ids }) });
+        stop();
       } catch (err) {
+        stop();
         setBusy(el, false);
         status.textContent = `Failed: ${err.message}`;
         return;

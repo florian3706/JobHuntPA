@@ -382,6 +382,9 @@ ranks a job down because of them, and never puts a number on it.
   or closing, length, an unticked block that would fit better). Write a block, tick it and *Assemble letter*
   again; *Check again* reviews a changed choice without assembling. Nothing in the letter is changed by the
   review, and without an AI key the letter is put together without one.
+- While the AI works (drafting, choosing blocks, checking a choice) the window shows a spinner and a sliding bar
+  with the text moving on to say what is taking the time ("Still choosing… a careful model can take up to a
+  minute"); people who ask their system for less motion get a still ring and bar.
 - **Blocks worth writing**: requirements of the ad that your documents show real experience in but no block
   covers (all of them when you have no blocks yet). Each shows a proposed title and *Write this block*, which
   opens a form with bullet points of facts taken from your documents beside the text box. You write the

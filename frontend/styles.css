@@ -1776,6 +1776,10 @@ dialog.modal.modal--letter .modal-box { max-height: calc(100dvh - 32px); }
 .cl-instructions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: end; }
 .cl-status:empty { display: none; }
 .cl-status { margin: 0; color: var(--muted); }
+/* A wait on the model (letter.js startWait): spinner, the step's text, and a sliding bar under them. */
+.cl-wait { display: inline-flex; align-items: center; gap: .5rem; }
+.cl-wait__bar { display: block; margin-top: .375rem; max-width: 24rem; height: .25rem; }
+.cl-review-wait { margin: 0; }
 .cl-letter-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .cl-letter-head .p-label { margin: 0; }
 .cl-textarea { font-size: 16px; line-height: 1.6; resize: vertical; width: 100%; }
